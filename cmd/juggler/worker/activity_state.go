@@ -120,14 +120,14 @@ func (w *ConversationWorker) patchProcessingState(mutate func(map[string]any)) {
 // forkParked marker (stamped on the copy at snapshot time) suppresses the
 // re-drive for exactly this first load, then is consumed so a later reload of the
 // clone behaves like any normal conversation.
-func (w *ConversationWorker) reconcileProcessingStateOnLoad() {
-	w.sendStatus("idle", "")
-	if b, _ := w.doc.GetMetadata(metaForkParked).(bool); b {
-		w.doc.SetMetadata(metaForkParked, false) // one-shot: consume the marker
+func (r *run) reconcileProcessingStateOnLoad() {
+	r.sendStatus("idle", "")
+	if b, _ := r.doc.GetMetadata(metaForkParked).(bool); b {
+		r.doc.SetMetadata(metaForkParked, false) // one-shot: consume the marker
 		return
 	}
-	if threadID, ok := w.findThreadWithIncompleteTool(); ok {
-		w.requestLLM(threadID)
+	if threadID, ok := r.findThreadWithIncompleteTool(); ok {
+		r.requestLLM(threadID)
 	}
 }
 
@@ -193,12 +193,12 @@ func (w *ConversationWorker) hideElapsedAnchor() {
 // — never snapping to 0. The deduction is pure in-memory arithmetic; only the one
 // derived startedAt field touches the doc, and that single write propagates to
 // every connected client at once.
-func (w *ConversationWorker) advanceElapsedAnchor(waitMs int64) {
+func (r *run) advanceElapsedAnchor(waitMs int64) {
 	if waitMs > 0 {
-		w.processingStartedAt += waitMs
+		r.t.processingStartedAt += waitMs
 	}
-	anchor := w.processingStartedAt
-	w.patchProcessingState(func(m map[string]any) {
+	anchor := r.t.processingStartedAt
+	r.patchProcessingState(func(m map[string]any) {
 		m["startedAt"] = anchor
 	})
 }

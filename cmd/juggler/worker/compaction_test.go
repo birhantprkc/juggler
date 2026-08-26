@@ -58,7 +58,7 @@ func TestCompactionFoldKeepsDelegatedRunRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	foldID, folded, err := w.foldConversationForCompaction(false)
+	foldID, folded, err := w.currentRun().foldConversationForCompaction(false)
 	if err != nil || !folded {
 		t.Fatalf("foldConversationForCompaction = (%q, %v, %v), want a fold", foldID, folded, err)
 	}
@@ -175,7 +175,7 @@ func TestSessionFoldsConvergeToOneSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	foldID, folded, err := w.foldConversationForCompaction(false)
+	foldID, folded, err := w.currentRun().foldConversationForCompaction(false)
 	if err != nil || !folded {
 		t.Fatalf("first fold = (%q, %v, %v), want a fold", foldID, folded, err)
 	}
@@ -186,7 +186,7 @@ func TestSessionFoldsConvergeToOneSummary(t *testing.T) {
 		invocationItemForTest("invoc-tu-4", "tu-4", "answer for tu-4"),
 		ConversationItem{Type: ItemTypeAssistant, ItemID: "body-tu-4", Content: "the work behind tu-4"},
 	)
-	secondFoldID, folded, err := w.foldConversationForCompaction(false)
+	secondFoldID, folded, err := w.currentRun().foldConversationForCompaction(false)
 	if err != nil || !folded {
 		t.Fatalf("second fold = (%q, %v, %v), want a fold", secondFoldID, folded, err)
 	}
@@ -244,7 +244,7 @@ func TestCompactRefusesWhileLLMClaimHeld(t *testing.T) {
 	w.storeState(StateIdle)
 
 	payload, _ := json.Marshal(CompactMessage{Type: "compact", AckID: "ack-1"})
-	w.handleCompact(payload)
+	w.currentRun().handleCompact(payload)
 
 	for _, it := range w.doc.GetItems() {
 		if it.Type == ItemTypeThread {
@@ -286,7 +286,7 @@ func TestStrategyRunThreadRecoveredByReconcileTick(t *testing.T) {
 	w.releaseLLM()
 	w.storeState(StateIdle)
 	for i := 0; i < maxReconcilePasses && w.needsReconcile; i++ {
-		w.tryReconcile()
+		w.currentRun().tryReconcile()
 	}
 
 	if got, _ := w.doc.GetThreadYMap(threadID).Get("result").(string); got != "Recovered summary." {
@@ -309,7 +309,7 @@ func TestResummarizeCompactionThreadRerunsSummarizer(t *testing.T) {
 	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
 		w.doc.GetThreadYMap(threadID).Set("result", "Stale summary.")
 	}, w.doc.authorID)
-	w.resetThreadContext()
+	w.currentRun().resetThreadContext()
 
 	stop := make(chan struct{})
 	defer close(stop)
@@ -340,7 +340,7 @@ func TestResummarizeCompactionThreadRerunsSummarizer(t *testing.T) {
 	payload, _ := json.Marshal(ResummarizeCompactionThreadMessage{
 		Type: "resummarize-compaction-thread", ThreadItemID: threadID,
 	})
-	w.handleResummarizeCompactionThread(payload)
+	w.currentRun().handleResummarizeCompactionThread(payload)
 
 	if got, _ := w.doc.GetThreadYMap(threadID).Get("result").(string); got != "Fresh summary." {
 		t.Fatalf("thread result = %q, want the regenerated summary", got)
@@ -371,7 +371,7 @@ func TestRunFoldedThreadCompactionOnePassAppendsPrompt(t *testing.T) {
 	}
 
 	probeTools := []ToolDefinition{{Name: "edit", Description: "Edit a file", InputSchema: json.RawMessage(`{"type":"object"}`)}}
-	handled, err := w.runFoldedThreadCompaction(&ModelConfig{Provider: "test", Model: "test"}, &ContextResult{SystemPrompt: "ordinary system prompt"}, probeTools)
+	handled, err := w.currentRun().runFoldedThreadCompaction(&ModelConfig{Provider: "test", Model: "test"}, &ContextResult{SystemPrompt: "ordinary system prompt"}, probeTools)
 	if !handled || err != nil {
 		t.Fatalf("runFoldedThreadCompaction = (%v, %v), want handled success", handled, err)
 	}
@@ -430,7 +430,7 @@ func TestRunFoldedThreadCompactionProbeOverflowChunks(t *testing.T) {
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "condensed fragment"}}}, nil
 	}
 
-	handled, err := w.runFoldedThreadCompaction(&ModelConfig{Provider: "test", Model: "test"}, &ContextResult{}, nil)
+	handled, err := w.currentRun().runFoldedThreadCompaction(&ModelConfig{Provider: "test", Model: "test"}, &ContextResult{}, nil)
 	if !handled || err != nil {
 		t.Fatalf("runFoldedThreadCompaction = (%v, %v), want handled success after overflow", handled, err)
 	}
@@ -456,7 +456,7 @@ func TestFoldedCompactionPublishesBusyStatus(t *testing.T) {
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	// The resting frame every real /compact starts from: the preceding turn ended
 	// at idle, and the pickup's claim deliberately leaves status untouched.
-	w.sendStatus("idle", "")
+	w.currentRun().sendStatus("idle", "")
 	insertBoundedCompactionThread(t, w, "history to summarize")
 
 	var sawStatus, sawMessage string
@@ -469,7 +469,7 @@ func TestFoldedCompactionPublishesBusyStatus(t *testing.T) {
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "the handoff summary"}}}, nil
 	}
 
-	handled, err := w.runFoldedThreadCompaction(&ModelConfig{Provider: "test", Model: "test"}, &ContextResult{}, nil)
+	handled, err := w.currentRun().runFoldedThreadCompaction(&ModelConfig{Provider: "test", Model: "test"}, &ContextResult{}, nil)
 	if !handled || err != nil {
 		t.Fatalf("runFoldedThreadCompaction = (%v, %v), want handled success", handled, err)
 	}
@@ -510,7 +510,7 @@ func TestBoundedCompactionMapsReducesAndPublishesOnlyFinalResult(t *testing.T) {
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "condensed fragment"}}}, nil
 	}
 
-	handled, err := w.tryBoundedCompaction(&provider.ContextLimitExceededError{
+	handled, err := w.currentRun().tryBoundedCompaction(&provider.ContextLimitExceededError{
 		EstimatedInputTokens: 5_000, OutputReserveTokens: reserve, ContextWindowTokens: window,
 	}, &ModelConfig{Provider: "test", Model: "test"})
 	if err != nil || !handled {
@@ -564,7 +564,7 @@ func TestBoundedCompactionPinsRejectedRequestModel(t *testing.T) {
 		}
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "short"}}}, nil
 	}
-	_, err := w.tryBoundedCompaction(&provider.ContextLimitExceededError{EstimatedInputTokens: 3_000, OutputReserveTokens: 300, ContextWindowTokens: 3000}, pinned)
+	_, err := w.currentRun().tryBoundedCompaction(&provider.ContextLimitExceededError{EstimatedInputTokens: 3_000, OutputReserveTokens: 300, ContextWindowTokens: 3000}, pinned)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -681,7 +681,7 @@ func TestBoundedCompactionMissingPromptDistinctFromLegacy(t *testing.T) {
 	m.Set("compactionPromptItemId", "does-not-exist")
 	ycrdtMu.Unlock()
 
-	items := w.getTargetItems()
+	items := w.currentRun().getTargetItems()
 	id, reason := w.resolveCompactionPromptItemID(threadID, items)
 	if id != "" || reason != BoundedCompactionMissingPrompt {
 		t.Fatalf("resolve = (%q, %q), want ('', %q)", id, reason, BoundedCompactionMissingPrompt)
@@ -698,7 +698,7 @@ func TestBoundedCompactionRejectsNonConvergence(t *testing.T) {
 		_ = json.Unmarshal(raw, &req)
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: strings.Repeat("expanded ", 3000)}}}, nil
 	}
-	_, err := w.tryBoundedCompaction(&provider.ContextLimitExceededError{OutputReserveTokens: 200, ContextWindowTokens: 1800}, &ModelConfig{Provider: "test", Model: "test"})
+	_, err := w.currentRun().tryBoundedCompaction(&provider.ContextLimitExceededError{OutputReserveTokens: 200, ContextWindowTokens: 1800}, &ModelConfig{Provider: "test", Model: "test"})
 	if err == nil || !strings.Contains(err.Error(), "no progress") {
 		t.Fatalf("error = %v, want no progress", err)
 	}
@@ -713,7 +713,7 @@ func TestBoundedCompactionCancellationPublishesNothing(t *testing.T) {
 		w.storeState(StateCancelling)
 		return nil, context.Canceled
 	}
-	_, err := w.tryBoundedCompaction(&provider.ContextLimitExceededError{OutputReserveTokens: 200, ContextWindowTokens: 1800}, &ModelConfig{Provider: "test", Model: "test"})
+	_, err := w.currentRun().tryBoundedCompaction(&provider.ContextLimitExceededError{OutputReserveTokens: 200, ContextWindowTokens: 1800}, &ModelConfig{Provider: "test", Model: "test"})
 	if !errors.Is(err, errBoundedCompactionCancelled) {
 		t.Fatalf("error = %v, want cancellation", err)
 	}
@@ -732,7 +732,7 @@ func TestBoundedCompactionCancellationCarriesPartialAccounting(t *testing.T) {
 		w.storeState(StateCancelling)
 		return nil, context.Canceled
 	}
-	_, err := w.tryBoundedCompaction(&provider.ContextLimitExceededError{OutputReserveTokens: 200, ContextWindowTokens: 1800}, &ModelConfig{Provider: "test", Model: "test"})
+	_, err := w.currentRun().tryBoundedCompaction(&provider.ContextLimitExceededError{OutputReserveTokens: 200, ContextWindowTokens: 1800}, &ModelConfig{Provider: "test", Model: "test"})
 	if !errors.Is(err, errBoundedCompactionCancelled) {
 		t.Fatalf("error = %v, want cancellation", err)
 	}
@@ -751,7 +751,7 @@ func TestBoundedCompactionCancellationCarriesPartialAccounting(t *testing.T) {
 func TestBoundedCompactionDoesNotHandleRoot(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	handled, err := w.tryBoundedCompaction(&provider.ContextLimitExceededError{ContextWindowTokens: 100}, &ModelConfig{Provider: "test", Model: "test"})
+	handled, err := w.currentRun().tryBoundedCompaction(&provider.ContextLimitExceededError{ContextWindowTokens: 100}, &ModelConfig{Provider: "test", Model: "test"})
 	if handled || err != nil {
 		t.Fatalf("root fallback = (%v, %v), want (false, nil)", handled, err)
 	}
@@ -883,7 +883,7 @@ func TestHiddenCompactionUsesRegistryAdmissionAndDiscardsAllStreamChunks(t *test
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "short"}}}, nil
 	}
 
-	handled, err := w.tryBoundedCompaction(&provider.ContextLimitExceededError{
+	handled, err := w.currentRun().tryBoundedCompaction(&provider.ContextLimitExceededError{
 		EstimatedInputTokens: 5_000, OutputReserveTokens: reserve, ContextWindowTokens: window,
 	}, &ModelConfig{Provider: "test", Model: "test"})
 	if err != nil || !handled {

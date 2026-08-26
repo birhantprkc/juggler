@@ -34,7 +34,7 @@ func newStrategyHookHarness(t *testing.T, strategyID string, replyFn func(w *Con
 		Conversation: SerializedConversation{ID: "conv-hooks"},
 		Config:       WorkerConfig{ProjectPath: t.TempDir()},
 	})
-	w.handleInit(initPayload)
+	w.currentRun().handleInit(initPayload)
 	// In production the switching/creating viewer writes currentStrategyId into
 	// the doc metadata and it syncs into the worker; handleInit does not seed it.
 	w.doc.SetMetadata("currentStrategyId", strategyID)
@@ -119,7 +119,7 @@ func TestWorkerDrivesStrategyHooks(t *testing.T) {
 		w.strategyHookReply.inject(w.done, resp)
 	})
 
-	w.runStrategyLoop("build a feature", false)
+	w.currentRun().runStrategyLoop("build a feature", false)
 
 	hooks := drainHooks(t, hookCh, 2)
 	if len(hooks) != 2 {
@@ -193,7 +193,7 @@ func TestWorkerActivatesSubThreadStrategy(t *testing.T) {
 	// (handleSendMessage sets both the itemID and the thread's items array).
 	w.turn.thread.itemID = threadID
 	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
-	w.maybeActivateStrategy()
+	w.currentRun().maybeActivateStrategy()
 
 	hooks := drainHooks(t, hookCh, 1)
 	if len(hooks) == 0 || hooks[0].hook != "onActivate" {
@@ -244,7 +244,7 @@ func TestWorkerDispatchesContextTurnHook(t *testing.T) {
 		Conversation: SerializedConversation{ID: "conv-ctxhook"},
 		Config:       WorkerConfig{ProjectPath: t.TempDir()},
 	})
-	w.handleInit(initPayload)
+	w.currentRun().handleInit(initPayload)
 
 	type ctxHookRec struct {
 		hook      string
@@ -287,7 +287,7 @@ func TestWorkerDispatchesContextTurnHook(t *testing.T) {
 		StopReason: "end_turn",
 	}})
 
-	w.runStrategyLoop("build a feature", false)
+	w.currentRun().runStrategyLoop("build a feature", false)
 
 	select {
 	case rec := <-ch:
@@ -318,7 +318,7 @@ func TestStrategyActivationDefersWhenEngineSilent(t *testing.T) {
 		// Deliberately never reply → the worker's wait must time out.
 	})
 
-	w.runStrategyLoop("build a feature", false)
+	w.currentRun().runStrategyLoop("build a feature", false)
 
 	hooks := drainHooks(t, hookCh, 1)
 	if len(hooks) == 0 || hooks[0].hook != "onActivate" {

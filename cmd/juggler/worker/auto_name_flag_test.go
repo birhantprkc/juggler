@@ -119,7 +119,7 @@ func TestAutoNameSkippedWhenNameIsUserChosen(t *testing.T) {
 func TestRequestAutoNameUnforcedRespectsMarker(t *testing.T) {
 	var calls []autoNameCall
 	w := namedWorker(t, "conv_unforced", "Fix login redirect (continued)", &calls)
-	w.addUserMessage(UserMessageInput{Text: "Handoff summary: the auth refactor so far"})
+	w.currentRun().addUserMessage(UserMessageInput{Text: "Handoff summary: the auth refactor so far"})
 
 	w.doc.SetMetadata(metaProvisionalName, false)
 	requestAutoName(t, w, false)
@@ -144,7 +144,7 @@ func TestRequestAutoNameForcedIgnoresMarker(t *testing.T) {
 	var calls []autoNameCall
 	w := namedWorker(t, "conv_forced", "Fix login redirect", &calls)
 	w.doc.SetMetadata(metaProvisionalName, false)
-	w.addUserMessage(UserMessageInput{Text: "Refactor the auth layer"})
+	w.currentRun().addUserMessage(UserMessageInput{Text: "Refactor the auth layer"})
 
 	requestAutoName(t, w, true)
 

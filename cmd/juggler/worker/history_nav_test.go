@@ -64,7 +64,7 @@ func TestHistoryNavigationSuppressesReducerForDangerousLastItems(t *testing.T) {
 			})
 			w.suppressReconcileAfterHistoryNavUntilMs = time.Now().UnixMilli() + 10_000
 
-			w.handleItemsChange()
+			w.currentRun().handleItemsChange()
 
 			if got := w.getActivity(); got != ActivityNone {
 				t.Fatalf("history-nav echo should clear stale activity, got %q", got)

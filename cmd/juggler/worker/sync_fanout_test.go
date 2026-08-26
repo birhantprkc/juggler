@@ -139,8 +139,8 @@ func TestSyncFanoutConvergence(t *testing.T) {
 		perWriter  = 15
 	)
 	w := NewConversationWorker("conv-fanout", "user:test")
-	w.Start(context.Background())
-	defer w.Stop()
+	w.currentRun().Start(context.Background())
+	defer w.currentRun().Stop()
 
 	// progress wakes the settle waiter whenever any client receives a frame, so
 	// it blocks instead of busy-spinning — and a true stall (loss) starves it,
@@ -213,7 +213,7 @@ func TestSyncFanoutConvergence(t *testing.T) {
 func TestSyncFanoutIntakeNoLoss(t *testing.T) {
 	const numMsgs = 500 // >> any small fixed inbound buffer
 	w := NewConversationWorker("conv-intake", "user:test")
-	defer w.Stop()
+	defer w.currentRun().Stop()
 
 	mc := newMsgChan()
 	w.SetCallback("client-0", mc.callback)
@@ -227,7 +227,7 @@ func TestSyncFanoutIntakeNoLoss(t *testing.T) {
 	}
 
 	// Now let the worker process them all.
-	w.Start(context.Background())
+	w.currentRun().Start(context.Background())
 
 	seen := collectAcks(mc, numMsgs, 15*time.Second)
 	if len(seen) != numMsgs {
@@ -316,8 +316,8 @@ func collectAcks(mc *msgChan, expected int, timeout time.Duration) map[string]bo
 func TestSyncFanoutAckBroadcastCorrelation(t *testing.T) {
 	const numClients = 12
 	w := NewConversationWorker("conv-ack", "user:test")
-	w.Start(context.Background())
-	defer w.Stop()
+	w.currentRun().Start(context.Background())
+	defer w.currentRun().Stop()
 
 	chans := make([]*msgChan, numClients)
 	ackIDs := make([]string, numClients)
@@ -365,8 +365,8 @@ func TestSyncFanoutAckBroadcastCorrelation(t *testing.T) {
 func TestAckTargetsOriginatingClient(t *testing.T) {
 	const numClients = 5
 	w := NewConversationWorker("conv-ack-target", "user:test")
-	w.Start(context.Background())
-	defer w.Stop()
+	w.currentRun().Start(context.Background())
+	defer w.currentRun().Stop()
 
 	chans := make([]*msgChan, numClients)
 	for i := 0; i < numClients; i++ {

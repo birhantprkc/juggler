@@ -66,7 +66,7 @@ func TestSendStatusIdleClearsActivity(t *testing.T) {
 	if !w.isLLMClaimed() {
 		t.Fatal("after claim: expected isLLMClaimed=true")
 	}
-	w.sendStatus("idle", "")
+	w.currentRun().sendStatus("idle", "")
 	if w.isLLMClaimed() {
 		t.Fatal("after sendStatus(idle): expected isLLMClaimed=false")
 	}
@@ -80,7 +80,7 @@ func TestSendStatusNonIdleSetsActivity(t *testing.T) {
 	for _, status := range cases {
 		t.Run(status, func(t *testing.T) {
 			w := NewConversationWorker("test-status-"+status, "user:test")
-			w.sendStatus(status, "")
+			w.currentRun().sendStatus(status, "")
 			if !w.isLLMClaimed() {
 				t.Errorf("after sendStatus(%q): expected isLLMClaimed=true", status)
 			}
@@ -99,7 +99,7 @@ func TestSendStatusErrorReleasesClaim(t *testing.T) {
 	for _, status := range []string{"error", "validation-error"} {
 		t.Run(status, func(t *testing.T) {
 			w := NewConversationWorker("test-err-"+status, "user:test")
-			w.sendStatus(status, "boom")
+			w.currentRun().sendStatus(status, "boom")
 			if w.getActivity() != ActivityNone {
 				t.Fatalf("after sendStatus(%q): expected activity=%q (claim released), got %q", status, ActivityNone, w.getActivity())
 			}
@@ -120,7 +120,7 @@ func TestClaimLLM_ReloadScenario(t *testing.T) {
 		t.Fatal("initial claim: expected isLLMClaimed=true")
 	}
 
-	w.sendStatus("idle", "")
+	w.currentRun().sendStatus("idle", "")
 	if w.isLLMClaimed() {
 		t.Fatal("after init sendStatus(idle): expected stale claim cleared")
 	}
@@ -188,7 +188,7 @@ func TestSendStatusIdleClearsAwaiting(t *testing.T) {
 	w := NewConversationWorker("test-idle-awaiting", "user:test")
 
 	w.requestLLM("")
-	w.sendStatus("idle", "")
+	w.currentRun().sendStatus("idle", "")
 	if w.getActivity() != ActivityNone {
 		t.Fatalf("after sendStatus(idle): expected activity cleared, got %q", w.getActivity())
 	}

@@ -111,8 +111,8 @@ func (w *ConversationWorker) repairDuplicateItemIds() int {
 //
 // This is the whole of what persistence owes the user. Everything else a save
 // does is housekeeping, which is why the shutdown path calls this directly.
-func (w *ConversationWorker) writeStateToDisk() (bool, error) {
-	if w.projectPath == "" || w.saveBinary == nil {
+func (r *run) writeStateToDisk() (bool, error) {
+	if r.projectPath == "" || r.saveBinary == nil {
 		return false, nil // Can't save without store wiring
 	}
 
@@ -121,18 +121,18 @@ func (w *ConversationWorker) writeStateToDisk() (bool, error) {
 	// content it is still holding back would be missing from the saved state.
 	// Every caller runs on the worker goroutine, so this is the same actor that
 	// owns the streaming state.
-	w.flushPendingStreamWrites()
+	r.flushPendingStreamWrites()
 
-	state := w.doc.ToState()
+	state := r.doc.ToState()
 	if len(state) == 0 {
 		return false, nil // Nothing to save
 	}
 
-	if err := w.saveBinary(w.conversationID, state); err != nil {
+	if err := r.saveBinary(r.conversationID, state); err != nil {
 		return false, fmt.Errorf("save conversation binary: %w", err)
 	}
 
-	w.dirty.Store(false)
+	r.dirty.Store(false)
 	return true, nil
 }
 
@@ -141,18 +141,18 @@ func (w *ConversationWorker) writeStateToDisk() (bool, error) {
 // undoLog entry is deleted, and unreferenced assets go the same way.
 // Piggy-backing GC on the debounced save keeps it off the hot path while
 // ensuring it runs whenever the doc actually changes.
-func (w *ConversationWorker) saveStateToDisk() error {
-	wrote, err := w.writeStateToDisk()
+func (r *run) saveStateToDisk() error {
+	wrote, err := r.writeStateToDisk()
 	if err != nil || !wrote {
 		return err
 	}
 
-	if err := w.sweepTransactions(); err != nil {
-		w.log.Error("Failed to sweep transaction blobs: %v", err)
+	if err := r.sweepTransactions(); err != nil {
+		r.log.Error("Failed to sweep transaction blobs: %v", err)
 	}
 
-	if err := w.sweepAssets(); err != nil {
-		w.log.Error("Failed to sweep assets: %v", err)
+	if err := r.sweepAssets(); err != nil {
+		r.log.Error("Failed to sweep assets: %v", err)
 	}
 
 	return nil
@@ -173,46 +173,46 @@ func (w *ConversationWorker) scheduleSave() {
 	})
 }
 
-func (w *ConversationWorker) onShutdown() {
-	defer w.callbacks.stop()
-	// Deferred LIFO: w.log.Close() (registered last) runs first to release the
+func (r *run) onShutdown() {
+	defer r.callbacks.stop()
+	// Deferred LIFO: r.log.Close() (registered last) runs first to release the
 	// file, THEN maybePurgeLogs() removes it — an open file can't be deleted on
 	// Windows, so the ordering matters.
-	defer w.maybePurgeLogs()
+	defer r.maybePurgeLogs()
 	// Close this conversation's per-conversation log sink (nil-safe).
-	defer w.log.Close()
+	defer r.log.Close()
 
 	// Stop every task-output delivery pump and kill its background task so a
 	// delivering command doesn't outlive the conversation worker.
-	w.stopAllDeliveryPumps()
+	r.stopAllDeliveryPumps()
 
 	// Level the document up with any streamed content the write throttle is
 	// holding, BEFORE the Yjs flush below, so the final broadcast and the
 	// dirty check both see the whole message. This is the only save a
 	// mid-turn conversation gets.
-	w.flushPendingStreamWrites()
+	r.flushPendingStreamWrites()
 
 	// Flush any pending Yjs sync updates
-	w.batcher.Flush()
+	r.batcher.Flush()
 
 	// Cancel any pending save timer
-	if w.saveTimer != nil {
-		w.saveTimer.Stop()
-		w.saveTimer = nil
+	if r.saveTimer != nil {
+		r.saveTimer.Stop()
+		r.saveTimer = nil
 	}
 	// Drain any pending save signal (timer may have fired before Stop)
 	select {
-	case <-w.saveChan:
+	case <-r.saveChan:
 	default:
 	}
 	// Skip final save when the worker is being removed for deletion —
 	// otherwise SaveConversationBinary's ensureConvDir would recreate the
 	// just-deleted folder as "Untitled--<id>".
-	if w.deleting.Load() {
+	if r.deleting.Load() {
 		return
 	}
 	// Skip if no changes since last successful save.
-	if !w.dirty.Load() {
+	if !r.dirty.Load() {
 		return
 	}
 	// Write only — no blob/asset GC. Every worker's shutdown save runs inside
@@ -220,9 +220,9 @@ func (w *ConversationWorker) onShutdown() {
 	// txns and assets directories: pure latency in front of the only write that
 	// still stands between a mid-turn conversation and losing the turn. GC
 	// resumes on the next debounced save after the next launch.
-	w.log.Info("💾 Saving conversation %s...", w.conversationID)
-	if _, err := w.writeStateToDisk(); err != nil {
-		w.log.Error("Failed to save state on shutdown: %v", err)
+	r.log.Info("💾 Saving conversation %s...", r.conversationID)
+	if _, err := r.writeStateToDisk(); err != nil {
+		r.log.Error("Failed to save state on shutdown: %v", err)
 	}
 }
 

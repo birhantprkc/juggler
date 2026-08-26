@@ -67,29 +67,29 @@ const (
 //   - A thread item is created → same pattern (hasIncompleteThreads)
 //   - Text + end_turn → loop ends naturally
 //   - Cancellation
-func (w *ConversationWorker) runStrategyLoop(userText string, isContinuation bool) {
-	w.runStrategyLoopWithIntent(userText, isContinuation, false)
+func (r *run) runStrategyLoop(userText string, isContinuation bool) {
+	r.runStrategyLoopWithIntent(userText, isContinuation, false)
 }
 
-func (w *ConversationWorker) runStrategyLoopWithIntent(userText string, isContinuation, explicitContinuation bool) {
-	defer w.finishStrategyRun()
+func (r *run) runStrategyLoopWithIntent(userText string, isContinuation, explicitContinuation bool) {
+	defer r.finishStrategyRun()
 
 	// Clear any stale streaming state from previous conversation turn
-	w.finalizeStreaming()
+	r.finalizeStreaming()
 
 	// Add user message if a caller passed one in directly (test helper path).
 	// Production sends arrive via handleSendMessage which inserts the user
 	// message before signalling the reducer; in that case userText is empty
 	// and the trailing user item is found by findUnstampedUserMsgID below.
 	if !isContinuation && userText != "" {
-		w.addUserMessage(UserMessageInput{Text: userText})
-		w.batcher.Flush() // Show user message in UI immediately
+		r.addUserMessage(UserMessageInput{Text: userText})
+		r.batcher.Flush() // Show user message in UI immediately
 	}
 
 	st := strategyRunState{}
 
 	for {
-		if w.runOneTurn(&st, explicitContinuation) == turnDone {
+		if r.runOneTurn(&st, explicitContinuation) == turnDone {
 			return
 		}
 		explicitContinuation = false
@@ -127,7 +127,7 @@ type strategyRunState struct {
 // process the response. It returns turnContinue when the run needs another LLM
 // turn and turnDone when the run is over (rest, error or cancellation) — the
 // caller returns immediately on turnDone and finishStrategyRun settles it.
-func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVerdict {
+func (r *run) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVerdict {
 	// Polite stop (Pause): every LLM turn begins here, so this is the boundary
 	// where we rest before re-invoking the model. It catches every re-entry a
 	// mid-turn pause can precede — a sync-tool continuation, a barren retry, and
@@ -139,8 +139,8 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 	// synced pending cue. The reducer's dispatchCallLLMOnThread handles the
 	// between-turn (async-tool) case; this handles the case where the run never
 	// returned to the reducer at all.
-	if w.consumePolitePending() {
-		w.promotePendingItems(w.turn.thread.itemID)
+	if r.consumePolitePending() {
+		r.promotePendingItems(r.t.thread.itemID)
 		return turnDone
 	}
 
@@ -150,27 +150,27 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 	// single summarizer, committing through writeBoundedCompactionResult. The
 	// turn ends here; the deferred cleanup drives idle, which collapses the
 	// fold + summary into one undo group (compactionMergeFromIdx).
-	if w.turn.thread.itemID != "" && w.isBoundedCompactionThread(w.turn.thread.itemID) && !w.threadHasResult(w.turn.thread.itemID) {
-		itemIDs := w.foldedCompactionContextItemIDs(w.turn.thread.itemID)
-		ctxResult, tools, prepErr := w.requestContextAndToolsForItemIDs(itemIDs)
+	if r.t.thread.itemID != "" && r.isBoundedCompactionThread(r.t.thread.itemID) && !r.threadHasResult(r.t.thread.itemID) {
+		itemIDs := r.foldedCompactionContextItemIDs(r.t.thread.itemID)
+		ctxResult, tools, prepErr := r.requestContextAndToolsForItemIDs(itemIDs)
 		if prepErr != nil {
 			if errors.Is(prepErr, ErrCancelled) {
 				return turnDone
 			}
-			w.sendError(fmt.Sprintf("Failed to get context/tools for compaction: %v", prepErr), "")
+			r.sendError(fmt.Sprintf("Failed to get context/tools for compaction: %v", prepErr), "")
 			return turnDone
 		}
-		handled, compactErr := w.runFoldedThreadCompaction(w.resolveModelConfig(), ctxResult, tools)
+		handled, compactErr := r.runFoldedThreadCompaction(r.resolveModelConfig(), ctxResult, tools)
 		if handled {
 			if compactErr != nil && !errors.Is(compactErr, errBoundedCompactionCancelled) {
-				w.log.Error("❌ compaction error: %s", compactErr.Error())
+				r.log.Error("❌ compaction error: %s", compactErr.Error())
 				errorData := map[string]any{}
 				for k, v := range compactionErrorData(compactErr) {
 					errorData[k] = v
 				}
-				w.sendErrorWithData(compactErr.Error(), "", errorData)
+				r.sendErrorWithData(compactErr.Error(), "", errorData)
 			}
-			w.turn.txnID = ""
+			r.t.txnID = ""
 			return turnDone
 		}
 	}
@@ -191,9 +191,9 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 	// interjected continuation routes through the warm-append resume there —
 	// a few seconds of CLI respawn with the prompt cache intact, a fair
 	// price for prompt delivery of a deliberately-typed message.
-	w.promotePendingItems(w.turn.thread.itemID)
+	r.promotePendingItems(r.t.thread.itemID)
 
-	userMsgToStamp := w.findUnstampedUserMsgID()
+	userMsgToStamp := r.findUnstampedUserMsgID()
 
 	// Fire the strategy's onActivate hook (in the engine) if the active
 	// strategy hasn't been activated yet. Placed AFTER promotePendingItems so
@@ -201,66 +201,66 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 	// injected guidance then lands deterministically after it, not racing the
 	// promotion. Blocks until the guidance has synced back, so buildMessages
 	// sees it. Idempotent across iterations (activatedStrategyId gate).
-	w.maybeActivateStrategy()
+	r.maybeActivateStrategy()
 
 	// Reset streaming state for this iteration — must reset message IDs
 	// AND content so each iteration creates new messages rather than
 	// updating previous ones.
-	w.finalizeStreaming()
-	w.resetStreamingText()
-	w.resetStreamingThinking()
+	r.finalizeStreaming()
+	r.resetStreamingText()
+	r.resetStreamingThinking()
 
-	if w.loadState() == StateCancelling {
+	if r.loadState() == StateCancelling {
 		return turnDone
 	}
 
-	w.sendStatus("preparing", "")
-	w.batcher.Flush()
+	r.sendStatus("preparing", "")
+	r.batcher.Flush()
 
-	ctxResult, tools, err := w.requestContextAndTools()
+	ctxResult, tools, err := r.requestContextAndTools()
 	if err != nil {
 		if errors.Is(err, ErrCancelled) {
 			return turnDone
 		}
-		w.sendError(fmt.Sprintf("Failed to get context/tools: %v", err), "")
+		r.sendError(fmt.Sprintf("Failed to get context/tools: %v", err), "")
 		return turnDone
 	}
 
 	// Apply the worker's thread gate before recording the exact capabilities
 	// sent to the provider. The same filtered slice builds the request, so a
 	// hallucinated or withheld tool cannot later reach the full engine registry.
-	tools = w.filterToolsForThread(tools)
-	w.turn.offeredTools = collectOfferedToolNames(tools)
+	tools = r.filterToolsForThread(tools)
+	r.t.offeredTools = collectOfferedToolNames(tools)
 
 	// Remember which of this turn's offered tools may delegate to a subthread,
 	// so processLLMResponse can route a call to the build-spec round-trip.
 	// Whether delegation is actually available is decided at the point of use.
-	w.turn.delegatingTools = collectDelegatingTools(tools)
+	r.t.delegatingTools = collectDelegatingTools(tools)
 
 	// txnID identifies this round-trip; insertTargetMessage stamps it onto
 	// every item produced during the call so callers don't plumb it through.
 	txnID := generateTransactionID()
-	w.turn.txnID = txnID
+	r.t.txnID = txnID
 
-	llmRequest := w.buildLLMRequestWithIntent(ctxResult, tools, txnID, st.bypassContextGuard, explicitContinuation)
+	llmRequest := r.buildLLMRequestWithIntent(ctxResult, tools, txnID, st.bypassContextGuard, explicitContinuation)
 
 	// Stamp the originating user message before the call. The transaction
 	// blob is written below regardless of outcome, so on LLM failure the
 	// user message + error item both link to a viewable blob.
 	if userMsgToStamp != "" {
-		_ = w.updateTargetItemByID(userMsgToStamp, "transactionId", txnID)
+		_ = r.updateTargetItemByID(userMsgToStamp, "transactionId", txnID)
 	}
 
 	startTime := time.Now()
 
-	response, err := w.callLLMWithRetry(llmRequest)
+	response, err := r.callLLMWithRetry(llmRequest)
 	if errors.Is(err, ErrRestartStrategy) {
 		return turnContinue
 	}
 
 	duration := time.Since(startTime)
 
-	w.batcher.Flush()
+	r.batcher.Flush()
 
 	// Persist the transaction blob BEFORE any further Yjs mutation. On
 	// cancellation, capture whatever partial streaming content existed so
@@ -269,27 +269,27 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 	blobResponse := response
 	if err != nil {
 		if errors.Is(err, ErrCancelled) {
-			blobResponse = w.partialCancelledResponse()
+			blobResponse = r.partialCancelledResponse()
 		} else {
 			errMsg = err.Error()
 		}
 	}
-	if blobErr := w.txnStore.SaveBlob(TransactionBlobInput{
-		ConversationID: w.conversationID,
+	if blobErr := r.txnStore.SaveBlob(TransactionBlobInput{
+		ConversationID: r.conversationID,
 		TxnID:          txnID,
 		LLMRequest:     llmRequest,
 		Response:       blobResponse,
 		ErrMsg:         errMsg,
 		StartTime:      startTime,
 		Duration:       duration,
-		ModelConfig:    w.resolveModelConfig(),
+		ModelConfig:    r.resolveModelConfig(),
 	}); blobErr != nil {
-		w.log.Error("❌ Failed to save transaction blob: %v", blobErr)
+		r.log.Error("❌ Failed to save transaction blob: %v", blobErr)
 	}
 
 	if err != nil {
 		if errors.Is(err, ErrCancelled) {
-			w.turn.txnID = ""
+			r.t.txnID = ""
 			return turnDone
 		}
 
@@ -300,7 +300,7 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 		// auto-retry. Do this before any context-limit handling: a credential
 		// failure is terminal and unrelated to compaction/recovery.
 		if errors.Is(err, ErrProviderUnavailable) {
-			mc := w.resolveModelConfig()
+			mc := r.resolveModelConfig()
 			msg := "The selected model's provider can't be used. Pick another model, or configure it in settings."
 			errorData := map[string]any{"duration": duration.Milliseconds()}
 			if mc != nil {
@@ -323,9 +323,9 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 			// credential that lapses mid-loop leaves a turn that simply stops.
 			// Insert the item first, while turn.txnID still stamps it with
 			// the transaction saved above.
-			w.sendErrorWithData(msg, "", errorData)
-			w.sendStatusWithCode("validation-error", msg, "provider-unavailable")
-			w.turn.txnID = ""
+			r.sendErrorWithData(msg, "", errorData)
+			r.sendStatusWithCode("validation-error", msg, "provider-unavailable")
+			r.t.txnID = ""
 			return turnDone
 		}
 
@@ -347,16 +347,16 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 			// context-limit overflow), not on every successful turn.
 			var originalRequest hiddenLLMRequest
 			_ = json.Unmarshal(llmRequest, &originalRequest)
-			switch v := w.handleContextOverflow(limit, isAdvisory, st.bypassContextGuard, &st.compaction, originalRequest.ModelConfig, err); v.verdict {
+			switch v := r.handleContextOverflow(limit, isAdvisory, st.bypassContextGuard, &st.compaction, originalRequest.ModelConfig, err); v.verdict {
 			case overflowStop:
-				w.turn.txnID = ""
+				r.t.txnID = ""
 				return turnDone
 			case overflowRetry:
-				w.turn.txnID = ""
+				r.t.txnID = ""
 				return turnContinue
 			case overflowBypassAndRetry:
 				st.bypassContextGuard = true
-				w.turn.txnID = ""
+				r.t.txnID = ""
 				return turnContinue
 			case overflowTerminal:
 				// Report v.err below. A synthesized terminal error must not
@@ -366,11 +366,11 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 			}
 		}
 
-		w.log.Error("❌ LLM error: %s", err.Error())
+		r.log.Error("❌ LLM error: %s", err.Error())
 		errorData := map[string]any{
 			"duration": duration.Milliseconds(),
 		}
-		if mc := w.resolveModelConfig(); mc != nil {
+		if mc := r.resolveModelConfig(); mc != nil {
 			errorData["provider"] = mc.Provider
 			errorData["model"] = mc.Model
 		}
@@ -382,8 +382,8 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 		// turn.txnID is still set, so insertTargetMessage stamps the
 		// error item with txnID — the View Transaction button opens the
 		// blob saved above.
-		w.sendErrorWithData(err.Error(), "", errorData)
-		w.turn.txnID = ""
+		r.sendErrorWithData(err.Error(), "", errorData)
+		r.t.txnID = ""
 		return turnDone
 	}
 
@@ -416,31 +416,31 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 	if response.CacheWriteTokens != nil {
 		cacheWrite = fmt.Sprintf("%d", *response.CacheWriteTokens)
 	}
-	w.log.Info("[turn tokens] thread=%q input=%d cached=%s (%s%% hit) output=%d cacheWrite=%s stop=%s in %s",
-		w.turn.thread.itemID, response.InputTokens, cached, hit,
+	r.log.Info("[turn tokens] thread=%q input=%d cached=%s (%s%% hit) output=%d cacheWrite=%s stop=%s in %s",
+		r.t.thread.itemID, response.InputTokens, cached, hit,
 		response.OutputTokens, cacheWrite, response.StopReason,
 		duration.Round(time.Millisecond))
 
-	shouldContinue, err := w.processLLMResponse(response)
-	w.turn.txnID = ""
+	shouldContinue, err := r.processLLMResponse(response)
+	r.t.txnID = ""
 	if err != nil {
 		if errors.Is(err, ErrCancelled) {
 			return turnDone
 		}
-		w.sendError(fmt.Sprintf("Error processing response: %v", err), "")
+		r.sendError(fmt.Sprintf("Error processing response: %v", err), "")
 		return turnDone
 	}
 
 	// Non-blocking: if async tools or a child thread were created,
 	// transition to "awaiting_llm" and let the reducer re-dispatch when
 	// the work completes.
-	if w.hasIncompleteTools() || w.hasIncompleteThreads() {
-		w.batcher.Flush()
-		w.transitionToAwaitingLLM()
+	if r.hasIncompleteTools() || r.hasIncompleteThreads() {
+		r.batcher.Flush()
+		r.transitionToAwaitingLLM()
 		return turnDone
 	}
 
-	w.batcher.Flush()
+	r.batcher.Flush()
 
 	// A turn the provider cut off at its output budget is not a blank turn,
 	// and must never be retried as one: the retry re-sends the same request
@@ -450,11 +450,11 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 	// starts nearer the limit than the last. Surface it once, here, naming the
 	// budget that ended it.
 	if response.StopReason == "max_tokens" {
-		w.insertTruncationNotice(response)
-		w.batcher.Flush()
+		r.insertTruncationNotice(response)
+		r.batcher.Flush()
 		// Truncated before it emitted anything usable: there is nothing to
 		// react to and nothing a further turn could add, so rest.
-		if !w.turnProducedAction(response) {
+		if !r.turnProducedAction(response) {
 			return turnDone
 		}
 	}
@@ -466,15 +466,15 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 	// doesn't look stuck. Only when the cap is hit do we surface the
 	// placeholder and exit — otherwise the UI would flip silently to
 	// idle, indistinguishable from a stuck spinner.
-	if !w.turnProducedAction(response) {
+	if !r.turnProducedAction(response) {
 		st.barrenTurns++
 		if st.barrenTurns >= MaxBarrenTurns {
-			w.insertBarrenStallPlaceholder()
+			r.insertBarrenStallPlaceholder()
 			return turnDone
 		}
-		w.sendStatus("retrying", fmt.Sprintf(
+		r.sendStatus("retrying", fmt.Sprintf(
 			"No response — retrying (%d/%d)", st.barrenTurns, MaxBarrenTurns))
-		w.batcher.Flush()
+		r.batcher.Flush()
 		return turnContinue
 	}
 	st.barrenTurns = 0
@@ -487,13 +487,13 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 	// while this turn ran, promote it and drive another turn instead of
 	// going idle (the next turn's promotePendingItems does the actual move).
 	if !shouldContinue {
-		if w.hasPendingItems(w.turn.thread.itemID) {
+		if r.hasPendingItems(r.t.thread.itemID) {
 			return turnContinue
 		}
 		return turnDone
 	}
 	if response.StopReason == "end_turn" && hasAssistantText(response) {
-		if w.hasPendingItems(w.turn.thread.itemID) {
+		if r.hasPendingItems(r.t.thread.itemID) {
 			return turnContinue
 		}
 		return turnDone
@@ -504,20 +504,20 @@ func (w *ConversationWorker) runOneTurn(st *strategyRunState, explicitContinuati
 // finishStrategyRun settles the run a strategy loop just finished, whatever the
 // ending: rest, error or cancellation. Deferred by runStrategyLoop so no exit
 // path can skip it and strand a stamped tool_use unpaired.
-func (w *ConversationWorker) finishStrategyRun() {
+func (r *run) finishStrategyRun() {
 	// Non-blocking: if the loop returned after dispatching tools or
 	// creating a child thread (activity="awaiting_llm"), let the reducer
 	// dispatch the child. In production the run() event loop calls
 	// tryReconcile(); drain it inline here so tests (no run()) also work.
-	if w.getActivity() == ActivityAwaitingLLM {
-		w.storeState(StateIdle)
-		w.needsReconcile = true
-		w.drainReconcile()
+	if r.getActivity() == ActivityAwaitingLLM {
+		r.storeState(StateIdle)
+		r.needsReconcile = true
+		r.drainReconcile()
 		return
 	}
 
-	wasCancelled := w.loadState() == StateCancelling
-	completedThreadID := w.turn.thread.itemID // capture before clearing
+	wasCancelled := r.loadState() == StateCancelling
+	completedThreadID := r.t.thread.itemID // capture before clearing
 
 	// The run this loop just ran is over: record how it came out. This is
 	// the completion signal a parked caller waits on, and the source of the
@@ -526,18 +526,18 @@ func (w *ConversationWorker) finishStrategyRun() {
 	// tool_use unpaired. Run BEFORE clearing state so the Y.Map read can
 	// find the items.
 	if completedThreadID != "" {
-		w.settleThreadRun(completedThreadID, wasCancelled)
+		r.settleThreadRun(completedThreadID, wasCancelled)
 	}
 
-	w.storeState(StateIdle)
-	w.processingStartedAt = 0
-	w.approvalWaitStartedAt = 0
-	w.lastProgressWriteMs = 0
-	w.lastCacheMissNotice = ""
-	w.resetThreadContext()
+	r.storeState(StateIdle)
+	r.t.processingStartedAt = 0
+	r.t.approvalWaitStartedAt = 0
+	r.t.lastProgressWriteMs = 0
+	r.t.lastCacheMissNotice = ""
+	r.resetThreadContext()
 
 	if wasCancelled {
-		w.finalizeCancellation(completedThreadID)
+		r.finalizeCancellation(completedThreadID)
 		return
 	}
 
@@ -545,7 +545,7 @@ func (w *ConversationWorker) finishStrategyRun() {
 	// settled as: the parent asked a question and is owed the answer, and
 	// "the run errored" is an answer it can act on. The child stays exactly
 	// as it is — stopped, summarised or not, and free to run again.
-	if !w.signalParentThread(completedThreadID) {
+	if !r.signalParentThread(completedThreadID) {
 		// The run that just ended may not be the whole story: sibling or cousin
 		// llmCreated runs can still be open, because this branch is also where a
 		// child nobody is waiting on ends — a strategy-created or compaction
@@ -564,22 +564,22 @@ func (w *ConversationWorker) finishStrategyRun() {
 		// that rests with children still open is the awaiting_llm case handled at
 		// the top of this function.
 		if completedThreadID != "" {
-			if openID := w.doc.firstLiveThreadID(completedThreadID); openID != "" {
-				w.releaseLLM()
+			if openID := r.doc.firstLiveThreadID(completedThreadID); openID != "" {
+				r.releaseLLM()
 				// If the claim can't be taken (another request already pending),
 				// fall through and publish idle rather than returning with no
 				// status written at all — a doc left mid-turn with nothing driving
 				// it never rests, and never fires the send this guard protects.
-				if w.requestLLM(openID) {
-					w.needsReconcile = true
-					w.drainReconcile()
+				if r.requestLLM(openID) {
+					r.needsReconcile = true
+					r.drainReconcile()
 					return
 				}
 			}
 		}
 
-		w.sendStatus("idle", "")
-		w.CancelStaleToolActions()
+		r.sendStatus("idle", "")
+		r.CancelStaleToolActions()
 
 		// A completed sub-thread folds back into the root conversation. If
 		// the user queued a message at the ROOT while the sub-thread ran —
@@ -599,10 +599,10 @@ func (w *ConversationWorker) finishStrategyRun() {
 		// completedThreadID != "" so it fires ONLY for a sub-thread
 		// completion — a root turn drains its own queue inside the loop (the
 		// end-of-run turnContinue), never here.
-		if completedThreadID != "" && w.hasPendingItems("") {
-			w.requestLLM("")
-			w.needsReconcile = true
-			w.drainReconcile()
+		if completedThreadID != "" && r.hasPendingItems("") {
+			r.requestLLM("")
+			r.needsReconcile = true
+			r.drainReconcile()
 			return
 		}
 
@@ -616,15 +616,15 @@ func (w *ConversationWorker) finishStrategyRun() {
 		// Root conversation went idle — let the strategy drive any
 		// post-idle work (e.g. plan execution) in the engine. Fire-and-
 		// forget: its effects re-enter via doc sync + reconcile.
-		w.dispatchWorkerIdleHook()
+		r.dispatchWorkerIdleHook()
 
 		// Same idle moment, one call per completed turn: let every
 		// context-item type run its onTurnEnd hook in the engine (e.g. an
 		// extension retaining a memory of the turn). Fire-and-forget; the
 		// hook's effects are external side-effects, not doc writes.
-		w.dispatchContextTurnHook()
+		r.dispatchContextTurnHook()
 	} else {
-		w.drainReconcile()
+		r.drainReconcile()
 	}
 }
 
@@ -648,8 +648,8 @@ func (w *ConversationWorker) turnProducedAction(response *LLMResponse) bool {
 // strategy loop is about to exit after MaxBarrenTurns iterations that
 // produced nothing the user can see. Without this the UI silently flips
 // back to idle and is indistinguishable from a stuck spinner.
-func (w *ConversationWorker) insertBarrenStallPlaceholder() {
-	w.appendTargetMessage(ConversationItem{
+func (r *run) insertBarrenStallPlaceholder() {
+	r.appendTargetMessage(ConversationItem{
 		Type:      ItemTypeAssistant,
 		ItemID:    generateItemID(),
 		Content:   "_(model returned no further response)_",
@@ -664,70 +664,70 @@ func (w *ConversationWorker) insertBarrenStallPlaceholder() {
 // Retries are bounded twice over: by MaxLLMRetries (how many) and by
 // MaxLLMRetryWindow (how long in total). The second bound is the load-bearing
 // one whenever a single attempt is expensive.
-func (w *ConversationWorker) callLLMWithRetry(req json.RawMessage) (*LLMResponse, error) {
+func (r *run) callLLMWithRetry(req json.RawMessage) (*LLMResponse, error) {
 	for attempt := 0; attempt < MaxLLMRetries; attempt++ {
 		// Only the first attempt claims to be receiving. A retry keeps the
 		// "retrying" spinner until real content arrives (clearRetryingStatus),
 		// because the fresh attempt may itself spend minutes inside the
 		// provider's own backoff before producing anything.
 		if attempt == 0 {
-			w.sendStatus("streaming", "")
+			r.sendStatus("streaming", "")
 		}
-		w.batcher.Flush()
+		r.batcher.Flush()
 
 		attemptStart := time.Now()
-		response, err := w.callLLM(req)
+		response, err := r.callLLM(req)
 		if err == nil {
-			w.resetLLMRetryBudget()
+			r.resetLLMRetryBudget()
 			return response, nil
 		}
 
 		// Only time spent FAILING is charged to the budget, so a long healthy
 		// turn followed by a single blip still gets its full allowance.
-		w.turn.retrySpent += time.Since(attemptStart)
+		r.t.retrySpent += time.Since(attemptStart)
 
 		var rErr retryableError
 		if !errors.As(err, &rErr) || attempt == MaxLLMRetries-1 {
-			w.resetLLMRetryBudget()
+			r.resetLLMRetryBudget()
 			return nil, err
 		}
 
-		if w.turn.retrySpent >= MaxLLMRetryWindow {
-			w.log.Info("Retryable LLM error (%v), but %v has already gone on retries (budget %v) — surfacing instead of retrying again",
-				err, w.turn.retrySpent.Round(time.Second), MaxLLMRetryWindow)
-			w.resetLLMRetryBudget()
+		if r.t.retrySpent >= MaxLLMRetryWindow {
+			r.log.Info("Retryable LLM error (%v), but %v has already gone on retries (budget %v) — surfacing instead of retrying again",
+				err, r.t.retrySpent.Round(time.Second), MaxLLMRetryWindow)
+			r.resetLLMRetryBudget()
 			return nil, err
 		}
 
 		wait := rErr.retryWait()
-		w.log.Info("Retryable LLM error (%v), retrying in %v (attempt %d/%d, %v of %v budget spent)",
-			err, wait, attempt+1, MaxLLMRetries, w.turn.retrySpent.Round(time.Second), MaxLLMRetryWindow)
+		r.log.Info("Retryable LLM error (%v), retrying in %v (attempt %d/%d, %v of %v budget spent)",
+			err, wait, attempt+1, MaxLLMRetries, r.t.retrySpent.Round(time.Second), MaxLLMRetryWindow)
 
 		status := rErr.retryStatus(attempt+1, MaxLLMRetries)
-		if w.turn.retrySpent >= time.Minute {
-			status = fmt.Sprintf("%s — %s so far", status, w.turn.retrySpent.Round(time.Second))
+		if r.t.retrySpent >= time.Minute {
+			status = fmt.Sprintf("%s — %s so far", status, r.t.retrySpent.Round(time.Second))
 		}
-		w.sendRetryingStatus(status)
-		w.batcher.Flush()
+		r.sendRetryingStatus(status)
+		r.batcher.Flush()
 
-		res := w.waitForRetryDelay(wait)
+		res := r.waitForRetryDelay(wait)
 		if res.Cancelled {
-			w.turn.txnID = ""
-			w.resetLLMRetryBudget()
+			r.t.txnID = ""
+			r.resetLLMRetryBudget()
 			return nil, ErrCancelled
 		}
 		if res.NewMessage {
 			// A new user message is a new intent, and gets a fresh allowance.
-			w.turn.txnID = ""
-			w.resetLLMRetryBudget()
+			r.t.txnID = ""
+			r.resetLLMRetryBudget()
 			return nil, ErrRestartStrategy
 		}
 
-		w.finalizeStreaming()
-		w.resetStreamingText()
-		w.resetStreamingThinking()
-		w.turn.offeredTools = nil
-		w.turn.delegatingTools = nil
+		r.finalizeStreaming()
+		r.resetStreamingText()
+		r.resetStreamingThinking()
+		r.t.offeredTools = nil
+		r.t.delegatingTools = nil
 	}
 	return nil, errors.New("unexpected retry loop exit")
 }
@@ -735,44 +735,44 @@ func (w *ConversationWorker) callLLMWithRetry(req json.RawMessage) (*LLMResponse
 // resetLLMRetryBudget ends the current retry sequence's wall-clock accounting.
 // Called on every exit from callLLMWithRetry — success, terminal error, cancel,
 // or a new user message — so the next sequence starts with a full allowance.
-func (w *ConversationWorker) resetLLMRetryBudget() {
-	w.turn.retrySpent = 0
+func (r *run) resetLLMRetryBudget() {
+	r.t.retrySpent = 0
 }
 
 // sendRetryingStatus publishes the "retrying" spinner and latches it so the
 // label survives into the next attempt. Without the latch the loop announced a
 // retry and then immediately claimed to be streaming again, so the UI read
 // "Receiving" for however long the fresh attempt spent backing off.
-func (w *ConversationWorker) sendRetryingStatus(message string) {
-	w.turn.retryStatusActive = true
-	w.sendStatus("retrying", message)
+func (r *run) sendRetryingStatus(message string) {
+	r.t.retryStatusActive = true
+	r.sendStatus("retrying", message)
 }
 
 // clearRetryingStatus flips the spinner off "retrying" once real content
 // arrives. Only content may do this: merely starting an attempt proves nothing,
 // which is exactly the mistake that made the spinner lie.
-func (w *ConversationWorker) clearRetryingStatus() {
-	if !w.turn.retryStatusActive {
+func (r *run) clearRetryingStatus() {
+	if !r.t.retryStatusActive {
 		return
 	}
-	w.turn.retryStatusActive = false
-	w.sendStatus("streaming", "")
+	r.t.retryStatusActive = false
+	r.sendStatus("streaming", "")
 }
 
 // finalizeCancellation handles cleanup when runStrategyLoop exits due to cancellation.
-func (w *ConversationWorker) finalizeCancellation(completedThreadID string) {
-	w.CancelInFlightToolActions()
+func (r *run) finalizeCancellation(completedThreadID string) {
+	r.CancelInFlightToolActions()
 	// Stop is a promote-and-idle boundary: keep any queued messages by moving
 	// them into the thread as user items (the user reviews/edits, then sends to
 	// run) rather than dropping them.
-	w.promotePendingItems(completedThreadID)
+	r.promotePendingItems(completedThreadID)
 	// For document-driven threads, needsStrategyRun is a one-shot trigger.
 	// If cancellation leaves it set while result is empty, checkForNewThreads
 	// would immediately re-run the same thread on the next observer tick.
 	if completedThreadID != "" {
-		w.clearThreadNeedsStrategyRun(completedThreadID)
+		r.clearThreadNeedsStrategyRun(completedThreadID)
 	}
-	w.sendStatus("idle", "")
+	r.sendStatus("idle", "")
 }
 
 // signalParentThread notifies a child thread's parent that the run it called
@@ -827,8 +827,8 @@ func newUserItem(input UserMessageInput) ConversationItem {
 
 // addUserMessage appends a user message (text + attachments, as one unit) to
 // the current target (root or thread).
-func (w *ConversationWorker) addUserMessage(input UserMessageInput) {
-	w.appendTargetMessage(newUserItem(input))
+func (r *run) addUserMessage(input UserMessageInput) {
+	r.appendTargetMessage(newUserItem(input))
 }
 
 // findUnstampedUserMsgID returns the ItemID of the trailing user message in
@@ -836,8 +836,8 @@ func (w *ConversationWorker) addUserMessage(input UserMessageInput) {
 // "". Walks backward from the end and stops as soon as it sees an item that
 // either is non-user or already has a transactionId — only the most recent
 // user submission needs stamping for the round-trip about to begin.
-func (w *ConversationWorker) findUnstampedUserMsgID() string {
-	items := w.getTargetItems()
+func (r *run) findUnstampedUserMsgID() string {
+	items := r.getTargetItems()
 	for i := len(items) - 1; i >= 0; i-- {
 		it := items[i]
 		if it.Type != ItemTypeUser {
@@ -854,16 +854,16 @@ func (w *ConversationWorker) findUnstampedUserMsgID() string {
 // callLLM calls the LLM provider directly and waits for response.
 // Chunks are streamed via the worker's Send method for UI updates.
 // In mock mode, returns the next scripted response instead of calling real LLM.
-func (w *ConversationWorker) callLLM(request json.RawMessage) (*LLMResponse, error) {
-	return w.callLLMWithSink(request, w.queueStreamChunk)
+func (r *run) callLLM(request json.RawMessage) (*LLMResponse, error) {
+	return r.callLLMWithSink(request, r.queueStreamChunk)
 }
 
 // callLLMWithSink is the transport primitive shared by visible turns and hidden
 // worker operations. A nil sink discards stream chunks while preserving the
 // normal server/cache/provider/admission path and cancellation semantics.
-func (w *ConversationWorker) callLLMWithSink(request json.RawMessage, sink func(StreamChunk)) (*LLMResponse, error) {
+func (r *run) callLLMWithSink(request json.RawMessage, sink func(StreamChunk)) (*LLMResponse, error) {
 	turnID := generateRequestID()
-	w.turn.llmTurnID = turnID
+	r.t.llmTurnID = turnID
 	correlatedSink := func(chunk StreamChunk) {
 		if sink != nil {
 			chunk.TurnID = turnID
@@ -871,29 +871,29 @@ func (w *ConversationWorker) callLLMWithSink(request json.RawMessage, sink func(
 		}
 	}
 
-	if w.mock != nil {
-		return w.callLLMMockWithSink(turnID, correlatedSink)
+	if r.mock != nil {
+		return r.callLLMMockWithSink(turnID, correlatedSink)
 	}
 
-	if w.llmCallFunc == nil {
+	if r.llmCallFunc == nil {
 		return nil, fmt.Errorf("LLM caller not configured")
 	}
 
 	// Reset the wake-interrupt flag for this attempt so a wake that fired
 	// during a previous turn can't be misattributed to this call's error.
-	w.turn.wakeInterrupt.Store(false)
+	r.t.wakeInterrupt.Store(false)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	w.turn.cancelLLM.Store(&cancel)
-	defer w.turn.cancelLLM.Store(nil)
+	r.t.cancelLLM.Store(&cancel)
+	defer r.t.cancelLLM.Store(nil)
 
 	go func() {
 		defer cancel()
-		response, err := w.llmCallFunc(ctx, request, correlatedSink)
-		w.deliverLLMResponse(turnID, response, err)
+		response, err := r.llmCallFunc(ctx, request, correlatedSink)
+		r.deliverLLMResponse(turnID, response, err)
 	}()
 
-	response, err := w.waitForLLMResponse(turnID, LLMTimeout)
+	response, err := r.waitForLLMResponse(turnID, LLMTimeout)
 	if err != nil {
 		var delivered *deliveredLLMError
 		if !errors.As(err, &delivered) {
@@ -902,7 +902,7 @@ func (w *ConversationWorker) callLLMWithSink(request json.RawMessage, sink func(
 		// A system-wake cancelled this call: the connection was dropped while
 		// the machine slept. Surface a clear, retryable message instead of the
 		// provider's raw "context canceled".
-		if w.turn.wakeInterrupt.Load() {
+		if r.t.wakeInterrupt.Load() {
 			return nil, fmt.Errorf("LLM request interrupted: the system resumed from sleep and the connection was dropped — please resend")
 		}
 		return nil, classifyLLMError(err.Error(), err)
@@ -960,7 +960,7 @@ func providerUnavailableDetail(err error) string {
 // during streaming via processStreamChunk. The blocks array contains raw
 // chunks (one per streamed piece), not merged content blocks, so we cannot
 // match them reliably.
-func (w *ConversationWorker) processLLMResponse(response *LLMResponse) (bool, error) {
+func (r *run) processLLMResponse(response *LLMResponse) (bool, error) {
 	var toolUseBlocks []LLMResponseBlock
 	for _, block := range response.Blocks {
 		switch block.Type {
@@ -982,15 +982,15 @@ func (w *ConversationWorker) processLLMResponse(response *LLMResponse) (bool, er
 	//   Async tools   → tool-action created, browser executes (bash, glob, etc.)
 	hasAsyncTools := false
 	for _, block := range toolUseBlocks {
-		if !w.toolWasOfferedThisTurn(block.Name) {
+		if !r.toolWasOfferedThisTurn(block.Name) {
 			content := fmt.Sprintf("Tool %q wasn't available in this thread, so it wasn't run.", block.Name)
-			w.addMetaToolResult(block.ID, block.Name, block.Input, content, true)
+			r.addMetaToolResult(block.ID, block.Name, block.Input, content, true)
 			continue
 		}
 
 		if isMetaTool(block.Name) {
-			if err := w.executeMetaTool(block.ID, block.Name, block.Input); err != nil {
-				w.log.Error("Meta tool execution failed: %v", err)
+			if err := r.executeMetaTool(block.ID, block.Name, block.Input); err != nil {
+				r.log.Error("Meta tool execution failed: %v", err)
 			}
 			continue
 		}
@@ -1002,8 +1002,8 @@ func (w *ConversationWorker) processLLMResponse(response *LLMResponse) (bool, er
 		// tool_result pair on the parent's next turn — without this the
 		// parent LLM has no record that it spawned a thread and re-does the work.
 		if block.Name == "create_thread" {
-			if err := w.executeCreateThread(block.ID, block.Name, block.Input); err != nil {
-				w.log.Error("Thread creation failed: %v", err)
+			if err := r.executeCreateThread(block.ID, block.Name, block.Input); err != nil {
+				r.log.Error("Thread creation failed: %v", err)
 			}
 			continue
 		}
@@ -1012,11 +1012,11 @@ func (w *ConversationWorker) processLLMResponse(response *LLMResponse) (bool, er
 		// spawns a delegated child (parked like create_thread — the run it
 		// starts becomes this tool_use's result); a null/timeout falls through
 		// to the ordinary client-side tool-action below.
-		if w.tryDelegateTool(block.ID, block.Name, block.Input) {
+		if r.tryDelegateTool(block.ID, block.Name, block.Input) {
 			continue
 		}
 
-		w.addToolAction(block.ID, block.Name, block.Input, block.Metadata)
+		r.addToolAction(block.ID, block.Name, block.Input, block.Metadata)
 		hasAsyncTools = true
 	}
 
@@ -1026,14 +1026,14 @@ func (w *ConversationWorker) processLLMResponse(response *LLMResponse) (bool, er
 		// and dispatches evaluate-tool / execute-tool for each non-terminal
 		// tool-action, rather than relying on the engine to auto-load on an
 		// incidental sync (racy → the "tools stuck" wedge).
-		w.driveToolActions()
+		r.driveToolActions()
 	}
 
 	return true, nil
 }
 
-func (w *ConversationWorker) addToolAction(toolUseID, toolName string, toolInput json.RawMessage, metadata map[string]any) {
-	w.log.Tool(toolName, toolSummary(toolName, toolInput))
+func (r *run) addToolAction(toolUseID, toolName string, toolInput json.RawMessage, metadata map[string]any) {
+	r.log.Tool(toolName, toolSummary(toolName, toolInput))
 	msg := ConversationItem{
 		Type:      ItemTypeToolAction,
 		ItemID:    generateItemID(),
@@ -1045,7 +1045,7 @@ func (w *ConversationWorker) addToolAction(toolUseID, toolName string, toolInput
 		Timestamp:    time.Now().Format(time.RFC3339),
 		ProviderData: metadata,
 	}
-	w.appendTargetMessage(msg)
+	r.appendTargetMessage(msg)
 }
 
 // hasAssistantText reports whether the response carries any non-empty text
@@ -1060,18 +1060,18 @@ func hasAssistantText(response *LLMResponse) bool {
 }
 
 // addThinkingMessage adds a thinking message to the conversation for UI feedback.
-func (w *ConversationWorker) addThinkingMessage(text string) {
+func (r *run) addThinkingMessage(text string) {
 	msg := ConversationItem{
 		Type:      ItemTypeThinking,
 		ItemID:    generateItemID(),
 		Content:   text,
 		Timestamp: time.Now().Format(time.RFC3339),
 	}
-	w.appendTargetMessage(msg)
+	r.appendTargetMessage(msg)
 }
 
 // addMetaToolResult adds a meta tool result to the conversation for LLM context.
-func (w *ConversationWorker) addMetaToolResult(toolUseID, toolName string, toolInput json.RawMessage, content string, isError bool) {
+func (r *run) addMetaToolResult(toolUseID, toolName string, toolInput json.RawMessage, content string, isError bool) {
 	result := map[string]any{
 		"content": content,
 		"isError": isError,
@@ -1088,7 +1088,7 @@ func (w *ConversationWorker) addMetaToolResult(toolUseID, toolName string, toolI
 		IsError:   isError,
 		Timestamp: time.Now().Format(time.RFC3339),
 	}
-	w.appendTargetMessage(msg)
+	r.appendTargetMessage(msg)
 }
 
 // =============================================================================

@@ -30,14 +30,14 @@ func TestStreamingNoDuplicateMessages(t *testing.T) {
 
 	// Simulate streaming text chunks
 	// These should all accumulate into a SINGLE assistant message
-	w.processStreamChunk(StreamChunk{Type: "text", Content: "Hello"})
-	w.processStreamChunk(StreamChunk{Type: "text", Content: " world"})
-	w.processStreamChunk(StreamChunk{Type: "text", Content: "!"})
+	w.currentRun().processStreamChunk(StreamChunk{Type: "text", Content: "Hello"})
+	w.currentRun().processStreamChunk(StreamChunk{Type: "text", Content: " world"})
+	w.currentRun().processStreamChunk(StreamChunk{Type: "text", Content: "!"})
 
 	// Content writes are throttled, so the document lags the accumulated text
 	// mid-block. This test is about message identity, not write cadence: read
 	// the content the way every production reader does, behind a flush.
-	w.flushPendingStreamWrites()
+	w.currentRun().flushPendingStreamWrites()
 
 	// Verify streaming created exactly ONE message
 	items := w.doc.GetItems()
@@ -56,7 +56,7 @@ func TestStreamingNoDuplicateMessages(t *testing.T) {
 	// CRITICAL: Simulate a tool_use chunk arriving after text streaming
 	// This triggers the "default" case in processStreamChunk which calls finalizeStreaming()
 	// and clears streamingTextMessageID - THIS IS WHERE THE BUG MANIFESTS
-	w.processStreamChunk(StreamChunk{Type: "tool_use"})
+	w.currentRun().processStreamChunk(StreamChunk{Type: "tool_use"})
 
 	// Verify streaming was finalized (IDs cleared)
 	if w.turn.streaming.textMsgID != "" {
@@ -73,7 +73,7 @@ func TestStreamingNoDuplicateMessages(t *testing.T) {
 	}
 
 	// Process the response - this should NOT add duplicate messages
-	shouldContinue, err := w.processLLMResponse(response)
+	shouldContinue, err := w.currentRun().processLLMResponse(response)
 	if err != nil {
 		t.Fatalf("processLLMResponse failed: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestMultipleTextBlocksNoDuplicates(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 
 	// First text block: "Hello"
-	w.processStreamChunk(StreamChunk{Type: "text", Content: "Hello"})
+	w.currentRun().processStreamChunk(StreamChunk{Type: "text", Content: "Hello"})
 
 	// Verify first message created
 	items := w.doc.GetItems()
@@ -124,7 +124,7 @@ func TestMultipleTextBlocksNoDuplicates(t *testing.T) {
 	}
 
 	// tool_use chunk arrives - this triggers finalizeStreaming via default case
-	w.processStreamChunk(StreamChunk{Type: "tool_use"})
+	w.currentRun().processStreamChunk(StreamChunk{Type: "tool_use"})
 
 	// Verify streaming was finalized
 	if w.turn.streaming.textMsgID != "" {
@@ -132,7 +132,7 @@ func TestMultipleTextBlocksNoDuplicates(t *testing.T) {
 	}
 
 	// Second text block: "World"
-	w.processStreamChunk(StreamChunk{Type: "text", Content: "World"})
+	w.currentRun().processStreamChunk(StreamChunk{Type: "text", Content: "World"})
 
 	// Verify second message was created correctly
 	items = w.doc.GetItems()
@@ -158,7 +158,7 @@ func TestMultipleTextBlocksNoDuplicates(t *testing.T) {
 	}
 
 	// Process the response - should NOT add duplicate messages
-	_, err := w.processLLMResponse(response)
+	_, err := w.currentRun().processLLMResponse(response)
 	if err != nil {
 		t.Fatalf("processLLMResponse failed: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestStreamingUpdatesCorrectMessage(t *testing.T) {
 	// Turn 2: New user message arrives. finalizeStreaming() clears
 	// streamingTextMessageID so new streaming creates a new message rather
 	// than updating the previous turn's assistant message.
-	w.finalizeStreaming()
+	w.currentRun().finalizeStreaming()
 
 	userMsg := ConversationItem{
 		Type:    ItemTypeUser,
@@ -233,7 +233,7 @@ func TestStreamingUpdatesCorrectMessage(t *testing.T) {
 
 	// First text chunk of the new LLM response must create a new message,
 	// not update "old-assistant-msg".
-	w.processTextChunk(StreamChunk{Type: "text", Content: "New response"})
+	w.currentRun().processTextChunk(StreamChunk{Type: "text", Content: "New response"})
 
 	// Verify order: should be [old-assistant, user, new-assistant]
 	items = w.doc.GetItems()
@@ -321,7 +321,7 @@ func TestStreamingLongMessageIntact(t *testing.T) {
 
 	// callLLM spawns the provider goroutine and enters waitForLLMResponse,
 	// which processes chunks from the inbound channel on THIS goroutine.
-	_, err := w.callLLM(nil)
+	_, err := w.currentRun().callLLM(nil)
 	if err != nil {
 		t.Fatalf("callLLM failed: %v", err)
 	}
@@ -393,7 +393,7 @@ func TestStreamingNoBottleneck(t *testing.T) {
 		}, nil
 	}
 
-	_, err := w.callLLM(nil)
+	_, err := w.currentRun().callLLM(nil)
 	callLLMDone := time.Now()
 	if err != nil {
 		t.Fatalf("callLLM failed: %v", err)
@@ -435,7 +435,7 @@ func TestStreamingThrottlesDocumentWrites(t *testing.T) {
 		if i > 0 {
 			tok = " " + word
 		}
-		w.processStreamChunk(StreamChunk{Type: "text", Content: tok})
+		w.currentRun().processStreamChunk(StreamChunk{Type: "text", Content: tok})
 
 		items := w.doc.GetItems()
 		if len(items) != 1 {
@@ -449,7 +449,7 @@ func TestStreamingThrottlesDocumentWrites(t *testing.T) {
 
 	// The block ends here, exactly as a tool_use chunk or the end of the turn
 	// would end it, and that is what must flush whatever the throttle held.
-	w.finalizeStreaming()
+	w.currentRun().finalizeStreaming()
 
 	items := w.doc.GetItems()
 	if len(items) != 1 {
@@ -482,7 +482,7 @@ func TestStatusChunkSurfacesPhase(t *testing.T) {
 
 	// mergeProcessingPhase only writes while a live status is set — mirror the
 	// strategy loop, which sends "streaming" just before the provider call.
-	w.sendStatus("streaming", "")
+	w.currentRun().sendStatus("streaming", "")
 
 	w.llmCallFunc = func(ctx context.Context, request json.RawMessage, chunkHandler func(StreamChunk)) (*LLMResponse, error) {
 		// A phase label arrives before any content, then the first token.
@@ -498,7 +498,7 @@ func TestStatusChunkSurfacesPhase(t *testing.T) {
 		}, nil
 	}
 
-	if _, err := w.callLLM(nil); err != nil {
+	if _, err := w.currentRun().callLLM(nil); err != nil {
 		t.Fatalf("callLLM failed: %v", err)
 	}
 
@@ -520,7 +520,7 @@ func TestCacheMissLandsInTranscript(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
 
-	w.sendStatus("streaming", "")
+	w.currentRun().sendStatus("streaming", "")
 
 	const reason = "diverged: system prompt changed"
 	w.llmCallFunc = func(ctx context.Context, request json.RawMessage, chunkHandler func(StreamChunk)) (*LLMResponse, error) {
@@ -534,12 +534,12 @@ func TestCacheMissLandsInTranscript(t *testing.T) {
 		}, nil
 	}
 
-	if _, err := w.callLLM(nil); err != nil {
+	if _, err := w.currentRun().callLLM(nil); err != nil {
 		t.Fatalf("callLLM failed: %v", err)
 	}
 
 	var notices []ConversationItem
-	for _, item := range w.getTargetItems() {
+	for _, item := range w.currentRun().getTargetItems() {
 		if item.Type == ItemTypeNotice {
 			notices = append(notices, item)
 		}
@@ -585,8 +585,8 @@ func TestStatusChunkIgnoredWhenIdle(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
 
-	w.sendStatus("idle", "")
-	w.processStreamChunk(StreamChunk{Type: "status", Content: "Starting Claude Code"})
+	w.currentRun().sendStatus("idle", "")
+	w.currentRun().processStreamChunk(StreamChunk{Type: "status", Content: "Starting Claude Code"})
 
 	state := w.readProcessingState()
 	if state != nil {

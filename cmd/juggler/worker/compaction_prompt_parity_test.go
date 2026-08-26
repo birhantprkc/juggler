@@ -41,7 +41,7 @@ func TestModernFoldRecognizedWithoutPromptMarker(t *testing.T) {
 	if !w.isBoundedCompactionThread(threadID) {
 		t.Fatal("expected a boundedCompaction-marked thread to be recognized without legacy markers")
 	}
-	id, reason := w.resolveCompactionPromptItemID(threadID, w.getTargetItems())
+	id, reason := w.resolveCompactionPromptItemID(threadID, w.currentRun().getTargetItems())
 	if reason != "" {
 		t.Fatalf("resolveCompactionPromptItemID reason=%q, want success via explicit compactionPromptItemId", reason)
 	}

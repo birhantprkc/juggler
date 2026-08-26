@@ -184,7 +184,7 @@ func TestPendingRequests_ScanClaimsWhenIdle(t *testing.T) {
 
 	// Worker starts in StateIdle (the default zero value), so the scan
 	// must claim. Dispatch fails on unknown kind and writes status='error'.
-	w.scanPendingRequests()
+	w.currentRun().scanPendingRequests()
 	if s := findEntryStatus(w, "r-claim"); s != "error" {
 		t.Errorf("status = %q, want 'error' (claim + dispatch reject)", s)
 	}
@@ -198,7 +198,7 @@ func TestPendingRequests_ScanSkipsWhenBusy(t *testing.T) {
 	defer w.doc.Destroy()
 	w.storeState(StateProcessing)
 	pushRequestedEntry(t, w, "createThread", "r-busy", nil)
-	w.scanPendingRequests()
+	w.currentRun().scanPendingRequests()
 	if s := findEntryStatus(w, "r-busy"); s != "requested" {
 		t.Errorf("status = %q, want 'requested' (busy worker shouldn't claim)", s)
 	}
@@ -220,7 +220,7 @@ func TestPendingRequests_CancelRequestedFlag(t *testing.T) {
 	}, w.doc.authorID)
 	ycrdtMu.Unlock()
 
-	w.scanPendingRequests()
+	w.currentRun().scanPendingRequests()
 	if s := findEntryStatus(w, "r-pre-cancel"); s != "cancelled" {
 		t.Errorf("status = %q, want 'cancelled'", s)
 	}
@@ -270,7 +270,7 @@ func TestPendingRequests_AdvanceClaimedCreateThreadCompletes(t *testing.T) {
 	}, w.doc.authorID)
 	ycrdtMu.Unlock()
 
-	w.scanPendingRequests()
+	w.currentRun().scanPendingRequests()
 	if s := findEntryStatus(w, "r-adv"); s != "completed" {
 		t.Errorf("status = %q, want 'completed' after result was written to thread Y.Map", s)
 	}
@@ -305,7 +305,7 @@ func TestPendingRequests_CancelClaimedAwaitingLLMCleansUpBeforeSettlement(t *tes
 	})
 	w.storeState(StateIdle)
 
-	w.scanPendingRequests()
+	w.currentRun().scanPendingRequests()
 
 	if !released {
 		t.Error("expected cancellation to release the provider session")
@@ -360,7 +360,7 @@ func TestPendingRequests_CancelClaimedDoesNotCancelUnrelatedProcessing(t *testin
 	})
 	w.storeState(StateProcessing)
 
-	w.scanPendingRequests()
+	w.currentRun().scanPendingRequests()
 
 	if llmCancelled {
 		t.Error("unrelated active LLM was cancelled")
@@ -410,7 +410,7 @@ func TestPendingRequests_GCSweepsOldCompleted(t *testing.T) {
 	}, w.doc.authorID)
 	ycrdtMu.Unlock()
 
-	w.scanPendingRequests()
+	w.currentRun().scanPendingRequests()
 
 	if s := findEntryStatus(w, "old"); s != "" {
 		t.Errorf("old entry should have been GC'd; status = %q", s)
@@ -463,7 +463,7 @@ func TestPendingRequests_PerThreadIsolation(t *testing.T) {
 	ycrdtMu.Unlock()
 
 	// Drive every thread's queue (worker idle by default).
-	w.scanPendingRequests()
+	w.currentRun().scanPendingRequests()
 
 	// Each entry was driven from its own queue → all reached 'error'.
 	for _, id := range []string{"a1", "b1", "root1"} {
@@ -539,10 +539,10 @@ func TestPendingRequests_SubmitToTerminalRoundtrip(t *testing.T) {
 
 	// First scan: claim + dispatch. dispatchCreateThread drives the
 	// reducer inline so the thread runs to completion synchronously.
-	w.scanPendingRequests()
+	w.currentRun().scanPendingRequests()
 	// Second scan: advance the 'claimed' entry once the thread Y.Map's
 	// result is populated.
-	w.scanPendingRequests()
+	w.currentRun().scanPendingRequests()
 
 	if s := findEntryStatus(w, "rt-1"); s != "completed" {
 		t.Fatalf("status = %q, want 'completed'", s)
@@ -600,7 +600,7 @@ func TestPendingRequests_DeliveryBindingOwnership(t *testing.T) {
 				}
 			})
 
-			w.scanPendingRequests()
+			w.currentRun().scanPendingRequests()
 
 			if s := findEntryStatus(w, "d-1"); s != tc.wantStat {
 				t.Errorf("status = %q, want %q", s, tc.wantStat)

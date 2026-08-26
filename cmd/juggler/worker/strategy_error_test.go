@@ -29,7 +29,7 @@ func TestCallLLMPreservesTypedProviderError(t *testing.T) {
 		return nil, want
 	}
 
-	_, err := w.callLLM(nil)
+	_, err := w.currentRun().callLLM(nil)
 	var got *provider.ContextLimitExceededError
 	if !errors.As(err, &got) {
 		t.Fatalf("callLLM error = %T %v, want ContextLimitExceededError", err, err)
@@ -53,7 +53,7 @@ func TestCallLLMWithRetryDoesNotRetryContextLimitError(t *testing.T) {
 		}
 	}
 
-	_, err := w.callLLMWithRetry(nil)
+	_, err := w.currentRun().callLLMWithRetry(nil)
 	var exceeded *provider.ContextLimitExceededError
 	if !errors.As(err, &exceeded) {
 		t.Fatalf("callLLMWithRetry error = %T %v, want ContextLimitExceededError", err, err)
@@ -84,7 +84,7 @@ func TestCallLLMWithRetryRetriesRateAndTransientErrors(t *testing.T) {
 				return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "recovered"}}}, nil
 			}
 
-			response, err := w.callLLMWithRetry(nil)
+			response, err := w.currentRun().callLLMWithRetry(nil)
 			if err != nil {
 				t.Fatalf("callLLMWithRetry: %v", err)
 			}
@@ -116,7 +116,7 @@ func TestCallLLMWithRetryStopsWhenRetryBudgetSpent(t *testing.T) {
 	// Earlier attempts in this sequence already used the whole allowance.
 	w.turn.retrySpent = MaxLLMRetryWindow
 
-	_, err := w.callLLMWithRetry(nil)
+	_, err := w.currentRun().callLLMWithRetry(nil)
 	if err == nil {
 		t.Fatal("expected the transient error to surface once the retry budget was spent")
 	}
@@ -136,18 +136,18 @@ func TestRetryingStatusClearedOnlyByContent(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
 
-	w.sendRetryingStatus("Rate limited, retrying (1/3)")
+	w.currentRun().sendRetryingStatus("Rate limited, retrying (1/3)")
 	if !w.turn.retryStatusActive {
 		t.Fatal("sendRetryingStatus must latch the retrying label")
 	}
 
 	// A provider phase label is liveness, not progress.
-	w.processStreamChunk(StreamChunk{Type: provider.ContentBlockTypeStatus, Content: "Waiting for response"})
+	w.currentRun().processStreamChunk(StreamChunk{Type: provider.ContentBlockTypeStatus, Content: "Waiting for response"})
 	if !w.turn.retryStatusActive {
 		t.Fatal("a status chunk cleared the retrying label — only real content may")
 	}
 
-	w.processStreamChunk(StreamChunk{Type: provider.ContentBlockTypeText, Content: "hello"})
+	w.currentRun().processStreamChunk(StreamChunk{Type: provider.ContentBlockTypeText, Content: "hello"})
 	if w.turn.retryStatusActive {
 		t.Fatal("real content must clear the retrying label")
 	}
@@ -195,7 +195,7 @@ func TestClassifyLLMResponseErrorCompatibility(t *testing.T) {
 		return &LLMResponse{Error: "HTTP 429 rate limited"}, nil
 	}
 
-	_, err := w.callLLM(nil)
+	_, err := w.currentRun().callLLM(nil)
 	var rateLimit *RateLimitError
 	if !errors.As(err, &rateLimit) {
 		t.Fatalf("callLLM error = %T %v, want RateLimitError", err, err)

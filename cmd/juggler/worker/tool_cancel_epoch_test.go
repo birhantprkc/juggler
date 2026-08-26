@@ -31,7 +31,7 @@ func newCancelEpochHarness(t *testing.T, convID string) *cancelEpochHarness {
 		Conversation: SerializedConversation{ID: convID},
 		Config:       WorkerConfig{ProjectPath: t.TempDir()},
 	})
-	w.handleInit(initPayload)
+	w.currentRun().handleInit(initPayload)
 
 	h := &cancelEpochHarness{
 		w:       w,

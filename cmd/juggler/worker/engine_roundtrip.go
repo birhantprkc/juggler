@@ -44,7 +44,7 @@ func waitForEngineReply[T any](
 				return v, true
 			}
 		case msg := <-w.inbound:
-			w.handleMessageInWait(msg)
+			w.currentRun().handleMessageInWait(msg)
 			if w.loadState() == StateCancelling {
 				return zero, false
 			}

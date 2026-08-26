@@ -12,25 +12,25 @@ import (
 // getTarget* / insertTarget* calls address the root conversation, not a
 // sub-thread. Clears both fields together so a stale itemsArray can never
 // outlive a cleared itemID.
-func (w *ConversationWorker) resetThreadContext() {
-	w.turn.thread = threadContext{}
+func (r *run) resetThreadContext() {
+	r.t.thread = threadContext{}
 }
 
 // getTargetItems returns items from the thread's nested array when in thread mode,
 // or from the root items array otherwise.
-func (w *ConversationWorker) getTargetItems() []ConversationItem {
-	if w.turn.thread.itemsArray != nil {
-		return w.doc.GetItemsFromArray(w.turn.thread.itemsArray)
+func (r *run) getTargetItems() []ConversationItem {
+	if r.t.thread.itemsArray != nil {
+		return r.doc.GetItemsFromArray(r.t.thread.itemsArray)
 	}
-	return w.doc.GetItems()
+	return r.doc.GetItems()
 }
 
 // getTargetItemsLength returns the item count from the thread or root items array.
-func (w *ConversationWorker) getTargetItemsLength() int {
-	if w.turn.thread.itemsArray != nil {
-		return w.doc.GetItemsLengthFromArray(w.turn.thread.itemsArray)
+func (r *run) getTargetItemsLength() int {
+	if r.t.thread.itemsArray != nil {
+		return r.doc.GetItemsLengthFromArray(r.t.thread.itemsArray)
 	}
-	return w.doc.GetItemsLength()
+	return r.doc.GetItemsLength()
 }
 
 // appendTargetMessage adds message(s) to the end of the thread or root items
@@ -48,42 +48,42 @@ func (w *ConversationWorker) getTargetItemsLength() int {
 // are two ycrdtMu holds, and that lock promises only that no two y-crdt calls
 // overlap — never that a sequence of them is atomic. Asking for the end and
 // writing at the end is one question, so it takes one hold.
-func (w *ConversationWorker) appendTargetMessage(msgs ...ConversationItem) {
-	w.stampTxnID(msgs)
-	if w.turn.thread.itemsArray != nil {
-		w.tracker.AppendMessageIntoArray(w.turn.thread.itemsArray, msgs...)
+func (r *run) appendTargetMessage(msgs ...ConversationItem) {
+	r.stampTxnID(msgs)
+	if r.t.thread.itemsArray != nil {
+		r.tracker.AppendMessageIntoArray(r.t.thread.itemsArray, msgs...)
 	} else {
-		w.tracker.AppendMessage(msgs...)
+		r.tracker.AppendMessage(msgs...)
 	}
 }
 
 // stampTxnID marks items produced during an in-flight round-trip with its id,
 // leaving any the caller set explicitly alone.
-func (w *ConversationWorker) stampTxnID(msgs []ConversationItem) {
-	if w.turn.txnID == "" {
+func (r *run) stampTxnID(msgs []ConversationItem) {
+	if r.t.txnID == "" {
 		return
 	}
 	for i := range msgs {
 		if msgs[i].TransactionID == "" {
-			msgs[i].TransactionID = w.turn.txnID
+			msgs[i].TransactionID = r.t.txnID
 		}
 	}
 }
 
 // getTargetItemsYArray returns the raw Y.Array for the current target (thread or root).
-func (w *ConversationWorker) getTargetItemsYArray() *ycrdt.YArray {
-	if w.turn.thread.itemsArray != nil {
-		return w.turn.thread.itemsArray
+func (r *run) getTargetItemsYArray() *ycrdt.YArray {
+	if r.t.thread.itemsArray != nil {
+		return r.t.thread.itemsArray
 	}
-	return w.doc.getItems()
+	return r.doc.getItems()
 }
 
 // updateTargetItemByID updates an item field in the thread or root items array.
-func (w *ConversationWorker) updateTargetItemByID(itemID, field string, value any) error {
-	if w.turn.thread.itemsArray != nil {
-		return w.doc.UpdateItemByIDInArray(w.turn.thread.itemsArray, itemID, field, value)
+func (r *run) updateTargetItemByID(itemID, field string, value any) error {
+	if r.t.thread.itemsArray != nil {
+		return r.doc.UpdateItemByIDInArray(r.t.thread.itemsArray, itemID, field, value)
 	}
-	return w.doc.UpdateItemByID(itemID, field, value)
+	return r.doc.UpdateItemByID(itemID, field, value)
 }
 
 // findThreadWithIncompleteTool returns the itemID of the innermost thread

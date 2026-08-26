@@ -134,8 +134,8 @@ func (w *ConversationWorker) delegationBlocked(threadItemID string) string {
 // caller should run the tool the ordinary way via addToolAction — because the
 // tool doesn't delegate, we're at the nesting-depth cap, the engine returned a
 // null spec (conditional "not this time"), or the round-trip failed/timed out.
-func (w *ConversationWorker) tryDelegateTool(toolUseID, toolName string, toolInput json.RawMessage) bool {
-	tool, delegates := w.turn.delegatingTools[toolName]
+func (r *run) tryDelegateTool(toolUseID, toolName string, toolInput json.RawMessage) bool {
+	tool, delegates := r.t.delegatingTools[toolName]
 	if !delegates {
 		return false
 	}
@@ -144,16 +144,16 @@ func (w *ConversationWorker) tryDelegateTool(toolUseID, toolName string, toolInp
 	// tools that HAVE an ordinary way reach this: filterToolsForThread withheld
 	// the RequiresDelegation ones from this turn's list on the same answer,
 	// because for those "run it inline" is not a degradation but a failure.
-	if reason := w.delegationBlocked(w.turn.thread.itemID); reason != "" {
-		w.log.Info("[worker] %s may delegate but is %s — running inline", toolName, reason)
+	if reason := r.delegationBlocked(r.t.thread.itemID); reason != "" {
+		r.log.Info("[worker] %s may delegate but is %s — running inline", toolName, reason)
 		return false
 	}
 
 	requestID := generateRequestID()
-	reply, unregister := w.subthreadSpecReply.register(requestID)
+	reply, unregister := r.subthreadSpecReply.register(requestID)
 	defer unregister()
-	w.dispatchBuildSubthreadSpec(requestID, toolUseID, toolName, toolInput)
-	spec, ok := w.waitForSubthreadSpec(requestID, reply, SubthreadSpecTimeout)
+	r.dispatchBuildSubthreadSpec(requestID, toolUseID, toolName, toolInput)
+	spec, ok := r.waitForSubthreadSpec(requestID, reply, SubthreadSpecTimeout)
 	if !ok || spec == nil {
 		return false // null spec / error / timeout → ordinary tool-action
 	}
@@ -163,14 +163,14 @@ func (w *ConversationWorker) tryDelegateTool(toolUseID, toolName string, toolInp
 	// and reports only through the thread's summary. Degrade to running the tool
 	// inline, exactly as a null spec does.
 	if spec.Prompt == "" {
-		w.log.Info("[worker] %s built a spec with no prompt — running inline", toolName)
+		r.log.Info("[worker] %s built a spec with no prompt — running inline", toolName)
 		return false
 	}
 
 	// A spec naming a session this tool already ran in the calling thread
 	// invokes that child again instead of spawning a sibling; anything else
 	// starts a new session under a name the result reports back.
-	session := w.resolveSession(toolName, spec.SessionName)
+	session := r.resolveSession(toolName, spec.SessionName)
 	opts := CreateThreadOptions{
 		Goal:        spec.Goal,
 		RunGoal:     spec.Goal,
@@ -196,20 +196,20 @@ func (w *ConversationWorker) tryDelegateTool(toolUseID, toolName string, toolInp
 	// the tool for real would answer a question the caller asked of a
 	// conversation, from outside that conversation.
 	if session.busy {
-		w.addMetaToolResult(toolUseID, toolName, toolInput, sessionBusyMessage(session.name), true)
+		r.addMetaToolResult(toolUseID, toolName, toolInput, sessionBusyMessage(session.name), true)
 		return true
 	}
 
 	if session.resumeThreadID != "" {
-		if err := w.resumeSession(session.resumeThreadID, opts); err != nil {
-			w.log.Error("[worker] resuming session %s for %s failed: %v", session.name, toolName, err)
+		if err := r.resumeSession(session.resumeThreadID, opts); err != nil {
+			r.log.Error("[worker] resuming session %s for %s failed: %v", session.name, toolName, err)
 			return false
 		}
 		return true
 	}
 
-	if _, err := w.createThread(opts); err != nil {
-		w.log.Error("[worker] delegated thread creation failed for %s: %v", toolName, err)
+	if _, err := r.createThread(opts); err != nil {
+		r.log.Error("[worker] delegated thread creation failed for %s: %v", toolName, err)
 		return false
 	}
 	return true

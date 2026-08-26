@@ -86,7 +86,7 @@ func TestDelegationBlockedDrivesBothConsumers(t *testing.T) {
 				t.Fatal("a blocked thread must give a reason; it is logged and read by a human")
 			}
 
-			got := w.filterToolsForThread(tools)
+			got := w.currentRun().filterToolsForThread(tools)
 			if offers(got, "Explore") == tc.wantBlocked {
 				t.Errorf("Explore offered=%v while delegation blocked=%v: a delegation-only tool must be offered exactly when it could be used",
 					offers(got, "Explore"), tc.wantBlocked)
@@ -158,7 +158,7 @@ func newDelegationHarnessTools(t *testing.T, specs []*SubthreadSpec, mocks []Moc
 		Conversation: SerializedConversation{ID: "conv-deleg"},
 		Config:       WorkerConfig{ProjectPath: t.TempDir()},
 	})
-	w.handleInit(initPayload)
+	w.currentRun().handleInit(initPayload)
 	w.storeState(StateProcessing)
 
 	w.SetCallback("engine", func(b []byte) {
@@ -245,9 +245,9 @@ func TestDelegatingToolDeliversChildResultToParent(t *testing.T) {
 		},
 	})
 
-	w.runStrategyLoop("Find the answer", false)
+	w.currentRun().runStrategyLoop("Find the answer", false)
 
-	messages := w.buildMessages(nil)
+	messages := w.currentRun().buildMessages(nil)
 	var foundToolUse, foundToolResult bool
 	var toolResultContent string
 	for _, m := range messages {
@@ -318,7 +318,7 @@ func TestReadOnlySubthreadClaimReachesTheChild(t *testing.T) {
 				InputSchema:          json.RawMessage(`{"type":"object","properties":{"url":{"type":"string"},"prompt":{"type":"string"}},"required":["url"]}`),
 			})
 
-			w.runStrategyLoop("Summarise the page", false)
+			w.currentRun().runStrategyLoop("Summarise the page", false)
 
 			thread := onlyThread(t, w)
 			if got := w.threadIsReadOnly(thread.ItemID); got != tc.declared {
@@ -342,7 +342,7 @@ func TestDelegatingToolNullSpecRunsToolAction(t *testing.T) {
 		},
 	})
 
-	w.runStrategyLoop("Fetch the page", false)
+	w.currentRun().runStrategyLoop("Fetch the page", false)
 
 	var foundToolAction, foundThread bool
 	for _, item := range w.doc.GetItems() {
@@ -376,7 +376,7 @@ func TestDelegatingToolEmptyPromptRunsToolAction(t *testing.T) {
 		},
 	})
 
-	w.runStrategyLoop("Fetch the page", false)
+	w.currentRun().runStrategyLoop("Fetch the page", false)
 
 	var foundToolAction bool
 	for _, item := range w.doc.GetItems() {
@@ -426,7 +426,7 @@ func TestDelegatedChildCannotReDelegate(t *testing.T) {
 		},
 	})
 
-	w.runStrategyLoop("start", false)
+	w.currentRun().runStrategyLoop("start", false)
 
 	if n := countThreads(w); n != 1 {
 		t.Fatalf("delegated child must not re-delegate: expected exactly 1 thread (the delegated child), got %d", n)
@@ -483,7 +483,7 @@ func TestDelegatedChildSettlesOnTrailingText(t *testing.T) {
 		},
 	})
 
-	w.runStrategyLoop("What colour?", false)
+	w.currentRun().runStrategyLoop("What colour?", false)
 
 	// A run that came to rest stamps its reply as the thread's summary.
 	var threadResult string
@@ -499,7 +499,7 @@ func TestDelegatedChildSettlesOnTrailingText(t *testing.T) {
 	}
 
 	// And that result must reach the parent as the WebFetch tool_result.
-	messages := w.buildMessages(nil)
+	messages := w.currentRun().buildMessages(nil)
 	var toolResultContent string
 	for _, m := range messages {
 		if m["type"] == "tool-result" && m["toolUseId"] == "tu-wf-3" {
@@ -530,7 +530,7 @@ func TestDelegatedSessionIsAutoNamedAndReported(t *testing.T) {
 		{Blocks: []LLMResponseBlock{{Type: "text", Content: "Thanks."}}, StopReason: "end_turn"},
 	})
 
-	w.runStrategyLoop("What colour?", false)
+	w.currentRun().runStrategyLoop("What colour?", false)
 
 	var sessionName string
 	for _, item := range w.doc.GetItems() {
@@ -543,7 +543,7 @@ func TestDelegatedSessionIsAutoNamedAndReported(t *testing.T) {
 	}
 
 	var content string
-	for _, m := range w.buildMessages(nil) {
+	for _, m := range w.currentRun().buildMessages(nil) {
 		if m["type"] == "tool-result" && m["toolUseId"] == "tu-wf-5" {
 			content, _ = m["content"].(string)
 		}
@@ -579,7 +579,7 @@ func TestDelegatedSessionResumeIsAppendOnly(t *testing.T) {
 		{Blocks: []LLMResponseBlock{{Type: "text", Content: "Done."}}, StopReason: "end_turn"},
 	})
 
-	w.runStrategyLoop("Tell me about the page", false)
+	w.currentRun().runStrategyLoop("Tell me about the page", false)
 
 	if n := countThreads(w); n != 1 {
 		t.Fatalf("resuming a session must not spawn a sibling: expected 1 thread, got %d", n)
@@ -601,7 +601,7 @@ func TestDelegatedSessionResumeIsAppendOnly(t *testing.T) {
 		t.Fatalf("resume must append after everything run 1 produced; items=%+v", items)
 	}
 
-	results := toolResultContents(w.buildMessages(nil))
+	results := toolResultContents(w.currentRun().buildMessages(nil))
 	if got := results["tu-a"]; !strings.HasPrefix(got, "page · new") || !strings.Contains(got, "It is blue.") {
 		t.Errorf("first delegated result = %q, want run 1's reply under the new-session preamble", got)
 	}
@@ -632,7 +632,7 @@ func TestDelegatedThreadRunsUnderSpecStrategy(t *testing.T) {
 		{Blocks: []LLMResponseBlock{{Type: "text", Content: "Thanks."}}, StopReason: "end_turn"},
 	})
 
-	w.runStrategyLoop("Where is auth?", false)
+	w.currentRun().runStrategyLoop("Where is auth?", false)
 
 	var childID string
 	for _, item := range w.doc.GetItems() {
@@ -684,7 +684,7 @@ func TestDelegatedChildErrorReachesParent(t *testing.T) {
 		},
 	})
 
-	w.runStrategyLoop("What colour?", false)
+	w.currentRun().runStrategyLoop("What colour?", false)
 
 	// Nothing fabricates a summary out of a failure.
 	for _, item := range w.doc.GetItems() {
@@ -698,7 +698,7 @@ func TestDelegatedChildErrorReachesParent(t *testing.T) {
 		}
 	}
 
-	messages := w.buildMessages(nil)
+	messages := w.currentRun().buildMessages(nil)
 	var toolResultContent string
 	for _, m := range messages {
 		if m["type"] == "tool-result" && m["toolUseId"] == "tu-wf-4" {

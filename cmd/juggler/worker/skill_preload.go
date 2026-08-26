@@ -69,11 +69,11 @@ func dedupSkills(names []string) []string {
 // thread for each name, in order. The caller places it relative to the user
 // message; driveToolActions (triggered by the surrounding handleItemsChange)
 // evaluates, approves, and executes each.
-func (w *ConversationWorker) injectSkillPreloads(names []string) {
+func (r *run) injectSkillPreloads(names []string) {
 	for _, name := range names {
 		item := newSkillToolAction(name)
-		w.log.Tool("skill", name)
-		w.appendTargetMessage(item)
+		r.log.Tool("skill", name)
+		r.appendTargetMessage(item)
 	}
 }
 

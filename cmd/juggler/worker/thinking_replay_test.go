@@ -35,7 +35,7 @@ func TestBuildMessages_EmitsStoredThinking(t *testing.T) {
 		Result: []byte(`{"content":"sunny","isError":false}`),
 	})
 
-	msgs := w.buildMessages(nil)
+	msgs := w.currentRun().buildMessages(nil)
 
 	// Locate the thinking message and assert it appears BEFORE the tool-use —
 	// otherwise the provider's per-turn grouping would attach the reasoning to
@@ -94,7 +94,7 @@ func TestBuildMessages_BatchesParallelToolCalls(t *testing.T) {
 		Result: []byte(`{"content":"rb","isError":false}`),
 	})
 
-	msgs := w.buildMessages(nil)
+	msgs := w.currentRun().buildMessages(nil)
 
 	// Positions: both tool_use must come before both tool_result.
 	lastUse, firstResult := -1, len(msgs)
@@ -141,7 +141,7 @@ func TestBuildMessages_DoesNotMergeSequentialTurns(t *testing.T) {
 		Result: []byte(`{"content":"rb","isError":false}`),
 	})
 
-	msgs := w.buildMessages(nil)
+	msgs := w.currentRun().buildMessages(nil)
 
 	// Expected order: use(a), result(a), use(b), result(b) — the first turn's
 	// result precedes the second turn's tool_use.
@@ -171,9 +171,9 @@ func TestBuildMessages_SkipsEmptyThinking(t *testing.T) {
 	w.doc.InsertMessage(0, ConversationItem{Type: ItemTypeUser, ItemID: "u-1", Content: "hi"})
 	w.doc.InsertMessage(1, ConversationItem{Type: ItemTypeThinking, ItemID: "th-1", Content: ""})
 
-	for _, m := range w.buildMessages(nil) {
+	for _, m := range w.currentRun().buildMessages(nil) {
 		if m["type"] == "thinking" {
-			t.Fatalf("empty thinking item should not be emitted; messages=%+v", w.buildMessages(nil))
+			t.Fatalf("empty thinking item should not be emitted; messages=%+v", w.currentRun().buildMessages(nil))
 		}
 	}
 }

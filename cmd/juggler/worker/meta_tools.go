@@ -17,7 +17,7 @@ func isMetaTool(toolName string) bool {
 // executeMetaTool executes a meta tool directly in the worker.
 // Meta tools are built-in operations that manipulate Yjs state (set metadata, drop context items).
 // They execute instantly and don't need frontend approval or action execution.
-func (w *ConversationWorker) executeMetaTool(toolUseID, toolName string, toolInput json.RawMessage) error {
+func (r *run) executeMetaTool(toolUseID, toolName string, toolInput json.RawMessage) error {
 	var input map[string]any
 	if err := json.Unmarshal(toolInput, &input); err != nil {
 		return fmt.Errorf("failed to parse meta tool input: %w", err)
@@ -29,14 +29,14 @@ func (w *ConversationWorker) executeMetaTool(toolUseID, toolName string, toolInp
 	)
 	switch toolName {
 	case "drop_context_items":
-		message, execErr = w.execDropContextItems(input)
+		message, execErr = r.execDropContextItems(input)
 	default:
 		execErr = fmt.Errorf("unknown meta tool: %s", toolName)
 		message = fmt.Sprintf("Error: %v", execErr)
 	}
 
-	w.addThinkingMessage(message)
-	w.addMetaToolResult(toolUseID, toolName, toolInput, message, execErr != nil)
+	r.addThinkingMessage(message)
+	r.addMetaToolResult(toolUseID, toolName, toolInput, message, execErr != nil)
 
 	return execErr
 }

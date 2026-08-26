@@ -15,7 +15,7 @@ func TestActivitySnapshotLivesOnlyInProcessingState(t *testing.T) {
 	defer w.doc.Destroy()
 	w.doc.SetMetadata("processingState", map[string]any{"status": "streaming"})
 
-	w.processStreamChunk(StreamChunk{
+	w.currentRun().processStreamChunk(StreamChunk{
 		Type:    provider.ContentBlockTypeActivity,
 		Content: "Complete snapshot",
 		Metadata: map[string]any{
@@ -31,7 +31,7 @@ func TestActivitySnapshotLivesOnlyInProcessingState(t *testing.T) {
 		t.Fatalf("processingState.description = %q, want complete snapshot", got)
 	}
 
-	w.processStreamChunk(StreamChunk{
+	w.currentRun().processStreamChunk(StreamChunk{
 		Type:     provider.ContentBlockTypeProviderState,
 		Metadata: map[string]any{"reasoningItemId": "rs_1"},
 	})
@@ -39,12 +39,12 @@ func TestActivitySnapshotLivesOnlyInProcessingState(t *testing.T) {
 		t.Fatalf("provider state replaced description with %q", got)
 	}
 
-	w.processStreamChunk(StreamChunk{Type: provider.ContentBlockTypeText, Content: "answer"})
+	w.currentRun().processStreamChunk(StreamChunk{Type: provider.ContentBlockTypeText, Content: "answer"})
 	if got, _ := w.readProcessingState()["description"].(string); got != "Complete snapshot" {
 		t.Fatalf("answer text replaced description with %q", got)
 	}
 
-	w.processStreamChunk(StreamChunk{Type: provider.ContentBlockTypeToolUse})
+	w.currentRun().processStreamChunk(StreamChunk{Type: provider.ContentBlockTypeToolUse})
 	if _, ok := w.readProcessingState()["description"]; ok {
 		t.Fatal("processingState.description survived tool transition")
 	}
@@ -55,20 +55,20 @@ func TestProviderStatePersistsAndReplaysInOrder(t *testing.T) {
 	defer w.doc.Destroy()
 	w.doc.InsertMessage(0, ConversationItem{Type: ItemTypeUser, ItemID: "u-1", Content: "hi"})
 
-	w.processStreamChunk(StreamChunk{
+	w.currentRun().processStreamChunk(StreamChunk{
 		Type: provider.ContentBlockTypeProviderState,
 		Metadata: map[string]any{
 			"reasoningItemId":  "rs_1",
 			"encryptedContent": "blob",
 		},
 	})
-	w.processStreamChunk(StreamChunk{Type: provider.ContentBlockTypeText, Content: "answer"})
+	w.currentRun().processStreamChunk(StreamChunk{Type: provider.ContentBlockTypeText, Content: "answer"})
 
 	items := w.doc.GetItems()
 	if len(items) != 3 || items[1].Type != ItemTypeProviderState || items[2].Type != ItemTypeAssistant {
 		t.Fatalf("ordered items = %+v, want user, provider-state, assistant", items)
 	}
-	messages := w.buildMessages(nil)
+	messages := w.currentRun().buildMessages(nil)
 	if len(messages) != 3 || messages[1]["type"] != "provider-state" || messages[2]["type"] != "assistant" {
 		t.Fatalf("ordered wire messages = %+v", messages)
 	}

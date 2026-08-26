@@ -174,7 +174,7 @@ func TestCreateThreadSeedsChildEagerly(t *testing.T) {
 	w.storeState(StateProcessing)
 	seedableRoot(w.doc, "identity")
 
-	threadID, err := w.createThread(CreateThreadOptions{Goal: "child", Prompt: "do the thing"})
+	threadID, err := w.currentRun().createThread(CreateThreadOptions{Goal: "child", Prompt: "do the thing"})
 	if err != nil {
 		t.Fatalf("createThread: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestCreateThreadContinuationDoesNotSeed(t *testing.T) {
 	w.storeState(StateProcessing)
 	seedableRoot(w.doc, "identity")
 
-	threadID, err := w.createThread(CreateThreadOptions{Goal: "cont", IsContinuation: true})
+	threadID, err := w.currentRun().createThread(CreateThreadOptions{Goal: "cont", IsContinuation: true})
 	if err != nil {
 		t.Fatalf("createThread: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestCreateThreadEagerSeedSurvivesBackstop(t *testing.T) {
 	w.storeState(StateProcessing)
 	seedableRoot(w.doc, "identity")
 
-	threadID, err := w.createThread(CreateThreadOptions{Goal: "child", Prompt: "do the thing"})
+	threadID, err := w.currentRun().createThread(CreateThreadOptions{Goal: "child", Prompt: "do the thing"})
 	if err != nil {
 		t.Fatalf("createThread: %v", err)
 	}
@@ -382,7 +382,7 @@ func TestSeedChainPropagatesCustomization(t *testing.T) {
 	seedableRoot(w.doc, "root-identity")
 
 	// Child seeded from root carries root's identity.
-	childID, err := w.createThread(CreateThreadOptions{Goal: "child", Prompt: "c"})
+	childID, err := w.currentRun().createThread(CreateThreadOptions{Goal: "child", Prompt: "c"})
 	if err != nil {
 		t.Fatalf("createThread child: %v", err)
 	}
@@ -401,7 +401,7 @@ func TestSeedChainPropagatesCustomization(t *testing.T) {
 	}
 
 	// Grandchild seeded from the child inherits the child's customization.
-	gcID, err := w.createThread(CreateThreadOptions{Goal: "gc", Prompt: "g", ParentThreadItemID: childID})
+	gcID, err := w.currentRun().createThread(CreateThreadOptions{Goal: "gc", Prompt: "g", ParentThreadItemID: childID})
 	if err != nil {
 		t.Fatalf("createThread grandchild: %v", err)
 	}

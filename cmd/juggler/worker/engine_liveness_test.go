@@ -62,7 +62,7 @@ func driveToEscalation(h *reattachHarness, traceReason string) {
 			h.w.tools.recordTrace("tu-1", traceReason, time.Now())
 		}
 		h.w.driveToolActions()
-		if it, ok := findToolItem(h.w.getTargetItems(), "tu-1"); ok && it.State == StateCompleted {
+		if it, ok := findToolItem(h.w.currentRun().getTargetItems(), "tu-1"); ok && it.State == StateCompleted {
 			return
 		}
 	}
@@ -98,7 +98,7 @@ func TestEngineMute_ToolIsNotBlamed(t *testing.T) {
 	driveToEscalation(h, traceNothing)
 	h.flush(t)
 
-	it, ok := findToolItem(h.w.getTargetItems(), "tu-1")
+	it, ok := findToolItem(h.w.currentRun().getTargetItems(), "tu-1")
 	if !ok {
 		t.Fatal("tu-1 disappeared")
 	}
@@ -122,7 +122,7 @@ func TestEngineDeclining_ToolStillEscalates(t *testing.T) {
 	driveToEscalation(h, "")
 	h.flush(t)
 
-	it, ok := findToolItem(h.w.getTargetItems(), "tu-1")
+	it, ok := findToolItem(h.w.currentRun().getTargetItems(), "tu-1")
 	if !ok {
 		t.Fatal("tu-1 disappeared")
 	}
@@ -132,7 +132,7 @@ func TestEngineDeclining_ToolStillEscalates(t *testing.T) {
 	}
 
 	// The provider must see an isError tool-result, or a parked CLI hangs.
-	found, isErr := toolResultIsError(h.w.buildMessages(nil), "tu-1")
+	found, isErr := toolResultIsError(h.w.currentRun().buildMessages(nil), "tu-1")
 	if !found || !isErr {
 		t.Fatalf("escalated tool must feed an isError tool-result (found=%v isError=%v)", found, isErr)
 	}
@@ -148,11 +148,11 @@ func TestEngineMute_FailureNamesTheEngine(t *testing.T) {
 	driveToEscalation(h, traceNothing)
 	h.flush(t)
 
-	it, ok := findToolItem(h.w.getTargetItems(), "tu-1")
+	it, ok := findToolItem(h.w.currentRun().getTargetItems(), "tu-1")
 	if !ok || it.State != StateCompleted {
 		return // not failed at all — TestEngineMute_ToolIsNotBlamed covers that
 	}
-	text := toolResultText(h.w.buildMessages(nil), "tu-1")
+	text := toolResultText(h.w.currentRun().buildMessages(nil), "tu-1")
 	if !strings.Contains(strings.ToLower(text), "engine") ||
 		strings.Contains(text, "never handled this command") {
 		t.Fatalf("a mute-engine failure must name the engine as unavailable, not "+
@@ -186,7 +186,7 @@ func TestEngineWentSilentMidPhase_ToolIsNotBlamed(t *testing.T) {
 	}
 	h.flush(t)
 
-	it, ok := findToolItem(h.w.getTargetItems(), "tu-1")
+	it, ok := findToolItem(h.w.currentRun().getTargetItems(), "tu-1")
 	if !ok {
 		t.Fatal("tu-1 disappeared")
 	}
@@ -240,7 +240,7 @@ func TestEngineUnreachableDecline_ToolIsHeldNotBlamed(t *testing.T) {
 	driveToEscalation(h, "conv-not-loaded")
 	h.flush(t)
 
-	it, ok := findToolItem(h.w.getTargetItems(), "tu-1")
+	it, ok := findToolItem(h.w.currentRun().getTargetItems(), "tu-1")
 	if !ok {
 		t.Fatal("tu-1 disappeared")
 	}
@@ -272,12 +272,12 @@ func TestEngineUnreachableDecline_FailureNamesTheReason(t *testing.T) {
 	driveToEscalation(h, "conv-not-loaded")
 	h.flush(t)
 
-	it, ok := findToolItem(h.w.getTargetItems(), "tu-1")
+	it, ok := findToolItem(h.w.currentRun().getTargetItems(), "tu-1")
 	if !ok || it.State != StateCompleted {
 		t.Fatalf("a tool held for an unreachable engine must still be failed once the "+
 			"hold elapses, or the turn parks forever: state=%q", it.State)
 	}
-	text := toolResultText(h.w.buildMessages(nil), "tu-1")
+	text := toolResultText(h.w.currentRun().buildMessages(nil), "tu-1")
 	if !strings.Contains(text, "conv-not-loaded") {
 		t.Fatalf("the failure must keep the reason the engine gave — it is what "+
 			"separates a conversation the engine never loaded from a copy missing the "+

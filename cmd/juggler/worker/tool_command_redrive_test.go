@@ -143,7 +143,7 @@ func TestToolCommandRedrive_RunningToolNotRedriven(t *testing.T) {
 	if got := h.executeCount("tu-1"); got != 1 {
 		t.Fatalf("running tool was re-driven: want 1 execute-tool, got %d (double exec)", got)
 	}
-	if it, ok := findToolItem(w.getTargetItems(), "tu-1"); !ok || it.State != StateRunning {
+	if it, ok := findToolItem(w.currentRun().getTargetItems(), "tu-1"); !ok || it.State != StateRunning {
 		t.Fatalf("running tool must be left running, not escalated: %+v (ok=%v)", it, ok)
 	}
 }

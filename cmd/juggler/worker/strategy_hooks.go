@@ -85,15 +85,15 @@ func (w *ConversationWorker) dispatchStrategyHook(requestID, hook, strategyID, t
 // onActivate's guidance is a durable doc item that must be present before
 // buildMessages assembles the turn, so the worker blocks until the engine has
 // run the hook AND the injected items have synced back into the worker's doc.
-func (w *ConversationWorker) maybeActivateStrategy() {
-	threadID := w.turn.thread.itemID
-	current := w.doc.ResolveEffectiveStrategyID(threadID)
+func (r *run) maybeActivateStrategy() {
+	threadID := r.t.thread.itemID
+	current := r.doc.ResolveEffectiveStrategyID(threadID)
 	// Normalize the activation marker the same way the resolver normalizes the
 	// effective strategy: an unset marker means "still on the default baseline".
 	// So a default thread (root or sub-thread) whose marker was never written
 	// never fires a no-op onActivate round-trip, while a thread that overrides
 	// (or inherits) a non-default strategy activates it for its own items once.
-	activated := w.doc.GetActivatedStrategyID(threadID)
+	activated := r.doc.GetActivatedStrategyID(threadID)
 	if activated == "" {
 		activated = defaultStrategyID
 	}
@@ -104,14 +104,14 @@ func (w *ConversationWorker) maybeActivateStrategy() {
 	// too late for this. Bring it up now; if it can't come up the turn's own
 	// gate will surface the error — leave activatedStrategyId unset so a later
 	// turn retries.
-	if !w.ensureEngineReady() {
+	if !r.ensureEngineReady() {
 		return
 	}
 	requestID := generateRequestID()
-	reply, unregister := w.strategyHookReply.register(requestID)
+	reply, unregister := r.strategyHookReply.register(requestID)
 	defer unregister()
-	w.dispatchStrategyHook(requestID, "onActivate", current, threadID, activated)
-	guidance, ok := w.waitForStrategyHook(requestID, reply, StrategyHookTimeout)
+	r.dispatchStrategyHook(requestID, "onActivate", current, threadID, activated)
+	guidance, ok := r.waitForStrategyHook(requestID, reply, StrategyHookTimeout)
 	if !ok {
 		return // engine didn't answer in time — retry on a later turn
 	}
@@ -121,7 +121,7 @@ func (w *ConversationWorker) maybeActivateStrategy() {
 		if g.Content == "" {
 			continue
 		}
-		w.appendTargetMessage(ConversationItem{
+		r.appendTargetMessage(ConversationItem{
 			Type:      ItemTypeSystemReminder,
 			ItemID:    generateItemID(),
 			Content:   g.Content,
@@ -129,8 +129,8 @@ func (w *ConversationWorker) maybeActivateStrategy() {
 			Timestamp: time.Now().Format(time.RFC3339),
 		})
 	}
-	w.batcher.Flush()
-	w.doc.SetActivatedStrategyID(threadID, current)
+	r.batcher.Flush()
+	r.doc.SetActivatedStrategyID(threadID, current)
 }
 
 // dispatchWorkerIdleHook fires onWorkerIdle on the engine when the root
@@ -138,12 +138,12 @@ func (w *ConversationWorker) maybeActivateStrategy() {
 // execution spawning sub-threads) re-enter through the normal doc-sync /
 // reconcile path, so there is nothing to wait for. The engine is up (it just
 // ran the turn) and load-aware on its side for the rare cold-restart case.
-func (w *ConversationWorker) dispatchWorkerIdleHook() {
-	// onWorkerIdle fires when the ROOT conversation goes idle (w.turn.thread already
+func (r *run) dispatchWorkerIdleHook() {
+	// onWorkerIdle fires when the ROOT conversation goes idle (r.t.thread already
 	// cleared), so this resolves the root strategy; routing through the per-thread
 	// resolver keeps every worker strategy read on one path.
-	strategyID := w.doc.ResolveEffectiveStrategyID(w.turn.thread.itemID)
-	w.dispatchStrategyHook("", "onWorkerIdle", strategyID, w.turn.thread.itemID, "")
+	strategyID := r.doc.ResolveEffectiveStrategyID(r.t.thread.itemID)
+	r.dispatchStrategyHook("", "onWorkerIdle", strategyID, r.t.thread.itemID, "")
 }
 
 // dispatchContextTurnHook fires the context-item onTurnEnd hook on the engine
@@ -155,18 +155,18 @@ func (w *ConversationWorker) dispatchWorkerIdleHook() {
 // side-effects (e.g. writing to a memory server), so there is nothing to wait
 // for. Carries the just-incremented turn counter so a hook can distil only the
 // content that is new since its last run.
-func (w *ConversationWorker) dispatchContextTurnHook() {
+func (r *run) dispatchContextTurnHook() {
 	data, err := json.Marshal(RunContextHookRequest{
 		Type:      "run-context-hook",
 		Hook:      "onTurnEnd",
-		TurnIndex: int(w.turnCounter),
+		TurnIndex: int(r.turnCounter),
 	})
 	if err != nil {
-		w.log.Error("[worker] marshal run-context-hook: %v", err)
+		r.log.Error("[worker] marshal run-context-hook: %v", err)
 		return
 	}
-	w.tape.Record("context-hook-dispatch", map[string]any{"hook": "onTurnEnd", "turn": w.turnCounter})
-	w.callbacks.sendToEngine(data)
+	r.tape.Record("context-hook-dispatch", map[string]any{"hook": "onTurnEnd", "turn": r.turnCounter})
+	r.callbacks.sendToEngine(data)
 }
 
 // dispatchCancelStrategyExecution tells the engine to abort any in-flight

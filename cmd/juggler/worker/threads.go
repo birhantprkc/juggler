@@ -117,7 +117,7 @@ func structuredToolInput(raw json.RawMessage) any {
 // createThread is the single thread-creation entry point. The three public
 // wrappers below differ only in how they assemble CreateThreadOptions; the
 // mutation/dispatch policy lives here.
-func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, error) {
+func (r *run) createThread(opts CreateThreadOptions) (string, error) {
 	if opts.RunGoal == "" {
 		opts.RunGoal = opts.Goal
 	}
@@ -126,8 +126,8 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 	}
 
 	if opts.ExternalDispatch {
-		if w.loadState() != StateIdle {
-			return "", fmt.Errorf("worker not idle (state=%s)", w.loadState())
+		if r.loadState() != StateIdle {
+			return "", fmt.Errorf("worker not idle (state=%s)", r.loadState())
 		}
 	}
 
@@ -137,27 +137,27 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 	var prevThread threadContext
 	restoreThread := false
 	if opts.ParentThreadItemID != "" {
-		prevThread = w.turn.thread
+		prevThread = r.t.thread
 		restoreThread = true
-		w.turn.thread.itemID = opts.ParentThreadItemID
-		w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(opts.ParentThreadItemID)
-		if w.turn.thread.itemsArray == nil {
-			w.turn.thread = prevThread
+		r.t.thread.itemID = opts.ParentThreadItemID
+		r.t.thread.itemsArray = r.doc.GetThreadItemsArray(opts.ParentThreadItemID)
+		if r.t.thread.itemsArray == nil {
+			r.t.thread = prevThread
 			return "", fmt.Errorf("thread item %s not found", opts.ParentThreadItemID)
 		}
 	} else if opts.ExternalDispatch {
-		prevThread = w.turn.thread
+		prevThread = r.t.thread
 		restoreThread = true
-		w.resetThreadContext()
+		r.resetThreadContext()
 	}
 	if restoreThread {
 		defer func() {
-			w.turn.thread = prevThread
+			r.t.thread = prevThread
 		}()
 	}
 
 	if opts.ExternalDispatch {
-		mc := w.doc.ResolveEffectiveModelConfig(opts.ParentThreadItemID)
+		mc := r.doc.ResolveEffectiveModelConfig(opts.ParentThreadItemID)
 		if mc == nil || mc.Model == "" {
 			return "", fmt.Errorf("please select a model before creating a thread")
 		}
@@ -169,8 +169,8 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 	// prompt left behind). Close the prior capture window and snapshot the stack
 	// height; every tracked write below lands at or after this index, and
 	// MergeFromIndex folds them together once creation completes.
-	w.tracker.StopCapturing()
-	createMergeFrom := w.tracker.UndoStackLen()
+	r.tracker.StopCapturing()
+	createMergeFrom := r.tracker.UndoStackLen()
 
 	// Whether this creation appends an invocation message to carry the run
 	// record. It normally does — every tool-driven creation supplies a prompt —
@@ -183,9 +183,9 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 	// Create thread item with nested Y.Array (in the current target array).
 	// Use the tracker (authorID origin) so the insertion is tracked by the
 	// UndoManager and can be undone independently.
-	targetArr := w.getTargetItemsYArray()
-	insertIdx := w.getTargetItemsLength()
-	nestedItems := w.tracker.InsertThreadIntoArray(targetArr, insertIdx, opts.Goal)
+	targetArr := r.getTargetItemsYArray()
+	insertIdx := r.getTargetItemsLength()
+	nestedItems := r.tracker.InsertThreadIntoArray(targetArr, insertIdx, opts.Goal)
 
 	// Get the thread's itemId and store tool_use coordinates (for LLM-created
 	// threads) on the thread Y.Map.
@@ -196,7 +196,7 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 	if m, ok := raw.(*ycrdt.YMap); ok {
 		threadYMap = m
 		threadItemID, _ = m.Get("itemId").(string)
-		w.doc.transactTracked(func(_ *ycrdt.Transaction) {
+		r.doc.transactTracked(func(_ *ycrdt.Transaction) {
 			if opts.ResultSpec != "" {
 				m.Set("resultSpec", opts.ResultSpec)
 			}
@@ -261,7 +261,7 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 	// array, each with a fresh id. targetArr is the parent array (root array
 	// when creating at root scope). Continuations already carry their seeds.
 	if !opts.IsContinuation {
-		w.tracker.SeedThreadFromParent(targetArr, nestedItems, threadYMap)
+		r.tracker.SeedThreadFromParent(targetArr, nestedItems, threadYMap)
 	}
 
 	// Insert the invocation message into the child thread's items array, AFTER
@@ -277,19 +277,19 @@ func (w *ConversationWorker) createThread(opts CreateThreadOptions) (string, err
 	// each invocation appending its own stamped message (resumeSession appends
 	// the identical shape).
 	if stampsInvocation {
-		w.tracker.AppendMessageIntoArray(nestedItems, invocationMessage(opts))
+		r.tracker.AppendMessageIntoArray(nestedItems, invocationMessage(opts))
 	}
 
 	// Collapse the container insert, field stamps, seeds, and seed prompt into one
 	// undo group, then close it so any subsequent dispatch or turn content forms
 	// its own separate groups.
-	w.tracker.MergeFromIndex(createMergeFrom)
-	w.tracker.StopCapturing()
+	r.tracker.MergeFromIndex(createMergeFrom)
+	r.tracker.StopCapturing()
 
 	if opts.ExternalDispatch {
-		w.requestLLM(threadItemID)
-		w.needsReconcile = true
-		w.drainReconcile()
+		r.requestLLM(threadItemID)
+		r.needsReconcile = true
+		r.drainReconcile()
 	}
 
 	return threadItemID, nil
@@ -366,7 +366,7 @@ const maxLiveThreads = 16
 // either continues the session it names or dispatches a new thread via
 // createThread. Called from processLLMResponse when the LLM emits a
 // create_thread block.
-func (w *ConversationWorker) executeCreateThread(toolUseID, toolName string, toolInput json.RawMessage) error {
+func (r *run) executeCreateThread(toolUseID, toolName string, toolInput json.RawMessage) error {
 	var input struct {
 		Goal       string `json:"goal"`
 		Prompt     string `json:"prompt"`
@@ -385,7 +385,7 @@ func (w *ConversationWorker) executeCreateThread(toolUseID, toolName string, too
 	// that thread already has. Resolved before the guards below because
 	// continuing a thread creates nothing — it neither deepens the tree nor
 	// widens it, so neither cap has anything to say about it.
-	session := w.resolveSession(toolName, input.Session)
+	session := r.resolveSession(toolName, input.Session)
 	opts := CreateThreadOptions{
 		Goal:        input.Goal,
 		RunGoal:     input.Goal,
@@ -397,11 +397,11 @@ func (w *ConversationWorker) executeCreateThread(toolUseID, toolName string, too
 		SessionName: session.name,
 	}
 	if session.busy {
-		w.addMetaToolResult(toolUseID, toolName, toolInput, sessionBusyMessage(session.name), true)
+		r.addMetaToolResult(toolUseID, toolName, toolInput, sessionBusyMessage(session.name), true)
 		return nil
 	}
 	if session.resumeThreadID != "" {
-		return w.resumeSession(session.resumeThreadID, opts)
+		return r.resumeSession(session.resumeThreadID, opts)
 	}
 
 	// Runaway-recursion guard. The would-be child sits one level below the
@@ -410,10 +410,10 @@ func (w *ConversationWorker) executeCreateThread(toolUseID, toolName string, too
 	// turn sees a tool_result paired with its own create_thread tool_use (not a
 	// dangling tool_use the provider would reject) and is told to continue the
 	// sub-task inline rather than spawn another thread.
-	if depth := w.doc.threadDepth(w.turn.thread.itemID); depth >= maxThreadDepth {
+	if depth := r.doc.threadDepth(r.t.thread.itemID); depth >= maxThreadDepth {
 		msg := fmt.Sprintf("create_thread refused: thread nesting depth limit (%d) reached. "+
 			"Do this sub-task inline in the current thread instead of spawning another thread.", maxThreadDepth)
-		w.addMetaToolResult(toolUseID, toolName, toolInput, msg, true)
+		r.addMetaToolResult(toolUseID, toolName, toolInput, msg, true)
 		return nil
 	}
 
@@ -424,28 +424,28 @@ func (w *ConversationWorker) executeCreateThread(toolUseID, toolName string, too
 	// meta-tool-result so the parent turn isn't stranded. Self-heals: the count
 	// drops as children settle, so this throttles a runaway without
 	// permanently disabling the tool.
-	if live := w.doc.liveThreadCount(); live >= maxLiveThreads {
+	if live := r.doc.liveThreadCount(); live >= maxLiveThreads {
 		msg := fmt.Sprintf("create_thread refused: too many threads (%d) are already in progress. "+
 			"Do this sub-task inline in the current thread, or wait for running threads to finish "+
 			"before spawning more.", live)
-		w.addMetaToolResult(toolUseID, toolName, toolInput, msg, true)
+		r.addMetaToolResult(toolUseID, toolName, toolInput, msg, true)
 		return nil
 	}
 
-	_, err := w.createThread(opts)
+	_, err := r.createThread(opts)
 	return err
 }
 
 // handleCreateThread handles strategy-driven thread creation requests from the
 // browser. Non-blocking: creates the thread item + user message, signals the
 // reducer to dispatch, and returns the threadItemId via WS response.
-func (w *ConversationWorker) handleCreateThread(payload json.RawMessage) {
+func (r *run) handleCreateThread(payload json.RawMessage) {
 	var msg CreateThreadMessage
 	if err := json.Unmarshal(payload, &msg); err != nil {
-		w.log.Error("Failed to parse create-thread message: %v", err)
+		r.log.Error("Failed to parse create-thread message: %v", err)
 		return
 	}
-	threadItemID, err := w.createThread(CreateThreadOptions{
+	threadItemID, err := r.createThread(CreateThreadOptions{
 		Goal:               msg.Goal,
 		Prompt:             msg.Prompt,
 		IsContinuation:     msg.IsContinuation,
@@ -453,14 +453,14 @@ func (w *ConversationWorker) handleCreateThread(payload json.RawMessage) {
 		ExternalDispatch:   true,
 	})
 	if err != nil {
-		w.send(map[string]any{
+		r.send(map[string]any{
 			"type":      "create-thread-response",
 			"requestId": msg.RequestID,
 			"error":     err.Error(),
 		})
 		return
 	}
-	w.send(map[string]any{
+	r.send(map[string]any{
 		"type":         "create-thread-response",
 		"requestId":    msg.RequestID,
 		"threadItemId": threadItemID,
@@ -470,8 +470,8 @@ func (w *ConversationWorker) handleCreateThread(payload json.RawMessage) {
 // dispatchCreateThread is the orchestrator entry point used by
 // pendingRequests. Same semantics as handleCreateThread but returns the
 // new thread's itemId directly (no WS response).
-func (w *ConversationWorker) dispatchCreateThread(goal, prompt, parentThreadItemID string, isContinuation bool, strategyID, modelConfigJSON string) (string, error) {
-	return w.createThread(CreateThreadOptions{
+func (r *run) dispatchCreateThread(goal, prompt, parentThreadItemID string, isContinuation bool, strategyID, modelConfigJSON string) (string, error) {
+	return r.createThread(CreateThreadOptions{
 		Goal:               goal,
 		Prompt:             prompt,
 		IsContinuation:     isContinuation,

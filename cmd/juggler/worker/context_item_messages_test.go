@@ -63,7 +63,7 @@ func TestBuildMessages_ContextLeadsHistory(t *testing.T) {
 	w.doc.InsertMessage(0, ConversationItem{Type: ItemTypeUser, ItemID: "u-1", Content: "hi"})
 	w.doc.InsertMessage(1, ConversationItem{Type: ItemTypeAssistant, ItemID: "a-1", Content: "hello"})
 
-	msgs := w.buildMessages([]ItemContext{
+	msgs := w.currentRun().buildMessages([]ItemContext{
 		{ItemID: "FILE_1", Content: "package main"},
 	})
 
@@ -98,12 +98,12 @@ func TestBuildMessages_ContextByteStableAcrossAppendedTurn(t *testing.T) {
 	ctx := []ItemContext{{ItemID: "FILE_1", Content: "package main"}}
 
 	w.doc.InsertMessage(0, ConversationItem{Type: ItemTypeUser, ItemID: "u-1", Content: "one"})
-	turn1 := w.buildMessages(ctx)
+	turn1 := w.currentRun().buildMessages(ctx)
 
 	// Next turn: history grew (assistant reply + a new user message), same context.
 	w.doc.InsertMessage(1, ConversationItem{Type: ItemTypeAssistant, ItemID: "a-1", Content: "reply"})
 	w.doc.InsertMessage(2, ConversationItem{Type: ItemTypeUser, ItemID: "u-2", Content: "two"})
-	turn2 := w.buildMessages(ctx)
+	turn2 := w.currentRun().buildMessages(ctx)
 
 	if turn1[0]["type"] != messageTypeContextItem || turn2[0]["type"] != messageTypeContextItem {
 		t.Fatalf("context must lead both turns; got %v / %v", turn1[0]["type"], turn2[0]["type"])

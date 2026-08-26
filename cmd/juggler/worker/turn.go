@@ -25,7 +25,27 @@ import (
 // are the exceptions and say why in their own comments: they are read or written
 // from Stop() and from the wake handler, neither of which runs on that
 // goroutine.
+type run struct {
+	*ConversationWorker
+	t *turnState
+}
+
 type turnState struct {
+	// processingStartedAt is the single anchor every client renders the spinner's
+	// elapsed digit against. Approval waits advance it so they are excluded.
+	processingStartedAt int64
+	// approvalWaitStartedAt records when this turn parked solely for approval.
+	approvalWaitStartedAt int64
+	// wasBlockedOnApprovals records the previous approval reconciliation state.
+	wasBlockedOnApprovals bool
+
+	// lastProgressWriteMs throttles processing-state progress writes.
+	lastProgressWriteMs int64
+	// lastCacheMissNotice deduplicates cache-miss notices within this turn.
+	lastCacheMissNotice string
+	// lastProviderNotice deduplicates provider notices for this run.
+	lastProviderNotice string
+
 	// thread is the thread this run writes to — the implicit destination of
 	// getTargetItems, insertTargetMessage and the rest. Zero value means the root
 	// conversation.
@@ -86,6 +106,17 @@ type turnState struct {
 	// the next attempt — which may itself spend minutes backing off — until real
 	// content flips it back; see clearRetryingStatus.
 	retryStatusActive bool
+}
+
+func (w *ConversationWorker) currentRun() *run {
+	return &run{ConversationWorker: w, t: w.turn}
+}
+
+func (w *ConversationWorker) Start(ctx context.Context) { w.currentRun().Start(ctx) }
+func (w *ConversationWorker) Stop()                     { w.currentRun().Stop() }
+func (w *ConversationWorker) StopForRemoval()           { w.currentRun().StopForRemoval() }
+func (w *ConversationWorker) interruptInFlightLLMForWake() {
+	w.currentRun().interruptInFlightLLMForWake()
 }
 
 // newTurnState builds the worker's turn. The response channel is buffered by one

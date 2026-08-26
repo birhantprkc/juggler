@@ -21,7 +21,7 @@ func TestTaskDeliveryInjectsStampedMonitorMessage(t *testing.T) {
 		t.Fatalf("marshal payload: %v", err)
 	}
 
-	w.handleInjectThreadMessage(payload)
+	w.currentRun().handleInjectThreadMessage(payload)
 
 	items := w.doc.GetItems()
 	if len(items) != 1 {

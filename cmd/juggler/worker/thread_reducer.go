@@ -312,28 +312,28 @@ func (w *ConversationWorker) reconcileThread() {
 // so the turn is never blockedOnlyByApprovals, no edge fires, and its timer keeps
 // running. The deduction is computed from in-memory state alone (processingStartedAt
 // + approvalWaitStartedAt); only the single derived startedAt field touches the doc.
-func (w *ConversationWorker) updateApprovalWaitAnchor() {
-	hasPending, hasExecuting := w.approvalBlockState()
+func (r *run) updateApprovalWaitAnchor() {
+	hasPending, hasExecuting := r.approvalBlockState()
 	parked := hasPending && !hasExecuting
-	if parked == w.wasBlockedOnApprovals {
+	if parked == r.t.wasBlockedOnApprovals {
 		return // no edge this tick
 	}
-	w.wasBlockedOnApprovals = parked
-	if w.processingStartedAt == 0 {
+	r.t.wasBlockedOnApprovals = parked
+	if r.t.processingStartedAt == 0 {
 		return // no active turn to anchor
 	}
 	now := time.Now().UnixMilli()
 	if parked {
-		w.approvalWaitStartedAt = now
-		w.hideElapsedAnchor()
+		r.t.approvalWaitStartedAt = now
+		r.hideElapsedAnchor()
 		return
 	}
 	// Park ended. Exclude the wait only when real work resumed; on a cancel at
 	// the prompt there is nothing to resume.
-	waitStart := w.approvalWaitStartedAt
-	w.approvalWaitStartedAt = 0
+	waitStart := r.t.approvalWaitStartedAt
+	r.t.approvalWaitStartedAt = 0
 	if hasExecuting && waitStart != 0 {
-		w.advanceElapsedAnchor(now - waitStart)
+		r.advanceElapsedAnchor(now - waitStart)
 	}
 }
 
@@ -354,34 +354,34 @@ const maxReconcilePasses = 10
 // drainReconcile runs tryReconcile until the reducer is quiet, bounded by
 // maxReconcilePasses. Used wherever an event or strategy-loop step may leave
 // needsReconcile set and no run() event loop is guaranteed to pick it up.
-func (w *ConversationWorker) drainReconcile() {
-	for i := 0; i < maxReconcilePasses && w.needsReconcile; i++ {
-		w.tryReconcile()
+func (r *run) drainReconcile() {
+	for i := 0; i < maxReconcilePasses && r.needsReconcile; i++ {
+		r.tryReconcile()
 	}
 }
 
-func (w *ConversationWorker) tryReconcile() {
-	if !w.needsReconcile {
+func (r *run) tryReconcile() {
+	if !r.needsReconcile {
 		return
 	}
-	w.needsReconcile = false
+	r.needsReconcile = false
 
 	// Guard: the reducer fires on every event-loop tick via handleItemsChange.
 	// During partial Yjs sync (mid-update, reconnect, etc.) the items array
 	// can contain half-populated Y.Maps that panic in yMapToConversationItem.
 	// Recover gracefully — the next observer tick will retry.
 	defer func() {
-		if r := recover(); r != nil {
-			w.log.Error("[reducer] recovered from panic in tryReconcile: %v\n%s", r, debug.Stack())
+		if panicValue := recover(); panicValue != nil {
+			r.log.Error("[reducer] recovered from panic in tryReconcile: %v\n%s", panicValue, debug.Stack())
 		}
 	}()
 
-	w.updateApprovalWaitAnchor()
+	r.updateApprovalWaitAnchor()
 
 	// Command the engine to advance any non-terminal tool-action. The worker
 	// observes every doc update, so it drives tool execution directly rather
 	// than relying on the engine's reactive observer to notice and react.
-	w.driveToolActions()
+	r.driveToolActions()
 
 	// Doc-driven threads (a /compact or /handoff fold, any plugin-inserted
 	// needsStrategyRun thread) are picked up here as well as from the items
@@ -390,20 +390,20 @@ func (w *ConversationWorker) tryReconcile() {
 	// writes processingState, not items — so no further observer tick arrives and
 	// the thread waits forever, unrun, while the conversation reports idle. This
 	// tick is the retry. It self-guards on idle, so it is inert mid-turn.
-	if w.checkForNewThreads() {
+	if r.checkForNewThreads() {
 		// The run mutated the doc and settled; re-evaluate from scratch rather
 		// than walking down with items read before it.
-		w.needsReconcile = true
+		r.needsReconcile = true
 		return
 	}
 
 	// Read activity first. The threadItemId in processingState is only
 	// meaningful when an operation is in flight (activity != null).
 	// When idle, the reducer evaluates the root thread.
-	activity := w.getActivity()
+	activity := r.getActivity()
 	threadItemID := ""
 	if activity != ActivityNone {
-		threadItemID = w.getProcessingThreadItemID()
+		threadItemID = r.getProcessingThreadItemID()
 	}
 
 	// Walk-down loop: evaluate the thread, and if the last effective item
@@ -413,15 +413,15 @@ func (w *ConversationWorker) tryReconcile() {
 	for {
 		var items []ConversationItem
 		if currentThreadID != "" {
-			if arr := w.doc.GetThreadItemsArray(currentThreadID); arr != nil {
-				items = w.doc.GetItemsFromArray(arr)
+			if arr := r.doc.GetThreadItemsArray(currentThreadID); arr != nil {
+				items = r.doc.GetItemsFromArray(arr)
 			}
 		} else {
-			items = w.doc.GetItems()
+			items = r.doc.GetItems()
 		}
 		isRoot := currentThreadID == ""
 
-		action := decideNextAction(items, currentActivity, isRoot, w.isExplicitContinuation(currentThreadID))
+		action := decideNextAction(items, currentActivity, isRoot, r.isExplicitContinuation(currentThreadID))
 
 		switch action {
 		case ActionNone:
@@ -460,8 +460,8 @@ func (w *ConversationWorker) tryReconcile() {
 				// sent a message to — the "new thread immediately starts running"
 				// bug. An empty/unreadable child is therefore not a descent
 				// target; it rests until the user sends a message.
-				childArr := w.doc.GetThreadItemsArray(item.ItemID)
-				if childArr == nil || len(effectiveItems(w.doc.GetItemsFromArray(childArr))) == 0 {
+				childArr := r.doc.GetThreadItemsArray(item.ItemID)
+				if childArr == nil || len(effectiveItems(r.doc.GetItemsFromArray(childArr))) == 0 {
 					continue
 				}
 				currentThreadID = item.ItemID
@@ -474,7 +474,7 @@ func (w *ConversationWorker) tryReconcile() {
 			return // truly nothing to do
 
 		case ActionCallLLM:
-			w.dispatchCallLLMOnThread(currentThreadID)
+			r.dispatchCallLLMOnThread(currentThreadID)
 			return
 
 		case ActionGoIdle:
@@ -488,11 +488,11 @@ func (w *ConversationWorker) tryReconcile() {
 			// while a tool is actually running cancels everything and writes idle
 			// (clearing awaiting_llm) BEFORE the reducer runs, so this continue
 			// only ever fires when the block was purely tool approvals.
-			if w.hasPendingItems(currentThreadID) {
-				w.dispatchCallLLMOnThread(currentThreadID)
+			if r.hasPendingItems(currentThreadID) {
+				r.dispatchCallLLMOnThread(currentThreadID)
 				return
 			}
-			w.restPromotingQueue(currentThreadID)
+			r.restPromotingQueue(currentThreadID)
 			return
 		}
 	}
@@ -504,9 +504,9 @@ func (w *ConversationWorker) tryReconcile() {
 // stop (Pause) boundaries — a polite stop reaches the SAME exit a hard stop
 // reaches via finalizeCancellation's tail, so queued messages simply become
 // normal user bubbles sitting at idle with no polite-specific handling (D4).
-func (w *ConversationWorker) restPromotingQueue(threadItemID string) {
-	w.promotePendingItems(threadItemID)
-	w.sendStatus("idle", "")
+func (r *run) restPromotingQueue(threadItemID string) {
+	r.promotePendingItems(threadItemID)
+	r.sendStatus("idle", "")
 }
 
 // dispatchCallLLMOnThread is the reducer's action handler for ActionCallLLM.
@@ -514,15 +514,15 @@ func (w *ConversationWorker) restPromotingQueue(threadItemID string) {
 // context, and runs a single LLM turn. If the LLM creates async tools
 // or a child thread, the loop sets activity="awaiting_llm" and returns.
 // The reducer re-dispatches when all work completes.
-func (w *ConversationWorker) dispatchCallLLMOnThread(threadItemID string) {
+func (r *run) dispatchCallLLMOnThread(threadItemID string) {
 	// Only dispatch when the worker is idle. If state is mid-transition
 	// (the previous turn's deferred cleanup hasn't flipped back to Idle yet),
 	// re-tickle the reducer so the next event-loop tick retries — otherwise
 	// the request is orphaned until some other event re-wakes the loop, which
 	// presents to the user as "user message appended but LLM loop never starts;
 	// hitting Continue kicks it off".
-	if w.loadState() != StateIdle {
-		w.needsReconcile = true
+	if r.loadState() != StateIdle {
+		r.needsReconcile = true
 		return
 	}
 
@@ -534,41 +534,41 @@ func (w *ConversationWorker) dispatchCallLLMOnThread(threadItemID string) {
 	// turn; the transcript is a clean, resumable prefix. consumePolitePending
 	// Swap(false)s the latch so the NEXT, user-initiated turn isn't also
 	// suppressed (D6, V5), and drops the synced pending cue.
-	if w.consumePolitePending() {
-		w.restPromotingQueue(threadItemID)
+	if r.consumePolitePending() {
+		r.restPromotingQueue(threadItemID)
 		return
 	}
 
 	// Transition activity from "awaiting_llm" → "calling_llm".
 	// Consume the one-shot continuation marker only once we are actually going
 	// to dispatch; if claimLLM fails, leave it for the next reconcile tick.
-	if !w.claimLLM(threadItemID) {
+	if !r.claimLLM(threadItemID) {
 		// Already claimed for an LLM call — re-tickle so the next reconcile
 		// tick picks it up after the in-flight call completes.
-		w.needsReconcile = true
+		r.needsReconcile = true
 		return
 	}
-	explicitContinuation := w.consumeExplicitContinuation(threadItemID)
+	explicitContinuation := r.consumeExplicitContinuation(threadItemID)
 
 	// Set up thread context from doc state.
-	w.turn.thread.itemID = threadItemID
+	r.t.thread.itemID = threadItemID
 	if threadItemID != "" {
-		w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadItemID)
+		r.t.thread.itemsArray = r.doc.GetThreadItemsArray(threadItemID)
 	} else {
-		w.turn.thread.itemsArray = nil
+		r.t.thread.itemsArray = nil
 	}
 
 	// Turn-scoped anchor: only stamp the start when beginning a fresh turn (from
 	// idle, where it was zeroed). Preserving it across re-dispatches within a turn
 	// keeps the spinner's elapsed digit measuring the whole turn, instead of
 	// resetting to 0 every time a tool completes and the next LLM call dispatches.
-	if w.processingStartedAt == 0 {
-		w.processingStartedAt = time.Now().UnixMilli()
+	if r.t.processingStartedAt == 0 {
+		r.t.processingStartedAt = time.Now().UnixMilli()
 	}
-	w.storeState(StateProcessing)
-	w.sendStatus("preparing", "")
-	w.batcher.Flush()
-	w.runStrategyLoopWithIntent("", true, explicitContinuation)
+	r.storeState(StateProcessing)
+	r.sendStatus("preparing", "")
+	r.batcher.Flush()
+	r.runStrategyLoopWithIntent("", true, explicitContinuation)
 }
 
 // selectThreadFallbackResult returns a run's trailing assistant text — what a

@@ -94,8 +94,8 @@ func sendResyncRequest(t *testing.T, w *ConversationWorker, clientID string, vec
 // holds the other's op — with only deltas on the wire in both directions.
 func TestResyncExchangesBothDirections(t *testing.T) {
 	w := NewConversationWorker("conv-resync", "user:test")
-	w.Start(context.Background())
-	defer w.Stop()
+	w.currentRun().Start(context.Background())
+	defer w.currentRun().Stop()
 
 	mc := newMsgChan()
 	w.SetCallback("client-1", mc.callback)
@@ -175,8 +175,8 @@ func TestResyncExchangesBothDirections(t *testing.T) {
 // the inbound delta is non-empty would strand exactly those ops.
 func TestResyncAnswersEvenWithNothingToSend(t *testing.T) {
 	w := NewConversationWorker("conv-resync-uptodate", "user:test")
-	w.Start(context.Background())
-	defer w.Stop()
+	w.currentRun().Start(context.Background())
+	defer w.currentRun().Stop()
 
 	mc := newMsgChan()
 	w.SetCallback("client-1", mc.callback)
@@ -218,8 +218,8 @@ func TestResyncAnswersEvenWithNothingToSend(t *testing.T) {
 // conversation it is large.
 func TestResyncResponseTargetsRequester(t *testing.T) {
 	w := NewConversationWorker("conv-resync-target", "user:test")
-	w.Start(context.Background())
-	defer w.Stop()
+	w.currentRun().Start(context.Background())
+	defer w.currentRun().Stop()
 
 	asker := newMsgChan()
 	w.SetCallback("client-asking", asker.callback)

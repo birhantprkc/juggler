@@ -34,11 +34,11 @@ func TestSystemWakeInterruptsInFlightLLM(t *testing.T) {
 
 	go func() {
 		<-providerStarted
-		w.interruptInFlightLLMForWake()
+		w.currentRun().interruptInFlightLLMForWake()
 	}()
 
 	start := time.Now()
-	_, err := w.callLLM(nil)
+	_, err := w.currentRun().callLLM(nil)
 	elapsed := time.Since(start)
 
 	if err == nil {

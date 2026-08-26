@@ -28,7 +28,7 @@ func newTruncationWorker(t *testing.T, convID string) *ConversationWorker {
 	if err != nil {
 		t.Fatalf("marshal init: %v", err)
 	}
-	w.handleInit(initPayload)
+	w.currentRun().handleInit(initPayload)
 
 	stop := make(chan struct{})
 	t.Cleanup(func() { close(stop) })
@@ -100,7 +100,7 @@ func TestTruncatedThinkingOnlyTurnIsReportedNotRetried(t *testing.T) {
 		{Blocks: []LLMResponseBlock{textBlock("SENTINEL")}, StopReason: "end_turn"},
 	})
 
-	w.runStrategyLoop("optimise clipToPolygon", false)
+	w.currentRun().runStrategyLoop("optimise clipToPolygon", false)
 
 	if n := len(w.mock.responses); n != 3 {
 		t.Fatalf("leftover mock responses = %d, want 3 (one call, not %d)", n, MaxBarrenTurns)
@@ -148,7 +148,7 @@ func TestTruncatedTurnWithTextKeepsTheTextAndReportsIt(t *testing.T) {
 		{Blocks: []LLMResponseBlock{textBlock("SENTINEL")}, StopReason: "end_turn"},
 	})
 
-	w.runStrategyLoop("explain the algorithm", false)
+	w.currentRun().runStrategyLoop("explain the algorithm", false)
 
 	if n := len(w.mock.responses); n != 1 {
 		t.Fatalf("leftover mock responses = %d, want 1 (exactly one call)", n)
@@ -175,7 +175,7 @@ func TestBarrenTurnWithoutTruncationStillRetries(t *testing.T) {
 		{Blocks: []LLMResponseBlock{textBlock("SENTINEL")}, StopReason: "end_turn"},
 	})
 
-	w.runStrategyLoop("optimise clipToPolygon", false)
+	w.currentRun().runStrategyLoop("optimise clipToPolygon", false)
 
 	if n := len(w.mock.responses); n != 1 {
 		t.Fatalf("leftover mock responses = %d, want 1 (exactly %d calls)", n, MaxBarrenTurns)

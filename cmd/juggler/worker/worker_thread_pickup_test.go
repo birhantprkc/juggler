@@ -136,7 +136,7 @@ func TestCompactionSubthread_DrainsRootQueueOnCompletion(t *testing.T) {
 	// scheduled a root turn rather than running it entirely inline.
 	for i := 0; i < 20 && (w.needsReconcile || w.HasPendingItems("")); i++ {
 		w.needsReconcile = true
-		w.tryReconcile()
+		w.currentRun().tryReconcile()
 	}
 
 	// Compaction closed with its result.
@@ -191,7 +191,7 @@ func TestCheckForNewThreads_IgnoresThreadWithoutFlag(t *testing.T) {
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	// checkForNewThreads should NOT process this thread
-	w.checkForNewThreads()
+	w.currentRun().checkForNewThreads()
 
 	// Worker should still be idle (didn't start processing)
 	if w.loadState() != StateIdle {
@@ -223,7 +223,7 @@ func TestCheckForNewThreads_IgnoresCompletedThread(t *testing.T) {
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	// checkForNewThreads should NOT process this (already has result)
-	w.checkForNewThreads()
+	w.currentRun().checkForNewThreads()
 
 	// Result should be unchanged
 	threadYMap := w.doc.GetThreadYMap(threadID)
@@ -247,7 +247,7 @@ func TestCheckForNewThreads_IgnoresWhenBusy(t *testing.T) {
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	// checkForNewThreads should skip when worker is busy
-	w.checkForNewThreads()
+	w.currentRun().checkForNewThreads()
 
 	// Thread should have no result (not processed)
 	threadYMap := w.doc.GetThreadYMap(threadID)
@@ -303,7 +303,7 @@ func TestCheckForNewThreads_SkipsCompletedThreads(t *testing.T) {
 
 	// Second call — skipped because the thread already has a result.
 	// No mock responses needed (won't reach LLM).
-	w.checkForNewThreads()
+	w.currentRun().checkForNewThreads()
 
 	result, _ = threadYMap.Get("result").(string)
 	if result != "First run" {
@@ -362,8 +362,8 @@ func TestCheckForNewThreads_CancelDoesNotRetriggerNeedsStrategyRunThread(t *test
 
 	// Simulate the observer firing again after the idle/cancel updates. Before
 	// the fix this immediately restarted the same needsStrategyRun thread.
-	w.handleItemsChange()
-	w.tryReconcile()
+	w.currentRun().handleItemsChange()
+	w.currentRun().tryReconcile()
 	if calls != 1 {
 		t.Fatalf("LLM calls after observer tick = %d, want 1 (no retrigger)", calls)
 	}
@@ -389,7 +389,7 @@ func TestHandleItemsChange_CancelsWhenCurrentThreadDeleted(t *testing.T) {
 		w.doc.ensureItems().Delete(ycrdt.Number(0), 1)
 	}, w.doc.authorID)
 
-	w.handleItemsChange()
+	w.currentRun().handleItemsChange()
 
 	if w.loadState() != StateCancelling {
 		t.Errorf("worker state = %v, want StateCancelling after current thread deleted", w.loadState())

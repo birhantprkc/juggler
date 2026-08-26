@@ -54,7 +54,7 @@ func TestFoldConversationForCompactionBuildsUnsummarizedThread(t *testing.T) {
 		arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: ItemTypeAssistant, ItemID: aID, Content: "did the thing"})})
 	}, w.doc.authorID)
 
-	threadID, folded, err := w.foldConversationForCompaction(false)
+	threadID, folded, err := w.currentRun().foldConversationForCompaction(false)
 	if err != nil || !folded {
 		t.Fatalf("foldConversationForCompaction = (%q, %v, %v), want folded success", threadID, folded, err)
 	}
@@ -171,7 +171,7 @@ func TestHandleCompactFoldsSummarizesAndAcks(t *testing.T) {
 	}, w.doc.authorID)
 
 	waitAck := captureAck(t, w, "client-1", "a1")
-	w.handleCompact(json.RawMessage(`{"type":"compact","ackId":"a1"}`))
+	w.currentRun().handleCompact(json.RawMessage(`{"type":"compact","ackId":"a1"}`))
 
 	ack := waitAck()
 	result, _ := ack["result"].(map[string]any)
@@ -201,7 +201,7 @@ func TestHandleCompactBusyDeclines(t *testing.T) {
 	}, w.doc.authorID)
 
 	waitAck := captureAck(t, w, "client-1", "a2")
-	w.handleCompact(json.RawMessage(`{"type":"compact","ackId":"a2"}`))
+	w.currentRun().handleCompact(json.RawMessage(`{"type":"compact","ackId":"a2"}`))
 
 	ack := waitAck()
 	result, _ := ack["result"].(map[string]any)
@@ -240,7 +240,7 @@ func TestFoldConversationForCompactionSweepsMidConversationContext(t *testing.T)
 		arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: ItemTypeAssistant, ItemID: aID, Content: "looked"})})
 	}, w.doc.authorID)
 
-	threadID, folded, err := w.foldConversationForCompaction(false)
+	threadID, folded, err := w.currentRun().foldConversationForCompaction(false)
 	if err != nil || !folded {
 		t.Fatalf("fold = (%q, %v, %v), want folded success", threadID, folded, err)
 	}
@@ -278,7 +278,7 @@ func TestFoldConversationForCompactionNothingFoldable(t *testing.T) {
 		arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: "rule", ItemID: generateItemID(), Content: "only a rule"})})
 	}, w.doc.authorID)
 
-	threadID, folded, err := w.foldConversationForCompaction(false)
+	threadID, folded, err := w.currentRun().foldConversationForCompaction(false)
 	if folded || err != nil || threadID != "" {
 		t.Fatalf("fold = (%q, %v, %v), want no-op (nothing foldable)", threadID, folded, err)
 	}
@@ -314,7 +314,7 @@ func TestFoldConversationForCompactionSwallowsPriorSummary(t *testing.T) {
 		arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: ItemTypeUser, ItemID: freshUID, Content: "new work"})})
 	}, w.doc.authorID)
 
-	threadID, folded, err := w.foldConversationForCompaction(false)
+	threadID, folded, err := w.currentRun().foldConversationForCompaction(false)
 	if err != nil || !folded {
 		t.Fatalf("fold = (%q, %v, %v), want folded success", threadID, folded, err)
 	}
@@ -363,7 +363,7 @@ func TestFoldConversationForCompactionPinsPendingFold(t *testing.T) {
 		arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: ItemTypeUser, ItemID: freshUID, Content: "new work"})})
 	}, w.doc.authorID)
 
-	threadID, folded, err := w.foldConversationForCompaction(false)
+	threadID, folded, err := w.currentRun().foldConversationForCompaction(false)
 	if err != nil || !folded {
 		t.Fatalf("fold = (%q, %v, %v), want folded success", threadID, folded, err)
 	}
@@ -390,7 +390,7 @@ func TestFoldConversationForCompactionDeclinesSummaryOnly(t *testing.T) {
 		})})
 	}, w.doc.authorID)
 
-	threadID, folded, err := w.foldConversationForCompaction(false)
+	threadID, folded, err := w.currentRun().foldConversationForCompaction(false)
 	if folded || err != nil || threadID != "" {
 		t.Fatalf("fold = (%q, %v, %v), want no-op (nothing fresh to compact)", threadID, folded, err)
 	}
@@ -427,12 +427,12 @@ func TestHandleCompactConvergesToSingleSummary(t *testing.T) {
 
 	pushUserTurn("first task")
 	waitAck := captureAck(t, w, "client-1", "c1")
-	w.handleCompact(json.RawMessage(`{"type":"compact","ackId":"c1"}`))
+	w.currentRun().handleCompact(json.RawMessage(`{"type":"compact","ackId":"c1"}`))
 	waitAck()
 
 	pushUserTurn("second task")
 	waitAck = captureAck(t, w, "client-1", "c2")
-	w.handleCompact(json.RawMessage(`{"type":"compact","ackId":"c2"}`))
+	w.currentRun().handleCompact(json.RawMessage(`{"type":"compact","ackId":"c2"}`))
 	waitAck()
 
 	items := w.doc.GetItems()

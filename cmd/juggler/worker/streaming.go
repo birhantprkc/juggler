@@ -67,17 +67,17 @@ func (w *ConversationWorker) queueStreamChunk(chunk StreamChunk) {
 // deliverLLMResponse hands one provider attempt's correlated result to the
 // shared turn channel. Stale results are consumed and rejected by waiters using
 // TurnID; delivery never drains another attempt's answer.
-func (w *ConversationWorker) deliverLLMResponse(turnID string, response *LLMResponse, err error) {
+func (r *run) deliverLLMResponse(turnID string, response *LLMResponse, err error) {
 	select {
-	case w.turn.responseChan <- llmCallResult{TurnID: turnID, Response: response, Err: err}:
-	case <-w.done:
+	case r.t.responseChan <- llmCallResult{TurnID: turnID, Response: response, Err: err}:
+	case <-r.done:
 	}
 }
 
 // processCoalescedStreamChunks reads one chunk plus any additional buffered chunks
 // for turnID, coalesces adjacent text/thinking chunks, and processes them. Chunks
 // from stale provider attempts are discarded rather than crossing generations.
-func (w *ConversationWorker) processCoalescedStreamChunks(turnID string, first StreamChunk) {
+func (r *run) processCoalescedStreamChunks(turnID string, first StreamChunk) {
 	// Drain all currently buffered chunks, retaining only this attempt.
 	chunks := make([]StreamChunk, 0, 1)
 	if first.TurnID == turnID {
@@ -85,7 +85,7 @@ func (w *ConversationWorker) processCoalescedStreamChunks(turnID string, first S
 	}
 	for {
 		select {
-		case chunk := <-w.streamChunkChan:
+		case chunk := <-r.streamChunkChan:
 			if chunk.TurnID == turnID {
 				chunks = append(chunks, chunk)
 			}
@@ -121,32 +121,32 @@ process:
 	coalesced = append(coalesced, current)
 
 	for _, chunk := range coalesced {
-		w.processStreamChunk(chunk)
+		r.processStreamChunk(chunk)
 	}
 }
 
 // processStreamChunk handles incremental streaming of LLM responses.
 // Updates the conversation document and sends streaming-content messages to browser.
-func (w *ConversationWorker) processStreamChunk(chunk StreamChunk) {
+func (r *run) processStreamChunk(chunk StreamChunk) {
 	switch chunk.Type {
 	case provider.ContentBlockTypeText:
-		w.clearRetryingStatus()
-		w.processTextChunk(chunk)
+		r.clearRetryingStatus()
+		r.processTextChunk(chunk)
 	case provider.ContentBlockTypeThinking:
-		w.clearRetryingStatus()
-		w.processThinkingChunk(chunk)
+		r.clearRetryingStatus()
+		r.processThinkingChunk(chunk)
 	case provider.ContentBlockTypeActivity:
 		// Provider activity is a complete, replaceable snapshot. It lives only in
 		// processingState and is never inserted into conversation history.
-		w.patchProcessingState(func(state map[string]any) {
+		r.patchProcessingState(func(state map[string]any) {
 			state["description"] = chunk.Content
 		})
 	case provider.ContentBlockTypeProviderState:
 		// Hidden continuation data is durable and ordered with the provider's
 		// visible output, even when it has no content of its own.
-		w.finalizeStreaming()
+		r.finalizeStreaming()
 		if len(chunk.Metadata) > 0 {
-			w.appendTargetMessage(ConversationItem{
+			r.appendTargetMessage(ConversationItem{
 				Type:         ItemTypeProviderState,
 				ItemID:       generateItemID(),
 				ProviderData: chunk.Metadata,
@@ -161,9 +161,9 @@ func (w *ConversationWorker) processStreamChunk(chunk StreamChunk) {
 		// because text deltas can arrive ~30/sec on a fast provider; one
 		// Yjs broadcast per delta would dominate the sync channel.
 		now := time.Now().UnixMilli()
-		if now-w.lastProgressWriteMs >= 200 {
-			w.lastProgressWriteMs = now
-			w.mergeProcessingTokens(chunk.OutputTokens, 0, 0)
+		if now-r.t.lastProgressWriteMs >= 200 {
+			r.t.lastProgressWriteMs = now
+			r.mergeProcessingTokens(chunk.OutputTokens, 0, 0)
 		}
 	case provider.ContentBlockTypeUsage:
 		// Surface input/cached tokens on the live spinner status text
@@ -172,7 +172,7 @@ func (w *ConversationWorker) processStreamChunk(chunk StreamChunk) {
 		// `inputTokens` on demand instead. Spinner text is purely
 		// cosmetic and tolerates noisy provider numbers.
 		if chunk.InputTokens > 0 {
-			w.mergeProcessingTokens(0, chunk.InputTokens, chunk.CachedTokens)
+			r.mergeProcessingTokens(0, chunk.InputTokens, chunk.CachedTokens)
 		}
 	case provider.ContentBlockTypeStatus:
 		// Provider-emitted retry, cache, or notice status. These exceptional
@@ -182,14 +182,14 @@ func (w *ConversationWorker) processStreamChunk(chunk StreamChunk) {
 		// A status chunk may ALSO carry a consequential cache miss. That is not
 		// transient — it is an event worth reading after the fact — so it lands
 		// in the transcript as its own item instead of riding the spinner.
-		w.clearProcessingDescription()
-		w.mergeProcessingPhase(chunk.Content)
-		w.insertCacheMissNotice(chunk.CacheMissReason)
-		w.insertProviderNotice(chunk.Notice)
+		r.clearProcessingDescription()
+		r.mergeProcessingPhase(chunk.Content)
+		r.insertCacheMissNotice(chunk.CacheMissReason)
+		r.insertProviderNotice(chunk.Notice)
 	default:
 		// Other chunk types (tool_use, etc.) end any provider activity.
-		w.clearProcessingDescription()
-		w.finalizeStreaming()
+		r.clearProcessingDescription()
+		r.finalizeStreaming()
 	}
 }
 
@@ -212,52 +212,52 @@ func streamWriteDue(contentLen, writtenLen int, lastWriteMs, nowMs int64) bool {
 // resetStreamingText starts a fresh text block: the accumulated content and the
 // marks that track how much of it the document holds go together, or the next
 // block's throttle would compare against the previous block's length.
-func (w *ConversationWorker) resetStreamingText() {
-	w.turn.streaming.textContent = ""
-	w.turn.streaming.textWrittenLen = 0
-	w.turn.streaming.lastTextWriteMs = 0
+func (r *run) resetStreamingText() {
+	r.t.streaming.textContent = ""
+	r.t.streaming.textWrittenLen = 0
+	r.t.streaming.lastTextWriteMs = 0
 }
 
 // resetStreamingThinking is resetStreamingText's counterpart for thinking blocks.
-func (w *ConversationWorker) resetStreamingThinking() {
-	w.turn.streaming.thinkingContent = ""
-	w.turn.streaming.thinkingWrittenLen = 0
-	w.turn.streaming.lastThinkingWriteMs = 0
+func (r *run) resetStreamingThinking() {
+	r.t.streaming.thinkingContent = ""
+	r.t.streaming.thinkingWrittenLen = 0
+	r.t.streaming.lastThinkingWriteMs = 0
 }
 
 // writeStreamingText puts the whole accumulated text block into the document
 // and records what the document now holds.
-func (w *ConversationWorker) writeStreamingText() {
+func (r *run) writeStreamingText() {
 	// Update content using messageId lookup - avoids expensive GetItems() JSON conversion
-	_ = w.updateTargetItemByID(w.turn.streaming.textMsgID, "content", w.turn.streaming.textContent)
-	w.turn.streaming.textWrittenLen = len(w.turn.streaming.textContent)
-	w.turn.streaming.lastTextWriteMs = time.Now().UnixMilli()
+	_ = r.updateTargetItemByID(r.t.streaming.textMsgID, "content", r.t.streaming.textContent)
+	r.t.streaming.textWrittenLen = len(r.t.streaming.textContent)
+	r.t.streaming.lastTextWriteMs = time.Now().UnixMilli()
 }
 
 // writeStreamingThinking is writeStreamingText's counterpart for thinking blocks.
-func (w *ConversationWorker) writeStreamingThinking() {
-	_ = w.updateTargetItemByID(w.turn.streaming.thinkingMsgID, "content", w.turn.streaming.thinkingContent)
-	w.turn.streaming.thinkingWrittenLen = len(w.turn.streaming.thinkingContent)
-	w.turn.streaming.lastThinkingWriteMs = time.Now().UnixMilli()
+func (r *run) writeStreamingThinking() {
+	_ = r.updateTargetItemByID(r.t.streaming.thinkingMsgID, "content", r.t.streaming.thinkingContent)
+	r.t.streaming.thinkingWrittenLen = len(r.t.streaming.thinkingContent)
+	r.t.streaming.lastThinkingWriteMs = time.Now().UnixMilli()
 }
 
 // flushStreamingText writes any text the throttle is still holding back. A
 // no-op when the document is already current, so a caller that cannot tell
 // whether a write is outstanding can call it unconditionally — which is what
 // every path that reads, persists or finalises the document does.
-func (w *ConversationWorker) flushStreamingText() {
-	if w.turn.streaming.textMsgID == "" || w.turn.streaming.textWrittenLen >= len(w.turn.streaming.textContent) {
+func (r *run) flushStreamingText() {
+	if r.t.streaming.textMsgID == "" || r.t.streaming.textWrittenLen >= len(r.t.streaming.textContent) {
 		return
 	}
-	w.writeStreamingText()
+	r.writeStreamingText()
 }
 
 // flushStreamingThinking is flushStreamingText's counterpart for thinking blocks.
-func (w *ConversationWorker) flushStreamingThinking() {
-	if w.turn.streaming.thinkingMsgID == "" || w.turn.streaming.thinkingWrittenLen >= len(w.turn.streaming.thinkingContent) {
+func (r *run) flushStreamingThinking() {
+	if r.t.streaming.thinkingMsgID == "" || r.t.streaming.thinkingWrittenLen >= len(r.t.streaming.thinkingContent) {
 		return
 	}
-	w.writeStreamingThinking()
+	r.writeStreamingThinking()
 }
 
 // flushPendingStreamWrites brings the document level with the accumulated
@@ -265,44 +265,44 @@ func (w *ConversationWorker) flushStreamingThinking() {
 // turn, persists the document, or hands it to something that reads it back must
 // go through here first: the throttle's lag is only ever allowed to be
 // transient, and a missed flush silently truncates a message.
-func (w *ConversationWorker) flushPendingStreamWrites() {
-	w.flushStreamingText()
-	w.flushStreamingThinking()
+func (r *run) flushPendingStreamWrites() {
+	r.flushStreamingText()
+	r.flushStreamingThinking()
 }
 
-func (w *ConversationWorker) processTextChunk(chunk StreamChunk) {
+func (r *run) processTextChunk(chunk StreamChunk) {
 	// If starting a new text block (ID is empty), reset accumulated content
 	// This ensures each text block's content is tracked separately for duplicate detection
-	if w.turn.streaming.textMsgID == "" {
+	if r.t.streaming.textMsgID == "" {
 		// Text following a thinking block leaves that block's tail unwritten;
 		// nothing else will come back to it until the turn ends.
-		w.flushStreamingThinking()
-		w.resetStreamingText()
+		r.flushStreamingThinking()
+		r.resetStreamingText()
 	}
 
 	// Accumulate content for this block
-	w.turn.streaming.textContent += chunk.Content
+	r.t.streaming.textContent += chunk.Content
 
 	// Extract <plan> tags from accumulated text and set as nextSteps metadata
-	w.extractPlanTag()
+	r.extractPlanTag()
 
 	// Create new message if needed
-	if w.turn.streaming.textMsgID == "" {
-		w.turn.streaming.textMsgID = generateItemID()
+	if r.t.streaming.textMsgID == "" {
+		r.t.streaming.textMsgID = generateItemID()
 		msg := ConversationItem{
 			Type:      ItemTypeAssistant,
-			ItemID:    w.turn.streaming.textMsgID,
-			Content:   w.turn.streaming.textContent,
+			ItemID:    r.t.streaming.textMsgID,
+			Content:   r.t.streaming.textContent,
 			Timestamp: time.Now().Format(time.RFC3339),
 		}
-		w.appendTargetMessage(msg)
+		r.appendTargetMessage(msg)
 		// The first write of a block is never throttled: the bubble has to
 		// appear the moment the model starts talking.
-		w.turn.streaming.textWrittenLen = len(w.turn.streaming.textContent)
-		w.turn.streaming.lastTextWriteMs = time.Now().UnixMilli()
-	} else if streamWriteDue(len(w.turn.streaming.textContent), w.turn.streaming.textWrittenLen,
-		w.turn.streaming.lastTextWriteMs, time.Now().UnixMilli()) {
-		w.writeStreamingText()
+		r.t.streaming.textWrittenLen = len(r.t.streaming.textContent)
+		r.t.streaming.lastTextWriteMs = time.Now().UnixMilli()
+	} else if streamWriteDue(len(r.t.streaming.textContent), r.t.streaming.textWrittenLen,
+		r.t.streaming.lastTextWriteMs, time.Now().UnixMilli()) {
+		r.writeStreamingText()
 	}
 }
 
@@ -310,76 +310,76 @@ func (w *ConversationWorker) processTextChunk(chunk StreamChunk) {
 // stores it as the emitting thread's `nextSteps` (per-thread state, like
 // goal/result). The root thread has no Y.Map of its own, so its plan lives on
 // conversation metadata; a sub-thread's plan lives on its own thread Y.Map.
-func (w *ConversationWorker) extractPlanTag() {
+func (r *run) extractPlanTag() {
 	const openTag = "<plan>"
 	const closeTag = "</plan>"
 
-	openIdx := strings.Index(w.turn.streaming.textContent, openTag)
+	openIdx := strings.Index(r.t.streaming.textContent, openTag)
 	if openIdx == -1 {
 		return
 	}
 
-	closeIdx := strings.Index(w.turn.streaming.textContent, closeTag)
+	closeIdx := strings.Index(r.t.streaming.textContent, closeTag)
 	if closeIdx == -1 {
 		return // Tag not yet closed (still streaming)
 	}
 
-	plan := strings.TrimSpace(w.turn.streaming.textContent[openIdx+len(openTag) : closeIdx])
+	plan := strings.TrimSpace(r.t.streaming.textContent[openIdx+len(openTag) : closeIdx])
 	if plan != "" {
 		// Per-thread: a sub-thread's plan lives on its own thread Y.Map so each
 		// column reads its own plan and concurrent threads never share one slot.
 		// The root thread has no Y.Map, so its plan lives on conversation metadata.
-		if w.turn.thread.itemID == "" {
-			w.doc.SetMetadata("nextSteps", plan)
+		if r.t.thread.itemID == "" {
+			r.doc.SetMetadata("nextSteps", plan)
 		} else {
-			w.doc.SetThreadField(w.turn.thread.itemID, "nextSteps", plan)
+			r.doc.SetThreadField(r.t.thread.itemID, "nextSteps", plan)
 		}
 	}
 }
 
-func (w *ConversationWorker) processThinkingChunk(chunk StreamChunk) {
+func (r *run) processThinkingChunk(chunk StreamChunk) {
 	// A thinking block's provider data (Anthropic signature, OpenAI reasoning
 	// item id + encrypted content) is known only once the block ends, so it
 	// arrives on a trailing contentless chunk. With no thinking block on screen
 	// there is nothing to attach it to: an item created for it would be empty,
 	// which renders as a blank tile and is dropped from the wire anyway
 	// (itemWireMessages emits nothing for contentless thinking). Let it go.
-	if chunk.Content == "" && len(chunk.Metadata) > 0 && w.turn.streaming.thinkingMsgID == "" {
+	if chunk.Content == "" && len(chunk.Metadata) > 0 && r.t.streaming.thinkingMsgID == "" {
 		return
 	}
 
 	// Finalize any active text streaming when thinking starts
-	if w.turn.streaming.textMsgID != "" && w.turn.streaming.thinkingMsgID == "" {
+	if r.t.streaming.textMsgID != "" && r.t.streaming.thinkingMsgID == "" {
 		// The text block is ending here, so this is the last chance to write
 		// whatever the throttle held back from it.
-		w.flushStreamingText()
-		w.turn.streaming.textMsgID = ""
+		r.flushStreamingText()
+		r.t.streaming.textMsgID = ""
 	}
 
 	// If starting a new thinking block (ID is empty), reset accumulated content
 	// This ensures each thinking block's content is tracked separately for duplicate detection
-	if w.turn.streaming.thinkingMsgID == "" {
-		w.resetStreamingThinking()
+	if r.t.streaming.thinkingMsgID == "" {
+		r.resetStreamingThinking()
 	}
 
 	// Accumulate content for this block
-	w.turn.streaming.thinkingContent += chunk.Content
+	r.t.streaming.thinkingContent += chunk.Content
 
 	// Create new message if needed
-	if w.turn.streaming.thinkingMsgID == "" {
-		w.turn.streaming.thinkingMsgID = generateItemID()
+	if r.t.streaming.thinkingMsgID == "" {
+		r.t.streaming.thinkingMsgID = generateItemID()
 		msg := ConversationItem{
 			Type:         ItemTypeThinking,
-			ItemID:       w.turn.streaming.thinkingMsgID,
-			Content:      w.turn.streaming.thinkingContent,
+			ItemID:       r.t.streaming.thinkingMsgID,
+			Content:      r.t.streaming.thinkingContent,
 			ProviderData: chunk.Metadata,
 			Timestamp:    time.Now().Format(time.RFC3339),
 		}
-		w.appendTargetMessage(msg)
+		r.appendTargetMessage(msg)
 		// The first write of a block is never throttled: the tile has to appear
 		// the moment the model starts reasoning.
-		w.turn.streaming.thinkingWrittenLen = len(w.turn.streaming.thinkingContent)
-		w.turn.streaming.lastThinkingWriteMs = time.Now().UnixMilli()
+		r.t.streaming.thinkingWrittenLen = len(r.t.streaming.thinkingContent)
+		r.t.streaming.lastThinkingWriteMs = time.Now().UnixMilli()
 		return
 	}
 
@@ -389,14 +389,14 @@ func (w *ConversationWorker) processThinkingChunk(chunk StreamChunk) {
 	// thought across a tool call. It rides a trailing chunk that ends the
 	// block, so the content goes in alongside it whatever the throttle says.
 	if len(chunk.Metadata) > 0 {
-		w.flushStreamingThinking()
-		_ = w.updateTargetItemByID(w.turn.streaming.thinkingMsgID, "providerData", chunk.Metadata)
+		r.flushStreamingThinking()
+		_ = r.updateTargetItemByID(r.t.streaming.thinkingMsgID, "providerData", chunk.Metadata)
 		return
 	}
 
-	if streamWriteDue(len(w.turn.streaming.thinkingContent), w.turn.streaming.thinkingWrittenLen,
-		w.turn.streaming.lastThinkingWriteMs, time.Now().UnixMilli()) {
-		w.writeStreamingThinking()
+	if streamWriteDue(len(r.t.streaming.thinkingContent), r.t.streaming.thinkingWrittenLen,
+		r.t.streaming.lastThinkingWriteMs, time.Now().UnixMilli()) {
+		r.writeStreamingThinking()
 	}
 }
 
@@ -473,12 +473,12 @@ const cacheMissNoticeLead = "Claude Code re-read the whole conversation instead 
 // undoing the turn takes the notice with it. The item is deliberately absent
 // from itemWireMessages: the model neither needs nor benefits from reading
 // about our caching.
-func (w *ConversationWorker) insertCacheMissNotice(reason string) {
-	if reason == "" || reason == w.lastCacheMissNotice {
+func (r *run) insertCacheMissNotice(reason string) {
+	if reason == "" || reason == r.t.lastCacheMissNotice {
 		return
 	}
-	w.lastCacheMissNotice = reason
-	w.appendTargetMessage(ConversationItem{
+	r.t.lastCacheMissNotice = reason
+	r.appendTargetMessage(ConversationItem{
 		Type:   ItemTypeNotice,
 		ItemID: generateItemID(),
 		// The summary is the row's entire label — the transcript shows a warning
@@ -500,16 +500,16 @@ func (w *ConversationWorker) insertCacheMissNotice(reason string) {
 // use a tier cannot use it on the next turn either, and a warning repeated on
 // every reply stops being information and becomes wallpaper. Once is the
 // honest count.
-func (w *ConversationWorker) insertProviderNotice(notice *StreamNotice) {
+func (r *run) insertProviderNotice(notice *StreamNotice) {
 	if notice == nil || notice.Summary == "" || notice.Content == "" {
 		return
 	}
 	key := notice.Summary + "\x00" + notice.Content
-	if key == w.lastProviderNotice {
+	if key == r.t.lastProviderNotice {
 		return
 	}
-	w.lastProviderNotice = key
-	w.appendTargetMessage(ConversationItem{
+	r.t.lastProviderNotice = key
+	r.appendTargetMessage(ConversationItem{
 		Type:      ItemTypeNotice,
 		ItemID:    generateItemID(),
 		Summary:   notice.Summary,
@@ -536,8 +536,8 @@ const truncationNoticeLead = "The model hit its output limit before it finished,
 // the same number that went on the wire as max_tokens — so the note explains
 // the limit the user can actually act on rather than a provider-side default
 // nobody here can see.
-func (w *ConversationWorker) insertTruncationNotice(response *LLMResponse) {
-	_, reserve := w.resolveContextWindow()
+func (r *run) insertTruncationNotice(response *LLMResponse) {
+	_, reserve := r.resolveContextWindow()
 
 	var detail strings.Builder
 	detail.WriteString(truncationNoticeLead)
@@ -561,10 +561,10 @@ func (w *ConversationWorker) insertTruncationNotice(response *LLMResponse) {
 		"that is what shrank this reply.")
 
 	source := ""
-	if mc := w.resolveModelConfig(); mc != nil {
+	if mc := r.resolveModelConfig(); mc != nil {
 		source = mc.Provider
 	}
-	w.appendTargetMessage(ConversationItem{
+	r.appendTargetMessage(ConversationItem{
 		Type:      ItemTypeNotice,
 		ItemID:    generateItemID(),
 		Summary:   "Reply cut off",
@@ -574,32 +574,32 @@ func (w *ConversationWorker) insertTruncationNotice(response *LLMResponse) {
 	})
 }
 
-func (w *ConversationWorker) finalizeStreaming() {
+func (r *run) finalizeStreaming() {
 	// Both blocks end here, and clearing the IDs makes their accumulated content
 	// unreachable — so anything the throttle held back goes in first. This is
 	// the flush point for a tool_use or provider-state chunk arriving mid-turn
 	// and for every strategy-loop iteration boundary.
-	w.flushPendingStreamWrites()
+	r.flushPendingStreamWrites()
 
 	// Only clear IDs, not content - content is used for duplicate detection in processLLMResponse
-	w.turn.streaming.textMsgID = ""
-	w.turn.streaming.thinkingMsgID = ""
+	r.t.streaming.textMsgID = ""
+	r.t.streaming.thinkingMsgID = ""
 }
 
 // partialCancelledResponse assembles whatever text/thinking content was mid-stream
 // when the user cancelled, so the transaction blob records the truncated output.
 // Returns nil if nothing had been emitted yet.
-func (w *ConversationWorker) partialCancelledResponse() *LLMResponse {
+func (r *run) partialCancelledResponse() *LLMResponse {
 	// The blob and the transcript must show the same truncated output, so the
 	// document catches up with the accumulated content before it is read off.
-	w.flushPendingStreamWrites()
+	r.flushPendingStreamWrites()
 
 	var blocks []LLMResponseBlock
-	if w.turn.streaming.thinkingContent != "" {
-		blocks = append(blocks, LLMResponseBlock{Type: provider.ContentBlockTypeThinking, Thinking: w.turn.streaming.thinkingContent})
+	if r.t.streaming.thinkingContent != "" {
+		blocks = append(blocks, LLMResponseBlock{Type: provider.ContentBlockTypeThinking, Thinking: r.t.streaming.thinkingContent})
 	}
-	if w.turn.streaming.textContent != "" {
-		blocks = append(blocks, LLMResponseBlock{Type: provider.ContentBlockTypeText, Content: w.turn.streaming.textContent})
+	if r.t.streaming.textContent != "" {
+		blocks = append(blocks, LLMResponseBlock{Type: provider.ContentBlockTypeText, Content: r.t.streaming.textContent})
 	}
 	return &LLMResponse{StopReason: "cancelled", Blocks: blocks}
 }
@@ -607,19 +607,19 @@ func (w *ConversationWorker) partialCancelledResponse() *LLMResponse {
 // waitForLLMResponse waits for an LLM response while processing stream chunks
 // and handling cancel messages. Stream chunks arrive on a dedicated channel
 // and are coalesced before Yjs updates to minimize transaction overhead.
-func (w *ConversationWorker) waitForLLMResponse(turnID string, timeout time.Duration) (*LLMResponse, error) {
+func (r *run) waitForLLMResponse(turnID string, timeout time.Duration) (*LLMResponse, error) {
 	// Every exit from the wait — response, cancel, timeout, worker stop, panic —
 	// ends the streamed blocks, so the document catches up here rather than at
 	// each return. The flush is a direct write, never a wait on the throttle
 	// window, so a finished stream still completes immediately.
-	defer w.flushPendingStreamWrites()
+	defer r.flushPendingStreamWrites()
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
 	for {
 		select {
-		case result := <-w.turn.responseChan:
+		case result := <-r.t.responseChan:
 			if result.TurnID != turnID {
 				continue
 			}
@@ -627,9 +627,9 @@ func (w *ConversationWorker) waitForLLMResponse(turnID string, timeout time.Dura
 			// carrying another generation are stale and are discarded.
 			for {
 				select {
-				case chunk := <-w.streamChunkChan:
+				case chunk := <-r.streamChunkChan:
 					if chunk.TurnID == turnID {
-						w.processStreamChunk(chunk)
+						r.processStreamChunk(chunk)
 					}
 				default:
 					if result.Err != nil {
@@ -638,26 +638,26 @@ func (w *ConversationWorker) waitForLLMResponse(turnID string, timeout time.Dura
 					return result.Response, nil
 				}
 			}
-		case chunk := <-w.streamChunkChan:
-			w.processCoalescedStreamChunks(turnID, chunk)
-		case msg := <-w.inbound:
-			w.handleMessageInWait(msg)
-			if w.loadState() == StateCancelling {
+		case chunk := <-r.streamChunkChan:
+			r.processCoalescedStreamChunks(turnID, chunk)
+		case msg := <-r.inbound:
+			r.handleMessageInWait(msg)
+			if r.loadState() == StateCancelling {
 				return nil, ErrCancelled
 			}
-		case <-w.doc.UpdateSignal():
-			w.batcher.Schedule()
-		case <-w.batcher.TimerChan():
-			w.batcher.Flush()
-		case <-w.livenessC():
+		case <-r.doc.UpdateSignal():
+			r.batcher.Schedule()
+		case <-r.batcher.TimerChan():
+			r.batcher.Flush()
+		case <-r.livenessC():
 			// A machine freeze (sleep, hibernate, host suspend) during the LLM
 			// call would otherwise inflate the elapsed digit by the frozen span;
 			// service the detector here too so it self-corrects within a tick of
 			// the process resuming, without waiting for the call to return.
-			w.detectFrozenGap()
+			r.detectFrozenGap()
 		case <-timer.C:
 			return nil, fmt.Errorf("LLM request timed out")
-		case <-w.done:
+		case <-r.done:
 			return nil, fmt.Errorf("worker stopped")
 		}
 	}
@@ -665,7 +665,7 @@ func (w *ConversationWorker) waitForLLMResponse(turnID string, timeout time.Dura
 
 // waitForContextAndTools waits on the private channels registered for this pair.
 // A nil context channel means only the tools response is required.
-func (w *ConversationWorker) waitForContextAndTools(timeout time.Duration, contextReply, toolsReply <-chan json.RawMessage) (json.RawMessage, json.RawMessage, error) {
+func (r *run) waitForContextAndTools(timeout time.Duration, contextReply, toolsReply <-chan json.RawMessage) (json.RawMessage, json.RawMessage, error) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
@@ -687,17 +687,17 @@ func (w *ConversationWorker) waitForContextAndTools(timeout time.Duration, conte
 		select {
 		case contextResult = <-ctxChan:
 		case toolsResult = <-toolsChan:
-		case msg := <-w.inbound:
-			w.handleMessageInWait(msg)
-			if w.loadState() == StateCancelling {
+		case msg := <-r.inbound:
+			r.handleMessageInWait(msg)
+			if r.loadState() == StateCancelling {
 				return nil, nil, ErrCancelled
 			}
-		case <-w.doc.UpdateSignal():
-			w.batcher.Schedule()
-		case <-w.batcher.TimerChan():
-			w.batcher.Flush()
-		case <-w.livenessC():
-			w.detectFrozenGap()
+		case <-r.doc.UpdateSignal():
+			r.batcher.Schedule()
+		case <-r.batcher.TimerChan():
+			r.batcher.Flush()
+		case <-r.livenessC():
+			r.detectFrozenGap()
 		case <-timer.C:
 			// Report which half never answered — the context reply is engine-only
 			// (single responder), so a wedge is almost always the context side.
@@ -710,7 +710,7 @@ func (w *ConversationWorker) waitForContextAndTools(timeout time.Duration, conte
 				missing = append(missing, "tools")
 			}
 			return nil, nil, fmt.Errorf("context/tools request timed out after %s (no %s response)", timeout, strings.Join(missing, "+"))
-		case <-w.done:
+		case <-r.done:
 			return nil, nil, fmt.Errorf("worker stopped")
 		}
 	}
@@ -768,10 +768,10 @@ type RetryWaitResult struct {
 
 // waitForRetryDelay parks for d while processing worker messages (cancel,
 // send-message, Yjs updates).
-func (w *ConversationWorker) waitForRetryDelay(d time.Duration) RetryWaitResult {
+func (r *run) waitForRetryDelay(d time.Duration) RetryWaitResult {
 	// Chunks from the attempt that just failed can still be draining into the
 	// throttle; whichever way the wait ends, the document catches up with them.
-	defer w.flushPendingStreamWrites()
+	defer r.flushPendingStreamWrites()
 
 	timer := time.NewTimer(d)
 	defer timer.Stop()
@@ -781,32 +781,32 @@ func (w *ConversationWorker) waitForRetryDelay(d time.Duration) RetryWaitResult 
 		case <-timer.C:
 			return RetryWaitResult{}
 
-		case msg := <-w.inbound:
+		case msg := <-r.inbound:
 			switch msg.Type {
 			case "cancel":
-				w.logCancel(cancelReasonFromPayload(msg.Payload))
-				if p := w.turn.cancelLLM.Swap(nil); p != nil {
+				r.logCancel(cancelReasonFromPayload(msg.Payload))
+				if p := r.t.cancelLLM.Swap(nil); p != nil {
 					(*p)()
 				}
-				w.storeState(StateCancelling)
+				r.storeState(StateCancelling)
 				return RetryWaitResult{Cancelled: true}
 
 			case "send-message":
 				// Only redirect when no tokens have streamed yet (pure retry — no partial response).
-				if w.turn.streaming.textContent == "" && w.turn.streaming.thinkingContent == "" {
+				if r.t.streaming.textContent == "" && r.t.streaming.thinkingContent == "" {
 					var sm SendMessageMessage
 					if err := json.Unmarshal(msg.Payload, &sm); err == nil {
 						if input := sm.UserInput(); !input.isEmpty() {
-							if sm.ThreadItemID != w.turn.thread.itemID {
-								w.turn.thread.itemID = sm.ThreadItemID
+							if sm.ThreadItemID != r.t.thread.itemID {
+								r.t.thread.itemID = sm.ThreadItemID
 								if sm.ThreadItemID != "" {
-									w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(sm.ThreadItemID)
+									r.t.thread.itemsArray = r.doc.GetThreadItemsArray(sm.ThreadItemID)
 								} else {
-									w.turn.thread.itemsArray = nil
+									r.t.thread.itemsArray = nil
 								}
 							}
-							w.addUserMessage(input)
-							w.batcher.Flush()
+							r.addUserMessage(input)
+							r.batcher.Flush()
 							return RetryWaitResult{NewMessage: true}
 						}
 					}
@@ -814,19 +814,19 @@ func (w *ConversationWorker) waitForRetryDelay(d time.Duration) RetryWaitResult 
 				// Has partial streamed tokens — composer should still be locked; ignore.
 
 			default:
-				w.handleMessageInWait(msg)
-				if w.loadState() == StateCancelling {
+				r.handleMessageInWait(msg)
+				if r.loadState() == StateCancelling {
 					return RetryWaitResult{Cancelled: true}
 				}
 			}
 
-		case chunk := <-w.streamChunkChan:
-			w.processCoalescedStreamChunks(w.turn.llmTurnID, chunk)
-		case <-w.doc.UpdateSignal():
-			w.batcher.Schedule()
-		case <-w.batcher.TimerChan():
-			w.batcher.Flush()
-		case <-w.done:
+		case chunk := <-r.streamChunkChan:
+			r.processCoalescedStreamChunks(r.t.llmTurnID, chunk)
+		case <-r.doc.UpdateSignal():
+			r.batcher.Schedule()
+		case <-r.batcher.TimerChan():
+			r.batcher.Flush()
+		case <-r.done:
 			return RetryWaitResult{Cancelled: true}
 		}
 	}

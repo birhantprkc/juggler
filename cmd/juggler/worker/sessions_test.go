@@ -160,7 +160,7 @@ func TestCreateThreadSessionResumesSameThread(t *testing.T) {
 		}
 	}()
 
-	w.runStrategyLoop("Investigate auth", false)
+	w.currentRun().runStrategyLoop("Investigate auth", false)
 
 	thread := onlyThread(t, w)
 	if thread.SessionName != "hunt" {
@@ -246,7 +246,7 @@ func TestCreateThreadSessionResumesSameThread(t *testing.T) {
 
 	// The parent sees two separately-paired calls, each answered by its own run
 	// and headed by the handle it can call again.
-	results := toolResultContents(w.buildMessages(nil))
+	results := toolResultContents(w.currentRun().buildMessages(nil))
 	if got := results["tu-1"]; !strings.HasPrefix(got, "hunt · new") || !strings.Contains(got, "Auth lives in auth.go.") {
 		t.Errorf("first tool_result = %q, want the new-session preamble and run 1's reply", got)
 	}
@@ -281,12 +281,12 @@ func TestSessionBusyIsRefused(t *testing.T) {
 	w.storeState(StateProcessing)
 	w.doc.ensureItems()
 
-	if err := w.executeCreateThread("tu-1", "create_thread",
+	if err := w.currentRun().executeCreateThread("tu-1", "create_thread",
 		json.RawMessage(`{"goal":"Dig","prompt":"Start digging","session":"hunt"}`)); err != nil {
 		t.Fatalf("first create_thread: %v", err)
 	}
 	// The child has not run, so its session is busy.
-	if err := w.executeCreateThread("tu-2", "create_thread",
+	if err := w.currentRun().executeCreateThread("tu-2", "create_thread",
 		json.RawMessage(`{"goal":"Dig","prompt":"Anything yet?","session":"hunt"}`)); err != nil {
 		t.Fatalf("second create_thread: %v", err)
 	}
@@ -320,12 +320,12 @@ func TestSessionIsNotHijackedByAnotherTool(t *testing.T) {
 	w.storeState(StateProcessing)
 	w.doc.ensureItems()
 
-	if err := w.executeCreateThread("tu-1", "create_thread",
+	if err := w.currentRun().executeCreateThread("tu-1", "create_thread",
 		json.RawMessage(`{"goal":"Dig","prompt":"Start digging","session":"hunt"}`)); err != nil {
 		t.Fatalf("create_thread: %v", err)
 	}
 
-	got := w.resolveSession("WebFetch", "hunt")
+	got := w.currentRun().resolveSession("WebFetch", "hunt")
 	if got.resumeThreadID != "" {
 		t.Errorf("another tool's session must not resolve as resumable; got %+v", got)
 	}
@@ -338,7 +338,7 @@ func TestSessionIsNotHijackedByAnotherTool(t *testing.T) {
 
 	// The owning tool, on the other hand, finds it — and reports it busy,
 	// because that first run has not been driven.
-	if own := w.resolveSession("create_thread", "hunt"); !own.busy {
+	if own := w.currentRun().resolveSession("create_thread", "hunt"); !own.busy {
 		t.Errorf("the owning tool must resolve its own session; got %+v", own)
 	}
 }

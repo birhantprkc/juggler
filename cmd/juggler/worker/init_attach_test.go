@@ -96,8 +96,8 @@ func sawYjsSync(mc *msgChan) bool {
 func startAttachableWorker(t *testing.T) (*ConversationWorker, *ConversationDocument) {
 	t.Helper()
 	w := NewConversationWorker("conv-attach", "user:test")
-	w.Start(context.Background())
-	t.Cleanup(w.Stop)
+	w.currentRun().Start(context.Background())
+	t.Cleanup(w.currentRun().Stop)
 
 	if err := w.SendAndWait(context.Background(), "init", initPayload(t, "conv-attach", nil)); err != nil {
 		t.Fatalf("first init failed: %v", err)

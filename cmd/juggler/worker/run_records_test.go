@@ -237,7 +237,7 @@ func TestSettleThreadRunStampsTheInvocationMessage(t *testing.T) {
 	threadID := insertThreadWithOpts(w, threadOpts{goal: "Work", userMessage: "do it"})
 	w.turn.thread.itemID = threadID
 	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
-	w.appendTargetMessage(ConversationItem{
+	w.currentRun().appendTargetMessage(ConversationItem{
 		Type: ItemTypeAssistant, ItemID: generateItemID(), Content: "All done.",
 	})
 
@@ -251,7 +251,7 @@ func TestSettleThreadRunStampsTheInvocationMessage(t *testing.T) {
 	}
 
 	// A second settle finds no open run and leaves the record alone.
-	w.appendTargetMessage(ConversationItem{
+	w.currentRun().appendTargetMessage(ConversationItem{
 		Type: ItemTypeAssistant, ItemID: generateItemID(), Content: "Something later.",
 	})
 	w.settleThreadRun(threadID, false)
@@ -287,14 +287,14 @@ func TestRunWithNothingToStampStillReports(t *testing.T) {
 			threadID := insertThreadWithOpts(w, threadOpts{goal: "Work", llmCreated: true})
 			w.turn.thread.itemID = threadID
 			w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
-			w.appendTargetMessage(tc.trailing)
+			w.currentRun().appendTargetMessage(tc.trailing)
 
 			w.settleThreadRun(threadID, tc.cancelled)
 
 			if result, _ := w.doc.GetThreadYMap(threadID).Get("result").(string); result == "" {
 				t.Fatalf("the run reported nothing anywhere — its caller waits on a run that can never report")
 			}
-			w.resetThreadContext()
+			w.currentRun().resetThreadContext()
 			items := append([]ConversationItem{{Type: ItemTypeUser, Content: "start"}}, w.doc.GetItems()...)
 			if action := decideNextAction(items, ActivityAwaitingLLM, true, false); action != ActionCallLLM {
 				t.Errorf("action = %q, want %q — a parked caller must resume", action, ActionCallLLM)
@@ -345,7 +345,7 @@ func TestInterjectedMessageDoesNotStrandTheRun(t *testing.T) {
 	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
 
 	appendItem := func(item ConversationItem) {
-		w.appendTargetMessage(item)
+		w.currentRun().appendTargetMessage(item)
 	}
 	appendItem(ConversationItem{
 		Type: ItemTypeUser, ItemID: "inv-1", Content: "find the auth bug",
@@ -442,7 +442,7 @@ func TestTrailingItemShowsTheResumedRun(t *testing.T) {
 	w.doc.ensureItems()
 	w.storeState(StateProcessing)
 
-	threadID, err := w.createThread(CreateThreadOptions{
+	threadID, err := w.currentRun().createThread(CreateThreadOptions{
 		Goal:      "map auth",
 		Prompt:    "find the auth flow",
 		ToolUseID: "tu-1",
@@ -456,7 +456,7 @@ func TestTrailingItemShowsTheResumedRun(t *testing.T) {
 	w.turn.thread.itemID = threadID
 	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
 	appendItem := func(item ConversationItem) {
-		w.appendTargetMessage(item)
+		w.currentRun().appendTargetMessage(item)
 	}
 
 	// The call is stopped partway.
@@ -464,7 +464,7 @@ func TestTrailingItemShowsTheResumedRun(t *testing.T) {
 	w.settleThreadRun(threadID, true)
 
 	callWire := func() (settled bool, toolUseID, content string) {
-		w.resetThreadContext()
+		w.currentRun().resetThreadContext()
 		items := w.doc.GetItems()
 		var thread ConversationItem
 		for _, it := range items {
@@ -537,7 +537,7 @@ func TestAnsweredCallGetsAReceiptNotARewrite(t *testing.T) {
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.storeState(StateProcessing)
 
-	threadID, err := w.createThread(CreateThreadOptions{
+	threadID, err := w.currentRun().createThread(CreateThreadOptions{
 		Goal: "map auth", Prompt: "find the auth flow", ToolUseID: "tu-1",
 		ToolName: "Explore", ToolInput: json.RawMessage(`{"prompt":"find the auth flow"}`), Delegated: true,
 	})
@@ -547,15 +547,15 @@ func TestAnsweredCallGetsAReceiptNotARewrite(t *testing.T) {
 	inChild := func(item ConversationItem) {
 		w.turn.thread.itemID = threadID
 		w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
-		w.appendTargetMessage(item)
-		w.resetThreadContext()
+		w.currentRun().appendTargetMessage(item)
+		w.currentRun().resetThreadContext()
 	}
 
 	inChild(ConversationItem{Type: ItemTypeAssistant, ItemID: "a-1", Content: "Auth lives in auth.go."})
 	w.settleThreadRun(threadID, false)
 
 	// The parent reads the answer. From here it is committed history.
-	before := w.buildMessages(nil)
+	before := w.currentRun().buildMessages(nil)
 	wireBefore, err := json.Marshal(before)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -566,7 +566,7 @@ func TestAnsweredCallGetsAReceiptNotARewrite(t *testing.T) {
 	inChild(ConversationItem{Type: ItemTypeAssistant, ItemID: "a-2", Content: "The router calls it."})
 	w.settleThreadRun(threadID, false)
 
-	after := w.buildMessages(nil)
+	after := w.currentRun().buildMessages(nil)
 	if len(after) != len(before)+1 {
 		t.Fatalf("a resume of an answered call must add exactly one message, got %d against %d:\n%v",
 			len(after), len(before), after)
@@ -610,7 +610,7 @@ func TestUnreadReceiptCoalescesTheNextRun(t *testing.T) {
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.storeState(StateProcessing)
 
-	threadID, err := w.createThread(CreateThreadOptions{
+	threadID, err := w.currentRun().createThread(CreateThreadOptions{
 		Goal: "map auth", Prompt: "find the auth flow", ToolUseID: "tu-1",
 		ToolName: "Explore", ToolInput: json.RawMessage(`{"prompt":"find the auth flow"}`), Delegated: true,
 	})
@@ -620,13 +620,13 @@ func TestUnreadReceiptCoalescesTheNextRun(t *testing.T) {
 	inChild := func(item ConversationItem) {
 		w.turn.thread.itemID = threadID
 		w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
-		w.appendTargetMessage(item)
-		w.resetThreadContext()
+		w.currentRun().appendTargetMessage(item)
+		w.currentRun().resetThreadContext()
 	}
 
 	inChild(ConversationItem{Type: ItemTypeAssistant, ItemID: "a-1", Content: "Auth lives in auth.go."})
 	w.settleThreadRun(threadID, false)
-	answered := w.buildMessages(nil) // the parent reads the call's answer
+	answered := w.currentRun().buildMessages(nil) // the parent reads the call's answer
 
 	// Two more runs, with nothing read in between.
 	inChild(ConversationItem{Type: ItemTypeUser, ItemID: "human-1", Content: "who calls it?"})
@@ -650,7 +650,7 @@ func TestUnreadReceiptCoalescesTheNextRun(t *testing.T) {
 		t.Errorf("the receipt must have followed the session to its latest run, selects %q", last.RunItemID)
 	}
 
-	got := w.buildMessages(nil)
+	got := w.currentRun().buildMessages(nil)
 	if len(got) != len(answered)+1 {
 		t.Fatalf("two unread runs must cost the parent one message, got %d against %d", len(got), len(answered))
 	}
@@ -675,7 +675,7 @@ func TestIdenticalRunGetsNoSecondReceipt(t *testing.T) {
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.storeState(StateProcessing)
 
-	threadID, err := w.createThread(CreateThreadOptions{
+	threadID, err := w.currentRun().createThread(CreateThreadOptions{
 		Goal: "map auth", Prompt: "find the auth flow", ToolUseID: "tu-1",
 		ToolName: "Explore", ToolInput: json.RawMessage(`{"prompt":"find the auth flow"}`), Delegated: true,
 	})
@@ -685,14 +685,14 @@ func TestIdenticalRunGetsNoSecondReceipt(t *testing.T) {
 	inChild := func(item ConversationItem) {
 		w.turn.thread.itemID = threadID
 		w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
-		w.appendTargetMessage(item)
-		w.resetThreadContext()
+		w.currentRun().appendTargetMessage(item)
+		w.currentRun().resetThreadContext()
 	}
 
 	// The call is stopped having produced nothing, and the parent reads that.
 	// From here it is committed history.
 	w.settleThreadRun(threadID, true)
-	w.buildMessages(nil)
+	w.currentRun().buildMessages(nil)
 	before := w.doc.GetItems()
 
 	// A human picks the child back up and it stops the same way again, so this
@@ -732,7 +732,7 @@ func TestContinueMovesOnlyTheTrailingSessionItem(t *testing.T) {
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.storeState(StateProcessing)
 
-	threadID, err := w.createThread(CreateThreadOptions{
+	threadID, err := w.currentRun().createThread(CreateThreadOptions{
 		Goal: "map auth", Prompt: "find the auth flow", ToolUseID: "tu-1",
 		ToolName: "Explore", ToolInput: json.RawMessage(`{"prompt":"find the auth flow"}`), Delegated: true,
 	})
@@ -741,13 +741,13 @@ func TestContinueMovesOnlyTheTrailingSessionItem(t *testing.T) {
 	}
 	w.turn.thread.itemID = threadID
 	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
-	w.appendTargetMessage(ConversationItem{
+	w.currentRun().appendTargetMessage(ConversationItem{
 		Type: ItemTypeAssistant, ItemID: "a-1", Content: "Auth lives in auth.go.",
 	})
 	w.settleThreadRun(threadID, false)
 
-	w.resetThreadContext()
-	if err := w.resumeSession(threadID, CreateThreadOptions{
+	w.currentRun().resetThreadContext()
+	if err := w.currentRun().resumeSession(threadID, CreateThreadOptions{
 		Goal: "trace callers", Prompt: "who calls it?", ToolUseID: "tu-2",
 		ToolName: "Explore", ToolInput: json.RawMessage(`{"prompt":"who calls it?"}`), Delegated: true,
 	}); err != nil {
@@ -787,7 +787,7 @@ func TestContinueMovesOnlyTheTrailingSessionItem(t *testing.T) {
 
 	w.turn.thread.itemID = threadID
 	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
-	w.appendTargetMessage(ConversationItem{
+	w.currentRun().appendTargetMessage(ConversationItem{
 		Type: ItemTypeAssistant, ItemID: "a-2", Content: "The router calls it.",
 	})
 	w.settleThreadRun(threadID, false)
@@ -813,7 +813,7 @@ func TestContinueAfterTheCallWasAnsweredLeavesItAlone(t *testing.T) {
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.storeState(StateProcessing)
 
-	threadID, err := w.createThread(CreateThreadOptions{
+	threadID, err := w.currentRun().createThread(CreateThreadOptions{
 		Goal: "map auth", Prompt: "find the auth flow", ToolUseID: "tu-1",
 		ToolName: "Explore", ToolInput: json.RawMessage(`{"prompt":"find the auth flow"}`), Delegated: true,
 	})
@@ -823,22 +823,22 @@ func TestContinueAfterTheCallWasAnsweredLeavesItAlone(t *testing.T) {
 	inChild := func(item ConversationItem) {
 		w.turn.thread.itemID = threadID
 		w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
-		w.appendTargetMessage(item)
-		w.resetThreadContext()
+		w.currentRun().appendTargetMessage(item)
+		w.currentRun().resetThreadContext()
 	}
 
 	inChild(ConversationItem{Type: ItemTypeAssistant, ItemID: "a-1", Content: "Auth lives in auth.go."})
 	w.settleThreadRun(threadID, false)
 
-	answered := w.buildMessages(nil) // the parent reads the call's answer
+	answered := w.currentRun().buildMessages(nil) // the parent reads the call's answer
 	wireBefore := mustJSON(t, answered)
 
 	// Continue, with nothing typed.
 	w.storeState(StateIdle)
 	sendMsg(t, w, SendMessageMessage{ThreadItemID: threadID, IsContinuation: true})
-	w.resetThreadContext()
+	w.currentRun().resetThreadContext()
 
-	if got := mustJSON(t, w.buildMessages(nil)); got != wireBefore {
+	if got := mustJSON(t, w.currentRun().buildMessages(nil)); got != wireBefore {
 		t.Fatalf("clicking Continue moved the answer the parent had already read:\nbefore %s\nafter  %s",
 			wireBefore, got)
 	}
@@ -858,7 +858,7 @@ func TestContinueAfterTheCallWasAnsweredLeavesItAlone(t *testing.T) {
 	inChild(ConversationItem{Type: ItemTypeAssistant, ItemID: "a-2", Content: "The router calls it."})
 	w.settleThreadRun(threadID, false)
 
-	after := w.buildMessages(nil)
+	after := w.currentRun().buildMessages(nil)
 	if len(after) != len(answered)+1 {
 		t.Fatalf("the continued run must add exactly one message, got %d against %d", len(after), len(answered))
 	}

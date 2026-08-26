@@ -197,7 +197,7 @@ func splitCompleteLines(s string) (lines []string, rest string) {
 // when idle. Mirrors handleSendMessage's intake so injected messages behave
 // exactly like a typed-while-busy / typed-while-idle user message. Generic —
 // any worker-internal producer can use it.
-func (w *ConversationWorker) handleInjectThreadMessage(payload json.RawMessage) {
+func (r *run) handleInjectThreadMessage(payload json.RawMessage) {
 	var msg injectThreadMessageMsg
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return
@@ -215,31 +215,31 @@ func (w *ConversationWorker) handleInjectThreadMessage(payload json.RawMessage) 
 	}
 
 	// Busy: queue it; the strategy loop drains at its next boundary.
-	if w.getActivity() != ActivityNone || w.loadState() != StateIdle {
-		w.enqueuePendingMessage(msg.ThreadItemID, input)
+	if r.getActivity() != ActivityNone || r.loadState() != StateIdle {
+		r.enqueuePendingMessage(msg.ThreadItemID, input)
 		return
 	}
 
 	// Idle: target the thread and add the message, then drive a fresh turn.
-	w.turn.thread.itemID = msg.ThreadItemID
+	r.t.thread.itemID = msg.ThreadItemID
 	if msg.ThreadItemID != "" {
-		itemsArray := w.doc.GetThreadItemsArray(msg.ThreadItemID)
+		itemsArray := r.doc.GetThreadItemsArray(msg.ThreadItemID)
 		if itemsArray == nil {
 			return // thread vanished — drop the event
 		}
-		w.turn.thread.itemsArray = itemsArray
+		r.t.thread.itemsArray = itemsArray
 	} else {
-		w.turn.thread.itemsArray = nil
+		r.t.thread.itemsArray = nil
 	}
-	w.addUserMessage(input)
-	w.batcher.Flush()
-	w.handleItemsChange()
+	r.addUserMessage(input)
+	r.batcher.Flush()
+	r.handleItemsChange()
 
 	// Claim the LLM and ask the reducer to dispatch — the same two-step
 	// handleSendMessage uses. handleItemsChange alone reconciles state but does
 	// not start a turn; without this the injected message would sit unanswered.
-	w.requestLLM(msg.ThreadItemID)
-	w.needsReconcile = true
+	r.requestLLM(msg.ThreadItemID)
+	r.needsReconcile = true
 }
 
 // handleDeliveryEnded finalizes a pump that has stopped: drop its handle and

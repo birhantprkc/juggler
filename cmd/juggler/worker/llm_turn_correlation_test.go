@@ -21,7 +21,7 @@ func TestWaitForLLMResponseRejectsStaleAttemptResult(t *testing.T) {
 		w.turn.responseChan <- llmCallResult{TurnID: "current", Response: want}
 	}()
 
-	got, err := w.waitForLLMResponse("current", time.Second)
+	got, err := w.currentRun().waitForLLMResponse("current", time.Second)
 	if err != nil {
 		t.Fatalf("waitForLLMResponse: %v", err)
 	}
@@ -35,12 +35,12 @@ func TestCoalescedStreamRejectsStaleAttemptChunks(t *testing.T) {
 	t.Cleanup(func() { w.doc.Destroy() })
 
 	w.streamChunkChan <- StreamChunk{TurnID: "current", Type: provider.ContentBlockTypeText, Content: "current"}
-	w.processCoalescedStreamChunks("current", StreamChunk{
+	w.currentRun().processCoalescedStreamChunks("current", StreamChunk{
 		TurnID:  "stale",
 		Type:    provider.ContentBlockTypeText,
 		Content: "stale",
 	})
-	w.flushPendingStreamWrites()
+	w.currentRun().flushPendingStreamWrites()
 
 	items := w.doc.GetItems()
 	if len(items) != 1 || items[0].Content != "current" {
@@ -58,10 +58,10 @@ func TestMockLLMUsesFreshAttemptGeneration(t *testing.T) {
 
 	var generations []string
 	sink := func(chunk StreamChunk) { generations = append(generations, chunk.TurnID) }
-	if _, err := w.callLLMWithSink(nil, sink); err != nil {
+	if _, err := w.currentRun().callLLMWithSink(nil, sink); err != nil {
 		t.Fatalf("first mock call: %v", err)
 	}
-	if _, err := w.callLLMWithSink(nil, sink); err != nil {
+	if _, err := w.currentRun().callLLMWithSink(nil, sink); err != nil {
 		t.Fatalf("second mock call: %v", err)
 	}
 

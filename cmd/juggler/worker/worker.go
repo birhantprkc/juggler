@@ -55,27 +55,6 @@ type threadContext struct {
 // updateApprovalWaitAnchor, detectFrozenGap); this gives them their own home.
 // Run goroutine only.
 type elapsedAnchor struct {
-	// processingStartedAt is the single anchor every client renders the spinner's
-	// elapsed digit against (mirrored into processingState.startedAt). The whole
-	// timer is just this one number: clients show `now - startedAt`, or nothing
-	// when it is absent. It is TURN-scoped (set once when a turn begins from idle,
-	// preserved across re-dispatches so the digit spans the whole turn, 0 = idle)
-	// and it is pushed FORWARD by each approval wait (see updateApprovalWaitAnchor)
-	// so the deliberation at a prompt is excluded from active-work time. The
-	// deduction is computed from in-memory state alone — no second doc field.
-	processingStartedAt int64
-	// approvalWaitStartedAt is the wall-clock millis at which the current turn
-	// parked PURELY on a human approval (a tool awaiting manual approval, nothing
-	// executing); 0 when not parked. It is in-memory turn bookkeeping, never
-	// persisted. On the resume edge the worker advances processingStartedAt by
-	// (now - approvalWaitStartedAt) so the wait is excluded. While parked the
-	// startedAt field is removed from the doc, so clients show no elapsed digit.
-	approvalWaitStartedAt int64
-	// wasBlockedOnApprovals is the previous reconcile tick's blockedOnlyByApprovals()
-	// value, so updateApprovalWaitAnchor can detect the park/resume edges. Auto-
-	// approved tools go Unevaluated→Approved without ever sitting pending, so this
-	// never goes true for them and their timer is left running untouched.
-	wasBlockedOnApprovals bool
 	// livenessTicker fires ~every livenessInterval while run() executes, giving
 	// detectFrozenGap a heartbeat. There is no OS event for "the wall clock jumped
 	// while we weren't running", so the only way to notice a suspended process is to
@@ -361,29 +340,6 @@ type ConversationWorker struct {
 	// itself refcounts across multiple workers concurrently busy.
 	activityAsserted bool
 
-	// lastProgressWriteMs throttles the rate at which mid-stream "progress"
-	// chunks update processingState.outputTokens. Without it every text
-	// delta would trigger a Yjs metadata write + broadcast + observer fire
-	// on every peer. Zeroed at idle transitions.
-	lastProgressWriteMs int64
-
-	// lastCacheMissNotice is the reason of the cache-miss notice most recently
-	// inserted into the transcript, so a provider that repeats the same status
-	// chunk within one turn leaves one notice rather than a column of identical
-	// ones. Two DIFFERENT reasons in a turn are two genuine events and both get
-	// an item. Cleared at idle transitions, so the same reason next turn is
-	// reported again.
-	lastCacheMissNotice string
-
-	// lastProviderNotice is the summary+content of the provider-composed notice
-	// most recently inserted. Unlike lastCacheMissNotice it is deliberately NOT
-	// cleared at idle: a cache miss is a per-turn event worth reporting each
-	// time it recurs, whereas the conditions behind these notices persist across
-	// turns (a plan that cannot use a serving tier still cannot use it on the
-	// next turn), so repeating one every reply would bury the transcript in
-	// identical warnings.
-	lastProviderNotice string
-
 	// turnCounter is incremented on every transition to idle. It is written
 	// into the durable `completedTurns` metadata key (NOT the ephemeral
 	// processingState blob) so the browser (and test harness) can observe that
@@ -546,18 +502,18 @@ func (w *ConversationWorker) SetSyncThrottle(d time.Duration) {
 }
 
 // Start begins the worker's message processing loop.
-func (w *ConversationWorker) Start(ctx context.Context) {
-	go w.run(ctx)
+func (r *run) Start(ctx context.Context) {
+	go r.run(ctx)
 }
 
-func (w *ConversationWorker) Stop() {
+func (r *run) Stop() {
 	// Cancel any in-flight LLM call first so waitForLLMResponse returns
 	// promptly instead of parking on the LLMTimeout backstop.
-	if p := w.turn.cancelLLM.Load(); p != nil {
+	if p := r.t.cancelLLM.Load(); p != nil {
 		(*p)()
 	}
-	close(w.done)
-	<-w.stopped
+	close(r.done)
+	<-r.stopped
 }
 
 // StopForRemoval tears the worker down when its conversation is being removed
@@ -574,11 +530,11 @@ func (w *ConversationWorker) Stop() {
 // warm-preserving (handleCancel uses the same hook) — moot for a permanent
 // delete and harmless for a bin, where the resume anchor survives — and a no-op
 // when no provider session exists.
-func (w *ConversationWorker) StopForRemoval() {
-	if w.cancelLLMSession != nil {
-		w.cancelLLMSession(w.conversationID)
+func (r *run) StopForRemoval() {
+	if r.cancelLLMSession != nil {
+		r.cancelLLMSession(r.conversationID)
 	}
-	w.Stop()
+	r.Stop()
 }
 
 // MarkDeleting flags the worker as being removed for conversation deletion
@@ -683,15 +639,15 @@ func (w *ConversationWorker) SetWindowResolver(fn WindowResolverFunc) {
 // window and output reserve (tokens) via the injected resolver. Returns (0, 0)
 // when no resolver is wired (tests) or the model is unknown; callers read a
 // non-positive window as "unknown".
-func (w *ConversationWorker) resolveContextWindow() (windowTokens, reserveTokens int) {
-	if w.windowResolver == nil {
+func (r *run) resolveContextWindow() (windowTokens, reserveTokens int) {
+	if r.windowResolver == nil {
 		return 0, 0
 	}
-	mc := w.resolveModelConfig()
+	mc := r.resolveModelConfig()
 	if mc == nil {
 		return 0, 0
 	}
-	return w.windowResolver(*mc)
+	return r.windowResolver(*mc)
 }
 
 // SetAutoCompactGate injects the gate that governs whether automatic proactive
@@ -741,10 +697,10 @@ func (w *ConversationWorker) SetCancelLLMSession(fn CancelLLMSessionFunc) {
 // Safe to call from the Manager goroutine: turn.cancelLLM is an atomic
 // pointer and the cancel func itself is goroutine-safe and idempotent, so
 // this composes with callLLM's defer and handleCancel's swap without locks.
-func (w *ConversationWorker) interruptInFlightLLMForWake() {
-	if p := w.turn.cancelLLM.Swap(nil); p != nil {
-		w.turn.wakeInterrupt.Store(true)
-		w.log.Info("☀️ system wake: cancelling in-flight LLM request conv=%s (connection likely dropped during sleep)", w.conversationID)
+func (r *run) interruptInFlightLLMForWake() {
+	if p := r.t.cancelLLM.Swap(nil); p != nil {
+		r.t.wakeInterrupt.Store(true)
+		r.log.Info("☀️ system wake: cancelling in-flight LLM request conv=%s (connection likely dropped during sleep)", r.conversationID)
 		(*p)()
 	}
 }
@@ -792,10 +748,10 @@ func (w *ConversationWorker) livenessC() <-chan time.Time {
 // Deliberately not sleep-specific: it corrects for ANY cause of missed ticks, which is
 // why it doesn't hook the sleep/wake notification. Runs only on the run() goroutine, so
 // the in-memory anchor reads are race-free.
-func (w *ConversationWorker) detectFrozenGap() {
+func (r *run) detectFrozenGap() {
 	now := time.Now().UnixMilli()
-	last := w.lastLivenessMs
-	w.lastLivenessMs = now
+	last := r.lastLivenessMs
+	r.lastLivenessMs = now
 	if last == 0 {
 		return // first tick of the run — nothing to compare against yet
 	}
@@ -806,11 +762,11 @@ func (w *ConversationWorker) detectFrozenGap() {
 	// Only meaningful while a turn's timer is actively running. Idle has no anchor;
 	// while parked on an approval the wait mechanism already excludes the entire park
 	// (this freeze included), so advancing here too would double-count it.
-	if w.processingStartedAt == 0 || w.approvalWaitStartedAt != 0 {
+	if r.t.processingStartedAt == 0 || r.t.approvalWaitStartedAt != 0 {
 		return
 	}
-	w.log.Info("⏱️ excluding %ds of frozen time from elapsed (process was suspended) conv=%s", excess/1000, w.conversationID)
-	w.advanceElapsedAnchor(excess)
+	r.log.Info("⏱️ excluding %ds of frozen time from elapsed (process was suspended) conv=%s", excess/1000, r.conversationID)
+	r.advanceElapsedAnchor(excess)
 }
 
 // Document returns the conversation document.
@@ -877,95 +833,95 @@ func (w *ConversationWorker) Tracker() *OperationTracker {
 
 // resolveModelConfig returns the effective model config for the current thread context.
 // Resolves from the Yjs document (thread → parent chain → conversation metadata).
-func (w *ConversationWorker) resolveModelConfig() *ModelConfig {
-	return w.doc.ResolveEffectiveModelConfig(w.turn.thread.itemID)
+func (r *run) resolveModelConfig() *ModelConfig {
+	return r.doc.ResolveEffectiveModelConfig(r.t.thread.itemID)
 }
 
 // run is the main message processing loop. All state access happens here.
-func (w *ConversationWorker) run(ctx context.Context) {
-	defer close(w.stopped)
-	defer w.onShutdown()
-	w.livenessTicker = time.NewTicker(livenessInterval)
-	defer w.livenessTicker.Stop()
+func (r *run) run(ctx context.Context) {
+	defer close(r.stopped)
+	defer r.onShutdown()
+	r.livenessTicker = time.NewTicker(livenessInterval)
+	defer r.livenessTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-w.done:
+		case <-r.done:
 			return
-		case msg := <-w.inbound:
-			w.handleMessage(msg)
-		case chunk := <-w.streamChunkChan:
-			w.processCoalescedStreamChunks(w.turn.llmTurnID, chunk)
+		case msg := <-r.inbound:
+			r.handleMessage(msg)
+		case chunk := <-r.streamChunkChan:
+			r.processCoalescedStreamChunks(r.t.llmTurnID, chunk)
 			// A chunk reaching the run loop arrives after its turn's wait loop
 			// has returned, so nothing else will come back for it: there is no
 			// later write to fold it into and the throttle must not hold it.
-			w.flushPendingStreamWrites()
-		case <-w.doc.UpdateSignal():
-			w.batcher.Schedule()
-		case <-w.batcher.TimerChan():
-			w.batcher.Flush()
-		case <-w.saveChan:
+			r.flushPendingStreamWrites()
+		case <-r.doc.UpdateSignal():
+			r.batcher.Schedule()
+		case <-r.batcher.TimerChan():
+			r.batcher.Flush()
+		case <-r.saveChan:
 			// Skip if marked for deletion — the folder is about to be
 			// removed, and saving would recreate it as "Untitled--<id>",
 			// which reconcileConversationOrder would then ghost back into
 			// the tab bar on the next session load.
-			if !w.deleting.Load() {
-				if err := w.saveStateToDisk(); err != nil {
-					w.log.Error("Failed to save state: %v", err)
+			if !r.deleting.Load() {
+				if err := r.saveStateToDisk(); err != nil {
+					r.log.Error("Failed to save state: %v", err)
 				}
 			}
-		case ack := <-w.flushReq:
+		case ack := <-r.flushReq:
 			var err error
-			if !w.deleting.Load() {
-				if w.saveTimer != nil {
-					w.saveTimer.Stop()
+			if !r.deleting.Load() {
+				if r.saveTimer != nil {
+					r.saveTimer.Stop()
 				}
-				err = w.saveStateToDisk()
+				err = r.saveStateToDisk()
 			}
 			ack <- err
-		case <-w.docChangeChan:
-			w.handleItemsChange()
-		case <-w.livenessC():
-			w.detectFrozenGap()
-			w.finalizeToolsAbsentFromExecReport()
+		case <-r.docChangeChan:
+			r.handleItemsChange()
+		case <-r.livenessC():
+			r.detectFrozenGap()
+			r.finalizeToolsAbsentFromExecReport()
 			// Age-based re-drive of a silently-dropped tool-command. driveToolActions
 			// is otherwise only called event-driven (tryReconcile); this periodic tick
 			// is the sole guaranteed wakeup that recovers a dropped command on an
 			// otherwise-idle worker (it early-returns with no engine attached and dedups
 			// on redriveInterval, so running it every tick is cheap).
-			w.driveToolActions()
+			r.driveToolActions()
 		}
 		// After every event, drain the reducer. A dispatch may complete
 		// and set needsReconcile again (e.g., child thread completes →
 		// parent needs dispatch). Loop until the reducer is quiet.
 		// Bounded to prevent spin loops from observer re-triggering.
-		w.drainReconcile()
+		r.drainReconcile()
 	}
 }
 
 // recoverWorkerPanic is the shared deferred-recover for handleMessage and
 // handleMessageInWait. On panic it marks the active thread (if any) as
 // failed, resets thread context, and sends an error to the UI.
-func (w *ConversationWorker) recoverWorkerPanic(msgType string) {
-	r := recover()
-	if r == nil {
+func (r *run) recoverWorkerPanic(msgType string) {
+	panicValue := recover()
+	if panicValue == nil {
 		return
 	}
-	w.log.Error("Panic handling message %s: %v", msgType, r)
+	r.log.Error("Panic handling message %s: %v", msgType, panicValue)
 
 	// If the panic occurred while in a thread context, settle that thread's open
 	// run as failed so the frontend doesn't get stuck in "active" limbo and
 	// anything parked on the thread stops waiting.
-	if w.turn.thread.itemID != "" {
-		w.stampRunOutcome(w.turn.thread.itemID, runStatusError, fmt.Sprintf("Thread failed: %v", r))
+	if r.t.thread.itemID != "" {
+		r.stampRunOutcome(r.t.thread.itemID, runStatusError, fmt.Sprintf("Thread failed: %v", panicValue))
 	}
 
 	// Reset thread context so the error appears in the root conversation,
 	// not inside the failed thread.
-	w.resetThreadContext()
+	r.resetThreadContext()
 
-	w.sendError(fmt.Sprintf("Internal error: %v", r), "")
+	r.sendError(fmt.Sprintf("Internal error: %v", panicValue), "")
 }
 
 // handlePause latches a polite stop when the worker is actually busy. Sent from
@@ -995,21 +951,21 @@ func (w *ConversationWorker) handleUnpause() {
 // here cooperatively cancels the LLM call and transitions to Cancelling;
 // a pause latches a polite stop without touching the in-flight work; every
 // other message routes through the normal dispatch.
-func (w *ConversationWorker) handleMessageInWait(msg workerMessage) {
-	defer w.recoverWorkerPanic(msg.Type)
+func (r *run) handleMessageInWait(msg workerMessage) {
+	defer r.recoverWorkerPanic(msg.Type)
 
 	// A message handled mid-stream may read, serialise or persist the document
 	// (undo, save, a round-trip that rebuilds the item list), and the streaming
 	// throttle may be holding the tail of the current block back. Level it up
 	// before the handler runs so nothing reads a message shorter than it is.
-	w.flushPendingStreamWrites()
+	r.flushPendingStreamWrites()
 
 	// Polite stop: latch and keep waiting. Deliberately BEFORE the cancel branch
 	// and non-destructive — no turn.cancelLLM swap, no session release, no state
 	// change. The wait loop returns the LLM response normally when it lands; the
 	// latch is consumed at the next turn boundary (D5, §10.2).
 	if msg.Type == "pause" {
-		w.setPolitePending()
+		r.setPolitePending()
 		return
 	}
 
@@ -1018,37 +974,37 @@ func (w *ConversationWorker) handleMessageInWait(msg workerMessage) {
 	// the latch and keep waiting; the wait loop returns the in-flight LLM response
 	// normally and the turn proceeds to its next boundary.
 	if msg.Type == "unpause" {
-		w.clearPolitePending()
+		r.clearPolitePending()
 		return
 	}
 
 	if msg.Type == "cancel" {
-		w.logCancel(cancelReasonFromPayload(msg.Payload))
-		if p := w.turn.cancelLLM.Swap(nil); p != nil {
+		r.logCancel(cancelReasonFromPayload(msg.Payload))
+		if p := r.t.cancelLLM.Swap(nil); p != nil {
 			(*p)()
 		}
 		// Same rationale as handleCancel's StateProcessing branch: release any
 		// parked provider subprocess that the ctx-cancel above doesn't reach,
 		// while preserving the resume token so the next turn stays cache-warm.
-		if w.cancelLLMSession != nil {
-			w.cancelLLMSession(w.conversationID)
+		if r.cancelLLMSession != nil {
+			r.cancelLLMSession(r.conversationID)
 		}
-		w.storeState(StateCancelling)
+		r.storeState(StateCancelling)
 		return
 	}
 
-	w.dispatchMessage(msg)
+	r.dispatchMessage(msg)
 }
 
 // handleMessage processes a single message from the main event loop.
-func (w *ConversationWorker) handleMessage(msg workerMessage) {
-	defer w.recoverWorkerPanic(msg.Type)
-	w.dispatchMessage(msg)
+func (r *run) handleMessage(msg workerMessage) {
+	defer r.recoverWorkerPanic(msg.Type)
+	r.dispatchMessage(msg)
 }
 
 // dispatchMessage routes a message to its type-specific handler.
 // Shared by handleMessage and handleMessageInWait.
-func (w *ConversationWorker) dispatchMessage(msg workerMessage) {
+func (r *run) dispatchMessage(msg workerMessage) {
 	if msg.Ack != nil {
 		defer func() {
 			if r := recover(); r != nil {
@@ -1058,61 +1014,61 @@ func (w *ConversationWorker) dispatchMessage(msg workerMessage) {
 			msg.Ack <- nil
 		}()
 	}
-	w.replyTo = msg.OriginClient
-	defer func() { w.replyTo = "" }()
+	r.replyTo = msg.OriginClient
+	defer func() { r.replyTo = "" }()
 
-	if w.handleTestMessage(msg) {
+	if r.handleTestMessage(msg) {
 		return
 	}
 
 	switch msg.Type {
 	case "init":
-		w.handleInit(msg.Payload)
+		r.handleInit(msg.Payload)
 
 	case "send-message":
-		w.handleSendMessage(msg.Payload)
+		r.handleSendMessage(msg.Payload)
 
 	case "inject-thread-message":
-		w.handleInjectThreadMessage(msg.Payload)
+		r.handleInjectThreadMessage(msg.Payload)
 
 	case "delivery-ended":
-		w.handleDeliveryEnded(msg.Payload)
+		r.handleDeliveryEnded(msg.Payload)
 
 	case "cancel":
-		w.handleCancel(cancelReasonFromPayload(msg.Payload))
+		r.handleCancel(cancelReasonFromPayload(msg.Payload))
 
 	case "pause":
-		w.handlePause()
+		r.handlePause()
 
 	case "unpause":
-		w.handleUnpause()
+		r.handleUnpause()
 
 	case "provider-turn":
-		w.handleProviderTurn(msg.Payload)
+		r.handleProviderTurn(msg.Payload)
 
 	case "render-context-items-response":
-		w.handleRenderContextItemsResponse(msg.Payload)
+		r.handleRenderContextItemsResponse(msg.Payload)
 
 	case "tools-result":
-		w.handleToolsResult(msg.Payload)
+		r.handleToolsResult(msg.Payload)
 
 	case "strategy-hook-response":
-		w.handleStrategyHookResponse(msg.Payload)
+		r.handleStrategyHookResponse(msg.Payload)
 
 	case "build-subthread-spec-response":
-		w.handleBuildSubthreadSpecResponse(msg.Payload)
+		r.handleBuildSubthreadSpecResponse(msg.Payload)
 
 	case "yjs-sync":
-		w.handleYjsSync(msg.Payload)
+		r.handleYjsSync(msg.Payload)
 
 	case "undo":
-		w.handleUndo(msg.Payload)
+		r.handleUndo(msg.Payload)
 
 	case "redo":
-		w.handleRedo(msg.Payload)
+		r.handleRedo(msg.Payload)
 
 	case "clear-history":
-		w.handleClearHistory()
+		r.handleClearHistory()
 
 	case "stop-undo-capturing":
 		// Browser-driven mutations bypass the OperationTracker, so the
@@ -1122,76 +1078,76 @@ func (w *ConversationWorker) dispatchMessage(msg workerMessage) {
 		// all of them. The browser sends this message at user-action
 		// boundaries (slash commands, context-item add/remove, etc.) to
 		// force a fresh undo group.
-		w.tracker.StopCapturing()
+		r.tracker.StopCapturing()
 
 	case "begin-undo-coalesce":
-		w.handleBeginUndoCoalesce()
+		r.handleBeginUndoCoalesce()
 
 	case "end-undo-coalesce":
-		w.handleEndUndoCoalesce(msg.Payload)
+		r.handleEndUndoCoalesce(msg.Payload)
 
 	case "retry-tool-approval":
-		w.handleRetryToolApproval(msg.Payload)
+		r.handleRetryToolApproval(msg.Payload)
 
 	case "move-context-item-message-to-end":
-		w.handleMoveContextItemMessageToEnd(msg.Payload)
+		r.handleMoveContextItemMessageToEnd(msg.Payload)
 
 	case "update-and-reposition-tool-actions":
-		w.handleUpdateAndRepositionToolActions(msg.Payload)
+		r.handleUpdateAndRepositionToolActions(msg.Payload)
 
 	case "retry-tool-action":
-		w.handleRetryToolAction(msg.Payload)
+		r.handleRetryToolAction(msg.Payload)
 
 	case "update-tool-action-for-retry":
-		w.handleUpdateToolActionForRetry(msg.Payload)
+		r.handleUpdateToolActionForRetry(msg.Payload)
 
 	case "background-task-snapshot":
-		w.handleBackgroundTaskSnapshot(msg.Payload)
+		r.handleBackgroundTaskSnapshot(msg.Payload)
 
 	case "reposition-context-item-placeholder":
-		w.handleRepositionContextItemPlaceholder(msg.Payload)
+		r.handleRepositionContextItemPlaceholder(msg.Payload)
 
 	case "create-thread":
-		w.handleCreateThread(msg.Payload)
+		r.handleCreateThread(msg.Payload)
 
 	case "resummarize-compaction-thread":
-		w.handleResummarizeCompactionThread(msg.Payload)
+		r.handleResummarizeCompactionThread(msg.Payload)
 
 	case "request-full-state":
-		w.broadcastFullState()
+		r.broadcastFullState()
 
 	case "resync-request":
-		w.handleResyncRequest(msg.Payload)
+		r.handleResyncRequest(msg.Payload)
 
 	case "resync-to-origin":
-		w.handleResyncToOrigin()
+		r.handleResyncToOrigin()
 
 	case "tool-execution-report":
-		w.handleToolExecutionReport(msg.Payload, msg.OriginClient)
+		r.handleToolExecutionReport(msg.Payload, msg.OriginClient)
 
 	case "engine-trace":
-		w.handleEngineTrace(msg.Payload)
+		r.handleEngineTrace(msg.Payload)
 
 	case "rename-log":
-		w.handleRenameLog()
+		r.handleRenameLog()
 
 	case "request-auto-name":
-		w.handleRequestAutoName(msg.Payload)
+		r.handleRequestAutoName(msg.Payload)
 
 	case "clear-undo-stacks":
-		w.handleClearUndoStacks(msg.Payload)
+		r.handleClearUndoStacks(msg.Payload)
 
 	case "get-transaction":
-		w.handleGetTransaction(msg.Payload)
+		r.handleGetTransaction(msg.Payload)
 
 	case "flush-persistence":
-		w.handleFlushPersistence(msg.Payload)
+		r.handleFlushPersistence(msg.Payload)
 
 	case "compact":
-		w.handleCompact(msg.Payload)
+		r.handleCompact(msg.Payload)
 
 	default:
-		w.log.Error("Unknown message type: %s", msg.Type)
+		r.log.Error("Unknown message type: %s", msg.Type)
 	}
 }
 
@@ -1250,7 +1206,7 @@ func (w *ConversationWorker) handleGetTransaction(payload json.RawMessage) {
 // saves directly — mirroring the loop's own flushReq case — rather than routing
 // through ConversationWorker.FlushPersistence, which would deadlock waiting on
 // the same loop to service flushReq.
-func (w *ConversationWorker) handleFlushPersistence(payload json.RawMessage) {
+func (r *run) handleFlushPersistence(payload json.RawMessage) {
 	var msg struct {
 		AckID string `json:"ackId,omitempty"`
 	}
@@ -1258,15 +1214,15 @@ func (w *ConversationWorker) handleFlushPersistence(payload json.RawMessage) {
 
 	// Match the run loop's flushReq handling: skip while deleting (the folder is
 	// about to be removed), otherwise stop the pending debounce timer and save.
-	if !w.deleting.Load() {
-		if w.saveTimer != nil {
-			w.saveTimer.Stop()
+	if !r.deleting.Load() {
+		if r.saveTimer != nil {
+			r.saveTimer.Stop()
 		}
-		if err := w.saveStateToDisk(); err != nil {
-			w.log.Error("Failed to flush persistence: %v", err)
+		if err := r.saveStateToDisk(); err != nil {
+			r.log.Error("Failed to flush persistence: %v", err)
 		}
 	}
-	w.send(map[string]any{
+	r.send(map[string]any{
 		"type":  "ack",
 		"ackId": msg.AckID,
 	})
@@ -1308,8 +1264,8 @@ func (w *ConversationWorker) reply(msg any) {
 	w.sendWS(data)
 }
 
-func (w *ConversationWorker) sendStatus(status, message string) {
-	w.sendStatusWithCode(status, message, "")
+func (r *run) sendStatus(status, message string) {
+	r.sendStatusWithCode(status, message, "")
 }
 
 // sendStatusWithCode is sendStatus plus a machine-readable `code` the client can
@@ -1318,12 +1274,12 @@ func (w *ConversationWorker) sendStatus(status, message string) {
 // by re-broadcasting its own config) apart from a genuinely unusable model
 // (code "provider-unavailable" — never auto-retry). Empty code ⇒ omitted, so
 // every existing sendStatus caller is unchanged on the wire.
-func (w *ConversationWorker) sendStatusWithCode(status, message, code string) {
-	w.updateElapsedAnchor(status)
-	w.updateOSActivity(status)
-	w.writeProcessingState(status, message, code)
+func (r *run) sendStatusWithCode(status, message, code string) {
+	r.updateElapsedAnchor(status)
+	r.updateOSActivity(status)
+	r.writeProcessingState(status, message, code)
 	if status == "idle" {
-		w.finishIdleTransition()
+		r.finishIdleTransition()
 	}
 
 	// Also send direct WebSocket message for logging/debugging
@@ -1335,13 +1291,13 @@ func (w *ConversationWorker) sendStatusWithCode(status, message, code string) {
 	if code != "" {
 		wsMsg["code"] = code
 	}
-	w.send(wsMsg)
+	r.send(wsMsg)
 }
 
 // updateElapsedAnchor maintains the in-memory base for the spinner's elapsed-time
 // digit as `status` changes: a busy status lazily starts it, a resting one clears
 // it so the next turn counts from zero.
-func (w *ConversationWorker) updateElapsedAnchor(status string) {
+func (r *run) updateElapsedAnchor(status string) {
 	// `startedAt` is the shared timer base every client uses to render
 	// the spinner's elapsed-time digit (see web/js/services/llm-state.js).
 	// It must come from the doc so all clients agree: a client falling back
@@ -1350,8 +1306,8 @@ func (w *ConversationWorker) updateElapsedAnchor(status string) {
 	// sendStatus(non-idle) without having set processingStartedAt still gets
 	// a single shared anchor written to the doc.
 	if statusHoldsClaim(status) {
-		if w.processingStartedAt == 0 {
-			w.processingStartedAt = time.Now().UnixMilli()
+		if r.t.processingStartedAt == 0 {
+			r.t.processingStartedAt = time.Now().UnixMilli()
 		}
 	} else {
 		// Resting transition (idle, or a terminal-error status): clear the
@@ -1365,7 +1321,7 @@ func (w *ConversationWorker) updateElapsedAnchor(status string) {
 		// the stale anchor survives, and the next Continue's dispatchCallLLMOnThread
 		// sees processingStartedAt != 0, preserves it, and the spinner counts from
 		// the cancelled turn's start.
-		w.processingStartedAt = 0
+		r.t.processingStartedAt = 0
 	}
 }
 
@@ -1390,25 +1346,25 @@ func (w *ConversationWorker) updateOSActivity(status string) {
 
 // writeProcessingState publishes the frame every client renders the spinner from:
 // the doc-native `processingState` blob, rebuilt from scratch on each call.
-func (w *ConversationWorker) writeProcessingState(status, message, code string) {
+func (r *run) writeProcessingState(status, message, code string) {
 	// Include threadItemId so frontend knows which column to target
 	stateMap := map[string]any{
 		"status":       status,
 		"message":      message,
-		"threadItemId": w.turn.thread.itemID,
+		"threadItemId": r.t.thread.itemID,
 	}
 	if code != "" {
 		stateMap["code"] = code
 	}
 	if statusHoldsClaim(status) {
-		stateMap["startedAt"] = w.processingStartedAt
+		stateMap["startedAt"] = r.t.processingStartedAt
 		// Mirror the polite-stop (Pause) latch into the synced state so a client
 		// reloading mid-pause restores the "Pausing…" cue. Only ever on a busy
 		// frame — a pending pause is meaningless at idle, so a latch stranded past
 		// a natural turn end (never consumed at a boundary) can't publish a cue on
 		// an idle worker. Re-emitting here keeps the flag across status transitions,
 		// since stateMap is rebuilt from scratch on every frame.
-		if w.politeStop.Load() {
+		if r.politeStop.Load() {
 			stateMap["politePending"] = true
 		}
 	}
@@ -1421,31 +1377,31 @@ func (w *ConversationWorker) writeProcessingState(status, message, code string) 
 		stateMap["activity"] = ActivityCallingLLM
 		stateMap["claimedAt"] = time.Now().UnixMilli()
 	} else if status == "idle" {
-		w.bumpTurnCounterAtIdle()
+		r.bumpTurnCounterAtIdle()
 	}
-	w.doc.SetMetadata("processingState", stateMap)
+	r.doc.SetMetadata("processingState", stateMap)
 }
 
 // bumpTurnCounterAtIdle advances the monotonic turn fence observers use to detect
 // that a turn happened even when Yjs sync batching merged the whole non-idle
 // window into a single update.
-func (w *ConversationWorker) bumpTurnCounterAtIdle() {
+func (r *run) bumpTurnCounterAtIdle() {
 	// Seed from the doc's current value first so the counter stays MONOTONIC
 	// across a worker restart on a reloaded conversation: a fresh worker starts
 	// at 0 but the persisted doc may already carry a higher count (handleInit's
 	// first frame is idle, so this seed runs before any non-idle frame could
 	// regress it). Without the seed the counter would go backwards and break
 	// every fence observing it.
-	if docTC := w.docTurnCounter(); docTC > w.turnCounter {
-		w.turnCounter = docTC
+	if docTC := r.docTurnCounter(); docTC > r.turnCounter {
+		r.turnCounter = docTC
 	}
-	w.turnCounter++
+	r.turnCounter++
 	// Persist the bumped counter to its own durable top-level metadata key,
 	// OUTSIDE the ephemeral processingState blob (whose other fields —
 	// startedAt, live token counts, status — are rebuilt from scratch on
 	// every load by handleInit). completedTurns is the one value read back
 	// across a load (the monotonic turn fence), so it gets a clean key.
-	w.doc.SetMetadata("completedTurns", w.turnCounter)
+	r.doc.SetMetadata("completedTurns", r.turnCounter)
 }
 
 // finishIdleTransition closes out a completed run: it collapses any in-flight
@@ -1487,11 +1443,11 @@ func (w *ConversationWorker) sendReadyWithMetadata(metadata map[string]any) {
 	w.send(msg)
 }
 
-func (w *ConversationWorker) sendError(message, stack string) {
-	w.sendErrorWithData(message, stack, nil)
+func (r *run) sendError(message, stack string) {
+	r.sendErrorWithData(message, stack, nil)
 }
 
-func (w *ConversationWorker) sendErrorWithData(message, stack string, data map[string]any) {
+func (r *run) sendErrorWithData(message, stack string, data map[string]any) {
 	summary := extractErrorSummary(message)
 
 	// Add error message to conversation items (visible in UI via Yjs sync)
@@ -1505,10 +1461,10 @@ func (w *ConversationWorker) sendErrorWithData(message, stack string, data map[s
 	if data != nil {
 		msg.Data, _ = json.Marshal(data)
 	}
-	w.appendTargetMessage(msg)
+	r.appendTargetMessage(msg)
 
 	// Also send as WebSocket message for logging/debugging
-	w.send(ErrorMessage{
+	r.send(ErrorMessage{
 		Type:    "error",
 		Message: message,
 		Summary: summary,
@@ -1575,13 +1531,13 @@ func (w *ConversationWorker) setupDocumentObserver() {
 //
 // CRITICAL: This is the core of the document-driven approval flow.
 // All state transitions happen through observation, not polling.
-func (w *ConversationWorker) handleItemsChange() {
+func (r *run) handleItemsChange() {
 	// Suppressed while applying an undo/redo: the UndoManager's mutations
 	// arrive through the same observer that drives the reducer, and we must
 	// not let those mutations re-trigger the strategy loop (e.g. by
 	// re-firing on a restored thread + trailing user message). See
 	// handleUndoOrRedo's wrapping.
-	if w.suppressItemsChange {
+	if r.suppressItemsChange {
 		return
 	}
 
@@ -1590,39 +1546,39 @@ func (w *ConversationWorker) handleItemsChange() {
 	// the synchronous UndoManager transaction and reintroduce stale
 	// activity="awaiting_llm"; clear it and skip the reducer until an explicit
 	// user action (send/continue/approve/retry/rerun) starts a new LLM intent.
-	if w.suppressReconcileAfterHistoryNavUntilMs > 0 {
-		if time.Now().UnixMilli() < w.suppressReconcileAfterHistoryNavUntilMs {
-			w.releaseLLM()
-			w.needsReconcile = false
+	if r.suppressReconcileAfterHistoryNavUntilMs > 0 {
+		if time.Now().UnixMilli() < r.suppressReconcileAfterHistoryNavUntilMs {
+			r.releaseLLM()
+			r.needsReconcile = false
 			return
 		}
-		w.suppressReconcileAfterHistoryNavUntilMs = 0
+		r.suppressReconcileAfterHistoryNavUntilMs = 0
 	}
-	w.tape.Record("items-change", map[string]any{
-		"itemCount": w.doc.GetItemsLength(),
-		"state":     string(w.loadState()),
+	r.tape.Record("items-change", map[string]any{
+		"itemCount": r.doc.GetItemsLength(),
+		"state":     string(r.loadState()),
 	})
 	// Cancel if the browser deleted the thread we're currently processing.
-	if w.loadState() == StateProcessing && w.turn.thread.itemID != "" {
-		if w.doc.GetThreadYMap(w.turn.thread.itemID) == nil {
-			w.handleCancel(cancelReasonThreadDeleted)
+	if r.loadState() == StateProcessing && r.t.thread.itemID != "" {
+		if r.doc.GetThreadYMap(r.t.thread.itemID) == nil {
+			r.handleCancel(cancelReasonThreadDeleted)
 		}
 	}
 
 	// DOCUMENT-DRIVEN THREAD PROCESSING: When a thread is inserted with
 	// items (including a user message) and no result, automatically process it.
 	// This enables compact commands and plugins to be pure yjs mutations.
-	w.checkForNewThreads()
+	r.checkForNewThreads()
 
 	// Signal the reducer to evaluate the thread state. The reducer is the
 	// sole dispatcher for all LLM calls — tool completions, thread
 	// completions, user messages, and new threads all flow through here.
-	w.reconcileThread()
+	r.reconcileThread()
 
 	// Drive any strategy-written pendingRequests entries one step forward
 	// (including starting/cancelling task-output delivery pumps). Cheap no-op if
 	// no entries are pending.
-	w.scanPendingRequests()
+	r.scanPendingRequests()
 }
 
 // checkForNewThreads scans root items for threads marked with needsStrategyRun=true
@@ -1639,18 +1595,18 @@ func (w *ConversationWorker) handleItemsChange() {
 //
 // Returns true when it dispatched a thread's run, so the reducer can re-evaluate
 // from a clean state rather than continuing a walk-down built on pre-run data.
-func (w *ConversationWorker) checkForNewThreads() bool {
-	if w.loadState() != StateIdle {
+func (r *run) checkForNewThreads() bool {
+	if r.loadState() != StateIdle {
 		return false
 	}
 
-	items := w.doc.GetItems()
+	items := r.doc.GetItems()
 	for _, item := range items {
 		if item.Type != ItemTypeThread {
 			continue
 		}
 
-		threadYMap := w.doc.GetThreadYMap(item.ItemID)
+		threadYMap := r.doc.GetThreadYMap(item.ItemID)
 		if threadYMap == nil {
 			continue
 		}
@@ -1670,12 +1626,12 @@ func (w *ConversationWorker) checkForNewThreads() bool {
 		}
 
 		// Get the thread's items array
-		threadItems := w.doc.GetThreadItemsArray(item.ItemID)
+		threadItems := r.doc.GetThreadItemsArray(item.ItemID)
 		if threadItems == nil {
 			continue
 		}
 
-		modelConfig := w.doc.ResolveEffectiveModelConfig(item.ItemID)
+		modelConfig := r.doc.ResolveEffectiveModelConfig(item.ItemID)
 		if modelConfig == nil || modelConfig.Model == "" {
 			continue
 		}
@@ -1687,12 +1643,12 @@ func (w *ConversationWorker) checkForNewThreads() bool {
 		// a successful claim. Without the re-arm the thread is orphaned — the
 		// release that frees the claim writes processingState, not items, so the
 		// items observer never fires again and nothing revisits the pickup.
-		if !w.claimLLM(item.ItemID) {
-			w.needsReconcile = true
+		if !r.claimLLM(item.ItemID) {
+			r.needsReconcile = true
 			return false
 		}
 
-		w.log.Debug("Auto-processing thread %s (doc-driven)", item.ItemID)
+		r.log.Debug("Auto-processing thread %s (doc-driven)", item.ItemID)
 		// Compaction-style threads (noAutoSelect) must undo as a single
 		// atomic operation from the user's perspective — they didn't
 		// author the LLM turns inside the sub-thread, only the act of
@@ -1704,27 +1660,27 @@ func (w *ConversationWorker) checkForNewThreads() bool {
 		// /thread, or the LLM did create_thread) DO get their natural
 		// per-turn grouping — we only merge for noAutoSelect.
 		if noAutoSelect {
-			w.compactionMergeFromIdx = w.tracker.UndoStackLen() - 1
+			r.compactionMergeFromIdx = r.tracker.UndoStackLen() - 1
 		}
 		// Consume the one-shot trigger before running. Completion is tracked by
 		// the thread result; cancellation must not leave a persistent trigger that
 		// restarts the thread immediately on the next observer tick.
-		w.clearThreadNeedsStrategyRun(item.ItemID)
-		w.turn.thread.itemID = item.ItemID
-		w.turn.thread.itemsArray = threadItems
+		r.clearThreadNeedsStrategyRun(item.ItemID)
+		r.t.thread.itemID = item.ItemID
+		r.t.thread.itemsArray = threadItems
 		// Turn-scoped anchor (see dispatchCallLLMOnThread): set once at turn start,
 		// preserved across re-dispatches so the elapsed digit spans the whole turn.
-		if w.processingStartedAt == 0 {
-			w.processingStartedAt = time.Now().UnixMilli()
+		if r.t.processingStartedAt == 0 {
+			r.t.processingStartedAt = time.Now().UnixMilli()
 		}
-		w.storeState(StateProcessing)
+		r.storeState(StateProcessing)
 		// Publish the busy frame at dispatch, exactly as dispatchCallLLMOnThread
 		// does. The claim above is doc-native state the UI does not render, so
 		// without this the conversation reads as idle — no spinner, no status —
 		// for the whole window before the run writes a status of its own.
-		w.sendStatus("preparing", "")
-		w.batcher.Flush()
-		w.runStrategyLoop("", true)
+		r.sendStatus("preparing", "")
+		r.batcher.Flush()
+		r.runStrategyLoop("", true)
 		return true // Process one thread at a time
 	}
 	return false
@@ -1775,8 +1731,8 @@ func (w *ConversationWorker) writeThreadNeedsStrategyRun(threadItemID string, ne
 // Asked per ITEM, not per thread: a call into a session that has already been
 // called before stands as its own alias item, and each item is parked on the one
 // run it made rather than on whatever that thread most recently did.
-func (w *ConversationWorker) hasIncompleteThreads() bool {
-	items := w.getTargetItems()
+func (r *run) hasIncompleteThreads() bool {
+	items := r.getTargetItems()
 	for _, item := range items {
 		if item.Type == ItemTypeThread && !itemRunSettled(items, item) {
 			return true
@@ -1786,8 +1742,8 @@ func (w *ConversationWorker) hasIncompleteThreads() bool {
 }
 
 // hasIncompleteTools returns true if any tool-action in the thread hasn't finished.
-func (w *ConversationWorker) hasIncompleteTools() bool {
-	for _, item := range w.getTargetItems() {
+func (r *run) hasIncompleteTools() bool {
+	for _, item := range r.getTargetItems() {
 		if item.Type != ItemTypeToolAction {
 			continue
 		}

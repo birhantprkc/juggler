@@ -69,7 +69,7 @@ func TestToolTurnPushesStateToEngine(t *testing.T) {
 		Conversation: SerializedConversation{ID: "test-conv"},
 		Config:       WorkerConfig{ProjectPath: t.TempDir()},
 	})
-	w.handleInit(initPayload)
+	w.currentRun().handleInit(initPayload)
 
 	var engineSyncs, viewerSyncs atomic.Int64
 	countYjsSync := func(c *atomic.Int64) func([]byte) {
@@ -118,7 +118,7 @@ func TestToolTurnPushesStateToEngine(t *testing.T) {
 
 	// Drives one turn that emits a bash tool_use, creating an async tool-action
 	// and parking (no executor in the test). The push fires inside that turn.
-	w.runStrategyLoop("do a tool", false)
+	w.currentRun().runStrategyLoop("do a tool", false)
 	close(done)
 
 	// Await mailbox-delivery quiescence: the engine must end up with strictly

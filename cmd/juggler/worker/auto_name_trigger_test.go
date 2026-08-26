@@ -46,7 +46,7 @@ func sendMsg(t *testing.T, w *ConversationWorker, msg SendMessageMessage) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	w.handleSendMessage(payload)
+	w.currentRun().handleSendMessage(payload)
 }
 
 // requestAutoName delivers a request-auto-name message with the given force.
@@ -86,7 +86,7 @@ func TestRequestAutoNameFiresForceFromFirstMessage(t *testing.T) {
 	var calls []autoNameCall
 	w := newAutoNameWorker(t, "conv-force", &calls)
 
-	w.addUserMessage(UserMessageInput{Text: "Refactor the auth layer"})
+	w.currentRun().addUserMessage(UserMessageInput{Text: "Refactor the auth layer"})
 
 	requestAutoName(t, w, true)
 
@@ -121,7 +121,7 @@ func TestAutoNameDoesNotFireWhenUserMessageExists(t *testing.T) {
 	w := newAutoNameWorker(t, "conv-existing", &calls)
 
 	// Seed a prior root user message directly, then send another while idle.
-	w.addUserMessage(UserMessageInput{Text: "an earlier message"})
+	w.currentRun().addUserMessage(UserMessageInput{Text: "an earlier message"})
 
 	sendMsg(t, w, SendMessageMessage{Text: "another message"})
 
@@ -146,7 +146,7 @@ func TestAutoNameDoesNotFireAfterCompactionFold(t *testing.T) {
 	}
 	pushAssistant(w, "worked on it")
 
-	if _, folded, err := w.foldConversationForCompaction(false); err != nil || !folded {
+	if _, folded, err := w.currentRun().foldConversationForCompaction(false); err != nil || !folded {
 		t.Fatalf("foldConversationForCompaction = (%v, %v), want a fold", folded, err)
 	}
 	for _, it := range w.doc.GetItems() {
@@ -172,7 +172,7 @@ func TestRequestAutoNameReadsThroughCompactionFold(t *testing.T) {
 
 	sendMsg(t, w, SendMessageMessage{Text: "the original task"})
 	pushAssistant(w, "worked on it")
-	if _, folded, err := w.foldConversationForCompaction(false); err != nil || !folded {
+	if _, folded, err := w.currentRun().foldConversationForCompaction(false); err != nil || !folded {
 		t.Fatalf("foldConversationForCompaction = (%v, %v), want a fold", folded, err)
 	}
 

@@ -24,9 +24,9 @@ func TestStreamedThinkingKeepsProviderData(t *testing.T) {
 	w := NewConversationWorker("conv-thinking-metadata", "user:test")
 	defer w.doc.Destroy()
 
-	w.processStreamChunk(StreamChunk{Type: "thinking", Content: "Weighing "})
-	w.processStreamChunk(StreamChunk{Type: "thinking", Content: "the options."})
-	w.processStreamChunk(StreamChunk{Type: "thinking", Metadata: map[string]any{"signature": "sig-abc"}})
+	w.currentRun().processStreamChunk(StreamChunk{Type: "thinking", Content: "Weighing "})
+	w.currentRun().processStreamChunk(StreamChunk{Type: "thinking", Content: "the options."})
+	w.currentRun().processStreamChunk(StreamChunk{Type: "thinking", Metadata: map[string]any{"signature": "sig-abc"}})
 
 	items := w.doc.GetItems()
 	if len(items) != 1 {
@@ -48,20 +48,20 @@ func TestStreamedThinkingProviderDataReachesTheWire(t *testing.T) {
 	defer w.doc.Destroy()
 
 	w.doc.InsertMessage(0, ConversationItem{Type: ItemTypeUser, ItemID: "u-1", Content: "hi"})
-	w.processStreamChunk(StreamChunk{Type: "thinking", Content: "Reasoning."})
-	w.processStreamChunk(StreamChunk{Type: "thinking", Metadata: map[string]any{
+	w.currentRun().processStreamChunk(StreamChunk{Type: "thinking", Content: "Reasoning."})
+	w.currentRun().processStreamChunk(StreamChunk{Type: "thinking", Metadata: map[string]any{
 		"reasoningItemId":  "rs_1",
 		"encryptedContent": "gAAAAA",
 	}})
 
 	var found map[string]any
-	for _, m := range w.buildMessages(nil) {
+	for _, m := range w.currentRun().buildMessages(nil) {
 		if m["type"] == "thinking" {
 			found, _ = m["providerData"].(map[string]any)
 		}
 	}
 	if found == nil {
-		t.Fatalf("thinking message reached the wire without providerData; messages=%+v", w.buildMessages(nil))
+		t.Fatalf("thinking message reached the wire without providerData; messages=%+v", w.currentRun().buildMessages(nil))
 	}
 	if got, _ := found["reasoningItemId"].(string); got != "rs_1" {
 		t.Fatalf("reasoningItemId = %q, want rs_1", got)
@@ -80,7 +80,7 @@ func TestOrphanThinkingMetadataCreatesNoItem(t *testing.T) {
 	w := NewConversationWorker("conv-thinking-orphan", "user:test")
 	defer w.doc.Destroy()
 
-	w.processStreamChunk(StreamChunk{Type: "thinking", Metadata: map[string]any{"signature": "sig-orphan"}})
+	w.currentRun().processStreamChunk(StreamChunk{Type: "thinking", Metadata: map[string]any{"signature": "sig-orphan"}})
 
 	if items := w.doc.GetItems(); len(items) != 0 {
 		t.Fatalf("got %d items, want none — a contentless thinking item is a blank tile: %+v", len(items), items)
@@ -101,7 +101,7 @@ func TestAutonomousTurnThinkingKeepsProviderData(t *testing.T) {
 			Metadata: map[string]any{"signature": "sig-auto"},
 		}},
 	})
-	w.handleProviderTurn(json.RawMessage(payload))
+	w.currentRun().handleProviderTurn(json.RawMessage(payload))
 
 	items := w.doc.GetItems()
 	if len(items) != 1 {

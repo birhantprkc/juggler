@@ -124,7 +124,7 @@ func TestCompactionAccountingPersistedOnSummaryItem(t *testing.T) {
 	calls := 0
 	w.llmCallFunc = observedRecoveryStub(t, &calls)
 
-	if _, err := w.compactToFit(recoveryLimitErr(), pinned); err != nil {
+	if _, err := w.currentRun().compactToFit(recoveryLimitErr(), pinned); err != nil {
 		t.Fatal(err)
 	}
 	if calls < 2 {
@@ -190,7 +190,7 @@ func TestCompactionTapeRecords(t *testing.T) {
 	calls := 0
 	w.llmCallFunc = observedRecoveryStub(t, &calls)
 
-	if _, err := w.compactToFit(recoveryLimitErr(), pinned); err != nil {
+	if _, err := w.currentRun().compactToFit(recoveryLimitErr(), pinned); err != nil {
 		t.Fatal(err)
 	}
 
@@ -302,7 +302,7 @@ func TestCompactionCancellationTapeAndAccounting(t *testing.T) {
 		}, nil
 	}
 
-	_, err := w.compactToFit(recoveryLimitErr(), pinned)
+	_, err := w.currentRun().compactToFit(recoveryLimitErr(), pinned)
 	if !errors.Is(err, errBoundedCompactionCancelled) {
 		t.Fatalf("error = %v, want cancellation", err)
 	}
@@ -344,7 +344,7 @@ func TestCompactionFoldedThreadAccountingPersisted(t *testing.T) {
 	calls := 0
 	w.llmCallFunc = observedRecoveryStub(t, &calls)
 
-	handled, err := w.tryBoundedCompaction(&provider.ContextLimitExceededError{
+	handled, err := w.currentRun().tryBoundedCompaction(&provider.ContextLimitExceededError{
 		EstimatedInputTokens: 5_000, OutputReserveTokens: reserve, ContextWindowTokens: window,
 	}, &ModelConfig{Provider: "test", Model: "test"})
 	if err != nil || !handled {
@@ -485,7 +485,7 @@ func TestContextGuardRecoveryProgressReevaluatesWithoutBypass(t *testing.T) {
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "recovered"}}, StopReason: "end_turn"}, nil
 	}
 
-	w.runStrategyLoop("latest question", false)
+	w.currentRun().runStrategyLoop("latest question", false)
 	if visibleCalls != 2 || hiddenCalls == 0 {
 		t.Fatalf("visible/hidden calls = %d/%d, want 2 and at least 1", visibleCalls, hiddenCalls)
 	}
@@ -534,11 +534,11 @@ func TestContextGuardIrreducibleFallbackIsSingleDispatchAndResets(t *testing.T) 
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "next turn success"}}, StopReason: "end_turn"}, nil
 	}
 
-	w.runStrategyLoop(strings.Repeat("x", 25_000), false)
+	w.currentRun().runStrategyLoop(strings.Repeat("x", 25_000), false)
 	if calls != 3 {
 		t.Fatalf("visible calls = %d, want advisory, one fallback, and one normally guarded next turn", calls)
 	}
-	request := w.buildLLMRequest(&ContextResult{}, nil, "after-success", false)
+	request := w.currentRun().buildLLMRequest(&ContextResult{}, nil, "after-success", false)
 	var rebuilt hiddenLLMRequest
 	if err := json.Unmarshal(request, &rebuilt); err != nil {
 		t.Fatal(err)
@@ -569,7 +569,7 @@ func TestContextGuardRepeatedAdvisoryAfterBypassStopsWithoutErrorItem(t *testing
 			ContextWindowTokens: limit.ContextWindowTokens, Breakdown: limit.Breakdown,
 		}
 	}
-	w.runStrategyLoop(strings.Repeat("x", 25_000), false)
+	w.currentRun().runStrategyLoop(strings.Repeat("x", 25_000), false)
 	if calls != 2 {
 		t.Fatalf("calls = %d, want initial advisory plus one bounded fallback", calls)
 	}
@@ -609,7 +609,7 @@ func TestContextGuardFallbackRealOverflowPreservesProviderCause(t *testing.T) {
 		return nil, limit
 	}
 
-	w.runStrategyLoop(strings.Repeat("x", 25_000), false)
+	w.currentRun().runStrategyLoop(strings.Repeat("x", 25_000), false)
 	if calls != 2 {
 		t.Fatalf("visible calls = %d, want bounded advisory plus fallback", calls)
 	}
@@ -652,7 +652,7 @@ func TestContextGuardRecoveryFailureSurfacesErrorItem(t *testing.T) {
 		}
 	}
 
-	w.runStrategyLoop("latest question", false)
+	w.currentRun().runStrategyLoop("latest question", false)
 	for _, item := range w.doc.GetItems() {
 		if item.Type == ItemTypeError {
 			if !strings.Contains(item.Content, "context recovery failed") || !strings.Contains(item.Content, reducerFailure.Error()) {
@@ -727,7 +727,7 @@ func TestContextRecoveryBudgetResetsAfterSuccessfulDispatch(t *testing.T) {
 		}
 	}
 
-	w.runStrategyLoop("latest question", false)
+	w.currentRun().runStrategyLoop("latest question", false)
 	if want := maxContextRecoveryAttempts + 3; visibleCalls != want {
 		t.Fatalf("visible calls = %d, want %d (budget-consuming overflows, barren success, post-reset overflow, final success)", visibleCalls, want)
 	}
@@ -782,7 +782,7 @@ func TestContextRecoveryNoProgressErrorItemPreservesProviderCause(t *testing.T) 
 
 	// The user's own message is the newest unit and alone exceeds the window:
 	// recovery cannot fold anything, so the turn fails terminally.
-	w.runStrategyLoop(strings.Repeat("x", 25_000), false)
+	w.currentRun().runStrategyLoop(strings.Repeat("x", 25_000), false)
 
 	if realCalls != 1 {
 		t.Fatalf("real calls = %d, want the single rejected attempt", realCalls)

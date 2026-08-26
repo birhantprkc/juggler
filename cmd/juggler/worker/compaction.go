@@ -23,20 +23,20 @@ const defaultSummarizationPromptMarker = "You are creating a handoff summary of 
 // it raises the spinner, labels it, and anchors the elapsed digit. Flushed
 // immediately so the label lands before the first hidden call rather than at the
 // batcher's next tick.
-func (w *ConversationWorker) beginCompactionStatus(message string) {
-	w.sendStatus("compacting", message)
-	w.batcher.Flush()
+func (r *run) beginCompactionStatus(message string) {
+	r.sendStatus("compacting", message)
+	r.batcher.Flush()
 }
 
 // tryBoundedCompaction handles only browser-folded summary threads. It is the
 // folded-thread orchestrator for the pure bounded reducer: snapshot the thread's
 // Yjs state, canonicalize it, run the reducer, commit the summary.
-func (w *ConversationWorker) tryBoundedCompaction(limitErr *provider.ContextLimitExceededError, modelConfig *ModelConfig) (bool, error) {
-	threadID := w.turn.thread.itemID
-	if threadID == "" || !w.isBoundedCompactionThread(threadID) {
+func (r *run) tryBoundedCompaction(limitErr *provider.ContextLimitExceededError, modelConfig *ModelConfig) (bool, error) {
+	threadID := r.t.thread.itemID
+	if threadID == "" || !r.isBoundedCompactionThread(threadID) {
 		return false, nil
 	}
-	if w.compactionCancelled() {
+	if r.compactionCancelled() {
 		return true, errBoundedCompactionCancelled
 	}
 	pinnedModel, err := validateCompactionModel(modelConfig, "bounded compaction")
@@ -44,8 +44,8 @@ func (w *ConversationWorker) tryBoundedCompaction(limitErr *provider.ContextLimi
 		return true, err
 	}
 
-	items := w.getTargetItems()
-	promptID, failReason := w.resolveCompactionPromptItemID(threadID, items)
+	items := r.getTargetItems()
+	promptID, failReason := r.resolveCompactionPromptItemID(threadID, items)
 	if failReason != "" {
 		message := "bounded compaction cannot prove which legacy item is the summarization prompt"
 		if failReason == BoundedCompactionMissingPrompt {
@@ -75,21 +75,21 @@ func (w *ConversationWorker) tryBoundedCompaction(limitErr *provider.ContextLimi
 		calls: 1,
 	}
 
-	w.beginCompactionStatus("Summarizing conversation")
-	w.recordCompactionStart(compactionKindFolded, limitErr.ContextWindowTokens, limitErr.OutputReserveTokens, limitErr.Breakdown.ProviderOverheadTokens)
-	result, err := w.runReducer(compactionKindFolded, pinnedModel, budget, records)
+	r.beginCompactionStatus("Summarizing conversation")
+	r.recordCompactionStart(compactionKindFolded, limitErr.ContextWindowTokens, limitErr.OutputReserveTokens, limitErr.Breakdown.ProviderOverheadTokens)
+	result, err := r.runReducer(compactionKindFolded, pinnedModel, budget, records)
 	if err != nil {
 		return true, err
 	}
-	if !w.writeBoundedCompactionResult(threadID, result) {
-		w.recordCompactionOutcome(compactionKindFolded, "error", result, map[string]any{"reason": string(BoundedCompactionSourceChanged)})
+	if !r.writeBoundedCompactionResult(threadID, result) {
+		r.recordCompactionOutcome(compactionKindFolded, "error", result, map[string]any{"reason": string(BoundedCompactionSourceChanged)})
 		return true, &BoundedCompactionError{
 			Reason: BoundedCompactionSourceChanged, Message: "bounded compaction thread disappeared before result commit",
 			Pass: result.Passes, Calls: result.Calls, Spend: result.EstimatedSpend,
 			Window: budget.window, Usage: result.Usage,
 		}
 	}
-	w.recordCompactionOutcome(compactionKindFolded, "result", result, nil)
+	r.recordCompactionOutcome(compactionKindFolded, "result", result, nil)
 	return true, nil
 }
 
@@ -102,12 +102,12 @@ func (w *ConversationWorker) tryBoundedCompaction(limitErr *provider.ContextLimi
 // (tryBoundedCompaction) to map/reduce the transcript. Either way the summary is
 // committed through the one path, writeBoundedCompactionResult. Returns
 // handled=false only when the thread is not a bounded compaction thread.
-func (w *ConversationWorker) runFoldedThreadCompaction(modelConfig *ModelConfig, ctxResult *ContextResult, tools []ToolDefinition) (bool, error) {
-	threadID := w.turn.thread.itemID
-	if threadID == "" || !w.isBoundedCompactionThread(threadID) {
+func (r *run) runFoldedThreadCompaction(modelConfig *ModelConfig, ctxResult *ContextResult, tools []ToolDefinition) (bool, error) {
+	threadID := r.t.thread.itemID
+	if threadID == "" || !r.isBoundedCompactionThread(threadID) {
 		return false, nil
 	}
-	if w.compactionCancelled() {
+	if r.compactionCancelled() {
 		return true, errBoundedCompactionCancelled
 	}
 	pinnedModel, err := validateCompactionModel(modelConfig, "bounded compaction")
@@ -115,8 +115,8 @@ func (w *ConversationWorker) runFoldedThreadCompaction(modelConfig *ModelConfig,
 		return true, err
 	}
 
-	items := w.getTargetItems()
-	promptID, failReason := w.resolveCompactionPromptItemID(threadID, items)
+	items := r.getTargetItems()
+	promptID, failReason := r.resolveCompactionPromptItemID(threadID, items)
 	if failReason != "" {
 		message := "bounded compaction cannot prove which legacy item is the summarization prompt"
 		if failReason == BoundedCompactionMissingPrompt {
@@ -141,14 +141,14 @@ func (w *ConversationWorker) runFoldedThreadCompaction(modelConfig *ModelConfig,
 		return true, &BoundedCompactionError{Reason: BoundedCompactionEmptySource, Message: "bounded compaction source is empty"}
 	}
 
-	w.beginCompactionStatus("Summarizing conversation")
-	w.recordCompactionStart(compactionKindFolded, 0, 0, 0)
-	probe := w.newBoundedReducer(compactionKindFolded, pinnedModel, boundedCompactionBudget{})
-	parentThreadID := w.doc.findParentThreadID(threadID)
+	r.beginCompactionStatus("Summarizing conversation")
+	r.recordCompactionStart(compactionKindFolded, 0, 0, 0)
+	probe := r.newBoundedReducer(compactionKindFolded, pinnedModel, boundedCompactionBudget{})
+	parentThreadID := r.doc.findParentThreadID(threadID)
 	// Preserve the real turn's cacheable prefix: the folded history renders through
 	// the same wire path as a live turn, and the summarization instruction is
 	// appended as a final user message rather than swapping the system prompt.
-	history, err := providerMessages(w.buildMessagesFromItems(itemsWithoutItemID(items, promptID), false))
+	history, err := providerMessages(r.buildMessagesFromItems(itemsWithoutItemID(items, promptID), false))
 	if err != nil {
 		return true, &BoundedCompactionError{Reason: BoundedCompactionSourceEncoding, Message: "bounded compaction could not encode semantic history: " + err.Error(), Cause: err}
 	}
@@ -166,15 +166,15 @@ func (w *ConversationWorker) runFoldedThreadCompaction(modelConfig *ModelConfig,
 	messages = append(messages, provider.Message{Type: ItemTypeUser, Content: DefaultSummarizationPrompt})
 	probeReq := hiddenLLMRequest{
 		Type: "message", SystemPrompt: ctxResult.SystemPrompt,
-		Messages: messages, Tools: w.filterToolsForThreadID(tools, parentThreadID),
-		ConversationID: w.conversationID, ThreadID: parentThreadID, ModelConfig: &pinnedModel,
+		Messages: messages, Tools: r.filterToolsForThreadID(tools, parentThreadID),
+		ConversationID: r.conversationID, ThreadID: parentThreadID, ModelConfig: &pinnedModel,
 		ToolChoice:    map[string]any{"mode": provider.ToolChoiceNone},
 		TransactionID: generateTransactionID(), BypassContextGuard: true,
 	}
 	result, overflow, probeErr := probe.probeRequest(probeReq, compactionSourceFingerprint(records))
 	if probeErr != nil {
 		if errors.Is(probeErr, errBoundedCompactionCancelled) {
-			w.recordCompactionOutcome(compactionKindFolded, "cancelled", result, nil)
+			r.recordCompactionOutcome(compactionKindFolded, "cancelled", result, nil)
 			return true, &BoundedCompactionCancelledError{Result: result}
 		}
 		reason := "error"
@@ -182,45 +182,45 @@ func (w *ConversationWorker) runFoldedThreadCompaction(modelConfig *ModelConfig,
 		if errors.As(probeErr, &bounded) {
 			reason = string(bounded.Reason)
 		}
-		w.recordCompactionOutcome(compactionKindFolded, "error", result, map[string]any{"reason": reason})
+		r.recordCompactionOutcome(compactionKindFolded, "error", result, map[string]any{"reason": reason})
 		return true, probeErr
 	}
 	if overflow != nil {
 		// The transcript does not fit one call: chunk it with the reported
 		// window through the bounded reducer's map/reduce path.
-		return w.tryBoundedCompaction(overflow, modelConfig)
+		return r.tryBoundedCompaction(overflow, modelConfig)
 	}
-	if w.compactionCancelled() {
-		w.recordCompactionOutcome(compactionKindFolded, "cancelled", result, nil)
+	if r.compactionCancelled() {
+		r.recordCompactionOutcome(compactionKindFolded, "cancelled", result, nil)
 		return true, &BoundedCompactionCancelledError{Result: result}
 	}
-	if !w.writeBoundedCompactionResult(threadID, result) {
-		w.recordCompactionOutcome(compactionKindFolded, "error", result, map[string]any{"reason": string(BoundedCompactionSourceChanged)})
+	if !r.writeBoundedCompactionResult(threadID, result) {
+		r.recordCompactionOutcome(compactionKindFolded, "error", result, map[string]any{"reason": string(BoundedCompactionSourceChanged)})
 		return true, &BoundedCompactionError{
 			Reason: BoundedCompactionSourceChanged, Message: "bounded compaction thread disappeared before result commit",
 			Pass: result.Passes, Calls: result.Calls, Spend: result.EstimatedSpend, Usage: result.Usage,
 		}
 	}
-	w.recordCompactionOutcome(compactionKindFolded, "result", result, nil)
+	r.recordCompactionOutcome(compactionKindFolded, "result", result, nil)
 	return true, nil
 }
 
-func (w *ConversationWorker) foldedCompactionContextItemIDs(threadID string) []string {
-	parentID := w.doc.findParentThreadID(threadID)
+func (r *run) foldedCompactionContextItemIDs(threadID string) []string {
+	parentID := r.doc.findParentThreadID(threadID)
 	var parentItems []ConversationItem
 	if parentID == "" {
-		parentItems = w.doc.GetItems()
+		parentItems = r.doc.GetItems()
 	} else {
-		parentItems = w.doc.GetItemsFromArray(w.doc.GetThreadItemsArray(parentID))
+		parentItems = r.doc.GetItemsFromArray(r.doc.GetThreadItemsArray(parentID))
 	}
-	ids := make([]string, 0, len(parentItems)+len(w.getTargetItems()))
+	ids := make([]string, 0, len(parentItems)+len(r.getTargetItems()))
 	for _, item := range parentItems {
 		if item.ItemID != "" && item.ItemID != threadID {
 			ids = append(ids, item.ItemID)
 		}
 	}
-	for _, item := range w.getTargetItems() {
-		if item.ItemID != "" && item.ItemID != w.compactionPromptItemID(threadID) {
+	for _, item := range r.getTargetItems() {
+		if item.ItemID != "" && item.ItemID != r.compactionPromptItemID(threadID) {
 			ids = append(ids, item.ItemID)
 		}
 	}
@@ -275,7 +275,7 @@ func validateCompactionModel(modelConfig *ModelConfig, label string) (ModelConfi
 // (conversation/thread ids, hidden-call dispatcher, cancellation probe, and the
 // tape hooks for this kind). Only the pinned model and pre-computed budget vary
 // between the folded, recovery, and shrink orchestrators.
-func (w *ConversationWorker) newBoundedReducer(kind string, pinnedModel ModelConfig, budget boundedCompactionBudget) *boundedReducer {
+func (r *run) newBoundedReducer(kind string, pinnedModel ModelConfig, budget boundedCompactionBudget) *boundedReducer {
 	// The folded /compact orchestrator produces a user-facing handoff summary, so
 	// its final call uses the rich DefaultSummarizationPrompt. Recovery and shrink
 	// keep the terse final prompt.
@@ -284,13 +284,13 @@ func (w *ConversationWorker) newBoundedReducer(kind string, pinnedModel ModelCon
 		finalPrompt = DefaultSummarizationPrompt
 	}
 	return &boundedReducer{
-		conversationID: w.conversationID,
-		threadID:       w.turn.thread.itemID,
+		conversationID: r.conversationID,
+		threadID:       r.t.thread.itemID,
 		modelConfig:    pinnedModel,
 		budget:         budget,
-		dispatcher:     w,
-		cancelled:      w.compactionCancelled,
-		hooks:          w.compactionTapeHooks(kind),
+		dispatcher:     r,
+		cancelled:      r.compactionCancelled,
+		hooks:          r.compactionTapeHooks(kind),
 		finalPrompt:    finalPrompt,
 	}
 }
@@ -302,12 +302,12 @@ func (w *ConversationWorker) newBoundedReducer(kind string, pinnedModel ModelCon
 // too, since both the folded and recovery orchestrators duplicated it. The
 // shrink orchestrator records per-tool-result outcomes and so builds its reducer
 // via newBoundedReducer directly rather than through this helper.
-func (w *ConversationWorker) runReducer(kind string, pinnedModel ModelConfig, budget boundedCompactionBudget, records []string) (CompactionResult, error) {
-	reducer := w.newBoundedReducer(kind, pinnedModel, budget)
+func (r *run) runReducer(kind string, pinnedModel ModelConfig, budget boundedCompactionBudget, records []string) (CompactionResult, error) {
+	reducer := r.newBoundedReducer(kind, pinnedModel, budget)
 	result, err := reducer.run(records)
 	if err != nil {
 		if errors.Is(err, errBoundedCompactionCancelled) {
-			w.recordCompactionOutcome(kind, "cancelled", result, nil)
+			r.recordCompactionOutcome(kind, "cancelled", result, nil)
 			return result, &BoundedCompactionCancelledError{Result: result}
 		}
 		reason := "error"
@@ -315,11 +315,11 @@ func (w *ConversationWorker) runReducer(kind string, pinnedModel ModelConfig, bu
 		if errors.As(err, &bounded) {
 			reason = string(bounded.Reason)
 		}
-		w.recordCompactionOutcome(kind, "error", result, map[string]any{"reason": reason})
+		r.recordCompactionOutcome(kind, "error", result, map[string]any{"reason": reason})
 		return result, err
 	}
-	if w.compactionCancelled() {
-		w.recordCompactionOutcome(kind, "cancelled", result, nil)
+	if r.compactionCancelled() {
+		r.recordCompactionOutcome(kind, "cancelled", result, nil)
 		return result, &BoundedCompactionCancelledError{Result: result}
 	}
 	return result, nil
@@ -387,9 +387,9 @@ func (w *ConversationWorker) resolveCompactionPromptItemID(threadID string, item
 // dispatchHiddenCompaction sends one pre-planned hidden call through the
 // normal server/provider path (registry admission included) with stream chunks
 // discarded, and maps engine-side cancellation onto the reducer's sentinel.
-func (w *ConversationWorker) dispatchHiddenCompaction(encoded json.RawMessage) (*LLMResponse, error) {
-	response, err := w.callLLMWithSink(encoded, nil)
-	if err != nil && (errors.Is(err, ErrCancelled) || w.compactionCancelled() || w.turn.wakeInterrupt.Load()) {
+func (r *run) dispatchHiddenCompaction(encoded json.RawMessage) (*LLMResponse, error) {
+	response, err := r.callLLMWithSink(encoded, nil)
+	if err != nil && (errors.Is(err, ErrCancelled) || r.compactionCancelled() || r.t.wakeInterrupt.Load()) {
 		return nil, errBoundedCompactionCancelled
 	}
 	return response, err
@@ -427,10 +427,10 @@ func (w *ConversationWorker) writeBoundedCompactionResult(threadID string, resul
 // It replies BEFORE driving the pickup so the browser command returns promptly;
 // the summarization then runs on the worker loop without blocking the command —
 // exactly as a browser-synced fold's pickup ran synchronously inside handleYjsSync.
-func (w *ConversationWorker) handleCompact(payload json.RawMessage) {
+func (r *run) handleCompact(payload json.RawMessage) {
 	var msg CompactMessage
 	if err := json.Unmarshal(payload, &msg); err != nil {
-		w.log.Error("Failed to parse compact message: %v", err)
+		r.log.Error("Failed to parse compact message: %v", err)
 		return
 	}
 	ack := AckMessage{Type: "ack", AckID: msg.AckID}
@@ -439,22 +439,22 @@ func (w *ConversationWorker) handleCompact(payload json.RawMessage) {
 	// a turn can leave state Idle while still holding the claim, and folding then
 	// commits a thread the pickup cannot claim — leaving a fold that never
 	// summarizes while the conversation reports idle. Refusing here says so.
-	if w.getActivity() != ActivityNone || w.loadState() != StateIdle {
+	if r.getActivity() != ActivityNone || r.loadState() != StateIdle {
 		ack.Result = map[string]any{"folded": false, "error": "conversation is busy"}
-		w.reply(ack)
+		r.reply(ack)
 		return
 	}
-	_, folded, err := w.foldConversationForCompaction(msg.HandoffPromote)
+	_, folded, err := r.foldConversationForCompaction(msg.HandoffPromote)
 	if err != nil {
-		w.log.Error("[compact] fold failed: %v", err)
+		r.log.Error("[compact] fold failed: %v", err)
 		ack.Result = map[string]any{"folded": false, "error": err.Error()}
-		w.reply(ack)
+		r.reply(ack)
 		return
 	}
 	ack.Result = map[string]any{"folded": folded}
-	w.reply(ack)
+	r.reply(ack)
 	if folded {
-		w.checkForNewThreads()
+		r.checkForNewThreads()
 	}
 }
 
@@ -527,8 +527,8 @@ func condenseForRefold(it ConversationItem) ConversationItem {
 // continued tab's parked first message. Returns the new thread's item id and
 // true when a fold happened, ("", false, nil) when there was nothing foldable,
 // and a BoundedCompactionError when encoding or the fingerprinted commit failed.
-func (w *ConversationWorker) foldConversationForCompaction(handoffPromote bool) (string, bool, error) {
-	items := w.getTargetItems()
+func (r *run) foldConversationForCompaction(handoffPromote bool) (string, bool, error) {
+	items := r.getTargetItems()
 
 	// Classify by POSITION, matching the browser /compact fold (not recovery's
 	// per-item token rule): keep only the LEADING run of standing context — rules,
@@ -647,7 +647,7 @@ func (w *ConversationWorker) foldConversationForCompaction(handoffPromote bool) 
 		FoldedRuns:             foldedRunsIn(items[prefixStart:prefixEnd]),
 	}
 
-	if !w.foldPrefixIntoSummaryTracked(w.getTargetItemsYArray(), prefixStart, prefixEnd-prefixStart, summaryItem, promptID, fingerprint) {
+	if !r.foldPrefixIntoSummaryTracked(r.getTargetItemsYArray(), prefixStart, prefixEnd-prefixStart, summaryItem, promptID, fingerprint) {
 		return "", false, &BoundedCompactionError{Reason: BoundedCompactionSourceChanged, Message: "conversation changed during compaction; nothing was folded"}
 	}
 	return threadID, true, nil

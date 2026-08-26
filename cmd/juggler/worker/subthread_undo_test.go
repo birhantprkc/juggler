@@ -29,7 +29,7 @@ func TestSubthreadTurnContentIsUndoable(t *testing.T) {
 	// A sub-thread turn: an assistant message plus a tool-action, appended the way
 	// the strategy loop does. Both land in one undo group (the assistant is
 	// non-auxiliary and opens the group; the auxiliary tool-action attaches).
-	w.appendTargetMessage(
+	w.currentRun().appendTargetMessage(
 		ConversationItem{Type: ItemTypeAssistant, ItemID: "a-1", Content: "working on it"},
 		ConversationItem{Type: ItemTypeToolAction, ItemID: "ta-1", ToolUseID: "tu-1", ToolName: "read_file", State: StateCompleted},
 	)
@@ -71,7 +71,7 @@ func TestCreateThreadIsAtomicallyUndoable(t *testing.T) {
 	seedableRoot(w.doc, "identity")
 	rootBefore := w.doc.GetItemsLength()
 
-	threadID, err := w.createThread(CreateThreadOptions{Goal: "child", Prompt: "do the thing"})
+	threadID, err := w.currentRun().createThread(CreateThreadOptions{Goal: "child", Prompt: "do the thing"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestPromotePendingIntoSubthreadIsUndoable(t *testing.T) {
 		t.Fatal("message was not queued")
 	}
 
-	if n := w.promotePendingItems(innerID); n != 1 {
+	if n := w.currentRun().promotePendingItems(innerID); n != 1 {
 		t.Fatalf("promoted %d, want 1", n)
 	}
 	if got := w.doc.GetItemsFromArray(arr); len(got) != 1 || got[0].Content != "queued question" {

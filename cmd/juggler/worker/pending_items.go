@@ -126,18 +126,18 @@ func (w *ConversationWorker) hasPendingItems(threadItemID string) bool {
 // promoted items are left UNSTAMPED (no transactionId) so the strategy loop's
 // findUnstampedUserMsgID picks up the last one for the next round-trip. Returns
 // the number promoted.
-func (w *ConversationWorker) promotePendingItems(threadItemID string) int {
+func (r *run) promotePendingItems(threadItemID string) int {
 	ycrdtMu.Lock()
-	arr := w.doc.getPendingArrayLocked(threadItemID)
+	arr := r.doc.getPendingArrayLocked(threadItemID)
 	if arr == nil || arr.GetLength() == 0 {
 		ycrdtMu.Unlock()
 		return 0
 	}
-	pending := w.doc.getItemsFromArrayLocked(arr)
+	pending := r.doc.getItemsFromArrayLocked(arr)
 	length := int(arr.GetLength())
-	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+	r.doc.doc.Transact(func(_ *ycrdt.Transaction) {
 		arr.Delete(ycrdt.Number(0), length)
-	}, w.doc.txOrigin())
+	}, r.doc.txOrigin())
 	ycrdtMu.Unlock()
 
 	for i := range pending {
@@ -147,24 +147,24 @@ func (w *ConversationWorker) promotePendingItems(threadItemID string) int {
 
 	if threadItemID == "" {
 		// Root: tracker insert keeps undo parity with a normal user send.
-		w.tracker.AppendMessage(pending...)
+		r.tracker.AppendMessage(pending...)
 	} else {
-		target := w.doc.GetThreadItemsArray(threadItemID)
+		target := r.doc.GetThreadItemsArray(threadItemID)
 		if target == nil {
 			return 0
 		}
 		// Tracker insert, mirroring the root branch: a promotion into a sub-thread
 		// is undoable just like a normal user send. (The pending-queue clear above
 		// stays untracked — queuing is not conversation content.)
-		w.tracker.AppendMessageIntoArray(target, pending...)
+		r.tracker.AppendMessageIntoArray(target, pending...)
 	}
 
-	w.tape.Record("pending-promote", map[string]any{
+	r.tape.Record("pending-promote", map[string]any{
 		"threadItemId": threadItemID,
 		"count":        len(pending),
 	})
-	w.batcher.Flush()
-	w.handleItemsChange()
+	r.batcher.Flush()
+	r.handleItemsChange()
 	return len(pending)
 }
 

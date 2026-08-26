@@ -63,16 +63,16 @@ func (w *ConversationWorker) setMockResponses(r []MockResponse) {
 // "mock-paused" status, and waits for releaseCh before delivering the final
 // response. This lets tests inject actions (e.g. cancel) at a deterministic
 // moment between stream and return.
-func (w *ConversationWorker) popMockResponse(turnID string, sink func(StreamChunk)) (*LLMResponse, error) {
-	if len(w.mock.responses) == 0 {
-		w.tape.Record("mock-pop", map[string]any{"exhausted": true})
+func (r *run) popMockResponse(turnID string, sink func(StreamChunk)) (*LLMResponse, error) {
+	if len(r.mock.responses) == 0 {
+		r.tape.Record("mock-pop", map[string]any{"exhausted": true})
 		return nil, fmt.Errorf("mock responses exhausted")
 	}
 
-	mock := w.mock.responses[0]
-	w.mock.responses = w.mock.responses[1:]
-	w.tape.Record("mock-pop", map[string]any{
-		"remaining":  len(w.mock.responses),
+	mock := r.mock.responses[0]
+	r.mock.responses = r.mock.responses[1:]
+	r.tape.Record("mock-pop", map[string]any{
+		"remaining":  len(r.mock.responses),
 		"stopReason": mock.StopReason,
 		"blocks":     len(mock.Blocks),
 	})
@@ -109,26 +109,26 @@ func (w *ConversationWorker) popMockResponse(turnID string, sink func(StreamChun
 		}
 
 		if paused {
-			w.sendStatus("mock-paused", "")
+			r.sendStatus("mock-paused", "")
 			select {
-			case <-w.mock.releaseCh:
-			case <-w.done:
+			case <-r.mock.releaseCh:
+			case <-r.done:
 				return
 			}
 		}
 
-		w.deliverLLMResponse(turnID, response, nil)
+		r.deliverLLMResponse(turnID, response, nil)
 	}()
 
-	return w.waitForLLMResponse(turnID, LLMTimeout)
+	return r.waitForLLMResponse(turnID, LLMTimeout)
 }
 
 // callLLMMock is the mock branch of callLLM. Returns the next scripted
 // response, or an error if responses are exhausted.
-func (w *ConversationWorker) callLLMMockWithSink(turnID string, sink func(StreamChunk)) (*LLMResponse, error) {
-	if len(w.mock.responses) > 0 {
-		jlog.Info("[callLLM] conv=%s thread=%q mockLeft=%d", w.conversationID, w.turn.thread.itemID, len(w.mock.responses))
-		response, err := w.popMockResponse(turnID, sink)
+func (r *run) callLLMMockWithSink(turnID string, sink func(StreamChunk)) (*LLMResponse, error) {
+	if len(r.mock.responses) > 0 {
+		jlog.Info("[callLLM] conv=%s thread=%q mockLeft=%d", r.conversationID, r.t.thread.itemID, len(r.mock.responses))
+		response, err := r.popMockResponse(turnID, sink)
 		if err != nil {
 			return nil, err
 		}
@@ -140,6 +140,6 @@ func (w *ConversationWorker) callLLMMockWithSink(turnID string, sink func(Stream
 		}
 		return response, nil
 	}
-	jlog.Error("[callLLM] conv=%s thread=%q EXHAUSTED", w.conversationID, w.turn.thread.itemID)
+	jlog.Error("[callLLM] conv=%s thread=%q EXHAUSTED", r.conversationID, r.t.thread.itemID)
 	return nil, fmt.Errorf("mock responses exhausted - test may have more LLM calls than expected")
 }

@@ -79,7 +79,7 @@ func TestPoliteStop_ReducerRestsBeforeNextTurn(t *testing.T) {
 	// Drive the reducer exactly as the event loop would after the tool completes.
 	w.needsReconcile = true
 	for i := 0; i < 10 && w.needsReconcile; i++ {
-		w.tryReconcile()
+		w.currentRun().tryReconcile()
 	}
 
 	// The model was NOT re-invoked: the scripted turn is still on the queue.
@@ -155,7 +155,7 @@ func TestPoliteStop_SupersededByHardCancel(t *testing.T) {
 	w.storeState(StateIdle)
 
 	w.politeStop.Store(true)
-	w.handleCancel(cancelReasonUnspecified)
+	w.currentRun().handleCancel(cancelReasonUnspecified)
 
 	if w.politeStop.Load() {
 		t.Error("hard cancel did not supersede the pending polite stop (D7)")
@@ -175,7 +175,7 @@ func TestPoliteStop_ClearedByExplicitSend(t *testing.T) {
 	w.politeStop.Store(true)
 
 	payload, _ := json.Marshal(map[string]any{"text": "resume with this"})
-	w.handleSendMessage(payload)
+	w.currentRun().handleSendMessage(payload)
 
 	if w.politeStop.Load() {
 		t.Error("explicit send did not clear the pending polite stop (D6 resume)")
@@ -267,7 +267,7 @@ func TestPoliteStop_ConsumeAndIdleDropPublishedPending(t *testing.T) {
 
 	// A busy status frame must re-emit the flag from the latch — the frame is
 	// rebuilt from scratch, so without the re-emit the flag would flicker off.
-	w.sendStatus("streaming", "")
+	w.currentRun().sendStatus("streaming", "")
 	if p, _ := w.readProcessingState()["politePending"].(bool); !p {
 		t.Error("busy sendStatus frame dropped politePending while the latch was set")
 	}
@@ -283,7 +283,7 @@ func TestPoliteStop_ConsumeAndIdleDropPublishedPending(t *testing.T) {
 	// Defensive: even with the latch forced back on, a resting idle frame must
 	// never publish a pending cue — there is nothing to pause at idle.
 	w.politeStop.Store(true)
-	w.sendStatus("idle", "")
+	w.currentRun().sendStatus("idle", "")
 	if _, present := w.readProcessingState()["politePending"]; present {
 		t.Error("idle sendStatus frame published politePending on a resting worker")
 	}

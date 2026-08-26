@@ -64,7 +64,7 @@ func newCompactionWorld(t *testing.T, window, reserve int64, respond func(turn i
 		Conversation: SerializedConversation{ID: "test-conv"},
 		Config:       WorkerConfig{ProjectPath: t.TempDir()},
 	})
-	w.handleInit(initPayload)
+	w.currentRun().handleInit(initPayload)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.SetAutoNamer(func(_, firstMessage, _, _, _ string, _ bool) {
 		world.autoNames = append(world.autoNames, firstMessage)
@@ -129,7 +129,7 @@ func (world *compactionWorld) runToolTurn(toolUseID, result string) {
 	if err := world.w.doc.UpdateItemByToolUseID(toolUseID, "result", map[string]any{"content": result, "isError": false}); err != nil {
 		world.t.Fatal(err)
 	}
-	world.w.runStrategyLoop("", true)
+	world.w.currentRun().runStrategyLoop("", true)
 }
 
 func (world *compactionWorld) driveToolActions() { world.w.driveToolActions() }
@@ -192,7 +192,7 @@ func TestCompactionFitsAndFiresDuringTheToolChain(t *testing.T) {
 	// turn nine and there are still calls left that a compaction can help.
 	result := strings.Repeat("output ", 590)
 
-	world.w.runStrategyLoop("work through the list", false)
+	world.w.currentRun().runStrategyLoop("work through the list", false)
 	for i := 1; i <= toolCall; i++ {
 		world.runToolTurn(fmt.Sprintf("tu-%d", i), result)
 	}
@@ -239,13 +239,13 @@ func TestCompactionDoesNotChangeConversationIdentity(t *testing.T) {
 	world.w.storeState(StateIdle)
 
 	sendMsg(t, world.w, SendMessageMessage{Text: "the original task"})
-	world.w.runStrategyLoop("", true)
+	world.w.currentRun().runStrategyLoop("", true)
 	if len(world.autoNames) != 1 || world.autoNames[0] != "the original task" {
 		t.Fatalf("auto-name calls = %v, want exactly one from the opening message", world.autoNames)
 	}
 
 	world.w.storeState(StateIdle)
-	if _, folded, err := world.w.foldConversationForCompaction(false); err != nil || !folded {
+	if _, folded, err := world.w.currentRun().foldConversationForCompaction(false); err != nil || !folded {
 		t.Fatalf("foldConversationForCompaction = (%v, %v), want a fold", folded, err)
 	}
 
@@ -272,7 +272,7 @@ func TestCompactionTerminatesOnAnUnfoldableOversizedResult(t *testing.T) {
 		return endTurn("recovered and continued")
 	})
 
-	world.w.runStrategyLoop("read the enormous file", false)
+	world.w.currentRun().runStrategyLoop("read the enormous file", false)
 	world.runToolTurn("tu-huge", strings.Repeat("enormous ", 12_000))
 
 	if errs := world.errorItems(); len(errs) > 0 {

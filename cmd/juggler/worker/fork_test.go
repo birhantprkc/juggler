@@ -40,7 +40,7 @@ func TestForkParked_ClonedWorkerRestsWithIncompleteTool(t *testing.T) {
 	if err := clone.doc.LoadFromState(snap); err != nil {
 		t.Fatalf("load snapshot: %v", err)
 	}
-	clone.reconcileProcessingStateOnLoad()
+	clone.currentRun().reconcileProcessingStateOnLoad()
 
 	// Carries the tool item, but RESTS — no auto-resume.
 	if _, ok := clone.findThreadWithIncompleteTool(); !ok {
@@ -51,7 +51,7 @@ func TestForkParked_ClonedWorkerRestsWithIncompleteTool(t *testing.T) {
 	}
 
 	// Marker is one-shot: a later normal reload re-drives as usual.
-	clone.reconcileProcessingStateOnLoad()
+	clone.currentRun().reconcileProcessingStateOnLoad()
 	if got := clone.getActivity(); got != ActivityAwaitingLLM {
 		t.Fatalf("after marker consumed, reload should re-drive, got %q", got)
 	}
@@ -108,7 +108,7 @@ func TestReconcileOnLoad_IncompleteTool_ReDrivesWhenNotForked(t *testing.T) {
 		Type: ItemTypeToolAction, ItemID: "ta-1", State: StatePending,
 	})
 
-	w.reconcileProcessingStateOnLoad()
+	w.currentRun().reconcileProcessingStateOnLoad()
 
 	if got := w.getActivity(); got != ActivityAwaitingLLM {
 		t.Fatalf("crash-recovery re-drive: expected awaiting_llm, got %q", got)

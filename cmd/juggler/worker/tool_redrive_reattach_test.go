@@ -36,7 +36,7 @@ func newReattachHarness(t *testing.T, convID string) *reattachHarness {
 		Conversation: SerializedConversation{ID: convID},
 		Config:       WorkerConfig{ProjectPath: t.TempDir()},
 	})
-	w.handleInit(initPayload)
+	w.currentRun().handleInit(initPayload)
 
 	h := &reattachHarness{
 		w:          w,
@@ -91,7 +91,7 @@ func (h *reattachHarness) executeCount(id string) int {
 // resets stranded running tools, and re-drives every non-terminal tool-action
 // against the freshly attached engine.
 func (h *reattachHarness) reattach() {
-	h.w.dispatchMessage(workerMessage{Type: "resync-to-origin", OriginClient: "engine"})
+	h.w.currentRun().dispatchMessage(workerMessage{Type: "resync-to-origin", OriginClient: "engine"})
 }
 
 // TestReattach_SkipsToolWhoseResultDeliveredThisTurn is the Item 1.1 genesis
@@ -123,7 +123,7 @@ func TestReattach_SkipsToolWhoseResultDeliveredThisTurn(t *testing.T) {
 	// The worker builds a provider request while tu-1 is still running: this is
 	// the real feed path. buildMessages emits an isError placeholder tool-result
 	// for tu-1 (it isn't completed), delivering a result for tu-1 this turn.
-	msgs := w.buildMessages(nil)
+	msgs := w.currentRun().buildMessages(nil)
 	if !hasToolResultFor(msgs, "tu-1") {
 		t.Fatalf("precondition: buildMessages should feed a (placeholder) tool-result for the running tu-1; messages=%+v", msgs)
 	}

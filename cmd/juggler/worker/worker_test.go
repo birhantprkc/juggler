@@ -442,7 +442,7 @@ func TestProviderUnavailableSurfacedAsValidationError(t *testing.T) {
 		},
 		Config: WorkerConfig{ProjectPath: t.TempDir()},
 	})
-	w.handleInit(initPayload)
+	w.currentRun().handleInit(initPayload)
 
 	// Real dispatch path (no mock): the caller fails with a wrapped
 	// ErrProviderUnavailable, exactly as createLLMCaller does when credentials
@@ -479,7 +479,7 @@ func TestProviderUnavailableSurfacedAsValidationError(t *testing.T) {
 		}
 	}()
 
-	w.runStrategyLoop("Hello", false)
+	w.currentRun().runStrategyLoop("Hello", false)
 
 	deadline := time.After(2 * time.Second)
 	for {
@@ -629,7 +629,7 @@ func TestMetaToolsContinueLoop(t *testing.T) {
 		StopReason: "tool_use",
 	}
 
-	shouldContinue, err := w.processLLMResponse(response)
+	shouldContinue, err := w.currentRun().processLLMResponse(response)
 	if err != nil {
 		t.Fatalf("processLLMResponse failed: %v", err)
 	}
@@ -702,7 +702,7 @@ func TestInjectedSystemReminderReachesMessages(t *testing.T) {
 		ConversationItem{Type: ItemTypeSystemReminder, Content: reminder, Summary: "research-mode"},
 	)
 
-	messages := w.buildMessages(nil)
+	messages := w.currentRun().buildMessages(nil)
 
 	var found bool
 	for _, m := range messages {
@@ -729,7 +729,7 @@ func TestInjectedGuidanceReachesMessages(t *testing.T) {
 		ConversationItem{Type: ItemTypeGuidance, Content: guidance},
 	)
 
-	messages := w.buildMessages(nil)
+	messages := w.currentRun().buildMessages(nil)
 
 	var found bool
 	for _, m := range messages {
@@ -748,7 +748,7 @@ func TestBuildLLMRequest_ExplicitContinuationIsCallScoped(t *testing.T) {
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	var first map[string]any
-	if err := json.Unmarshal(w.buildLLMRequestWithIntent(&ContextResult{}, nil, "txn-continue", false, true), &first); err != nil {
+	if err := json.Unmarshal(w.currentRun().buildLLMRequestWithIntent(&ContextResult{}, nil, "txn-continue", false, true), &first); err != nil {
 		t.Fatalf("unmarshal continuation request: %v", err)
 	}
 	if got, ok := first["explicitContinuation"].(bool); !ok || !got {
@@ -756,7 +756,7 @@ func TestBuildLLMRequest_ExplicitContinuationIsCallScoped(t *testing.T) {
 	}
 
 	var second map[string]any
-	if err := json.Unmarshal(w.buildLLMRequest(&ContextResult{}, nil, "txn-next", false), &second); err != nil {
+	if err := json.Unmarshal(w.currentRun().buildLLMRequest(&ContextResult{}, nil, "txn-next", false), &second); err != nil {
 		t.Fatalf("unmarshal next request: %v", err)
 	}
 	if _, present := second["explicitContinuation"]; present {
@@ -773,7 +773,7 @@ func TestBuildLLMRequest_AutoCompactGateSetsContextCeiling(t *testing.T) {
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	var enabled map[string]any
-	if err := json.Unmarshal(w.buildLLMRequest(&ContextResult{}, nil, "txn-enabled", false), &enabled); err != nil {
+	if err := json.Unmarshal(w.currentRun().buildLLMRequest(&ContextResult{}, nil, "txn-enabled", false), &enabled); err != nil {
 		t.Fatalf("unmarshal request: %v", err)
 	}
 	if _, present := enabled["contextCeilingFraction"]; present {
@@ -782,7 +782,7 @@ func TestBuildLLMRequest_AutoCompactGateSetsContextCeiling(t *testing.T) {
 
 	w.autoCompactGate = func() bool { return false }
 	var disabled map[string]any
-	if err := json.Unmarshal(w.buildLLMRequest(&ContextResult{}, nil, "txn-disabled", false), &disabled); err != nil {
+	if err := json.Unmarshal(w.currentRun().buildLLMRequest(&ContextResult{}, nil, "txn-disabled", false), &disabled); err != nil {
 		t.Fatalf("unmarshal request: %v", err)
 	}
 	if got, ok := disabled["contextCeilingFraction"].(float64); !ok || got != 1 {
@@ -809,7 +809,7 @@ func TestBuildLLMRequest_ForcedToolChoice(t *testing.T) {
 		threadID := insertThreadWithOpts(w, threadOpts{goal: "Forced", forceTool: "submit_answer"})
 		w.turn.thread.itemID = threadID
 
-		raw := w.buildLLMRequest(ctxResult, tools, "txn-1", false)
+		raw := w.currentRun().buildLLMRequest(ctxResult, tools, "txn-1", false)
 		var req map[string]any
 		if err := json.Unmarshal(raw, &req); err != nil {
 			t.Fatalf("unmarshal request: %v", err)
@@ -830,7 +830,7 @@ func TestBuildLLMRequest_ForcedToolChoice(t *testing.T) {
 		threadID := insertThreadWithOpts(w, threadOpts{goal: "Plain"})
 		w.turn.thread.itemID = threadID
 
-		raw := w.buildLLMRequest(ctxResult, tools, "txn-2", false)
+		raw := w.currentRun().buildLLMRequest(ctxResult, tools, "txn-2", false)
 		var req map[string]any
 		if err := json.Unmarshal(raw, &req); err != nil {
 			t.Fatalf("unmarshal request: %v", err)

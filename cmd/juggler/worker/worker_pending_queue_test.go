@@ -91,7 +91,7 @@ func TestQueuedMessageJoinsToolResultContinuation(t *testing.T) {
 	// Drive the reducer exactly as the event loop would after the tool completes.
 	w.needsReconcile = true
 	for i := 0; i < 10 && w.needsReconcile; i++ {
-		w.tryReconcile()
+		w.currentRun().tryReconcile()
 	}
 
 	// Exactly the one scripted turn must have run.
@@ -170,7 +170,7 @@ func TestPromotePendingKeepsReadGroupedWithMessage(t *testing.T) {
 	})
 	w.enqueuePendingMessage("", UserMessageInput{Text: "look at @foo.txt"})
 
-	if n := w.promotePendingItems(""); n != 2 {
+	if n := w.currentRun().promotePendingItems(""); n != 2 {
 		t.Fatalf("expected 2 items promoted (read + message), got %d", n)
 	}
 	if w.hasPendingItems("") {

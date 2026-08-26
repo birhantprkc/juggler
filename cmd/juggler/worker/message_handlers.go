@@ -32,27 +32,27 @@ func (w *ConversationWorker) sendReadyWithDocMetadata() {
 	w.sendReadyWithMetadata(metadata)
 }
 
-func (w *ConversationWorker) handleInit(payload json.RawMessage) {
+func (r *run) handleInit(payload json.RawMessage) {
 	var msg InitMessage
 	if err := json.Unmarshal(payload, &msg); err != nil {
-		w.log.Error("Failed to parse init message: %v", err)
-		w.sendError("Failed to parse init message", "")
+		r.log.Error("Failed to parse init message: %v", err)
+		r.sendError("Failed to parse init message", "")
 		return
 	}
 
 	// Reconnect path: viewer reconnected to an already-initialized worker.
 	// Do NOT cancel processing, reload from disk, or reset processingState —
 	// just update config, sync the reconnecting client, and return.
-	if w.initialized {
+	if r.initialized {
 		// Only an attach to a busy worker is worth a line. A page load inits
 		// every conversation in the project, from every client, so logging the
 		// idle case buries the log in one identical line per open tab per load.
-		if state := w.loadState(); state != StateIdle {
-			w.log.Debug("Client attached mid-turn (conv=%s, state=%s)", w.conversationID, state)
+		if state := r.loadState(); state != StateIdle {
+			r.log.Debug("Client attached mid-turn (conv=%s, state=%s)", r.conversationID, state)
 		}
-		w.tape.Record("init", map[string]any{
+		r.tape.Record("init", map[string]any{
 			"path":         "reconnect",
-			"origin":       w.replyTo,
+			"origin":       r.replyTo,
 			"loadFromDisk": msg.Conversation.LoadFromDisk,
 			"delta":        len(msg.StateVector) > 0,
 		})
@@ -70,43 +70,43 @@ func (w *ConversationWorker) handleInit(payload json.RawMessage) {
 		// out on the broadcast path, which is also how a freshly attached engine
 		// picks up a conversation it has never seen.
 		if len(msg.StateVector) > 0 {
-			if delta := w.doc.GetStateUpdate(msg.StateVector); len(delta) > 0 {
-				w.reply(YjsSyncMessage{Type: "yjs-sync", Bytes: delta})
+			if delta := r.doc.GetStateUpdate(msg.StateVector); len(delta) > 0 {
+				r.reply(YjsSyncMessage{Type: "yjs-sync", Bytes: delta})
 			}
 		} else {
-			w.broadcastFullState()
+			r.broadcastFullState()
 		}
 
 		// Send ready with metadata if requested. The conversation name is
 		// the folder name on disk and lives on the session manifest, not
 		// in the Yjs doc — so we don't include it here.
 		if msg.Conversation.LoadFromDisk {
-			w.sendReadyWithDocMetadata()
+			r.sendReadyWithDocMetadata()
 		} else {
-			w.sendReady()
+			r.sendReady()
 		}
 		return
 	}
 
 	// First-init path: full initialization
-	w.tape.Record("init", map[string]any{
+	r.tape.Record("init", map[string]any{
 		"path":         "first",
-		"origin":       w.replyTo,
+		"origin":       r.replyTo,
 		"loadFromDisk": msg.Conversation.LoadFromDisk,
 	})
-	w.projectPath = msg.Config.ProjectPath
-	w.txnStore = NewTransactionStore(w.pathProvider)
-	w.assetStore = NewAssetStore(w.pathProvider)
+	r.projectPath = msg.Config.ProjectPath
+	r.txnStore = NewTransactionStore(r.pathProvider)
+	r.assetStore = NewAssetStore(r.pathProvider)
 
 	// Open this conversation's own log file (in addition to the process-wide
 	// server.log) so a conversation's worker activity can be read in isolation.
 	// The filename is prefixed with the current tab name for easy browsing, with
 	// the stable conv id as the authoritative suffix. Only when on-disk logging
-	// is actually enabled; otherwise w.log stays nil and the nil-safe handle
+	// is actually enabled; otherwise r.log stays nil and the nil-safe handle
 	// routes to the process sink + console alone.
 	if jlog.FileLoggingEnabled() {
-		path := logpaths.ConversationLogPath(w.projectPath, w.conversationID, w.conversationName())
-		w.log = jlog.NewLogger(path, 10, 5)
+		path := logpaths.ConversationLogPath(r.projectPath, r.conversationID, r.conversationName())
+		r.log = jlog.NewLogger(path, 10, 5)
 	}
 
 	initStart := time.Now()
@@ -118,10 +118,10 @@ func (w *ConversationWorker) handleInit(payload json.RawMessage) {
 	// mustExist=true when loading from disk: missing file means the conversation
 	// was orphaned (e.g. app quit before worker could save) — report error so
 	// frontend removes it from conversationOrder.
-	if err := w.loadStateFromDisk(msg.Conversation.LoadFromDisk); err != nil {
-		w.log.Error("Failed to load state from disk: %v", err)
+	if err := r.loadStateFromDisk(msg.Conversation.LoadFromDisk); err != nil {
+		r.log.Error("Failed to load state from disk: %v", err)
 		if msg.Conversation.LoadFromDisk {
-			w.sendError(fmt.Sprintf("Conversation data not found: %v", err), "")
+			r.sendError(fmt.Sprintf("Conversation data not found: %v", err), "")
 			return
 		}
 	} else {
@@ -135,9 +135,9 @@ func (w *ConversationWorker) handleInit(payload json.RawMessage) {
 	// with it the browser's SYSTEM_1). Flushing the doc state to the viewer
 	// before sendReady lets the viewer's activateYjsSync see the array as
 	// already present so it doesn't try to create a competing one.
-	w.tracker.EnsureInitialized()
+	r.tracker.EnsureInitialized()
 	if !msg.Conversation.LoadFromDisk {
-		w.batcher.Flush()
+		r.batcher.Flush()
 	}
 
 	// Repair routines below all read items via doc.GetItems(), which is
@@ -147,15 +147,15 @@ func (w *ConversationWorker) handleInit(payload json.RawMessage) {
 	// conversations — new ones have nothing to repair.
 	if msg.Conversation.LoadFromDisk {
 		// Repair any duplicate messageIds from undo/redo bugs
-		repairedCount := w.repairDuplicateItemIds()
+		repairedCount := r.repairDuplicateItemIds()
 		if repairedCount > 0 {
-			w.log.Info("Repaired %d duplicate messageIds", repairedCount)
+			r.log.Info("Repaired %d duplicate messageIds", repairedCount)
 			// Save repaired state immediately to prevent re-corruption on next load
-			if err := w.saveStateToDisk(); err != nil {
-				w.log.Error("Failed to save repaired state: %v", err)
+			if err := r.saveStateToDisk(); err != nil {
+				r.log.Error("Failed to save repaired state: %v", err)
 			}
 			// Notify frontend about the repair
-			w.sendCorruptionRepaired(repairedCount)
+			r.sendCorruptionRepaired(repairedCount)
 		}
 
 		// A thread with no summary is stopped, not stuck — a thread is running
@@ -165,7 +165,7 @@ func (w *ConversationWorker) handleInit(payload json.RawMessage) {
 		// CancelStaleToolActions below + the requestLLM re-drive.)
 
 		// Cancel tool-actions left running when the app was killed
-		w.CancelStaleToolActions()
+		r.CancelStaleToolActions()
 	}
 
 	// Initialize the conversation-level DEFAULT model config in doc metadata for
@@ -177,8 +177,8 @@ func (w *ConversationWorker) handleInit(payload json.RawMessage) {
 	if msg.Conversation.ModelConfig != nil &&
 		msg.Conversation.ModelConfig.Provider != "" &&
 		msg.Conversation.ModelConfig.Model != "" &&
-		w.doc.GetMetadata("defaultModelConfig") == nil &&
-		w.doc.GetMetadata("modelConfig") == nil {
+		r.doc.GetMetadata("defaultModelConfig") == nil &&
+		r.doc.GetMetadata("modelConfig") == nil {
 		seed := map[string]any{
 			"provider": msg.Conversation.ModelConfig.Provider,
 			"model":    msg.Conversation.ModelConfig.Model,
@@ -188,13 +188,13 @@ func (w *ConversationWorker) handleInit(payload json.RawMessage) {
 		if msg.Conversation.ModelConfig.Thinking != "" {
 			seed["thinking"] = msg.Conversation.ModelConfig.Thinking
 		}
-		w.doc.SetMetadata("defaultModelConfig", seed)
+		r.doc.SetMetadata("defaultModelConfig", seed)
 	}
 
 	// Initialize created timestamp in doc metadata for new conversations.
 	// (Name lives on the on-disk folder name now, not the Yjs doc.)
-	if msg.Conversation.Created != "" && w.doc.GetMetadata("created") == nil {
-		w.doc.SetMetadata("created", msg.Conversation.Created)
+	if msg.Conversation.Created != "" && r.doc.GetMetadata("created") == nil {
+		r.doc.SetMetadata("created", msg.Conversation.Created)
 	}
 
 	// The name itself stays on the folder, but its PROVENANCE is doc state: seed
@@ -203,8 +203,8 @@ func (w *ConversationWorker) handleInit(payload json.RawMessage) {
 	// types a name.)
 	// Absent-only, so a doc that already carries the marker keeps it. See
 	// metaProvisionalName.
-	w.seedNameIsProvisional()
-	w.seedHasAutoNamed()
+	r.seedNameIsProvisional()
+	r.seedHasAutoNamed()
 
 	// Seed the strategy-activation marker so onActivate fires only on a genuine,
 	// non-baseline activation (matching the old "fires on a live switch, never on
@@ -216,41 +216,41 @@ func (w *ConversationWorker) handleInit(payload json.RawMessage) {
 	//     in) plan/research still fires onActivate.
 	// Only seed when absent: a conversation activated under this feature has its
 	// own persisted value that must win.
-	if w.doc.GetMetadata("activatedStrategyId") == nil {
+	if r.doc.GetMetadata("activatedStrategyId") == nil {
 		seed := defaultStrategyID
 		if loadedFromDisk {
-			if cur, ok := w.doc.GetMetadata("currentStrategyId").(string); ok && cur != "" {
+			if cur, ok := r.doc.GetMetadata("currentStrategyId").(string); ok && cur != "" {
 				seed = cur
 			}
 		}
-		w.doc.SetMetadata("activatedStrategyId", seed)
+		r.doc.SetMetadata("activatedStrategyId", seed)
 	}
 
 	// For new conversations, save the initial state immediately so the .yjs file
 	// exists on disk before the frontend can write the conversation ID to
 	// conversationOrder. This prevents orphaned IDs if the app quits quickly.
 	if !msg.Conversation.LoadFromDisk {
-		if err := w.saveStateToDisk(); err != nil {
-			w.log.Error("Failed to save initial state for new conversation: %v", err)
+		if err := r.saveStateToDisk(); err != nil {
+			r.log.Error("Failed to save initial state for new conversation: %v", err)
 		}
 	}
 
 	// Clear any undo history that accumulated during initialization (e.g. from
 	// repairDuplicateItemIds, which uses authorID). The repair operations are
 	// not user-initiated and should not be undoable.
-	w.tracker.ClearHistory()
+	r.tracker.ClearHistory()
 
 	// Reset processingState on first init (idle, plus a conditional crash-recovery
 	// re-drive). Factored out so the fork-parked suppression is unit-testable.
-	w.reconcileProcessingStateOnLoad()
+	r.reconcileProcessingStateOnLoad()
 
 	// Broadcast state to frontend so it can sync
-	w.broadcastFullState()
+	r.broadcastFullState()
 
 	// Broadcast initial undo state so clients know undo availability after load
-	w.sendUndoState(w.tracker.CanUndo(), w.tracker.CanRedo())
+	r.sendUndoState(r.tracker.CanUndo(), r.tracker.CanRedo())
 
-	w.initialized = true
+	r.initialized = true
 
 	// Send ready message LAST (after all document mutations complete).
 	// This prevents race with tests that start modifying document after
@@ -258,18 +258,18 @@ func (w *ConversationWorker) handleInit(payload json.RawMessage) {
 	// manifest (folder name on disk), not in the Yjs doc — so we don't
 	// look it up here.
 	if msg.Conversation.LoadFromDisk && loadedFromDisk {
-		w.sendReadyWithDocMetadata()
-		w.log.Debug("[worker] loaded conv=%s in %v", w.conversationID, time.Since(initStart).Round(time.Millisecond))
+		r.sendReadyWithDocMetadata()
+		r.log.Debug("[worker] loaded conv=%s in %v", r.conversationID, time.Since(initStart).Round(time.Millisecond))
 	} else {
-		w.sendReady()
-		w.log.Debug("[worker] created conv=%s in %v", w.conversationID, time.Since(initStart).Round(time.Millisecond))
+		r.sendReady()
+		r.log.Debug("[worker] created conv=%s in %v", r.conversationID, time.Since(initStart).Round(time.Millisecond))
 	}
 }
 
-func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
+func (r *run) handleSendMessage(payload json.RawMessage) {
 	var msg SendMessageMessage
 	if err := json.Unmarshal(payload, &msg); err != nil {
-		w.sendError("Failed to parse send-message", "")
+		r.sendError("Failed to parse send-message", "")
 		return
 	}
 
@@ -279,15 +279,15 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 	// messages and continuations have nothing to queue.
 	input := msg.UserInput()
 	skillsToLoad := dedupSkills(msg.Skills)
-	if w.getActivity() != ActivityNone || w.loadState() != StateIdle {
+	if r.getActivity() != ActivityNone || r.loadState() != StateIdle {
 		if !msg.IsContinuation {
 			// Skills chosen while a turn is in flight ride the pending queue ahead
 			// of the message, so they promote and execute before its turn.
 			for _, name := range skillsToLoad {
-				w.enqueuePendingSkill(msg.ThreadItemID, name)
+				r.enqueuePendingSkill(msg.ThreadItemID, name)
 			}
 			if !input.isEmpty() {
-				w.enqueuePendingMessage(msg.ThreadItemID, input)
+				r.enqueuePendingMessage(msg.ThreadItemID, input)
 			}
 		}
 		return
@@ -299,17 +299,17 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 	// user-initiated turn (D6, §10.5). Defensive: the boundary that drove idle
 	// already Swap(false)'d the latch, but a send arriving in the same idle
 	// window must win regardless.
-	w.clearPolitePending()
+	r.clearPolitePending()
 
 	// Guard: empty message (no text AND no attachments) with no incomplete
 	// tools = nothing to do. An explicit skills-only send is the exception — it
 	// carries no text but must still load the chosen skills (handled below).
-	if input.isEmpty() && !msg.IsContinuation && !w.hasIncompleteTools() && len(skillsToLoad) == 0 {
+	if input.isEmpty() && !msg.IsContinuation && !r.hasIncompleteTools() && len(skillsToLoad) == 0 {
 		return
 	}
 
 	// Resolve model config: check thread Y.Map → parent chain → conversation metadata
-	modelConfig := w.doc.ResolveEffectiveModelConfig(msg.ThreadItemID)
+	modelConfig := r.doc.ResolveEffectiveModelConfig(msg.ThreadItemID)
 
 	if modelConfig == nil || modelConfig.Model == "" {
 		errMsg := "Please select a model before sending a message"
@@ -319,17 +319,17 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 		// code "no-model" marks the recoverable divergence case: the client may
 		// hold a valid model this worker's doc never received (outbound sync gap).
 		// The client self-heals by re-broadcasting its config and retrying once.
-		w.sendStatusWithCode("validation-error", errMsg, "no-model")
+		r.sendStatusWithCode("validation-error", errMsg, "no-model")
 		return
 	}
 
 	// A send/continue is a fresh user intent to drive the LLM after any prior
 	// undo/redo history navigation.
-	w.suppressReconcileAfterHistoryNavUntilMs = 0
+	r.suppressReconcileAfterHistoryNavUntilMs = 0
 
 	// Set thread context for this request. Validate the target thread BEFORE
-	// mutating w.turn.thread, so an early return (missing items array) can't leave
-	// w.turn.thread pointing at a half-set thread from this request.
+	// mutating r.t.thread, so an early return (missing items array) can't leave
+	// r.t.thread pointing at a half-set thread from this request.
 	//
 	// A thread carrying a result is NOT refused. A result is the thread's current
 	// summary, not a terminal state: a thread is running or it is stopped, and a
@@ -337,16 +337,16 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 	// a parent LLM relies on to invoke a subthread more than once, so the human
 	// path and the delegation path are one mechanism.
 	if msg.ThreadItemID != "" {
-		itemsArray := w.doc.GetThreadItemsArray(msg.ThreadItemID)
+		itemsArray := r.doc.GetThreadItemsArray(msg.ThreadItemID)
 		if itemsArray == nil {
-			w.sendError(fmt.Sprintf("Thread item %s not found", msg.ThreadItemID), "")
+			r.sendError(fmt.Sprintf("Thread item %s not found", msg.ThreadItemID), "")
 			return
 		}
-		w.turn.thread.itemID = msg.ThreadItemID
-		w.turn.thread.itemsArray = itemsArray
+		r.t.thread.itemID = msg.ThreadItemID
+		r.t.thread.itemsArray = itemsArray
 	} else {
-		w.turn.thread.itemID = ""
-		w.turn.thread.itemsArray = nil
+		r.t.thread.itemID = ""
+		r.t.thread.itemsArray = nil
 	}
 
 	// Add user message to doc before signaling the reducer.
@@ -361,10 +361,10 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 		// text-less (image-only) first messages, and any conversation whose name a
 		// human has committed to (NameIsProvisional — the server re-checks it
 		// before applying the title).
-		if msg.ThreadItemID == "" && w.autoNameFunc != nil &&
-			strings.TrimSpace(input.Text) != "" && !w.hasAutoNamed() &&
-			w.NameIsProvisional() {
-			w.fireAutoName(input.Text, modelConfig.Provider, modelConfig.Model, modelConfig.Thinking, false)
+		if msg.ThreadItemID == "" && r.autoNameFunc != nil &&
+			strings.TrimSpace(input.Text) != "" && !r.hasAutoNamed() &&
+			r.NameIsProvisional() {
+			r.fireAutoName(input.Text, modelConfig.Provider, modelConfig.Model, modelConfig.Thinking, false)
 		}
 
 		// Drain any queued items into this thread FIRST, then append the new user
@@ -375,17 +375,17 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 		// message). Promoting here lands those reads immediately before the user
 		// message instead of stranding them for the next boundary to promote out
 		// of order. Harmless when the queue is empty.
-		w.promotePendingItems(msg.ThreadItemID)
-		w.addUserMessage(input)
+		r.promotePendingItems(msg.ThreadItemID)
+		r.addUserMessage(input)
 		// Explicit skill preloads land immediately AFTER the user message, so the
 		// transcript reads user → assistant(skill) → tool_result → reply and the
 		// skill's instructions are in context before the assistant responds. The
 		// reducer rests on these non-terminal tool-actions, drives them to
 		// completion, then dispatches the LLM call (requestLLM below sets the
 		// awaiting_llm activity that authorises that dispatch).
-		w.injectSkillPreloads(skillsToLoad)
-		w.batcher.Flush()
-		w.handleItemsChange()
+		r.injectSkillPreloads(skillsToLoad)
+		r.batcher.Flush()
+		r.handleItemsChange()
 
 		// A human just sent a genuine message into this thread — promote it to
 		// spawn-capable so its agent may itself use create_thread. The
@@ -393,18 +393,18 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 		// a thread a person has messaged may spawn, gating recursion on human
 		// attention. No-op at root (full tool list already) and for delegated
 		// subthreads. See promoteThreadSpawnCapable.
-		w.promoteThreadSpawnCapable(msg.ThreadItemID)
+		r.promoteThreadSpawnCapable(msg.ThreadItemID)
 	} else if !msg.IsContinuation && len(skillsToLoad) > 0 {
 		// Skills-only send (no prose): load the chosen skills as visible
 		// tool-actions but start NO turn. driveToolActions (via handleItemsChange)
 		// evaluates, approves, and executes them; because we never requestLLM,
 		// activity stays idle and the reducer rests on the completed tool-action
 		// rather than dispatching an empty turn.
-		w.promotePendingItems(msg.ThreadItemID)
-		w.injectSkillPreloads(skillsToLoad)
-		w.batcher.Flush()
-		w.handleItemsChange()
-		w.needsReconcile = true
+		r.promotePendingItems(msg.ThreadItemID)
+		r.injectSkillPreloads(skillsToLoad)
+		r.batcher.Flush()
+		r.handleItemsChange()
+		r.needsReconcile = true
 		return
 	}
 
@@ -413,15 +413,15 @@ func (w *ConversationWorker) handleSendMessage(payload json.RawMessage) {
 	// it as live, then remember the one-shot intent until the reducer claims the
 	// turn. Root continuations have no run records to open.
 	if msg.IsContinuation {
-		w.openThreadContinuationRun(msg.ThreadItemID)
-		w.markExplicitContinuation(msg.ThreadItemID)
+		r.openThreadContinuationRun(msg.ThreadItemID)
+		r.markExplicitContinuation(msg.ThreadItemID)
 	}
 
 	// Signal the reducer to dispatch an LLM call. requestLLM sets
 	// activity="awaiting_llm" atomically; the reducer picks it up on
 	// the next event-loop tick via tryReconcile → dispatchCallLLM.
-	w.requestLLM(msg.ThreadItemID)
-	w.needsReconcile = true
+	r.requestLLM(msg.ThreadItemID)
+	r.needsReconcile = true
 }
 
 // firstRootUserMessageText returns the text of the conversation's first
@@ -521,10 +521,10 @@ func (w *ConversationWorker) handleRequestAutoName(payload json.RawMessage) {
 // billed, not lost — the footer reads the latest blob's inputTokens. There is
 // no juggler request behind an autonomous turn, so the blob's input context is
 // empty; the output blocks + usage come from the turn itself.
-func (w *ConversationWorker) handleProviderTurn(payload json.RawMessage) {
+func (r *run) handleProviderTurn(payload json.RawMessage) {
 	var msg ProviderTurnMessage
 	if err := json.Unmarshal(payload, &msg); err != nil {
-		w.log.Error("Failed to parse provider-turn: %v", err)
+		r.log.Error("Failed to parse provider-turn: %v", err)
 		return
 	}
 
@@ -541,7 +541,7 @@ func (w *ConversationWorker) handleProviderTurn(payload json.RawMessage) {
 			if content == "" {
 				continue
 			}
-			w.tracker.AppendMessage(ConversationItem{
+			r.tracker.AppendMessage(ConversationItem{
 				Type:   ItemTypeThinking,
 				ItemID: generateItemID(),
 				// The block's signature / reasoning item id, kept so the next
@@ -556,7 +556,7 @@ func (w *ConversationWorker) handleProviderTurn(payload json.RawMessage) {
 			if len(block.Metadata) == 0 {
 				continue
 			}
-			w.tracker.AppendMessage(ConversationItem{
+			r.tracker.AppendMessage(ConversationItem{
 				Type:          ItemTypeProviderState,
 				ItemID:        generateItemID(),
 				ProviderData:  block.Metadata,
@@ -568,7 +568,7 @@ func (w *ConversationWorker) handleProviderTurn(payload json.RawMessage) {
 			if block.Content == "" {
 				continue
 			}
-			w.tracker.AppendMessage(ConversationItem{
+			r.tracker.AppendMessage(ConversationItem{
 				Type:          ItemTypeAssistant,
 				ItemID:        generateItemID(),
 				Content:       block.Content,
@@ -577,7 +577,7 @@ func (w *ConversationWorker) handleProviderTurn(payload json.RawMessage) {
 			})
 			inserted = true
 		case provider.ContentBlockTypeToolUse:
-			w.log.Info("provider-turn: autonomous tool_use %q not yet driven through approval pipeline (deferred); skipping", block.Name)
+			r.log.Info("provider-turn: autonomous tool_use %q not yet driven through approval pipeline (deferred); skipping", block.Name)
 		}
 	}
 
@@ -589,8 +589,8 @@ func (w *ConversationWorker) handleProviderTurn(payload json.RawMessage) {
 	// Transaction" resolves. StartTime is now / Duration is zero: the turn ran
 	// in the CLI, so juggler has no real wall-clock for it (cosmetic fields).
 	// SaveBlob no-ops on a nil store (tests without persistence).
-	if err := w.txnStore.SaveBlob(TransactionBlobInput{
-		ConversationID: w.conversationID,
+	if err := r.txnStore.SaveBlob(TransactionBlobInput{
+		ConversationID: r.conversationID,
 		TxnID:          txnID,
 		Response: &LLMResponse{
 			Blocks:                 msg.Blocks,
@@ -602,44 +602,44 @@ func (w *ConversationWorker) handleProviderTurn(payload json.RawMessage) {
 			StopReason:             msg.StopReason,
 		},
 		StartTime:   time.Now(),
-		ModelConfig: w.resolveModelConfig(),
+		ModelConfig: r.resolveModelConfig(),
 	}); err != nil {
-		w.log.Error("Failed to save autonomous-turn transaction blob: %v", err)
+		r.log.Error("Failed to save autonomous-turn transaction blob: %v", err)
 	}
 
 	// Flush so the autonomous turn syncs to the browser promptly; the items
 	// observer will drive the reducer on the next tick (an assistant message at
 	// root with no pending activity is inert).
-	w.batcher.Flush()
+	r.batcher.Flush()
 }
 
 // logCancel records who stopped the turn, with enough state to tell a mid-turn
 // cancel from one that landed on an already-parked turn. Every path that can
 // cancel writes exactly one of these; without it a cancelled turn simply stops,
 // leaving no trace anywhere in the logs.
-func (w *ConversationWorker) logCancel(reason cancelReason) {
-	w.log.Info("🛑 Cancel requested (%s) — state=%s activity=%s llmInFlight=%v",
-		reason, w.loadState(), w.getActivity(), w.turn.cancelLLM.Load() != nil)
+func (r *run) logCancel(reason cancelReason) {
+	r.log.Info("🛑 Cancel requested (%s) — state=%s activity=%s llmInFlight=%v",
+		reason, r.loadState(), r.getActivity(), r.t.cancelLLM.Load() != nil)
 }
 
-func (w *ConversationWorker) handleCancel(reason cancelReason) {
-	w.logCancel(reason)
+func (r *run) handleCancel(reason cancelReason) {
+	r.logCancel(reason)
 
 	// A hard cancel supersedes any pending polite stop (Pause): the user escalated
 	// from "finish then pause" to "stop now", so drop the latch before the
 	// destructive teardown below runs (D6, D7). Clearing it here also means the
 	// next turn after the cancel is never spuriously suppressed.
-	w.clearPolitePending()
+	r.clearPolitePending()
 
 	// Unwind any engine-driven strategy execution (e.g. plan onWorkerIdle's
 	// _driveExecution loop): the worker cancels the turn/tools below, but the
 	// driver loop lives in the engine and must abort its controller so it stops
 	// rather than continuing to the next step. Fire-and-forget to the engine.
-	w.dispatchCancelStrategyExecution()
+	r.dispatchCancelStrategyExecution()
 
-	if w.loadState() == StateProcessing {
-		w.storeState(StateCancelling)
-		if p := w.turn.cancelLLM.Swap(nil); p != nil {
+	if r.loadState() == StateProcessing {
+		r.storeState(StateCancelling)
+		if p := r.t.cancelLLM.Swap(nil); p != nil {
 			(*p)()
 		}
 		// Release any parked provider subprocess that the ctx-cancel above
@@ -652,8 +652,8 @@ func (w *ConversationWorker) handleCancel(reason cancelReason) {
 		// through isContinuation/continueSession and the CLI would resume
 		// the abandoned turn, never seeing the new user input. The release is
 		// warm-preserving: sessionUUID survives so the next turn --resumes warm.
-		if w.cancelLLMSession != nil {
-			w.cancelLLMSession(w.conversationID)
+		if r.cancelLLMSession != nil {
+			r.cancelLLMSession(r.conversationID)
 		}
 		return
 	}
@@ -661,14 +661,14 @@ func (w *ConversationWorker) handleCancel(reason cancelReason) {
 	// Non-blocking tool wait: the worker is idle but a turn is parked in
 	// activity="awaiting_llm" (a tool batch awaiting approval, or in-flight
 	// tools/threads). How we cancel depends on what is actually blocking.
-	if w.getActivity() == ActivityAwaitingLLM {
-		threadID := w.getProcessingThreadItemID()
+	if r.getActivity() == ActivityAwaitingLLM {
+		threadID := r.getProcessingThreadItemID()
 		// Decide BEFORE cancelling — cancelling flips pending → cancelled.
-		pureApproval := w.blockedOnlyByApprovals()
+		pureApproval := r.blockedOnlyByApprovals()
 
 		// Stop everything in this parked turn, including approvals the browser
 		// hasn't resolved (the test path has no browser-side approval cancel).
-		w.CancelAllToolActions()
+		r.CancelAllToolActions()
 		// The provider may have a live subprocess parked inside an MCP
 		// tools/call awaiting a result that will now never come — release it so
 		// handlers don't block until their 5-minute timeout. The release is
@@ -684,8 +684,8 @@ func (w *ConversationWorker) handleCancel(reason cancelReason) {
 		// conversation — and that is the common case, since Claude emits
 		// multi-tool batches where one tool executes while a sibling still awaits
 		// approval, so "real work in flight" is the norm at an approval prompt.
-		if w.cancelLLMSession != nil {
-			w.cancelLLMSession(w.conversationID)
+		if r.cancelLLMSession != nil {
+			r.cancelLLMSession(r.conversationID)
 		}
 
 		if pureApproval {
@@ -694,16 +694,16 @@ func (w *ConversationWorker) handleCancel(reason cancelReason) {
 			// hand off to the reducer, which continues a queued turn or rests.
 			// Deliberately does NOT write idle here — that would clear
 			// awaiting_llm before the reducer runs and strand the continuation.
-			w.needsReconcile = true
+			r.needsReconcile = true
 			return
 		}
 
 		// Real work was in flight (an approved/running tool, or an open
 		// sub-thread). Park: keep any queued messages by promoting them into
 		// the thread, then rest — don't silently re-drive the interrupted work.
-		w.promotePendingItems(threadID)
-		w.sendStatus("idle", "")
-		w.resetThreadContext()
+		r.promotePendingItems(threadID)
+		r.sendStatus("idle", "")
+		r.resetThreadContext()
 	}
 }
 
@@ -728,7 +728,7 @@ func (w *ConversationWorker) handleBuildSubthreadSpecResponse(payload json.RawMe
 	w.subthreadSpecReply.deliver(payload)
 }
 
-func (w *ConversationWorker) handleYjsSync(payload json.RawMessage) {
+func (r *run) handleYjsSync(payload json.RawMessage) {
 	var msg YjsSyncMessage
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return
@@ -736,21 +736,21 @@ func (w *ConversationWorker) handleYjsSync(payload json.RawMessage) {
 
 	var applyErr error
 	if msg.EngineDerived {
-		applyErr = w.doc.ApplyEngineDerivedSyncUpdate(msg.Bytes)
+		applyErr = r.doc.ApplyEngineDerivedSyncUpdate(msg.Bytes)
 	} else {
-		applyErr = w.doc.ApplySyncUpdate(msg.Bytes)
+		applyErr = r.doc.ApplySyncUpdate(msg.Bytes)
 	}
 	// `origin` identifies WHICH client's sync this was — when a flake's
 	// worker doc diverges from a viewer's, the writer of the divergent
 	// update is the whole question.
-	w.tape.Record("yjs-apply", map[string]any{
+	r.tape.Record("yjs-apply", map[string]any{
 		"bytes":         len(msg.Bytes),
 		"engineDerived": msg.EngineDerived,
 		"err":           applyErr != nil,
-		"origin":        w.replyTo,
+		"origin":        r.replyTo,
 	})
 	if applyErr != nil {
-		w.log.Error("Failed to apply sync update: %v", applyErr)
+		r.log.Error("Failed to apply sync update: %v", applyErr)
 		return
 	}
 
@@ -758,15 +758,15 @@ func (w *ConversationWorker) handleYjsSync(payload json.RawMessage) {
 	// sync the browser may send its own items Y.Array which wins the Yjs
 	// conflict, replacing the Go-created array. Without this call the manager
 	// keeps watching the stale (tombstoned) array and canUndo stays false.
-	w.tracker.RefreshScope()
+	r.tracker.RefreshScope()
 
 	// Schedule save to persist frontend updates (metadata, context items, etc.)
-	w.scheduleSave()
+	r.scheduleSave()
 
 	// Explicitly check for items changes after applying sync update.
 	// ycrdt's items.Observe may not fire for remote updates applied via ApplyUpdate,
 	// so we manually trigger change detection to ensure undo tracking works.
-	w.handleItemsChange()
+	r.handleItemsChange()
 }
 
 // handleResyncRequest answers a client's reconnect catch-up in both directions:
@@ -1016,20 +1016,20 @@ func (w *ConversationWorker) handleRenameLog() {
 	w.log.Rename(newPath)
 }
 
-func (w *ConversationWorker) handleUndo(payload json.RawMessage) {
-	w.handleUndoOrRedo(w.tracker.Undo, payload)
+func (r *run) handleUndo(payload json.RawMessage) {
+	r.handleUndoOrRedo(r.tracker.Undo, payload)
 }
 
-func (w *ConversationWorker) handleRedo(payload json.RawMessage) {
-	w.handleUndoOrRedo(w.tracker.Redo, payload)
+func (r *run) handleRedo(payload json.RawMessage) {
+	r.handleUndoOrRedo(r.tracker.Redo, payload)
 }
 
-func (w *ConversationWorker) handleUndoOrRedo(fn func() bool, payload json.RawMessage) {
+func (r *run) handleUndoOrRedo(fn func() bool, payload json.RawMessage) {
 	var msg struct {
 		AckID string `json:"ackId,omitempty"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
-		w.log.Error("Failed to parse undo/redo message: %v", err)
+		r.log.Error("Failed to parse undo/redo message: %v", err)
 		return
 	}
 	// Stop any in-flight strategy loop before we start mutating the document.
@@ -1038,25 +1038,25 @@ func (w *ConversationWorker) handleUndoOrRedo(fn func() bool, payload json.RawMe
 	// loop's defers finally run (writing a fallback result, transitioning to
 	// idle, etc.) they would overwrite the just-restored state. Cancelling
 	// first puts the worker on a path to Idle so the undo lands cleanly.
-	w.cancelAndWaitForIdle()
+	r.cancelAndWaitForIdle()
 
 	// Suppress the items observer for the duration of the undo. Otherwise
 	// the UndoManager's restoration of items (e.g. a thread with a trailing
 	// user message) immediately tickles the reducer, which dispatches a new
 	// LLM turn — the user's undo would visibly do nothing because the worker
 	// fights it. Same reason we clear needsReconcile afterwards.
-	w.suppressItemsChange = true
+	r.suppressItemsChange = true
 	success := fn()
 	// The Yjs items observer fires synchronously inside fn(), enqueueing
 	// docChangeChan signals. Drain them before clearing suppressItemsChange
 	// so the next event-loop tick doesn't run handleItemsChange against
 	// the post-undo state and tickle the reducer.
 	select {
-	case <-w.docChangeChan:
+	case <-r.docChangeChan:
 	default:
 	}
-	w.suppressItemsChange = false
-	w.needsReconcile = false
+	r.suppressItemsChange = false
+	r.needsReconcile = false
 
 	// Clear any in-flight activity marker. The user explicitly reverted
 	// state; awaiting_llm or calling_llm semantics from before the undo
@@ -1065,15 +1065,15 @@ func (w *ConversationWorker) handleUndoOrRedo(fn func() bool, payload json.RawMe
 	// post-undo doc ([..., user]) plus activity="awaiting_llm" matches
 	// decideNextAction's ItemTypeUser-AwaitingLLM = CallLLM branch.
 	// Note: this is a no-op if activity was already None.
-	w.releaseLLM()
+	r.releaseLLM()
 	// Keep suppressing reducer advancement for immediate post-undo/redo Yjs sync
 	// echoes. This is time-bounded so later Yjs-originated user actions (approval
 	// clicks) still drive the reducer normally.
-	w.suppressReconcileAfterHistoryNavUntilMs = time.Now().UnixMilli() + 500
+	r.suppressReconcileAfterHistoryNavUntilMs = time.Now().UnixMilli() + 500
 
 	// Flush Yjs sync BEFORE ACK so frontend state is updated when undo()/redo() returns
-	w.batcher.Flush()
-	w.reply(map[string]any{
+	r.batcher.Flush()
+	r.reply(map[string]any{
 		"type":   "ack",
 		"ackId":  msg.AckID,
 		"result": success,
@@ -1116,16 +1116,16 @@ func (w *ConversationWorker) handleEndUndoCoalesce(payload json.RawMessage) {
 // cancelAndWaitForIdle stops any in-flight strategy loop and blocks (briefly)
 // until the worker reaches StateIdle. Called before undo/redo so the document
 // rollback can't be raced by the strategy's deferred writes.
-func (w *ConversationWorker) cancelAndWaitForIdle() {
-	if w.loadState() == StateIdle {
+func (r *run) cancelAndWaitForIdle() {
+	if r.loadState() == StateIdle {
 		return
 	}
-	w.handleCancel(cancelReasonUndoRedo)
+	r.handleCancel(cancelReasonUndoRedo)
 	// Wait up to ~1s for the strategy goroutine to honour the cancel and
 	// transition to Idle. Polling is acceptable here: undo is rare and the
 	// strategy loop checks its state every iteration / on LLM cancel.
 	for i := 0; i < 100; i++ {
-		if w.loadState() == StateIdle {
+		if r.loadState() == StateIdle {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -1137,25 +1137,25 @@ func (w *ConversationWorker) cancelAndWaitForIdle() {
 // re-arm the one-shot needsStrategyRun trigger, then drive the pickup. When the
 // worker is busy the pickup is a no-op and a later handleItemsChange runs it, so
 // the re-arm alone is enough to guarantee the run.
-func (w *ConversationWorker) handleResummarizeCompactionThread(payload json.RawMessage) {
+func (r *run) handleResummarizeCompactionThread(payload json.RawMessage) {
 	var msg ResummarizeCompactionThreadMessage
 	if err := json.Unmarshal(payload, &msg); err != nil {
-		w.log.Error("Failed to parse resummarize-compaction-thread message: %v", err)
+		r.log.Error("Failed to parse resummarize-compaction-thread message: %v", err)
 		return
 	}
-	handled := w.isBoundedCompactionThread(msg.ThreadItemID)
+	handled := r.isBoundedCompactionThread(msg.ThreadItemID)
 	if handled {
-		w.clearThreadResult(msg.ThreadItemID)
-		w.setThreadNeedsStrategyRun(msg.ThreadItemID)
+		r.clearThreadResult(msg.ThreadItemID)
+		r.setThreadNeedsStrategyRun(msg.ThreadItemID)
 	}
-	w.batcher.Flush()
-	w.reply(map[string]any{
+	r.batcher.Flush()
+	r.reply(map[string]any{
 		"type":   "ack",
 		"ackId":  msg.AckID,
 		"result": handled,
 	})
 	if handled {
-		w.checkForNewThreads()
+		r.checkForNewThreads()
 	}
 }
 

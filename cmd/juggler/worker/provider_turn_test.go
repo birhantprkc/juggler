@@ -40,7 +40,7 @@ func TestHandleProviderTurn_FinalizesCost(t *testing.T) {
 		Autonomous:             true,
 	})
 
-	w.handleProviderTurn(payload)
+	w.currentRun().handleProviderTurn(payload)
 
 	items := w.doc.GetItems()
 	if len(items) != before+2 {
@@ -101,7 +101,7 @@ func TestHandleProviderTurn_LandsAutonomousAssistantTurn(t *testing.T) {
 		t.Fatalf("marshal provider-turn: %v", err)
 	}
 
-	w.handleProviderTurn(payload)
+	w.currentRun().handleProviderTurn(payload)
 
 	items := w.doc.GetItems()
 	if len(items) != before+2 {
@@ -132,7 +132,7 @@ func TestHandleProviderTurn_ToolUseOnlyInsertsNothing(t *testing.T) {
 		Autonomous: true,
 	})
 
-	w.handleProviderTurn(payload)
+	w.currentRun().handleProviderTurn(payload)
 
 	if got := len(w.doc.GetItems()); got != before {
 		t.Fatalf("expected no new items for a tool_use-only turn, got %d new", got-before)

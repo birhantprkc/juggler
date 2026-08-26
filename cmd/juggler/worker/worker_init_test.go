@@ -45,7 +45,7 @@ func TestInitResetsStaleProcessingState(t *testing.T) {
 			ProjectPath: t.TempDir(),
 		},
 	})
-	w.handleInit(initPayload)
+	w.currentRun().handleInit(initPayload)
 
 	// Verify processingState is now idle
 	ps = w.doc.GetMetadata("processingState")
@@ -105,7 +105,7 @@ func TestInitCancelsStaleToolActions(t *testing.T) {
 			ProjectPath: tmpDir,
 		},
 	})
-	w.handleInit(initPayload)
+	w.currentRun().handleInit(initPayload)
 
 	// Verify the stale tool-action was cancelled
 	items = w.doc.GetItems()
@@ -184,7 +184,7 @@ func TestInitPreservesAwaitingLLMForPendingTool(t *testing.T) {
 		},
 		Config: WorkerConfig{ProjectPath: tmpDir},
 	})
-	w.handleInit(initPayload)
+	w.currentRun().handleInit(initPayload)
 
 	// The pending tool must NOT have been cancelled — CancelStaleToolActions
 	// skips StatePending, but cross-check here so a regression in that path
@@ -252,7 +252,7 @@ func TestInitLeavesUnsummarisedThreadAlone(t *testing.T) {
 		},
 		Config: WorkerConfig{ProjectPath: tmpDir},
 	})
-	w.handleInit(initPayload)
+	w.currentRun().handleInit(initPayload)
 
 	threadYMap := w.doc.GetThreadYMap(threadItemID)
 	if threadYMap == nil {

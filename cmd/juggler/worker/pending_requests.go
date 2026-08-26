@@ -74,25 +74,25 @@ type pendingEntrySnapshot struct {
 // scanPendingRequests is invoked from handleItemsChange. Walks the
 // pendingRequests Y.Array and drives every entry one step forward. Runs on
 // the worker's run() goroutine; Yjs reads/writes acquire ycrdtMu.
-func (w *ConversationWorker) scanPendingRequests() {
-	snapshot := w.snapshotPendingEntries()
+func (r *run) scanPendingRequests() {
+	snapshot := r.snapshotPendingEntries()
 	if len(snapshot) == 0 {
 		return
 	}
 	nowMs := time.Now().UnixMilli()
 	for _, e := range snapshot {
 		if e.cancelRequested && (e.status == "requested" || e.status == "claimed") {
-			w.cancelPendingEntry(e)
+			r.cancelPendingEntry(e)
 			continue
 		}
 		switch e.status {
 		case "requested":
-			w.claimAndDispatchPendingEntry(e)
+			r.claimAndDispatchPendingEntry(e)
 		case "claimed":
-			w.advanceClaimedPendingEntry(e)
+			r.advanceClaimedPendingEntry(e)
 		case "completed", "error", "cancelled":
 			if e.completedAt > 0 && nowMs-int64(e.completedAt) > pendingRequestsGCMs {
-				w.gcPendingEntry(e.ownerThreadID, e.id)
+				r.gcPendingEntry(e.ownerThreadID, e.id)
 			}
 		}
 	}
@@ -219,9 +219,9 @@ func (w *ConversationWorker) pendingEntryByIDLocked(ownerThreadID, id string) (i
 // (createThread returns a threadItemId immediately; the actual thread runs
 // async on the worker and is detected by advanceClaimedPendingEntry on
 // subsequent scans).
-func (w *ConversationWorker) claimAndDispatchPendingEntry(e pendingEntrySnapshot) {
+func (r *run) claimAndDispatchPendingEntry(e pendingEntrySnapshot) {
 	if e.kind == "createThread" || e.kind == "continue" {
-		if w.loadState() != StateIdle {
+		if r.loadState() != StateIdle {
 			// Worker is busy with something else; leave entry in 'requested'
 			// for a later scan to re-attempt. Don't claim — claiming locks
 			// the entry to this worker boot, and we don't yet know we can
@@ -231,7 +231,7 @@ func (w *ConversationWorker) claimAndDispatchPendingEntry(e pendingEntrySnapshot
 	}
 
 	ycrdtMu.Lock()
-	_, ymap, ok := w.pendingEntryByIDLocked(e.ownerThreadID, e.id)
+	_, ymap, ok := r.pendingEntryByIDLocked(e.ownerThreadID, e.id)
 	if !ok {
 		ycrdtMu.Unlock()
 		return
@@ -240,7 +240,7 @@ func (w *ConversationWorker) claimAndDispatchPendingEntry(e pendingEntrySnapshot
 		ycrdtMu.Unlock()
 		return
 	}
-	w.doc.transactTracked(func(t *ycrdt.Transaction) {
+	r.doc.transactTracked(func(t *ycrdt.Transaction) {
 		ymap.Set("status", "claimed")
 		ymap.Set("claimedBy", "worker")
 	})
@@ -248,33 +248,33 @@ func (w *ConversationWorker) claimAndDispatchPendingEntry(e pendingEntrySnapshot
 
 	switch e.kind {
 	case "createThread":
-		threadItemID, err := w.dispatchCreateThread(e.goal, e.prompt, e.parentThreadID, e.isContinuation, e.strategyID, e.modelConfigJSON)
+		threadItemID, err := r.dispatchCreateThread(e.goal, e.prompt, e.parentThreadID, e.isContinuation, e.strategyID, e.modelConfigJSON)
 		if err != nil {
-			w.writePendingEntryError(e.ownerThreadID, e.id, err.Error())
+			r.writePendingEntryError(e.ownerThreadID, e.id, err.Error())
 			return
 		}
-		w.setPendingEntryThreadID(e.ownerThreadID, e.id, threadItemID)
+		r.setPendingEntryThreadID(e.ownerThreadID, e.id, threadItemID)
 	case "continue":
-		w.dispatchPendingContinue(e)
+		r.dispatchPendingContinue(e)
 	case "deliverTaskOutput":
-		if w.deliveryIsForeign(e) {
-			w.writePendingEntryCompletedThread(e.ownerThreadID, e.id, "", "")
+		if r.deliveryIsForeign(e) {
+			r.writePendingEntryCompletedThread(e.ownerThreadID, e.id, "", "")
 			return
 		}
 		// Long-lived: the entry stays "claimed" while the pump streams the
 		// task's output; the pump completes the entry when the task exits.
-		w.startTaskDeliveryPump(e.id, e.ownerThreadID, e.deliverTaskID, e.deliverLabel)
+		r.startTaskDeliveryPump(e.id, e.ownerThreadID, e.deliverTaskID, e.deliverLabel)
 	default:
-		w.writePendingEntryError(e.ownerThreadID, e.id, fmt.Sprintf("unknown kind: %s", e.kind))
+		r.writePendingEntryError(e.ownerThreadID, e.id, fmt.Sprintf("unknown kind: %s", e.kind))
 	}
 }
 
 // dispatchPendingContinue triggers a continuation turn. Captures items
 // length before so advanceClaimedPendingEntry can detect when the response
 // starts streaming.
-func (w *ConversationWorker) dispatchPendingContinue(e pendingEntrySnapshot) {
-	itemsLen := w.getTargetItemsLength()
-	w.setPendingEntryItemsBefore(e.ownerThreadID, e.id, itemsLen)
+func (r *run) dispatchPendingContinue(e pendingEntrySnapshot) {
+	itemsLen := r.getTargetItemsLength()
+	r.setPendingEntryItemsBefore(e.ownerThreadID, e.id, itemsLen)
 
 	// Build a synthetic send-message payload and enqueue it on the worker's
 	// own inbound channel. Going through the normal message path keeps the
@@ -287,23 +287,23 @@ func (w *ConversationWorker) dispatchPendingContinue(e pendingEntrySnapshot) {
 	}
 	payload, err := json.Marshal(sm)
 	if err != nil {
-		w.writePendingEntryError(e.ownerThreadID, e.id, err.Error())
+		r.writePendingEntryError(e.ownerThreadID, e.id, err.Error())
 		return
 	}
-	w.Send("send-message", payload)
+	r.Send("send-message", payload)
 }
 
 // advanceClaimedPendingEntry drives a claimed entry toward completion by
 // inspecting its underlying side effect: for createThread, look at how the
 // thread's run settled; for continue, watch the items length.
-func (w *ConversationWorker) advanceClaimedPendingEntry(e pendingEntrySnapshot) {
+func (r *run) advanceClaimedPendingEntry(e pendingEntrySnapshot) {
 	switch e.kind {
 	case "createThread":
 		if e.threadItemID == "" {
 			return // dispatch hasn't recorded the threadItemId yet
 		}
 		ycrdtMu.Lock()
-		threadYMap := findThreadYMap(w.doc.getItems(), e.threadItemID)
+		threadYMap := findThreadYMap(r.doc.getItems(), e.threadItemID)
 		if threadYMap == nil {
 			ycrdtMu.Unlock()
 			return
@@ -316,7 +316,7 @@ func (w *ConversationWorker) advanceClaimedPendingEntry(e pendingEntrySnapshot) 
 			return
 		}
 		if status == runStatusCancelled {
-			w.writePendingEntryCancelled(e.ownerThreadID, e.id, cancelledThreadResult)
+			r.writePendingEntryCancelled(e.ownerThreadID, e.id, cancelledThreadResult)
 			return
 		}
 		// The run's own result is what this request asked for; a thread with no
@@ -325,29 +325,29 @@ func (w *ConversationWorker) advanceClaimedPendingEntry(e pendingEntrySnapshot) 
 		if result == "" {
 			result = summary
 		}
-		w.writePendingEntryCompletedThread(e.ownerThreadID, e.id, e.threadItemID, result)
+		r.writePendingEntryCompletedThread(e.ownerThreadID, e.id, e.threadItemID, result)
 	case "continue":
-		curLen := w.getTargetItemsLength()
+		curLen := r.getTargetItemsLength()
 		if curLen > e.itemsBefore {
-			w.writePendingEntryCompletedThread(e.ownerThreadID, e.id, "", "")
+			r.writePendingEntryCompletedThread(e.ownerThreadID, e.id, "", "")
 		}
 	case "deliverTaskOutput":
-		if _, running := w.deliveryPumps[e.id]; running {
+		if _, running := r.deliveryPumps[e.id]; running {
 			return // the pump owns this entry's lifecycle
 		}
-		if w.deliveryIsForeign(e) {
+		if r.deliveryIsForeign(e) {
 			// A binding copied in from another conversation: the task belongs to
 			// the submitter, so retire the inherited entry instead of adopting it.
-			w.writePendingEntryCompletedThread(e.ownerThreadID, e.id, "", "")
+			r.writePendingEntryCompletedThread(e.ownerThreadID, e.id, "", "")
 			return
 		}
 		// Claimed but no pump — e.g. the worker was recreated mid-delivery.
 		// Restart the pump if the task is still alive; otherwise the task is
 		// gone (a server restart drops in-process tasks), so complete the entry.
 		if snap := ops.TaskState(e.deliverTaskID); snap.Found && snap.Status == "running" {
-			w.startTaskDeliveryPump(e.id, e.ownerThreadID, e.deliverTaskID, e.deliverLabel)
+			r.startTaskDeliveryPump(e.id, e.ownerThreadID, e.deliverTaskID, e.deliverLabel)
 		} else {
-			w.writePendingEntryCompletedThread(e.ownerThreadID, e.id, "", "")
+			r.writePendingEntryCompletedThread(e.ownerThreadID, e.id, "", "")
 		}
 	}
 }
@@ -375,38 +375,38 @@ func (w *ConversationWorker) deliveryIsForeign(e pendingEntrySnapshot) bool {
 // cancelRequested flag flips. An active createThread is cancelled through the
 // worker's normal cancellation path; its pending result remains claimed until
 // that path has made the thread quiescent and settled its run.
-func (w *ConversationWorker) cancelPendingEntry(e pendingEntrySnapshot) {
+func (r *run) cancelPendingEntry(e pendingEntrySnapshot) {
 	if e.kind == "deliverTaskOutput" {
 		// Stop the pump and kill the task; do NOT forward to handleCancel (a
 		// delivery cancel must not abort an unrelated in-flight turn).
-		w.stopDeliveryPump(e.id)
-		w.writePendingEntryCancelled(e.ownerThreadID, e.id, "")
+		r.stopDeliveryPump(e.id)
+		r.writePendingEntryCancelled(e.ownerThreadID, e.id, "")
 		return
 	}
 	if e.kind != "createThread" || e.threadItemID == "" {
-		w.writePendingEntryCancelled(e.ownerThreadID, e.id, "")
+		r.writePendingEntryCancelled(e.ownerThreadID, e.id, "")
 		return
 	}
 
-	if w.pendingThreadOwnsActiveWork(e.threadItemID) {
-		switch w.loadState() {
+	if r.pendingThreadOwnsActiveWork(e.threadItemID) {
+		switch r.loadState() {
 		case StateProcessing:
 			// finishStrategyRun settles the active run and finalizeCancellation
 			// completes cleanup. A later scan publishes the pending result.
-			w.handleCancel(cancelReasonPendingRequest)
+			r.handleCancel(cancelReasonPendingRequest)
 			return
 		case StateCancelling:
 			return
 		}
-		if w.getActivity() == ActivityAwaitingLLM {
+		if r.getActivity() == ActivityAwaitingLLM {
 			// The parked-tool branch completes synchronously: tools are cancelled,
 			// the provider session is released, and activity is cleared first.
-			w.handleCancel(cancelReasonPendingRequest)
+			r.handleCancel(cancelReasonPendingRequest)
 		}
 	}
 
-	w.settleThreadRun(e.threadItemID, true)
-	w.writePendingEntryCancelled(e.ownerThreadID, e.id, cancelledThreadResult)
+	r.settleThreadRun(e.threadItemID, true)
+	r.writePendingEntryCancelled(e.ownerThreadID, e.id, cancelledThreadResult)
 }
 
 // pendingThreadOwnsActiveWork reports whether the worker's active thread is the

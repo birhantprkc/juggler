@@ -224,7 +224,7 @@ func TestCancelParksWhenToolExecuting(t *testing.T) {
 
 	// A turn that began a minute ago is anchored in memory and in the doc.
 	oldAnchor := time.Now().Add(-60 * time.Second).UnixMilli()
-	w.processingStartedAt = oldAnchor
+	w.turn.processingStartedAt = oldAnchor
 
 	// Record that the worker released the provider session (warm-preserving).
 	var released bool
@@ -245,14 +245,14 @@ func TestCancelParksWhenToolExecuting(t *testing.T) {
 		t.Fatal("precondition: a running tool must make blockedOnlyByApprovals=false")
 	}
 
-	w.handleCancel(cancelReasonUnspecified)
+	w.currentRun().handleCancel(cancelReasonUnspecified)
 
 	// The elapsed-time anchor must reset on the stop. Parking rests the turn via
 	// sendStatus("idle"), so the NEXT turn — a Continue the user presses to start
 	// the queued message — begins its timer from zero instead of inheriting this
 	// cancelled turn's minute-old anchor (the "elapsed time didn't reset" bug).
-	if w.processingStartedAt != 0 {
-		t.Errorf("park: expected in-memory elapsed anchor reset to 0, got %d", w.processingStartedAt)
+	if w.turn.processingStartedAt != 0 {
+		t.Errorf("park: expected in-memory elapsed anchor reset to 0, got %d", w.turn.processingStartedAt)
 	}
 	if startedAtPresent(t, w) {
 		t.Error("park: expected doc startedAt dropped once the turn rests at idle")
@@ -343,7 +343,7 @@ func TestPureApprovalCancelPreservesWarmSession(t *testing.T) {
 		t.Fatal("precondition: a lone pending tool must make blockedOnlyByApprovals=true")
 	}
 
-	w.handleCancel(cancelReasonUnspecified)
+	w.currentRun().handleCancel(cancelReasonUnspecified)
 
 	if !called {
 		t.Fatal("expected handleCancel to release the provider session")

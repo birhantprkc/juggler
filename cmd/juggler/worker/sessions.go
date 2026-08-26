@@ -121,9 +121,9 @@ func sessionToolOf(item ConversationItem) string {
 // processed — the scope a session name is unique in. Cross-thread and
 // cross-conversation handles are deliberately out of scope: a session belongs
 // to the transcript that can see its results.
-func (w *ConversationWorker) sessionsInCallingThread() []threadSession {
+func (r *run) sessionsInCallingThread() []threadSession {
 	var out []threadSession
-	for _, item := range w.getTargetItems() {
+	for _, item := range r.getTargetItems() {
 		if item.Type != ItemTypeThread || item.SessionName == "" {
 			continue
 		}
@@ -162,8 +162,8 @@ type sessionResolution struct {
 
 // resolveSession decides whether a call starts a session or continues one, and
 // under what name.
-func (w *ConversationWorker) resolveSession(toolName, requested string) sessionResolution {
-	sessions := w.sessionsInCallingThread()
+func (r *run) resolveSession(toolName, requested string) sessionResolution {
+	sessions := r.sessionsInCallingThread()
 	taken := make(map[string]bool, len(sessions))
 	for _, s := range sessions {
 		taken[s.name] = true
@@ -355,8 +355,8 @@ func receiptItem(canonicalItemID, goal, sessionName, runItemID string) Conversat
 // an earlier alias still shows a result shaped by an older one. That is the
 // header describing the session as it stands, which is what a header is for —
 // while each item keeps its own short label in RunGoal.
-func (w *ConversationWorker) resumeSession(threadItemID string, opts CreateThreadOptions) error {
-	nested := w.doc.GetThreadItemsArray(threadItemID)
+func (r *run) resumeSession(threadItemID string, opts CreateThreadOptions) error {
+	nested := r.doc.GetThreadItemsArray(threadItemID)
 	if nested == nil {
 		return fmt.Errorf("session thread %s not found", threadItemID)
 	}
@@ -364,17 +364,17 @@ func (w *ConversationWorker) resumeSession(threadItemID string, opts CreateThrea
 	// One undo unit, as a creation is: the header update, the alias item and the
 	// appended message collapse into a single group. A resume that left an orphan
 	// alias, or a message no parent item answers for, is a broken document.
-	w.tracker.StopCapturing()
-	mergeFrom := w.tracker.UndoStackLen()
+	r.tracker.StopCapturing()
+	mergeFrom := r.tracker.UndoStackLen()
 
 	var goal, sessionName string
 	ycrdtMu.Lock()
-	if m := findThreadYMap(w.doc.getItems(), threadItemID); m != nil {
+	if m := findThreadYMap(r.doc.getItems(), threadItemID); m != nil {
 		goal, _ = m.Get("goal").(string)
 		spec, _ := m.Get("resultSpec").(string)
 		sessionName, _ = m.Get("sessionName").(string)
 		if (opts.Goal != "" && opts.Goal != goal) || (opts.ResultSpec != "" && opts.ResultSpec != spec) {
-			w.doc.transactTracked(func(_ *ycrdt.Transaction) {
+			r.doc.transactTracked(func(_ *ycrdt.Transaction) {
 				if opts.Goal != "" && opts.Goal != goal {
 					m.Set("goal", opts.Goal)
 					goal = opts.Goal
@@ -391,14 +391,14 @@ func (w *ConversationWorker) resumeSession(threadItemID string, opts CreateThrea
 	// making this call stands — so it is in the document before the run it stands
 	// for can settle.
 	if opts.ToolUseID != "" {
-		target := w.getTargetItemsYArray()
-		w.tracker.AppendMessageIntoArray(target, aliasItem(threadItemID, goal, sessionName, opts))
+		target := r.getTargetItemsYArray()
+		r.tracker.AppendMessageIntoArray(target, aliasItem(threadItemID, goal, sessionName, opts))
 	}
 
-	w.tracker.AppendMessageIntoArray(nested, invocationMessage(opts))
-	w.tracker.MergeFromIndex(mergeFrom)
-	w.tracker.StopCapturing()
+	r.tracker.AppendMessageIntoArray(nested, invocationMessage(opts))
+	r.tracker.MergeFromIndex(mergeFrom)
+	r.tracker.StopCapturing()
 
-	w.log.Info("[worker] resumed session %s (thread %s)", opts.SessionName, threadItemID)
+	r.log.Info("[worker] resumed session %s (thread %s)", opts.SessionName, threadItemID)
 	return nil
 }

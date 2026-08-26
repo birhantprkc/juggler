@@ -31,7 +31,7 @@ func newToolsRequestHarness(t *testing.T, respond func(w *ConversationWorker, tu
 		Conversation: SerializedConversation{ID: "conv-tools"},
 		Config:       WorkerConfig{ProjectPath: t.TempDir()},
 	})
-	w.handleInit(initPayload)
+	w.currentRun().handleInit(initPayload)
 	w.storeState(StateProcessing)
 
 	requestIDs := make(chan string, 8)
@@ -68,7 +68,7 @@ func sendToolsReply(w *ConversationWorker, requestID, toolName string) {
 // only the tools half is awaited) and returns the single tool it was offered.
 func offeredToolName(t *testing.T, w *ConversationWorker) string {
 	t.Helper()
-	_, tools, err := w.requestContextAndToolsForItemIDs(nil)
+	_, tools, err := w.currentRun().requestContextAndToolsForItemIDs(nil)
 	if err != nil {
 		t.Fatalf("requestContextAndToolsForItemIDs: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestContextAndToolsUseTurnThreadNotProcessingState(t *testing.T) {
 	w.turn.thread.itemID = "turn-thread"
 	w.doc.SetMetadata("processingState", map[string]any{"threadItemId": "other-thread"})
 
-	if _, _, err := w.requestContextAndTools(); err != nil {
+	if _, _, err := w.currentRun().requestContextAndTools(); err != nil {
 		t.Fatalf("requestContextAndTools: %v", err)
 	}
 	if got := <-threadIDs; got != "turn-thread" {

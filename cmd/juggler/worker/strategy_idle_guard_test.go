@@ -40,7 +40,7 @@ func newIdleGuardWorld(t *testing.T, replyFor func(threadID string) string) *idl
 		Conversation: SerializedConversation{ID: "test-conv"},
 		Config:       WorkerConfig{ProjectPath: t.TempDir()},
 	})
-	w.handleInit(initPayload)
+	w.currentRun().handleInit(initPayload)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.SetCallback("engine", func([]byte) {})
 	w.SetEngineClientID("engine")
@@ -74,7 +74,7 @@ func newIdleGuardWorld(t *testing.T, replyFor func(threadID string) string) *idl
 // finishStrategyRun's idle-publishing branch.
 func (world *idleGuardWorld) userThread(goal string) string {
 	world.t.Helper()
-	threadID, err := world.w.createThread(CreateThreadOptions{
+	threadID, err := world.w.currentRun().createThread(CreateThreadOptions{
 		Goal:             goal,
 		ExternalDispatch: true,
 	})
@@ -88,7 +88,7 @@ func (world *idleGuardWorld) userThread(goal string) string {
 // create_thread/delegation kind, whose open run is work still in flight.
 func (world *idleGuardWorld) llmThread(name string) string {
 	world.t.Helper()
-	threadID, err := world.w.createThread(CreateThreadOptions{
+	threadID, err := world.w.currentRun().createThread(CreateThreadOptions{
 		Goal:      name,
 		Prompt:    "task for " + name,
 		ToolUseID: "tu-" + name,
@@ -229,7 +229,7 @@ func TestFirstLiveThreadIDMatchesWalkOrder(t *testing.T) {
 	w.doc.ensureItems()
 
 	mkThread := func(name string) string {
-		threadID, err := w.createThread(CreateThreadOptions{
+		threadID, err := w.currentRun().createThread(CreateThreadOptions{
 			Goal:      name,
 			Prompt:    "task for " + name,
 			ToolUseID: "tu-" + name,

@@ -214,7 +214,7 @@ func TestCreateThreadStampsRunRecordOnInvocationMessage(t *testing.T) {
 	w.storeState(StateProcessing)
 
 	input := json.RawMessage(`{"prompt":"find the auth flow"}`)
-	threadID, err := w.createThread(CreateThreadOptions{
+	threadID, err := w.currentRun().createThread(CreateThreadOptions{
 		Goal:      "map auth",
 		Prompt:    "find the auth flow",
 		ToolUseID: "tu-1",
@@ -534,7 +534,7 @@ func TestResultFedStampMarksTheAnswerNotTheTurn(t *testing.T) {
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.storeState(StateProcessing)
 
-	threadID, err := w.createThread(CreateThreadOptions{
+	threadID, err := w.currentRun().createThread(CreateThreadOptions{
 		Goal: "map auth", Prompt: "find the auth flow", ToolUseID: "tu-1",
 		ToolName: "Explore", ToolInput: json.RawMessage(`{"prompt":"find the auth flow"}`), Delegated: true,
 	})
@@ -553,8 +553,8 @@ func TestResultFedStampMarksTheAnswerNotTheTurn(t *testing.T) {
 
 	// A build while the run is in flight emits the placeholder — the caller is
 	// parked, and nothing has been answered.
-	w.resetThreadContext()
-	if msgs := w.buildMessages(nil); msgs[len(msgs)-1]["content"] != pendingToolResultPlaceholder {
+	w.currentRun().resetThreadContext()
+	if msgs := w.currentRun().buildMessages(nil); msgs[len(msgs)-1]["content"] != pendingToolResultPlaceholder {
 		t.Fatalf("expected the pending placeholder while the run is in flight, got %v", msgs[len(msgs)-1])
 	}
 	if fed() {
@@ -564,11 +564,11 @@ func TestResultFedStampMarksTheAnswerNotTheTurn(t *testing.T) {
 	// The run settles and the next build carries its result.
 	w.turn.thread.itemID = threadID
 	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
-	w.appendTargetMessage(ConversationItem{
+	w.currentRun().appendTargetMessage(ConversationItem{
 		Type: ItemTypeAssistant, ItemID: "a-1", Content: "Auth lives in auth.go.",
 	})
 	w.settleThreadRun(threadID, false)
-	w.resetThreadContext()
+	w.currentRun().resetThreadContext()
 
 	// A snapshot build renders the same messages and writes nothing: only the
 	// live turn may record what the provider has seen.
@@ -579,7 +579,7 @@ func TestResultFedStampMarksTheAnswerNotTheTurn(t *testing.T) {
 		t.Error("a snapshot build stamped the item — compaction and tests must not record deliveries")
 	}
 
-	if msgs := w.buildMessages(nil); !strings.Contains(msgs[len(msgs)-1]["content"].(string), "Auth lives in auth.go.") {
+	if msgs := w.currentRun().buildMessages(nil); !strings.Contains(msgs[len(msgs)-1]["content"].(string), "Auth lives in auth.go.") {
 		t.Fatalf("expected the run's result on the wire, got %v", msgs[len(msgs)-1])
 	}
 	if !fed() {

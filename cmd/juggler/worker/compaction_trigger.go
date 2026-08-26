@@ -139,7 +139,7 @@ type overflowResult struct {
 // per-incident attempt budget, advanced in place. The two overflow kinds differ
 // only in the terminal move: an advisory that can no longer reduce bypasses the
 // guard once and retries, where a provider rejection surfaces the overflow.
-func (w *ConversationWorker) handleContextOverflow(
+func (r *run) handleContextOverflow(
 	limit *provider.ContextLimitExceededError,
 	isAdvisory bool,
 	guardBypassed bool,
@@ -152,13 +152,13 @@ func (w *ConversationWorker) handleContextOverflow(
 	// caller/provider contract; stop without ever publishing the estimate as a
 	// terminal user error. Provider rejections carry no such single-shot guard.
 	if isAdvisory && guardBypassed {
-		w.log.Error("[context guard] advisory repeated after fallback bypass; stopping without a terminal estimate error")
+		r.log.Error("[context guard] advisory repeated after fallback bypass; stopping without a terminal estimate error")
 		return overflowResult{verdict: overflowStop}
 	}
 
 	// A browser-folded summary thread reduces in one bounded pass. When this
 	// overflow belongs to such a thread, tryBoundedCompaction handles it here.
-	if handled, compactErr := w.tryBoundedCompaction(limit, modelConfig); handled {
+	if handled, compactErr := r.tryBoundedCompaction(limit, modelConfig); handled {
 		if compactErr == nil || errors.Is(compactErr, errBoundedCompactionCancelled) {
 			return overflowResult{verdict: overflowStop}
 		}
@@ -179,7 +179,7 @@ func (w *ConversationWorker) handleContextOverflow(
 	// genuinely does not fit, the rejection returns below and surfaces the
 	// provider's own context error, so the user hits the wall — and the "Compact
 	// now" affordance — instead of an automatic summarize.
-	if !w.autoCompactEnabled() {
+	if !r.autoCompactEnabled() {
 		if isAdvisory {
 			return overflowResult{verdict: overflowBypassAndRetry}
 		}
@@ -197,16 +197,16 @@ func (w *ConversationWorker) handleContextOverflow(
 	// budget is spent, the terminal move depends on the overflow kind.
 	if !recovery.canAttempt() {
 		if isAdvisory {
-			w.log.Info("[context guard] recovery attempt bound reached; estimate=%d reserve=%d window=%d; dispatching one fallback", limit.EstimatedInputTokens, limit.OutputReserveTokens, limit.ContextWindowTokens)
+			r.log.Info("[context guard] recovery attempt bound reached; estimate=%d reserve=%d window=%d; dispatching one fallback", limit.EstimatedInputTokens, limit.OutputReserveTokens, limit.ContextWindowTokens)
 			return overflowResult{verdict: overflowBypassAndRetry}
 		}
 		// Preserve and expose the last provider-authored overflow; do not
 		// replace it with a local estimate or retry-limit error.
-		w.log.Info("[compaction] stopped after %d progressive attempts", recovery.attempts)
+		r.log.Info("[compaction] stopped after %d progressive attempts", recovery.attempts)
 		return overflowResult{verdict: overflowTerminal, err: providerAuthoredContextError(overflowErr)}
 	}
 
-	result, recErr := w.compactToFit(limit, modelConfig)
+	result, recErr := r.compactToFit(limit, modelConfig)
 	if errors.Is(recErr, errBoundedCompactionCancelled) {
 		return overflowResult{verdict: overflowStop}
 	}
@@ -226,12 +226,12 @@ func (w *ConversationWorker) handleContextOverflow(
 		return overflowResult{verdict: overflowRetry}
 	}
 	if isAdvisory {
-		w.log.Info("[context guard] estimate=%d reserve=%d window=%d; dispatching one irreducible fallback", limit.EstimatedInputTokens, limit.OutputReserveTokens, limit.ContextWindowTokens)
+		r.log.Info("[context guard] estimate=%d reserve=%d window=%d; dispatching one irreducible fallback", limit.EstimatedInputTokens, limit.OutputReserveTokens, limit.ContextWindowTokens)
 		return overflowResult{verdict: overflowBypassAndRetry}
 	}
 	// No durable structural progress: surface the latest provider overflow
 	// unchanged so errors.Is/As reach its Cause.
-	w.log.Info("[compaction] stopped because the request structure did not change")
+	r.log.Info("[compaction] stopped because the request structure did not change")
 	return overflowResult{verdict: overflowTerminal, err: providerAuthoredContextError(overflowErr)}
 }
 
@@ -273,9 +273,9 @@ type recoveryUnit struct {
 // Every failure path returns a typed error: BoundedCompactionError for
 // deterministic recovery failures, BoundedCompactionCancelledError (matching
 // errBoundedCompactionCancelled) when interrupted mid-reduce.
-func (w *ConversationWorker) compactToFit(limitErr *provider.ContextLimitExceededError, modelConfig *ModelConfig) (contextRecoveryResult, error) {
-	before := contextRecoverySignature(w.getTargetItems())
-	if w.compactionCancelled() {
+func (r *run) compactToFit(limitErr *provider.ContextLimitExceededError, modelConfig *ModelConfig) (contextRecoveryResult, error) {
+	before := contextRecoverySignature(r.getTargetItems())
+	if r.compactionCancelled() {
 		return contextRecoveryResult{}, errBoundedCompactionCancelled
 	}
 	pinnedModel, err := validateCompactionModel(modelConfig, "context recovery")
@@ -295,15 +295,15 @@ func (w *ConversationWorker) compactToFit(limitErr *provider.ContextLimitExceede
 		envelope = 0
 	}
 
-	w.beginCompactionStatus("Summarizing earlier conversation to fit the context window")
-	w.recordCompactionStart(compactionKindAuto, window, reserve, envelope)
+	r.beginCompactionStatus("Summarizing earlier conversation to fit the context window")
+	r.recordCompactionStart(compactionKindAuto, window, reserve, envelope)
 
 	// A trailing tool-result payload too large for the suffix budget can never
 	// be folded — folding would destroy the live tool pair. Shrink oversized
 	// results in place to reducer-generated summaries first; the pair stays
 	// intact on the wire and in the visible doc (the full result survives in
 	// its transaction blob).
-	if err := w.shrinkOversizedTrailingToolResults(limitErr, &pinnedModel, envelope); err != nil {
+	if err := r.shrinkOversizedTrailingToolResults(limitErr, &pinnedModel, envelope); err != nil {
 		return contextRecoveryResult{}, err
 	}
 
@@ -313,7 +313,7 @@ func (w *ConversationWorker) compactToFit(limitErr *provider.ContextLimitExceede
 	// recoveryPromptSentinel and becomes the thread's CompactionPromptItemID.
 	promptID := generateItemID()
 
-	items := w.getTargetItems()
+	items := r.getTargetItems()
 	records, err := canonicalCompactionRecords(items, promptID)
 	if err != nil {
 		return contextRecoveryResult{}, &BoundedCompactionError{Reason: BoundedCompactionSourceEncoding, Message: "context recovery could not encode canonical source: " + err.Error(), Cause: err}
@@ -383,8 +383,8 @@ func (w *ConversationWorker) compactToFit(limitErr *provider.ContextLimitExceede
 		// prefix fold, so succeed and let the caller's retry proceed against the
 		// smaller history rather than summarizing history that no longer needs
 		// it. Admission on the retry is the backstop if this estimate is optimistic.
-		w.recordCompactionOutcome(compactionKindAuto, "shrink-only", CompactionResult{}, map[string]any{"suffixTokens": suffixEst})
-		w.log.Info("[compaction] trailing-result shrink sufficed; no history fold needed (suffix=%d tokens)", suffixEst)
+		r.recordCompactionOutcome(compactionKindAuto, "shrink-only", CompactionResult{}, map[string]any{"suffixTokens": suffixEst})
+		r.log.Info("[compaction] trailing-result shrink sufficed; no history fold needed (suffix=%d tokens)", suffixEst)
 		return contextRecoveryOutcome(before, items), nil
 	}
 
@@ -410,7 +410,7 @@ func (w *ConversationWorker) compactToFit(limitErr *provider.ContextLimitExceede
 		calls: 1,
 	}
 
-	result, err := w.runReducer(compactionKindAuto, pinnedModel, budget, prefixRecords)
+	result, err := r.runReducer(compactionKindAuto, pinnedModel, budget, prefixRecords)
 	if err != nil {
 		return contextRecoveryResult{}, err
 	}
@@ -430,7 +430,7 @@ func (w *ConversationWorker) compactToFit(limitErr *provider.ContextLimitExceede
 	nested := append(append([]ConversationItem{}, items[prefixStart:prefixEnd]...), promptItem)
 	nestedJSON, err := json.Marshal(nested)
 	if err != nil {
-		w.recordCompactionOutcome(compactionKindAuto, "error", result, map[string]any{"reason": string(BoundedCompactionSourceEncoding)})
+		r.recordCompactionOutcome(compactionKindAuto, "error", result, map[string]any{"reason": string(BoundedCompactionSourceEncoding)})
 		return contextRecoveryResult{}, &BoundedCompactionError{Reason: BoundedCompactionSourceEncoding, Message: "context recovery could not encode folded thread items: " + err.Error(), Cause: err}
 	}
 	resultJSON, _ := json.Marshal(result.Summary)
@@ -457,20 +457,20 @@ func (w *ConversationWorker) compactToFit(limitErr *provider.ContextLimitExceede
 	// the fold splicing at stale indices — it aborts rather than clobbering. The
 	// tracked variant captures the whole delete+insert as one undo group, so a
 	// single undo reverses the fold (parity with the browser /compact fold).
-	if !w.foldPrefixIntoSummaryTracked(w.getTargetItemsYArray(), prefixStart, prefixEnd-prefixStart, summaryItem, promptID, fingerprint) {
-		w.recordCompactionOutcome(compactionKindAuto, "error", result, map[string]any{"reason": string(BoundedCompactionSourceChanged)})
+	if !r.foldPrefixIntoSummaryTracked(r.getTargetItemsYArray(), prefixStart, prefixEnd-prefixStart, summaryItem, promptID, fingerprint) {
+		r.recordCompactionOutcome(compactionKindAuto, "error", result, map[string]any{"reason": string(BoundedCompactionSourceChanged)})
 		return contextRecoveryResult{}, &BoundedCompactionError{
 			Reason: BoundedCompactionSourceChanged, Message: "conversation changed during context recovery; nothing was folded",
 			Calls: result.Calls, Spend: result.EstimatedSpend,
 			Window: budget.window, Usage: result.Usage,
 		}
 	}
-	w.recordCompactionOutcome(compactionKindAuto, "fold", result, map[string]any{
+	r.recordCompactionOutcome(compactionKindAuto, "fold", result, map[string]any{
 		"foldedItems": prefixEnd - prefixStart, "suffixTokens": suffixEst, "window": window,
 	})
-	w.log.Info("[compaction] folded %d items into a compaction summary (passes=%d calls=%d spend=%d window=%d suffix=%d tokens)",
+	r.log.Info("[compaction] folded %d items into a compaction summary (passes=%d calls=%d spend=%d window=%d suffix=%d tokens)",
 		prefixEnd-prefixStart, result.Passes, result.Calls, result.EstimatedSpend, window, suffixEst)
-	return contextRecoveryOutcome(before, w.getTargetItems()), nil
+	return contextRecoveryOutcome(before, r.getTargetItems()), nil
 }
 
 // recoveryShrunkResultMarker prefixes a tool result that was replaced by a
@@ -485,11 +485,11 @@ const recoveryShrunkResultMarker = "[tool result exceeded the model context wind
 // splits a single result larger than one map budget across calls); the tool
 // call and its (now summarized) result stay paired on the wire and in the
 // visible doc. No-op when the trailing unit fits or is not a tool batch.
-func (w *ConversationWorker) shrinkOversizedTrailingToolResults(limitErr *provider.ContextLimitExceededError, pinnedModel *ModelConfig, envelope int64) error {
+func (r *run) shrinkOversizedTrailingToolResults(limitErr *provider.ContextLimitExceededError, pinnedModel *ModelConfig, envelope int64) error {
 	window := limitErr.ContextWindowTokens
 	reserve := limitErr.OutputReserveTokens
 
-	items := w.getTargetItems()
+	items := r.getTargetItems()
 	units := recoveryAtomicUnits(items)
 	if len(units) == 0 {
 		return nil
@@ -530,21 +530,21 @@ func (w *ConversationWorker) shrinkOversizedTrailingToolResults(limitErr *provid
 			reserve:          reserve,
 			providerOverhead: limitErr.Breakdown.ProviderOverheadTokens,
 		}
-		reducer := w.newBoundedReducer(compactionKindShrink, *pinnedModel, budget)
+		reducer := r.newBoundedReducer(compactionKindShrink, *pinnedModel, budget)
 		shrunk, err := reducer.run([]string{resultPayload.Content})
 		if err != nil {
 			if errors.Is(err, errBoundedCompactionCancelled) {
-				w.recordCompactionOutcome(compactionKindShrink, "cancelled", shrunk, map[string]any{"toolUseId": item.ToolUseID})
+				r.recordCompactionOutcome(compactionKindShrink, "cancelled", shrunk, map[string]any{"toolUseId": item.ToolUseID})
 				return &BoundedCompactionCancelledError{Result: shrunk}
 			}
-			w.recordCompactionOutcome(compactionKindShrink, "error", shrunk, map[string]any{"toolUseId": item.ToolUseID})
+			r.recordCompactionOutcome(compactionKindShrink, "error", shrunk, map[string]any{"toolUseId": item.ToolUseID})
 			return err
 		}
-		if w.compactionCancelled() {
-			w.recordCompactionOutcome(compactionKindShrink, "cancelled", shrunk, map[string]any{"toolUseId": item.ToolUseID})
+		if r.compactionCancelled() {
+			r.recordCompactionOutcome(compactionKindShrink, "cancelled", shrunk, map[string]any{"toolUseId": item.ToolUseID})
 			return &BoundedCompactionCancelledError{Result: shrunk}
 		}
-		if err := w.updateTargetItemByID(item.ItemID, "result", map[string]any{
+		if err := r.updateTargetItemByID(item.ItemID, "result", map[string]any{
 			"content": recoveryShrunkResultMarker + shrunk.Summary,
 			"isError": resultPayload.IsError,
 		}); err != nil {
@@ -553,8 +553,8 @@ func (w *ConversationWorker) shrinkOversizedTrailingToolResults(limitErr *provid
 				Calls: shrunk.Calls, Spend: shrunk.EstimatedSpend, Window: reducer.budget.window, Usage: shrunk.Usage,
 			}
 		}
-		w.recordCompactionOutcome(compactionKindShrink, "shrink", shrunk, map[string]any{"toolUseId": item.ToolUseID})
-		w.log.Info("[compaction] summarized oversized tool result %s in place (calls=%d spend=%d)",
+		r.recordCompactionOutcome(compactionKindShrink, "shrink", shrunk, map[string]any{"toolUseId": item.ToolUseID})
+		r.log.Info("[compaction] summarized oversized tool result %s in place (calls=%d spend=%d)",
 			item.ToolUseID, shrunk.Calls, shrunk.EstimatedSpend)
 	}
 	return nil
