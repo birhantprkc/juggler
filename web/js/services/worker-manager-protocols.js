@@ -570,6 +570,15 @@ export async function handleEvaluateTool(wm, conversationId, toolUseId) {
   // the worker escalates it to a terminal error (escalateStaleToolCommand), and
   // an untraced no-act makes that indistinguishable from a command the engine
   // never received — the two have opposite causes and opposite fixes.
+  //
+  // The `reason` is a WIRE CONTRACT, not just a log string: the worker classifies
+  // it against engineUnreachableReasons (cmd/juggler/worker/tool_command_state.go)
+  // to decide whether this decline is about the TOOL — in which case the tool is
+  // failed at the attempt cap — or about the ENGINE's own readiness, in which case
+  // the tool is held while we finish loading. A reason meaning "I couldn't reach
+  // the tool at all" must be listed there, or the engine's loading window is
+  // reported to the user as a tool that never carried out its command. A Go test
+  // reads this file and fails on any reason string it has never heard of.
   const c = await loadAndFlush(wm, conversationId);
   if (!c) { sendEngineTrace(wm, conversationId, 'evaluate-noact', { toolUseId, reason: 'conv-not-loaded' }); return false; }
   const mt = findThreadForTool(c, toolUseId);

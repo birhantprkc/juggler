@@ -42,8 +42,23 @@ type toolCommandState struct {
 	// the toolUseId it acted on — the acting paths (execute-claim/start/done) and
 	// the declining ones (evaluate-noact/execute-noact) alike — so a trace here is
 	// the only evidence that a command for this tool reached a handler at all.
-	// Zero until the first trace for the id.
+	// Zero until the first trace for the id. Diagnostic: the escalation verdict
+	// reads the two classified stamps below.
 	lastTracedAt time.Time
+
+	// lastEngagedAt stamps the last trace that proves the engine reached THIS tool
+	// — it claimed it, ran it, or declined for a reason about the tool itself.
+	// This, not lastTracedAt, is what answeredSincePrevDispatch weighs, because a
+	// decline about the engine's own readiness proves the opposite of engagement.
+	lastEngagedAt time.Time
+
+	// lastUnreachableAt / lastUnreachableReason stamp the last trace declining the
+	// command because the engine could not reach the tool at all
+	// (engineUnreachableReasons). Kept apart from lastEngagedAt so a tool waiting
+	// on an engine that is still loading its conversation is held rather than
+	// blamed, and so the escalation message can name the reason it was given.
+	lastUnreachableAt     time.Time
+	lastUnreachableReason string
 
 	// firstDispatchedAt stamps when the CURRENT delivery phase began — the first
 	// dispatch at this state. It bounds how long an unproven engine is waited out
@@ -118,32 +133,84 @@ func (t *toolCommandTracker) recordDispatch(id, state string, now time.Time) int
 	return s.attempts
 }
 
-// recordTrace stamps the arrival of an engine-trace naming id. Only ids already
-// under command are stamped: a trace for anything else is diagnostic-only, and
-// creating an entry for it would leak one map entry per tool ever traced.
-func (t *toolCommandTracker) recordTrace(id string, now time.Time) {
-	if s := t.byID[id]; s != nil {
-		s.lastTracedAt = now
-	}
+// engineUnreachableReasons are the `reason` values an engine no-act trace
+// carries when the engine could not reach the tool AT ALL: it holds no loaded
+// copy of the conversation, no thread in the copy it holds owns the tool, or the
+// tool-action map is missing. Every other reason ('in-flight',
+// 'already-executing') means the engine did reach the tool and is working on it.
+//
+// The distinction decides who is blamed. All of these are declines, so they all
+// prove the engine is alive and running handlers — but they are declines about
+// the ENGINE's own readiness, not about the tool, and the identical command
+// re-driven once it finishes loading succeeds. Counting them as answers makes
+// the engine's loading window read as a tool that "never carried out" its
+// command, and fails a tool that was about to run.
+//
+// This is a wire contract with the engine: the strings are the `reason` fields
+// of the evaluate-noact/execute-noact traces in
+// web/js/services/worker-manager-protocols.js (handleEvaluateTool,
+// handleExecuteTool). TestEngineNoActReasons_AreAllClassified reads that file
+// and fails if a reason appears there that this table has never heard of, so a
+// new no-act exit cannot silently default to "the tool's fault".
+var engineUnreachableReasons = map[string]bool{
+	"conv-not-loaded": true,
+	"no-thread":       true,
+	"no-ymap":         true,
 }
 
-// answeredSincePrevDispatch reports whether the engine traced about THIS tool
+// recordTrace stamps the arrival of an engine-trace naming id, classifying it by
+// the trace's `reason` field ("" for the acting traces, which carry none). Only
+// ids already under command are stamped: a trace for anything else is
+// diagnostic-only, and creating an entry for it would leak one map entry per
+// tool ever traced.
+func (t *toolCommandTracker) recordTrace(id, reason string, now time.Time) {
+	s := t.byID[id]
+	if s == nil {
+		return
+	}
+	s.lastTracedAt = now
+	if engineUnreachableReasons[reason] {
+		s.lastUnreachableAt, s.lastUnreachableReason = now, reason
+		return
+	}
+	s.lastEngagedAt = now
+}
+
+// answeredSincePrevDispatch reports whether the engine ENGAGED with THIS tool
 // since the dispatch before the most recent one — i.e. whether the engine is
 // still answering for this tool right now, rather than having answered once
 // early in the phase and gone silent since.
 //
-// This is the whole difference between the two escalation verdicts, so it is
-// deliberately per-tool and deliberately recent. A conversation-wide "has the
-// engine said anything" test is satisfied by a sibling tool in the same parallel
-// batch, and by this tool's own declining trace; an "anything since the phase
+// This is the difference between the escalation verdicts, so it is deliberately
+// per-tool, deliberately recent, and deliberately blind to the unreachable
+// declines. A conversation-wide "has the engine said anything" test is satisfied
+// by a sibling tool in the same parallel batch; an "anything since the phase
 // began" test is satisfied by one trace in the first millisecond of a 30-second
-// phase, which is exactly what a suspended engine leaves behind.
+// phase, which is exactly what a suspended engine leaves behind; and a test that
+// counts any trace at all is satisfied by an engine repeating that it cannot
+// find the conversation, which is a statement about the engine, not the tool.
 func (t *toolCommandTracker) answeredSincePrevDispatch(id string) bool {
 	s := t.byID[id]
-	if s == nil || s.lastTracedAt.IsZero() {
+	if s == nil || s.lastEngagedAt.IsZero() {
 		return false
 	}
-	return s.lastTracedAt.After(s.prevDispatchedAt)
+	return s.lastEngagedAt.After(s.prevDispatchedAt)
+}
+
+// unreachableSincePrevDispatch reports whether the engine's most recent word on
+// THIS tool, since the dispatch before the last, was that it could not reach it
+// (engineUnreachableReasons), along with the reason it gave. An engine that
+// declined that way and has since fallen silent is not "currently unreachable" —
+// it is mute, and the shorter mute hold applies.
+func (t *toolCommandTracker) unreachableSincePrevDispatch(id string) (bool, string) {
+	s := t.byID[id]
+	if s == nil || s.lastUnreachableAt.IsZero() {
+		return false, ""
+	}
+	if !s.lastUnreachableAt.After(s.prevDispatchedAt) {
+		return false, ""
+	}
+	return true, s.lastUnreachableReason
 }
 
 // lastTracedAt returns when an engine-trace naming id last arrived, or the zero

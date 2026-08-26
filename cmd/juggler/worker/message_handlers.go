@@ -927,17 +927,25 @@ func (w *ConversationWorker) resetRunningToolsForReattach() {
 // The toolUseId is pulled out for the same reason, and stamped per-tool
 // (tools.recordTrace): conversation-wide receipt cannot tell "the engine
 // declined THIS tool" from "the engine was busy with a sibling tool while this
-// one's commands vanished", and those have opposite causes. Decoding is
-// best-effort and never gates the log line — the payload is still logged raw, so
-// fields the engine adds appear without a Go change.
+// one's commands vanished", and those have opposite causes.
+//
+// The reason is pulled out because not every decline says the same thing about
+// the engine. A no-act reason in engineUnreachableReasons means the engine could
+// not reach the tool at all — its conversation is still loading — which is a
+// statement about the engine's readiness, not the tool's; recordTrace files
+// those separately so the tool is held rather than blamed for them.
+//
+// Decoding is best-effort and never gates the log line — the payload is still
+// logged raw, so fields the engine adds appear without a Go change.
 func (w *ConversationWorker) handleEngineTrace(payload json.RawMessage) {
 	now := time.Now()
 	w.lastEngineTraceAt = now
 	var probe struct {
 		ToolUseID string `json:"toolUseId"`
+		Reason    string `json:"reason"`
 	}
 	if json.Unmarshal(payload, &probe) == nil && probe.ToolUseID != "" {
-		w.tools.recordTrace(probe.ToolUseID, now)
+		w.tools.recordTrace(probe.ToolUseID, probe.Reason, now)
 	}
 	w.log.Trace("[engine-trace] conv=%s %s", w.conversationID, string(payload))
 }

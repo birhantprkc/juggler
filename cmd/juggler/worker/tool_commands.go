@@ -47,6 +47,22 @@ const defaultRedriveInterval = 5 * time.Second
 // this package must not import — the coupling is by comment, so check it here.
 const engineUnprovenHold = 60 * time.Second
 
+// engineUnreachableHold bounds how long a tool is held while the engine is
+// answering for it only to say it cannot reach it — it has no loaded copy of the
+// conversation, or the copy it has does not hold the tool yet
+// (engineUnreachableReasons). That is a decline, but a recoverable one: the
+// engine is loading, and the same command re-driven afterwards succeeds.
+//
+// It is longer than engineUnprovenHold because it waits on a different, slower
+// recovery. A mute engine waits on the server's eviction ladder (~50s); a
+// loading engine waits on its own conversation load, whose ceiling is
+// WORKER_READY_TIMEOUT_MS in web/js/services/worker-manager.js — 60s. A hold
+// merely equal to that ties with the thing it is waiting for and fails the tool
+// as the load lands, so this leaves a redriveInterval's headroom above it for
+// the next command to actually run. Raising that JS timeout without raising this
+// puts the race back.
+const engineUnreachableHold = 90 * time.Second
+
 // driveToolActions commands the engine — the single tool executor — to advance
 // every non-terminal tool-action in the conversation. It is the worker side of
 // the command-driven engine: the worker already observes every doc update via
@@ -310,13 +326,22 @@ func (w *ConversationWorker) clearToolCommandBookkeeping(id string) {
 // engine gets put back before the tool is failed. Escalating on the attempts cap
 // alone takes ~30s and beats it every time.
 //
-// The ceiling is what keeps doc.go's rule intact — degrade to a recoverable
-// error, never an infinite wait. It only changes WHO is blamed and how long we
+// An engine that answers only to say it cannot reach the tool is held on the
+// same principle for the same reason, but against its own longer clock: it is
+// demonstrably running handlers, so none of the server's eviction ladder will
+// fire, and what it is waiting on is its own conversation load. See
+// engineUnreachableHold.
+//
+// Each ceiling is what keeps doc.go's rule intact — degrade to a recoverable
+// error, never an infinite wait. They only change WHO is blamed and how long we
 // wait first, not whether the turn is eventually released.
 func (w *ConversationWorker) engineUnproven(id string, now time.Time) bool {
 	phaseStart := w.tools.phaseStartedAt(id)
 	if phaseStart.IsZero() {
 		return false
+	}
+	if unreachable, _ := w.tools.unreachableSincePrevDispatch(id); unreachable {
+		return now.Sub(phaseStart) < engineUnreachableHold
 	}
 	if w.tools.answeredSincePrevDispatch(id) {
 		return false // the engine is answering for this tool; it really is stuck
@@ -386,24 +411,50 @@ func (w *ConversationWorker) escalateStaleToolCommand(id, expectState string) {
 	}
 
 	engine, lastTrace, toolTrace := w.engineLivenessSummary(id)
-	// Two very different faults share this exit, and the message must say which:
-	// an engine that answered for this tool and could not carry the command out,
-	// versus one that never answered for it and has now been waited out.
-	// Reporting the second as a tool failure sends every investigation after the
-	// tool. The test is per-tool and recent (answeredSincePrevDispatch), because
-	// the engine being alive proves nothing about this tool: a sibling tool in
-	// the same parallel batch traces constantly, and one trace at the head of the
-	// phase is what a since-suspended engine leaves behind.
-	mute := !w.tools.answeredSincePrevDispatch(id)
-	w.log.Error("[worker] tool-command for %s (%s) in %s stayed at state=%q unhandled %d× (mute=%v); failing the tool to unblock the turn (engine=%s lastEngineTrace=%s lastToolTrace=%s)",
-		id, toolName, w.conversationID, expectState, maxToolCommandAttempts, mute, engine, lastTrace, toolTrace)
+	// Three very different faults share this exit, and the message must say which
+	// — reporting any of the others as a tool failure sends every investigation
+	// after the tool:
+	//
+	//   - the engine answered for this tool and could not carry the command out.
+	//     The tool is what is broken.
+	//   - the engine answered only to say it could not reach the tool, and has
+	//     gone on saying so past engineUnreachableHold. Its conversation load is
+	//     what is broken; the reason it gave says which part.
+	//   - the engine never answered for this tool at all and has now been waited
+	//     out. The link is what is broken.
+	//
+	// The test is per-tool and recent (answeredSincePrevDispatch /
+	// unreachableSincePrevDispatch), because the engine being alive proves nothing
+	// about this tool: a sibling tool in the same parallel batch traces
+	// constantly, and one trace at the head of the phase is what a since-suspended
+	// engine leaves behind.
+	unreachable, unreachableReason := w.tools.unreachableSincePrevDispatch(id)
+	mute := !unreachable && !w.tools.answeredSincePrevDispatch(id)
+	verdict := "unhandled"
+	switch {
+	case unreachable:
+		verdict = "unreachable:" + unreachableReason
+	case mute:
+		verdict = "mute"
+	}
+	w.log.Error("[worker] tool-command for %s (%s) in %s stayed at state=%q unhandled %d× (verdict=%s); failing the tool to unblock the turn (engine=%s lastEngineTrace=%s lastToolTrace=%s)",
+		id, toolName, w.conversationID, expectState, maxToolCommandAttempts, verdict, engine, lastTrace, toolTrace)
 	w.tape.Record("tool-command-attempts-escalate", map[string]any{
 		"id": id, "tool": toolName, "state": expectState, "attempts": maxToolCommandAttempts,
-		"engine": engine, "lastEngineTrace": lastTrace, "lastToolTrace": toolTrace, "mute": mute,
+		"engine": engine, "lastEngineTrace": lastTrace, "lastToolTrace": toolTrace,
+		"verdict": verdict, "mute": mute,
 	})
 	content := fmt.Sprintf("Couldn't run this tool: the engine acknowledged the request but never carried it out, after %d attempts. Failed so the turn can continue.",
 		maxToolCommandAttempts)
-	if mute {
+	switch {
+	case unreachable:
+		// The engine said exactly why, every time it declined. Lead in plain
+		// English and keep its own word for it — that token is what distinguishes a
+		// conversation the engine never loaded from one whose copy is missing the
+		// tool, and it is the only thing in the message worth searching the log for.
+		content = fmt.Sprintf("Couldn't run this tool: the engine couldn't get hold of this conversation to run it, and kept saying so for %s. Nothing ran. (engine reason: %s)",
+			engineUnreachableHold, unreachableReason)
+	case mute:
 		// One line for both silences, because the reader tells them apart from the
 		// activity note: "never" is an engine that was never reached, an age is an
 		// engine that is alive and simply never answered for this tool.
