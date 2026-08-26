@@ -44,4 +44,9 @@ type ShellCancelRequest struct {
 // GenericWSMessage is used to determine message type before parsing
 type GenericWSMessage struct {
 	Type string `json:"type,omitempty"`
+	// WorkerMsgType is the inner type carried by a "worker-message" envelope
+	// (worker.WorkerMessage). Probed here so a routing decision that depends on
+	// which worker message this is can be made before the envelope is parsed;
+	// empty for every other message type.
+	WorkerMsgType string `json:"workerMsgType,omitempty"`
 }

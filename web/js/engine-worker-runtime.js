@@ -16,8 +16,14 @@
  * /engine boots it via engine-worker-main.js.
  */
 
+import { createSandboxBridge } from './engine-worker-sandbox.js';
+
 // Mark this global BEFORE the engine graph loads so client-role.isEngine() makes
-// the real wsService connect as role=engine from inside the worker.
+// the real wsService connect as role=engine from inside the worker. The import
+// above is a leaf module with no bare specifiers and no load-time side effects,
+// so hoisting it ahead of this assignment changes nothing; the engine graph
+// itself still loads through the /worker-module loader below, which is what
+// resolves its `juggler/*` specifiers.
 globalThis.JUGGLER_ENGINE = true;
 
 /**
@@ -33,6 +39,41 @@ function report(event, payload) {
     body: JSON.stringify({ event, ...payload })
   }).catch(() => {});
 }
+
+/**
+ * How many uncaught faults this realm reports before it stops. A failure that
+ * repeats in a loop would otherwise fill the app log with one shape of line, and
+ * the twentieth copy says nothing the first did not.
+ */
+const MAX_FAULT_REPORTS = 20;
+let faultReports = 0;
+
+/**
+ * Report an uncaught fault in this realm to the app log.
+ *
+ * Without this the engine's faults land nowhere at all: the worker runs inside a
+ * hidden WebView whose console nothing captures, and the host's `worker.onerror`
+ * only forwards to that same unread console. A rejection nobody handled is
+ * exactly how an await that never settles comes about, so it is the first thing
+ * an investigation wants and the one thing that used to leave no trace.
+ * @param {string} kind - 'unhandledrejection' or 'error'
+ * @param {unknown} reason - The rejection value or error
+ */
+function reportFault(kind, reason) {
+  if (faultReports++ >= MAX_FAULT_REPORTS) return;
+  const err = reason instanceof Error ? reason : null;
+  const message = err ? err.message : String(reason);
+  const stack = err?.stack;
+  report('error', { message: `${kind}: ${message}`, stack });
+  self.postMessage({ type: 'error', message: `${kind}: ${message}`, stack });
+}
+
+self.addEventListener('unhandledrejection', (event) => {
+  reportFault('unhandledrejection', /** @type {any} */ (event).reason);
+});
+self.addEventListener('error', (event) => {
+  reportFault('error', /** @type {any} */ (event).error ?? /** @type {any} */ (event).message);
+});
 
 /**
  * Install the same-origin /api token shim the viewer gets from index.html.
@@ -72,73 +113,22 @@ function installAPITokenFetchShim(token) {
 }
 
 // ── Host-delegated sandbox (query_code) ──────────────────────────────────
-// query_code runs untrusted JS in an opaque-origin iframe, which needs a
-// `document` the worker doesn't have. We delegate the iframe to the main-thread
-// host (engine-worker-main) and service the script's capability calls (fs/grep/
-// glob) back here, where their closures live. The untrusted code never runs in
-// the worker — only the capability servicing does.
-let sandboxSeq = 0;
-/** @type {Map<string, {resolve: Function, reject: Function, capabilities: Record<string, any>}>} */
-const pendingSandbox = new Map();
-
-/** @type {any} */ (globalThis).__hostSandboxDelegate = (
-  /** @type {string} */ code,
-  /** @type {Record<string, any>} */ capabilities,
-  /** @type {number} */ timeoutMs
-) => {
-  const id = `sbx_${++sandboxSeq}`;
-  const descriptors = Object.entries(capabilities).map(([name, cap]) => ({
-    name,
-    callable: typeof cap === 'function'
-  }));
-  // The project root the sandbox exposes as `projectRoot` comes from the live
-  // engine value (updated on a runtime project switch — see session.js
-  // _applyEngineProjectRoot), NOT the frozen sandbox.html template. This realm
-  // (the engine worker) is where the session runs and keeps it current; the
-  // main-thread iframe host can't read this worker's global, so pass it across.
-  const projectRoot = /** @type {any} */ (globalThis).__jugglerProjectRoot;
-  return new Promise((resolve, reject) => {
-    pendingSandbox.set(id, { resolve, reject, capabilities });
-    self.postMessage({ type: 'sandbox-run', id, code, timeoutMs, descriptors, projectRoot });
-  });
-};
-
-/**
- * Service one capability call requested by the host's sandbox iframe.
- * @param {any} data - { id, callId, name, method, args }
- */
-async function handleSandboxCap(data) {
-  const entry = pendingSandbox.get(data.id);
-  try {
-    if (!entry) throw new Error(`no pending sandbox ${data.id}`);
-    const cap = entry.capabilities[data.name];
-    if (cap === undefined) throw new Error(`unknown capability: ${data.name}`);
-    const value = typeof cap === 'function'
-      ? await cap(...(data.args || []))
-      : await cap[data.method](...(data.args || []));
-    self.postMessage({ type: 'sandbox-cap-reply', id: data.id, callId: data.callId, ok: true, value });
-  } catch (err) {
-    self.postMessage({
-      type: 'sandbox-cap-reply', id: data.id, callId: data.callId, ok: false,
-      error: err instanceof Error ? err.message : String(err)
-    });
-  }
-}
+// The bridge itself lives in engine-worker-sandbox.js; this file owns only the
+// wiring to `self`. The delegate hook lives on globalThis (not a module export)
+// so it is shared regardless of how many sandbox-runner instances the
+// worker-module loader materialises.
+const sandbox = createSandboxBridge({ post: (message) => self.postMessage(message) });
+/** @type {any} */ (globalThis).__hostSandboxDelegate = sandbox.delegate;
 
 self.onmessage = (event) => {
   const data = event.data || {};
 
   if (data.type === 'sandbox-cap') {
-    handleSandboxCap(data);
+    sandbox.handleCap(data);
     return;
   }
   if (data.type === 'sandbox-result') {
-    const entry = pendingSandbox.get(data.id);
-    if (entry) {
-      pendingSandbox.delete(data.id);
-      if (data.ok) entry.resolve(data.result);
-      else entry.reject(new Error(data.error || 'sandbox script error'));
-    }
+    sandbox.handleResult(data);
     return;
   }
 

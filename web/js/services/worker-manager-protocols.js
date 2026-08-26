@@ -99,9 +99,36 @@ export function sendToolExecutionReports(wm) {
     }
   }
   _execReportPrevConvs = nowConvs;
+  reportOverdueExecutions(wm);
   if (nowConvs.size === 0 && _execReportTimer) {
     clearInterval(_execReportTimer);
     _execReportTimer = null;
+  }
+}
+
+/**
+ * Trace any execution the executor has been running for longer than its
+ * watchdog threshold.
+ *
+ * It rides the reporter's tick because that timer is armed exactly while
+ * something is executing and disarms when nothing is — the same condition the
+ * watchdog needs — so a wedge costs no extra timer and an idle engine costs
+ * nothing at all.
+ *
+ * The trace is diagnostic and the worker treats it as such: handleEngineTrace
+ * logs a `tool-overdue` at Warn (every other engine-trace is Trace) so a wedge
+ * that used to be entirely silent is one grep away, and nothing is failed or
+ * aborted on the strength of it. See ActionExecutor.overdueRunningActions for
+ * why reporting, rather than acting, is the whole of the response.
+ * @param {any} wm - WorkerManager instance
+ */
+function reportOverdueExecutions(wm) {
+  for (const o of actionExecutor.overdueRunningActions()) {
+    sendEngineTrace(wm, o.conversationId, 'tool-overdue', {
+      toolUseId: o.toolUseId,
+      actionId: o.actionId,
+      runningMs: o.runningMs
+    });
   }
 }
 

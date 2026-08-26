@@ -26,8 +26,17 @@ import (
 // So the engine proves itself the only way that cannot be faked from below: it
 // sends an engine-heartbeat from inside its module worker (see
 // web/js/engine-app.js), the realm that would have to be running for a tool to
-// execute at all. The stamp is refreshed by that heartbeat and by every other
-// message the engine sends, since traffic is proof of the same thing.
+// execute at all. The stamp is refreshed by that heartbeat and by nearly every
+// other message the engine sends, since traffic is proof of the same thing.
+//
+// What this measures, precisely, is that the engine's event loop is turning. It
+// does NOT measure that any particular piece of work is progressing, and it must
+// not be stretched to: a tool wedged on a promise that never settles leaves the
+// loop free, so the realm is genuinely alive and evicting it would close the
+// socket for every other conversation to punish one stuck tool. Progress of an
+// individual tool is a separate question with a separate ladder — the engine's
+// own overdue-execution watchdog (web/js/services/action-executor.js) and the
+// worker's tool-command escalation (worker/tool_commands.go).
 const (
 	// engineHeartbeatInterval is how often the engine announces itself. Kept well
 	// inside engineLivenessWindow so an ordinary scheduling hiccup, a slow
@@ -43,9 +52,28 @@ const (
 	engineLivenessWindow = 30 * time.Second
 )
 
+// engineTrafficProvesLiveness reports whether an inbound engine message is
+// admissible evidence that the engine's realm is running.
+//
+// Almost everything is. The exception is the tool-execution report: it is
+// emitted by a timer whose only precondition is that the executor's running set
+// is non-empty (web/js/services/worker-manager-protocols.js), so a tool that
+// claimed `running` and then hung inside execute() keeps that timer arriving
+// every few seconds for as long as the wedge lasts. Accepting it would make the
+// report the loudest witness for precisely the engine that has stopped getting
+// anywhere — liveness by traffic rather than by progress.
+//
+// Excluding it costs no coverage. The heartbeat is sent from the same realm on
+// the same kind of timer, is unconditional once the engine has connected, and is
+// the message designed to carry this meaning; anything that stops the reports
+// from being composed stops the heartbeat too.
+func engineTrafficProvesLiveness(generic GenericWSMessage) bool {
+	return generic.WorkerMsgType != "tool-execution-report"
+}
+
 // noteEngineAlive stamps the moment the engine last proved its realm is running.
 // Called on engine registration (a fresh connection has, by definition, just run
-// the code that opened it) and on every inbound engine message.
+// the code that opened it) and on every admissible inbound engine message.
 func (s *Server) noteEngineAlive() {
 	s.engineHeartbeatAt.Store(time.Now().UnixNano())
 }

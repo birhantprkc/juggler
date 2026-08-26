@@ -906,6 +906,13 @@ func (w *ConversationWorker) resetRunningToolsForReattach() {
 	}
 }
 
+// engineTraceToolOverdue is the trace event the engine's execution watchdog
+// emits for a tool it has been running longer than any tool's legitimate
+// deadline (reportOverdueExecutions in
+// web/js/services/worker-manager-protocols.js). A wire contract with the engine:
+// the string must match the event name sent there.
+const engineTraceToolOverdue = "tool-overdue"
+
 // handleEngineTrace persists a diagnostic event the engine emits over its WS
 // (sendEngineTrace) into the per-project server log, tagged with this worker's
 // conversation. The engine's WebView console is not captured anywhere, so this
@@ -941,11 +948,27 @@ func (w *ConversationWorker) handleEngineTrace(payload json.RawMessage) {
 	now := time.Now()
 	w.lastEngineTraceAt = now
 	var probe struct {
-		ToolUseID string `json:"toolUseId"`
-		Reason    string `json:"reason"`
+		Event     string  `json:"event"`
+		ToolUseID string  `json:"toolUseId"`
+		ActionID  string  `json:"actionId"`
+		Reason    string  `json:"reason"`
+		RunningMs float64 `json:"runningMs"`
 	}
-	if json.Unmarshal(payload, &probe) == nil && probe.ToolUseID != "" {
+	decoded := json.Unmarshal(payload, &probe) == nil
+	if decoded && probe.ToolUseID != "" {
 		w.tools.recordTrace(probe.ToolUseID, probe.Reason, now)
+	}
+	if decoded && probe.Event == engineTraceToolOverdue {
+		// The one engine-trace that is not merely part of a lifecycle: the engine's
+		// watchdog reporting an execution that has outlived every deadline a tool
+		// can legitimately be given. Nothing acts on it — a running tool has no
+		// safe kill threshold — so its whole value is being findable, which Trace
+		// (file-only, and only under --verbose) would not deliver. Info rather than
+		// Error because the same line covers a genuinely long build.
+		w.log.Info("[engine] tool %s (%s) in %s has been executing for %s with nothing back yet — long-running work, or an execution that will never return",
+			probe.ToolUseID, probe.ActionID, w.conversationID,
+			(time.Duration(probe.RunningMs) * time.Millisecond).Round(time.Second))
+		return
 	}
 	w.log.Trace("[engine-trace] conv=%s %s", w.conversationID, string(payload))
 }

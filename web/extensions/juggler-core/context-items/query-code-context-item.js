@@ -115,9 +115,13 @@ class QueryCodeContextItem extends ContextItem {
     const fs = new ReadOnlyFileSystem(this.getToolAllowedRoots());
     const { grep, glob } = this._createSearchHelpers();
 
+    // The signal is what makes Escape mean anything here. Without it the script
+    // is only bounded by its own timeout — up to ten minutes — and a cancel
+    // leaves the tool sitting at `running` until that budget runs out.
     const result = await runInSandbox(code, {
       capabilities: { fs, grep, glob },
       timeoutMs,
+      signal: this.signal,
     });
 
     /** @type {Record<string, unknown>} */

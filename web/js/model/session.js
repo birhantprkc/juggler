@@ -566,6 +566,43 @@ class Session {
   }
 
   /**
+   * Release a conversation this realm holds but has no further reason to.
+   *
+   * The engine's counterpart to the viewer's delete/bin handling. The engine
+   * loads a conversation lazily — the first time a worker syncs one to it — and
+   * otherwise never lets go: the Yjs document, its observers and the worker
+   * entry stay for the process lifetime, across project switches, including
+   * conversations the user threw away long ago. That is unbounded growth in the
+   * one realm that has to stay responsive, and a WebView out of memory presents
+   * exactly like a wedged realm.
+   *
+   * In-flight work is cancelled rather than waited out. These executions have
+   * nowhere left to report — the server-side worker is gone and the document
+   * beneath them is about to be destroyed — so running them to completion writes
+   * a result into a torn-down doc. A command the worker dispatches in the race
+   * window finds no loaded conversation and is declined with `conv-not-loaded`,
+   * which the worker reads as "the engine could not reach the tool" and holds
+   * rather than blames (engineUnreachableReasons, worker/tool_command_state.go).
+   *
+   * Viewer-only state (the visible conversation, the tab fallback) is
+   * deliberately untouched: a viewer reaches the same teardown through
+   * {@link Session#applyConversationDeleted}, which owns those.
+   * @param {string} id - Conversation to release
+   * @returns {Promise<boolean>} True if a loaded conversation was released
+   */
+  async releaseConversation(id) {
+    const conv = this.conversations.get(id);
+    if (!conv) return false;
+    /** @type {any} */ (conv)._actionExecutor?.cancelConversationActions?.(id);
+    this._loadQueue?.cancel(id);
+    await workerManager.destroyConversationAndWorker(conv);
+    recordTape('session-mut', id, { op: 'delete', from: 'releaseConversation' });
+    this.conversations.delete(id);
+    this._mruList = this._mruList.filter(x => x !== id);
+    return true;
+  }
+
+  /**
    * Tear down a conversation's worker and remove it from the active map,
    * MRU list, and (if visible) switch to a fallback. Returns the removed
    * `conv` so the caller can fire the appropriate notify, or null if the

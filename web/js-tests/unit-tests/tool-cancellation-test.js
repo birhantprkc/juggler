@@ -721,5 +721,113 @@ export async function runTests(_ctx) {
     }
   }
 
+  // Test 13: an execution that outlives every legitimate tool deadline must be
+  // reported as overdue — once, then again only after the repeat interval.
+  //
+  // Regression target: a tool that reached `running` and then hung was invisible
+  // to every ladder in the system. The worker's tool-command escalation covers
+  // only tools stuck at a DELIVERY state ("" or approved) and skips `running`;
+  // the worker's tool-execution-report rule finalizes only a tool ABSENT from the
+  // engine's executing set, and a hung tool is present in every report forever;
+  // and the engine's heartbeat keeps firing, because an await that never settles
+  // leaves the event loop free. Nothing anywhere recorded that the execution
+  // existed, so a permanent hang left no trace to find afterwards.
+  {
+    const originalFetch = window.fetch;
+    try {
+      assert(!actionExecutor.hasRunningActions(), 'precondition: no leftover running actions before the watchdog test');
+
+      const conversation = await createTestConversation(session);
+      const a = await startHungGrep(session, conversation, 'overdue-1', 7);
+
+      const fresh = actionExecutor.overdueRunningActions();
+      assert(fresh.length === 0, `a just-started execution must not be overdue, got ${fresh.length}`);
+
+      // Well past the longest deadline any tool is given (bash's 20 minutes).
+      const late = Date.now() + 22 * 60 * 1000;
+      const first = actionExecutor.overdueRunningActions(late);
+      assert(first.length === 1, `an execution running for 22 minutes must be reported overdue, got ${first.length}`);
+      assert(first[0].toolUseId === 'overdue-1', `the report must name the tool, got ${first[0].toolUseId}`);
+      assert(first[0].conversationId === conversation.id, 'the report must name the conversation so the trace can be addressed');
+      assert(first[0].runningMs >= 22 * 60 * 1000 - 5000, `the report must carry the elapsed time, got ${first[0].runningMs}`);
+
+      // Rate-limited: still stuck is not news every 3 seconds.
+      const again = actionExecutor.overdueRunningActions(late + 1000);
+      assert(again.length === 0, 'an already-reported execution must not be re-reported within the repeat interval');
+
+      // But a wedge that lasts leaves a trail rather than one line at the start.
+      const later = actionExecutor.overdueRunningActions(late + 11 * 60 * 1000);
+      assert(later.length === 1, 'an execution still stuck past the repeat interval must be reported again');
+
+      actionExecutor.cancelByToolUseId('overdue-1', conversation.id);
+      await a.execPromise;
+      assert(actionExecutor.overdueRunningActions(late).length === 0, 'a settled execution must not be reported overdue');
+
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push(`overdue-execution watchdog: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      window.fetch = originalFetch;
+      await drainExecutor();
+    }
+  }
+
+  // Test 14: the reporter tick turns an overdue execution into a `tool-overdue`
+  // engine-trace, which the worker logs at Info. That trace is the ONLY durable
+  // record of a hung execution — the engine's console is captured nowhere — so
+  // the wiring from the executor's watchdog to the wire is the thing under test,
+  // not just the ageing rule above.
+  {
+    const wsService = (await import('../../js/services/websocket.js')).default;
+    const originalSendWorkerMessage = wsService.sendWorkerMessage;
+    const prevEngine = /** @type {any} */ (globalThis).JUGGLER_ENGINE;
+    const originalFetch = window.fetch;
+    try {
+      assert(!actionExecutor.hasRunningActions(), 'precondition: no leftover running actions before the overdue-trace test');
+      __resetToolExecutionReporterForTest();
+      /** @type {any} */ (globalThis).JUGGLER_ENGINE = true;
+
+      const conversation = await createTestConversation(session);
+      const a = await startHungGrep(session, conversation, 'overdue-trace-1', 9);
+
+      // Age the execution in place. The reporter reads the executor's own clock,
+      // so backdating the entry is the only way to reach 22 minutes in a test.
+      for (const entry of /** @type {any} */ (actionExecutor)._runningActions.values()) {
+        entry.startTime -= 22 * 60 * 1000;
+      }
+
+      /** @type {any[]} */
+      const traces = [];
+      /** @type {any} */ (wsService).sendWorkerMessage = (/** @type {string} */ conversationId, /** @type {any} */ message) => {
+        traces.push({ conversationId, message });
+      };
+      const spyWm = { sendToWorker: () => {} };
+
+      sendToolExecutionReports(spyWm);
+
+      const overdue = traces.filter((t) => t.message?.event === 'tool-overdue');
+      assert(overdue.length === 1, `the reporter tick must emit exactly one tool-overdue trace, got ${overdue.length}`);
+      assert(overdue[0].conversationId === conversation.id, 'the trace must be addressed to the tool\'s conversation');
+      assert(overdue[0].message.type === 'engine-trace', 'the overdue report must ride the engine-trace channel');
+      assert(overdue[0].message.toolUseId === 'overdue-trace-1', `the trace must name the tool, got ${overdue[0].message.toolUseId}`);
+      assert(typeof overdue[0].message.runningMs === 'number', 'the trace must carry how long the execution has been running');
+
+      actionExecutor.cancelByToolUseId('overdue-trace-1', conversation.id);
+      await a.execPromise;
+
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push(`overdue execution reaches the worker as an engine-trace: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      /** @type {any} */ (wsService).sendWorkerMessage = originalSendWorkerMessage;
+      /** @type {any} */ (globalThis).JUGGLER_ENGINE = prevEngine;
+      window.fetch = originalFetch;
+      await drainExecutor();
+      __resetToolExecutionReporterForTest();
+    }
+  }
+
   return { passed, failed, errors };
 }

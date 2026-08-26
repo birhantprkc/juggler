@@ -172,8 +172,12 @@ class WorkerManager {
     this._pendingAutoLoads = new Map();
 
     /**
-     * Pending strategy-driven thread creation requests (requestId -> {resolve, reject})
-     * @type {Map<string, {resolve: Function, reject: Function}>}
+     * Pending strategy-driven thread creation requests
+     * (requestId -> {conversationId, resolve, reject}). The conversationId is
+     * what lets {@link WorkerManager#terminate} unwind the requests belonging to
+     * a conversation that is going away; see createThread for why there is no
+     * timer.
+     * @type {Map<string, {conversationId: string, resolve: Function, reject: Function}>}
      * @private
      */
     this._pendingThreadRequests = new Map();
@@ -394,6 +398,34 @@ class WorkerManager {
    */
   terminate(conversationId) {
     this._workers.delete(conversationId);
+    // A createThread awaiting this conversation can never be answered now: its
+    // reply arrives as a worker message for a worker this manager no longer
+    // holds. Unwind it here rather than leaving the awaiter — and the closure
+    // graph behind it — parked for the life of the process.
+    this._rejectThreadRequests(
+      (pending) => pending.conversationId === conversationId,
+      `Conversation ${conversationId} was closed while its thread was running`
+    );
+  }
+
+  /**
+   * Reject and drop every pending create-thread request matching `match`.
+   * @param {(pending: {conversationId?: string}) => boolean} match - Selector
+   * @param {string} message - Rejection message
+   * @private
+   */
+  _rejectThreadRequests(match, message) {
+    for (const [requestId, pending] of [...this._pendingThreadRequests]) {
+      if (!match(pending)) continue;
+      this._pendingThreadRequests.delete(requestId);
+      try {
+        // AbortError: the thread was not answered, it was called off. Callers
+        // already distinguish that from a thread that ran and failed.
+        const err = new Error(message);
+        err.name = 'AbortError';
+        pending.reject(err);
+      } catch { /* a rejection handler that throws must not strand the rest */ }
+    }
   }
 
   /**
@@ -410,14 +442,7 @@ class WorkerManager {
 
     // Reject outstanding thread requests so their awaiters unwind instead of
     // hanging forever, then drop them.
-    for (const pending of this._pendingThreadRequests.values()) {
-      try {
-        const err = new Error('Worker manager terminated');
-        err.name = 'AbortError';
-        pending.reject(err);
-      } catch { /* ignore */ }
-    }
-    this._pendingThreadRequests.clear();
+    this._rejectThreadRequests(() => true, 'Worker manager terminated');
 
     // Reject each pending ack — the reject wrapper clears its timeout, so the
     // timers don't fire later against torn-down state.
@@ -615,7 +640,21 @@ class WorkerManager {
           onAbort = null;
         }
       };
+      // No wall-clock deadline here, unlike _sendWithAck's 5s. The two wait for
+      // different things: an ack is an immediate receipt, so any silence past a
+      // few seconds means the message was lost, whereas this waits for a whole
+      // sub-agent run to finish — reading files, calling a model, running its own
+      // tools — which legitimately takes minutes and has no honest upper bound.
+      // A timer here would abandon a thread that was working perfectly.
+      //
+      // What ends the wait instead is an event: create-thread-response, the
+      // caller's abort, or {@link WorkerManager#terminate} for this conversation.
+      // The conversationId is recorded so that last one can find this entry —
+      // without it, a conversation torn down mid-thread (closed, deleted, or
+      // released by the engine) leaves the awaiter hanging and the entry, with
+      // the whole closure graph behind it, in the map for the process lifetime.
       this._pendingThreadRequests.set(requestId, {
+        conversationId,
         resolve: (/** @type {*} */ value) => { detachAbort(); resolve(value); },
         reject: (/** @type {Error} */ err) => { detachAbort(); reject(err); },
       });

@@ -137,10 +137,10 @@ func (s *Server) runRealtimeClientLoop(ctx context.Context, client RealtimeClien
 			// beat below only covers a client with nothing else to say.
 			link.noteInbound()
 
-			// Anything the engine says proves its realm is running, so all inbound
-			// engine traffic refreshes the liveness stamp — the heartbeat below only
-			// covers the case where the engine has nothing else to say.
-			if role == ClientRoleEngine {
+			// Engine traffic refreshes the liveness stamp: a message the engine
+			// composed is proof that the realm which composes messages is running.
+			// See engineTrafficProvesLiveness for the one message that is exempt.
+			if role == ClientRoleEngine && engineTrafficProvesLiveness(generic) {
 				s.noteEngineAlive()
 			}
 

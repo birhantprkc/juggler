@@ -121,7 +121,24 @@ function warnOnEmptySuccessSummary(rawSummary, className) {
  * @property {number} [runningEpoch] - Execution generation this action was claimed under (for generation-scoped cancellation)
  * @property {number} [runningStartedAt] - The tool-action's claim stamp (for the tool-execution-report happens-after guard)
  * @property {number} startTime - Start timestamp
+ * @property {number} [overdueReportedAt] - When this execution was last flagged as overdue (see overdueRunningActions); absent until the first flag
  */
+
+/**
+ * How long one execution may run before the watchdog starts reporting it.
+ *
+ * Sized above every deadline a tool can legitimately be given — the bash tool's
+ * 20-minute ceiling is the longest — so ordinary long work does not trip it. It
+ * is not a hard limit and nothing is aborted when it elapses; see
+ * {@link ActionExecutor#overdueRunningActions}.
+ */
+const OVERDUE_EXECUTION_MS = 21 * 60 * 1000;
+
+/**
+ * How often an execution that stays overdue is re-reported, so a wedge that
+ * lasts hours leaves a trail in the log rather than one line at the start.
+ */
+const OVERDUE_REPEAT_MS = 10 * 60 * 1000;
 
 /**
  * Action Executor Service
@@ -676,6 +693,75 @@ class ActionExecutor {
       arr.push({ toolUseId: a.toolUseId, runningEpoch: a.runningEpoch, runningStartedAt: a.runningStartedAt });
     }
     return byConv;
+  }
+
+  /**
+   * Executions that have outrun {@link OVERDUE_EXECUTION_MS} and are due to be
+   * reported, stamping each so it is not reported again for OVERDUE_REPEAT_MS.
+   *
+   * This is the engine's only witness to the wedge nothing else can see. A tool
+   * that reaches `running` and then hangs — inside `execute()`, or on an await
+   * that never settles — leaves every other ladder satisfied: the worker's
+   * tool-command escalation covers only tools stuck at a DELIVERY state ("" or
+   * approved) and skips `running` entirely; the worker's tool-execution-report
+   * rule finalizes only a tool ABSENT from the engine's executing set, and a hung
+   * tool is present in every report forever; and the engine's own heartbeat keeps
+   * firing, because a stuck await leaves the event loop free. The execution is
+   * invisible to all three, so age is the only signal left.
+   *
+   * It reports and does not act, deliberately. There is no threshold at which
+   * aborting a running tool is safe: the tools that hang are the same ones that
+   * legitimately run for a very long time (a build under `bash`, a large grep, a
+   * slow model call), so a watchdog that killed them would trade a rare wedge for
+   * routinely destroying work the user was waiting on. The user already has a
+   * cancel that reaches this executor. What was missing was any record that the
+   * execution existed, which is what the caller turns into an engine-trace.
+   * @param {number} [now] - Clock override for tests
+   * @returns {Array<{toolUseId: string|undefined, conversationId: string, actionId: string, runningMs: number}>}
+   *   One entry per overdue execution due for reporting; empty when nothing is overdue.
+   */
+  overdueRunningActions(now = Date.now()) {
+    /** @type {Array<{toolUseId: string|undefined, conversationId: string, actionId: string, runningMs: number}>} */
+    const out = [];
+    for (const a of this._runningActions.values()) {
+      // An execution with no conversation (a direct execute() outside the
+      // command-driven path) has nowhere to be reported to.
+      if (!a.conversationId) continue;
+      const runningMs = now - a.startTime;
+      if (runningMs < OVERDUE_EXECUTION_MS) continue;
+      if (a.overdueReportedAt !== undefined && now - a.overdueReportedAt < OVERDUE_REPEAT_MS) continue;
+      a.overdueReportedAt = now;
+      out.push({
+        toolUseId: a.toolUseId,
+        conversationId: a.conversationId,
+        actionId: a.actionId,
+        runningMs
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Cancel every in-flight action belonging to one conversation.
+   *
+   * Used when the engine releases a conversation the user has deleted or binned.
+   * Those executions have nowhere left to report: their worker is gone and their
+   * Yjs document is about to be destroyed, so letting them run to completion
+   * writes a result into a torn-down doc. Conversation-scoped for the same reason
+   * as {@link ActionExecutor#cancelByToolUseId} — this executor is engine-wide
+   * and every other conversation's work must be left strictly alone.
+   * @param {string} conversationId - Conversation whose work is being abandoned
+   * @returns {number} How many executions were aborted
+   */
+  cancelConversationActions(conversationId) {
+    let aborted = 0;
+    for (const runningAction of this._runningActions.values()) {
+      if (runningAction.conversationId !== conversationId) continue;
+      runningAction.controller.abort();
+      aborted++;
+    }
+    // Entries are removed by execute()'s finally as each abort unwinds.
+    return aborted;
   }
 
   /**

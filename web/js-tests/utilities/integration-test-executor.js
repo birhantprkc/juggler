@@ -98,6 +98,8 @@ import { runTests as runReadFileActionTests } from '../unit-tests/read-file-acti
 import { runTests as runPathInputQuotesTests } from '../unit-tests/path-input-quotes-test.js';
 import { runTests as runSearchActionTests } from '../unit-tests/search-action-test.js';
 import { runTests as runToolCancellationTests } from '../unit-tests/tool-cancellation-test.js';
+import { runTests as runUnboundedAwaitTests } from '../unit-tests/unbounded-await-test.js';
+import { runTests as runConversationReleaseTests } from '../unit-tests/conversation-release-test.js';
 import { runTests as runToolExecutionOrderTests } from '../unit-tests/tool-execution-order-test.js';
 import { runTests as runToolActionRenderTests } from '../unit-tests/tool-action-render-test.js';
 import { runTests as runJugglerSpinnerLiveTests } from '../unit-tests/juggler-spinner-live-test.js';
@@ -369,6 +371,8 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:skill-completion', run: runSkillCompletionTests },
   { name: 'unit:search-action', run: runSearchActionTests },
   { name: 'unit:tool-cancellation', run: runToolCancellationTests },
+  { name: 'unit:unbounded-await', run: runUnboundedAwaitTests },
+  { name: 'unit:conversation-release', run: runConversationReleaseTests },
   { name: 'unit:tool-execution-order', run: runToolExecutionOrderTests },
   { name: 'unit:tool-action-render', run: runToolActionRenderTests },
   { name: 'unit:juggler-spinner-live', run: runJugglerSpinnerLiveTests },

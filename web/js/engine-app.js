@@ -143,6 +143,44 @@ class EngineApp {
   }
 
   /**
+   * Release a conversation the user has thrown away, if this engine is holding
+   * one.
+   *
+   * The engine never let go of a conversation once it had loaded it: the Yjs
+   * document, its observers and the worker entry survived deletion, binning and
+   * project switches, so a long-lived engine accumulated every conversation it
+   * had ever been synced — in the one realm that has to stay responsive, and
+   * where an exhausted WebView is indistinguishable from a wedged one.
+   *
+   * Deleted and binned conversations are the unambiguous case: the user has
+   * removed them, their server-side worker is gone, and nothing will ask this
+   * engine to run a tool in them again. `binned-deleted` (emptied from the bin)
+   * is included for the engine that was restarted while something sat in the
+   * bin and picked it up from a later sync.
+   *
+   * Every other op is left alone. `restored` in particular needs no work: the
+   * next yjs-sync for that conversation loads it back through the same lazy path
+   * that loaded it the first time.
+   * @param {{op?: string, id?: string}} data - The conversations-changed diff
+   * @private
+   */
+  _releaseRemovedConversation({ op, id }) {
+    if (!id) return;
+    if (op !== 'deleted' && op !== 'binned' && op !== 'binned-deleted') return;
+    const session = this.getSession();
+    if (!session) return;
+    void Promise.resolve(session.releaseConversation(id))
+      .then((released) => {
+        if (released) console.info(`[Engine] Released ${op} conversation ${id}`);
+      })
+      .catch((err) => {
+        // A release that fails leaves the conversation held, which is the state
+        // we started from — never let it take the message handler down with it.
+        console.warn(`[Engine] Couldn't release ${op} conversation ${id}:`, err);
+      });
+  }
+
+  /**
    * Handle server messages - route worker messages
    * @param {any} data
    * @private
@@ -160,14 +198,20 @@ class EngineApp {
       return;
     }
 
-    // The engine loads conversations lazily via _autoLoadConversation
-    // when it receives yjs-sync from active workers; the op-tagged
-    // conversations-changed diff and the generic session-changed are
-    // no-ops here. Eagerly applying them would load every
-    // conversation because the engine's session.conversations is
-    // intentionally empty.
-    if (data.type === 'session-changed' ||
-            data.type === 'conversations-changed') {
+    // The engine loads conversations lazily via _autoLoadConversation when it
+    // receives yjs-sync from active workers, so it must NOT apply the op-tagged
+    // conversations-changed diff the way a viewer does — that would load every
+    // conversation, which is exactly what the engine's empty
+    // session.conversations exists to avoid. The generic session-changed is a
+    // viewer refresh and means nothing here.
+    //
+    // The ops that REMOVE a conversation are the exception, and they run in the
+    // other direction: they release something the engine already holds.
+    if (data.type === 'conversations-changed') {
+      this._releaseRemovedConversation(data);
+      return;
+    }
+    if (data.type === 'session-changed') {
       return;
     }
 

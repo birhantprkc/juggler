@@ -12,6 +12,7 @@ of changes; this project follows semantic versioning.
 - MCP servers connect at startup, so the first turn of a session can use their tools
 - The extension guide now covers info cards, file viewers, settings and secrets
 - Lots of work on making remote connections over slow networks more efficient and robust
+- Lots of work on handling stuck tools, and improving logging when things do go wrong
 
 ## [0.5.8] - 2026-08-24
 

@@ -154,6 +154,92 @@ func TestEngineSocket_SilentEngineIsEvicted(t *testing.T) {
 	}
 }
 
+// TestEngineSocket_ToolExecutionReportsDoNotProveLiveness. The tool-execution
+// report is emitted by a timer whose only precondition is that the engine's
+// executing set is non-empty, so a tool that claimed `running` and then hung
+// keeps it arriving for as long as the wedge lasts. If that stamped liveness,
+// the one message guaranteed to keep flowing during a wedge would be the one
+// vouching hardest for the engine. Liveness has to mean the realm is getting
+// somewhere, and only the heartbeat says that.
+func TestEngineSocket_ToolExecutionReportsDoNotProveLiveness(t *testing.T) {
+	s, ts := newEngineSocketServer(t)
+	conn := dialEngine(t, ts)
+
+	if !waitUntil(muteDetectionBudget, s.IsEngineConnected) {
+		t.Fatal("engine never registered")
+	}
+	freezeRealm(conn)
+
+	// A wedged engine that still reports its stuck executing set, and nothing else.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		tick := time.NewTicker(50 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				if err := conn.WriteJSON(map[string]any{
+					"type":           "worker-message",
+					"conversationId": "conv-wedged",
+					"workerMsgType":  "tool-execution-report",
+					"payload":        map[string]any{"seq": 1, "executing": []any{}},
+				}); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	if !waitUntil(muteDetectionBudget, func() bool { return !s.IsEngineConnected() }) {
+		t.Fatal("tool-execution reports kept a wedged engine registered: a tool " +
+			"hung inside execute() emits these forever, so accepting them as " +
+			"liveness makes the wedge invisible for as long as it lasts")
+	}
+}
+
+// TestEngineSocket_OtherWorkerMessagesStillProveLiveness is the guard against
+// over-correcting: the exemption is one message type, not the whole
+// worker-message envelope. An engine doing real work down that channel must
+// still count as alive.
+func TestEngineSocket_OtherWorkerMessagesStillProveLiveness(t *testing.T) {
+	s, ts := newEngineSocketServer(t)
+	conn := dialEngine(t, ts)
+
+	if !waitUntil(muteDetectionBudget, s.IsEngineConnected) {
+		t.Fatal("engine never registered")
+	}
+	freezeRealm(conn)
+
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		tick := time.NewTicker(50 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				if err := conn.WriteJSON(map[string]any{
+					"type":           "worker-message",
+					"conversationId": "conv-busy",
+					"workerMsgType":  "engine-trace",
+					"payload":        map[string]any{"event": "execute-start"},
+				}); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	if waitUntil(muteDetectionBudget, func() bool { return !s.IsEngineConnected() }) {
+		t.Fatal("an engine tracing real tool activity was dropped as silent")
+	}
+}
+
 // TestWSClient_CloseIsSafeAgainstConcurrentSenders. Evicting a wedged engine
 // means closing a client from a goroutine that does not own it, while broadcasts
 // may be sending to that same client. Shutdown must therefore be signalled

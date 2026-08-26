@@ -64,6 +64,51 @@ export const DEFAULT_EXEC_TIMEOUT_MS = 30000;
  */
 export const MAX_EXEC_TIMEOUT_MS = 1200000;
 
+/**
+ * Backstop deadline on a single `/api/ops/call` request.
+ *
+ * This is not a policy on how long an op may take — the server owns each op's
+ * real budget, and several ops (grep, tree walks, an MCP tool call) deliberately
+ * have none, being bounded by the work rather than by a clock. It exists because
+ * `await fetch(…)` is otherwise unbounded in BOTH directions: nothing on the
+ * route imposes a request deadline (no WriteTimeout, no TimeoutHandler), and a
+ * request the transport loses without erroring never settles at all. Every
+ * read/grep/glob/MCP/webfetch tool ends up here, and a tool awaiting a promise
+ * that never settles is the one wedge nothing else in the system can see — it
+ * holds the tool at `running` forever while the engine stays perfectly healthy.
+ *
+ * It sits AT the largest budget any op in the system is permitted
+ * ({@link MAX_EXEC_TIMEOUT_MS}, the shell/python ceiling) precisely so it can
+ * never pre-empt an op that is still legitimately working; a caller whose own
+ * budget reaches that ceiling passes a longer one explicitly rather than tying
+ * with it. Lowering it to something that feels reasonable for a file read would
+ * break a large grep on a big repo and a slow MCP server, which is a worse
+ * failure than the one being fixed.
+ */
+export const OP_CALL_TIMEOUT_MS = MAX_EXEC_TIMEOUT_MS;
+
+/**
+ * Headroom added to an op's OWN server-side budget when deriving its request
+ * deadline, so the backstop always loses the race to the server's real timeout
+ * and the caller gets the op's own error rather than this one.
+ */
+const OP_CALL_TIMEOUT_GRACE_MS = 30000;
+
+/**
+ * The live backstop, shortened by tests.
+ * @type {number}
+ */
+let _opCallTimeoutMs = OP_CALL_TIMEOUT_MS;
+
+/**
+ * Test hook: shorten the request backstop so a deadline test need not wait out
+ * the production one. Not used in production.
+ * @param {number} [ms] - New backstop, or omit to restore the default
+ */
+export function __setOpCallTimeoutForTest(ms) {
+  _opCallTimeoutMs = ms ?? OP_CALL_TIMEOUT_MS;
+}
+
 // ============================================================================
 // Type Definitions - Base Types
 // ============================================================================
@@ -363,10 +408,13 @@ export const MAX_EXEC_TIMEOUT_MS = 1200000;
  *   assembles it into a PathScope once, rather than re-reading it from the
  *   params map at each op callsite. Read/search/tree ops widen their
  *   containment boundary to these roots; ops that ignore it are unaffected.
+ * @param {number} [timeoutMs] - Backstop deadline for this request, overriding
+ *   {@link OP_CALL_TIMEOUT_MS}. Passed by an op whose own server-side budget
+ *   reaches that ceiling, so the backstop stays above the op's real timeout.
  * @returns {Promise<T>} Operation result of the specified type T
  * @throws {Error} If operation fails or parameters are invalid
  */
-async function callOp(toolId, operation, params, signal, allowedPaths) {
+async function callOp(toolId, operation, params, signal, allowedPaths, timeoutMs = _opCallTimeoutMs) {
   /** @type {{toolId: string, operation: string, params: object, allowedPaths?: string[]}} */
   const requestBody = {
     toolId,
@@ -383,20 +431,45 @@ async function callOp(toolId, operation, params, signal, allowedPaths) {
     headers['X-Juggler-Token'] = token;
   }
 
-  const response = await fetch('/api/ops/call', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(requestBody),
-    signal
-  });
-
-  // Check HTTP status
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${await extractHttpErrorDetail(response)}`);
+  // The deadline is delivered as an abort, so it must be told apart from the
+  // caller's own cancellation: an expiry is an ordinary failure the tool reports,
+  // while the caller's abort is an AbortError that must reach it unchanged (the
+  // executor turns that into a cancelled result). The caller's signal is chained
+  // onto ours so Escape still cancels the request.
+  const deadline = new AbortController();
+  let expired = false;
+  const timer = setTimeout(() => { expired = true; deadline.abort(); }, timeoutMs);
+  if (signal) {
+    if (signal.aborted) deadline.abort();
+    else signal.addEventListener('abort', () => deadline.abort(), { once: true });
   }
 
   /** @type {OpsResponse<T>} */
-  const result = await response.json();
+  let result;
+  try {
+    // The deadline covers the body too, not just the headers: a response whose
+    // headers arrive and whose body then stalls hangs the caller just as
+    // completely as one that never arrives.
+    const response = await fetch('/api/ops/call', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(requestBody),
+      signal: deadline.signal
+    });
+
+    // Check HTTP status
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${await extractHttpErrorDetail(response)}`);
+    }
+    result = await response.json();
+  } catch (err) {
+    if (expired) {
+      throw new OpsError(`Couldn't finish ${toolId}.${operation}: the backend never answered, so it was given up on after ${Math.round(timeoutMs / 1000)}s.`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!result.success) {
     // All backend errors are operational feedback, not bugs
@@ -734,7 +807,13 @@ export async function shellExecute(params) {
       throw new TypeError(`timeout must be a number between 0 and ${MAX_EXEC_TIMEOUT_MS}`);
     }
   }
-  return callOp('python', 'execute', params);
+  // This op carries its own server-side budget, and at the ceiling that budget
+  // equals the request backstop. Derive the deadline from it plus headroom so
+  // the server's "command execution timeout" — which names the command and its
+  // budget — always wins, and the backstop only ever catches a request that
+  // never came back at all.
+  const budget = params.timeout ?? DEFAULT_EXEC_TIMEOUT_MS;
+  return callOp('python', 'execute', params, undefined, undefined, budget + OP_CALL_TIMEOUT_GRACE_MS);
 }
 
 // ============================================================================

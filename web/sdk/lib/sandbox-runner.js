@@ -25,13 +25,29 @@ import { extractErrorMessage } from './error-utils.js';
 let _sandboxFramePromise = null;
 
 /**
+ * How long the frame has to signal readiness before the attempt is abandoned.
+ *
+ * Generous, because this runs on a main thread that is allowed to be throttled:
+ * the engine's WebView is hidden and `KeepRunningWhenHidden` is disabled, so the
+ * thread booting this iframe may be scheduled sparsely. The number only has to
+ * be small enough that a failed boot surfaces as an error the caller can report
+ * instead of a promise nobody ever settles.
+ */
+const SANDBOX_READY_TIMEOUT_MS = 15000;
+
+/**
  * Lazily create the hidden sandbox iframe and resolve once it has signalled
  * readiness. Cached across calls so subsequent runs reuse the same frame.
+ *
+ * Only a SUCCESSFUL frame is cached. Caching the promise unconditionally makes
+ * one bad boot permanent: every later call would await the same rejected — or,
+ * before this was bounded, the same forever-pending — promise, so a single
+ * missed `sandbox-ready` disabled query_code for the life of the realm.
  * @returns {Promise<HTMLIFrameElement>} The ready iframe
  */
 function getSandboxFrame() {
   if (_sandboxFramePromise) return _sandboxFramePromise;
-  _sandboxFramePromise = new Promise((resolve, reject) => {
+  const attempt = new Promise((resolve, reject) => {
     const iframe = document.createElement('iframe');
     iframe.setAttribute('sandbox', 'allow-scripts');
     iframe.setAttribute('hidden', '');
@@ -40,25 +56,41 @@ function getSandboxFrame() {
     iframe.src = '/sandbox';
 
     let settled = false;
+    /** @type {any} */
+    let readyTimer = null;
+    /** @param {Error} [err] - Rejection cause; resolves with the frame when absent */
+    const settle = (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(readyTimer);
+      window.removeEventListener('message', onReady);
+      if (!err) { resolve(iframe); return; }
+      iframe.remove();
+      reject(err);
+    };
     /** @param {MessageEvent} e */
     const onReady = (e) => {
-      if (settled) return;
       if (e.source !== iframe.contentWindow) return;
       if (!e.data || e.data.type !== 'sandbox-ready') return;
-      settled = true;
-      window.removeEventListener('message', onReady);
-      resolve(iframe);
+      settle();
     };
     window.addEventListener('message', onReady);
-    iframe.addEventListener('error', () => {
-      if (settled) return;
-      settled = true;
-      window.removeEventListener('message', onReady);
-      reject(new Error('sandbox iframe failed to load'));
-    });
+    iframe.addEventListener('error', () => settle(new Error('sandbox iframe failed to load')));
+    readyTimer = setTimeout(
+      () => settle(new Error(`sandbox iframe never signalled ready within ${SANDBOX_READY_TIMEOUT_MS}ms`)),
+      SANDBOX_READY_TIMEOUT_MS
+    );
     document.body.appendChild(iframe);
   });
-  return _sandboxFramePromise;
+  _sandboxFramePromise = attempt;
+  // Drop a failed attempt from the cache so the next call builds a fresh frame.
+  // The caller's own await is what reports the failure; this handler exists only
+  // to clear the cache (and to keep the rejection from going unobserved when
+  // there is no caller left to see it).
+  attempt.catch(() => {
+    if (_sandboxFramePromise === attempt) _sandboxFramePromise = null;
+  });
+  return attempt;
 }
 
 /**
@@ -75,6 +107,11 @@ function getSandboxFrame() {
  *   When omitted, the iframe falls back to its serve-time template value. The
  *   engine passes its live root here so the binding tracks a runtime project
  *   switch instead of the frozen boot value.
+ * @property {AbortSignal} [signal] - Cancellation. Aborting settles this call
+ *   with an AbortError; the sandboxed run itself is not killed, because the
+ *   frame protocol is one-shot and the run expires on its own `timeoutMs`. What
+ *   the caller gets back is a prompt answer instead of a wait for the full
+ *   budget, which is what Escape has to mean.
  */
 
 /**
@@ -85,7 +122,25 @@ function getSandboxFrame() {
  * @returns {Promise<unknown>} The code's return value (null if it returned
  *   undefined).
  */
-export async function runInSandbox(code, { capabilities = {}, timeoutMs = 30000, projectRoot = undefined } = {}) {
+export async function runInSandbox(code, { capabilities = {}, timeoutMs = 30000, projectRoot = undefined, signal = undefined } = {}) {
+  // Every exit below races against this, so an abort settles the caller even
+  // when the run it is waiting on cannot be reached to be stopped.
+  const cancelled = signal
+    ? new Promise((_r, reject) => {
+      if (signal.aborted) { reject(new DOMException('The operation was aborted.', 'AbortError')); return; }
+      signal.addEventListener(
+        'abort',
+        () => reject(new DOMException('The operation was aborted.', 'AbortError')),
+        { once: true }
+      );
+    })
+    : null;
+  /**
+   * @param {Promise<any>} p - The promise to bound by the caller's cancellation
+   * @returns {Promise<any>} p, or a rejection the moment the signal aborts
+   */
+  const withCancel = (p) => (cancelled ? Promise.race([p, cancelled]) : p);
+
   // Engine worker: no `document`, so this realm can't create the isolation
   // iframe. Delegate to the main-thread host (engine-worker-main), which runs
   // the SAME iframe sandbox and forwards each capability call back here to be
@@ -98,10 +153,10 @@ export async function runInSandbox(code, { capabilities = {}, timeoutMs = 30000,
     if (typeof delegate !== 'function') {
       throw new Error('runInSandbox: no host sandbox delegate registered (engine worker)');
     }
-    return delegate(code, capabilities, timeoutMs);
+    return withCancel(delegate(code, capabilities, timeoutMs));
   }
 
-  const iframe = await getSandboxFrame();
+  const iframe = await withCancel(getSandboxFrame());
   const channel = new MessageChannel();
   const port = channel.port1;
 
@@ -143,5 +198,5 @@ export async function runInSandbox(code, { capabilities = {}, timeoutMs = 30000,
   const descriptors = Object.entries(capabilities).map(([name, cap]) => ({ name, callable: typeof cap === 'function' }));
   contentWindow.postMessage({ type: 'sandbox-execute', code, timeoutMs, capabilities: descriptors, projectRoot }, '*', [channel.port2]);
 
-  return Promise.race([done, timer]);
+  return withCancel(Promise.race([done, timer]));
 }

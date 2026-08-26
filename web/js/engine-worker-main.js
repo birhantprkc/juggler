@@ -22,7 +22,7 @@ const worker = new Worker(`${/** @type {any} */ (window).__assetPrefix || ''}/js
 // it asks us to run it here. We run the real iframe sandbox and forward each of
 // the script's capability calls back to the worker (where fs/grep/glob live).
 let capCallSeq = 0;
-/** @type {Map<string, {resolve: Function, reject: Function}>} */
+/** @type {Map<string, {runId: string, resolve: Function, reject: Function}>} */
 const pendingCapCalls = new Map();
 
 /**
@@ -36,9 +36,26 @@ const pendingCapCalls = new Map();
 function callWorkerCapability(id, name, method, args) {
   const callId = `cc_${++capCallSeq}`;
   return new Promise((resolve, reject) => {
-    pendingCapCalls.set(callId, { resolve, reject });
+    pendingCapCalls.set(callId, { runId: id, resolve, reject });
     worker.postMessage({ type: 'sandbox-cap', id, callId, name, method, args });
   });
+}
+
+/**
+ * Settle and drop every capability call still outstanding for a finished run.
+ *
+ * A run that times out or throws abandons whatever calls the script had in
+ * flight, and the worker will never answer them — so without this each one
+ * leaves an entry holding the script's own resolve/reject closures for the life
+ * of the page, and the sandboxed code's promise never settles.
+ * @param {string} runId - Sandbox run that has finished
+ */
+function abandonCapCalls(runId) {
+  for (const [callId, pending] of [...pendingCapCalls]) {
+    if (pending.runId !== runId) continue;
+    pendingCapCalls.delete(callId);
+    pending.reject(new Error('sandbox run ended before this capability call was answered'));
+  }
 }
 
 /**
@@ -64,7 +81,8 @@ function runSandboxForWorker(data) {
     .catch((err) => worker.postMessage({
       type: 'sandbox-result', id: data.id, ok: false,
       error: err instanceof Error ? err.message : String(err)
-    }));
+    }))
+    .finally(() => abandonCapCalls(data.id));
 }
 
 worker.onmessage = (/** @type {MessageEvent} */ event) => {
