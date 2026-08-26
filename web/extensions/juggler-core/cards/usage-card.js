@@ -5,9 +5,10 @@
 
 /**
  * The Usage info card — a quiet, live summary of quota windows for the provider
- * configured on the active conversation. It renders cache data immediately and
- * refreshes silently while focused, preserving the existing meter nodes whenever
- * their generated HTML has not changed.
+ * configured on the active conversation. It renders cache data immediately, keeps
+ * the countdowns ticking whether or not the window is focused, and fetches fresh
+ * data silently while it is, preserving the existing meter nodes whenever their
+ * generated HTML has not changed.
  *
  * One info-card plugin of the `@juggler/core` extension; the host rail owns the
  * outer card chrome (eyebrow + × close), so this only fills the content region.
@@ -23,9 +24,10 @@ import { formatPlan, renderUsageRow } from '../../../js/utils/usage-renderer.js'
 // Re-render/retry tick. Live network fetches are governed by the usage cache's
 // own per-provider debounce (aligned to the upstream ~5-minute refresh), so this
 // timer only needs to be frequent enough to pick up a fresh snapshot shortly
-// after that window clears and to keep the "resets in …" text current — every
-// tick before then is a cheap debounced no-op.
-const REFRESH_MS = 60_000;
+// after that window clears and to land each "resets in …" minute rollover close
+// to the minute it happens — every tick before then is a cheap debounced no-op
+// that renders identical HTML and so writes no DOM.
+const REFRESH_MS = 10_000;
 
 /**
  * Return the configured provider name for the session's active conversation.
@@ -76,7 +78,8 @@ export default class UsageCard extends InfoCardType {
   }
 
   /**
-   * Paint cached usage immediately and silently refresh while the window is active.
+   * Paint cached usage immediately, keep it repainting on a timer, and silently
+   * fetch fresh data while the window is active.
    * @param {HTMLElement} contentEl
    * @param {import('../../../js/model/session.js').default} [session]
    * @returns {() => void} Teardown that stops polling and listeners.
@@ -111,11 +114,14 @@ export default class UsageCard extends InfoCardType {
     };
 
     const refresh = async () => {
-      if (disposed || !focused()) return;
+      if (disposed) return;
+      // The paint is unconditional and the network call is not: a quota window
+      // drains whether or not anyone is watching, so the countdown keeps moving
+      // in an unfocused window, but an unfocused window never asks upstream.
       // Only the active conversation's provider is ever shown, so fetch just that
       // one — never poll providers the user isn't looking at.
       const providerName = activeProvider(session);
-      if (providerName) await usageStatsCache.refresh(providerName);
+      if (providerName && focused()) await usageStatsCache.refresh(providerName);
       render();
     };
     const onFocus = () => { refresh(); };
@@ -133,12 +139,16 @@ export default class UsageCard extends InfoCardType {
     refresh();
     const timer = setInterval(refresh, REFRESH_MS);
     if (typeof window !== 'undefined') window.addEventListener('focus', onFocus);
+    // A hidden window's timers are throttled, so catch the countdown up the
+    // moment it comes back rather than waiting out the next tick.
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onFocus);
     const unsubscribe = session?.subscribe?.(onSessionEvent);
 
     return () => {
       disposed = true;
       clearInterval(timer);
       if (typeof window !== 'undefined') window.removeEventListener('focus', onFocus);
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onFocus);
       if (typeof unsubscribe === 'function') unsubscribe();
     };
   }
