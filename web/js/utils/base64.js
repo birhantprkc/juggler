@@ -15,11 +15,20 @@
  * @returns {string} The base64 representation.
  */
 export function bytesToBase64(bytes) {
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(/** @type {number} */ (bytes[i]));
+  // Converted a block at a time: btoa needs one binary string, and building that
+  // string per byte costs hundreds of milliseconds of blocked main thread on the
+  // multi-megabyte updates a full-state sync carries. String.fromCharCode takes
+  // the bytes as arguments, so the block stays well inside the engine's argument
+  // limit rather than near it.
+  const BLOCK = 0x8000;
+  if (bytes.length <= BLOCK) {
+    return globalThis.btoa(String.fromCharCode.apply(null, /** @type {any} */ (bytes)));
   }
-  return globalThis.btoa(binary);
+  const blocks = [];
+  for (let i = 0; i < bytes.length; i += BLOCK) {
+    blocks.push(String.fromCharCode.apply(null, /** @type {any} */ (bytes.subarray(i, i + BLOCK))));
+  }
+  return globalThis.btoa(blocks.join(''));
 }
 
 /**

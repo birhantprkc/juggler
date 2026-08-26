@@ -417,24 +417,56 @@ func (c *webRTCClient) writePump() {
 	}
 }
 
+// sendTextChunked delivers one frame over the DataChannel, splitting a payload
+// larger than webRTCChunkSize across several __juggler_dc_chunk envelopes.
+//
+// Splits land on a UTF-8 rune boundary. Chunk data rides in a JSON string field,
+// and json.Marshal coerces its input to valid UTF-8 — every byte of a truncated
+// rune becomes U+FFFD — so a rune straddling a boundary arrives corrupted in
+// both halves. Nothing downstream notices: U+FFFD is legal in a JSON string, so
+// the reassembled frame still parses and the damage surfaces only as mangled
+// text. Receivers concatenate the parts in order and never inspect the split
+// points, so choosing them here needs no cooperation from the far end.
+// webRTCChunkBounds splits payload into [start, end) spans of at most
+// webRTCChunkSize bytes, each ending on a UTF-8 rune boundary.
+func webRTCChunkBounds(payload []byte) [][2]int {
+	bounds := make([][2]int, 0, len(payload)/webRTCChunkSize+1)
+	for start := 0; start < len(payload); {
+		end := start + webRTCChunkSize
+		if end >= len(payload) {
+			end = len(payload)
+		} else {
+			// Walk back over continuation bytes (0b10xxxxxx) to the start of the
+			// rune spanning the boundary. A rune is at most four bytes, so this
+			// steps back three times at worst.
+			for end > start && payload[end]&0xC0 == 0x80 {
+				end--
+			}
+			// A whole chunk of continuation bytes is not valid UTF-8 and has no
+			// boundary to find. Split at full width so the loop still advances.
+			if end == start {
+				end = start + webRTCChunkSize
+			}
+		}
+		bounds = append(bounds, [2]int{start, end})
+		start = end
+	}
+	return bounds
+}
+
 func (c *webRTCClient) sendTextChunked(payload []byte) error {
 	if len(payload) <= webRTCChunkSize {
 		return c.dc.SendText(string(payload))
 	}
+	bounds := webRTCChunkBounds(payload)
 	id := fmt.Sprintf("%s-%d", c.id, time.Now().UnixNano())
-	total := (len(payload) + webRTCChunkSize - 1) / webRTCChunkSize
-	for i := 0; i < total; i++ {
-		start := i * webRTCChunkSize
-		end := start + webRTCChunkSize
-		if end > len(payload) {
-			end = len(payload)
-		}
+	for i, b := range bounds {
 		chunk, err := json.Marshal(webRTCChunk{
 			Type:  webRTCChunkType,
 			ID:    id,
 			Index: i,
-			Total: total,
-			Data:  string(payload[start:end]),
+			Total: len(bounds),
+			Data:  string(payload[b[0]:b[1]]),
 		})
 		if err != nil {
 			return err

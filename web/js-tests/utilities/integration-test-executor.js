@@ -113,6 +113,7 @@ import { runTests as runHeaderUndoLockTests } from '../unit-tests/header-undo-lo
 import { runTests as runFooterMetaTests } from '../unit-tests/footer-meta-test.js';
 import { runTests as runWriteFileActionTests } from '../unit-tests/write-file-action-test.js';
 import { runTests as runYjsCompatTests } from '../unit-tests/yjs-compat-test.js';
+import { runTests as runBase64Tests } from '../unit-tests/base64-test.js';
 import { runTests as runRenderPerformanceTests } from '../unit-tests/render-performance-tests.js';
 import { runTests as runSyncBatchBackoffTests } from '../unit-tests/sync-batch-backoff-test.js';
 import { runTests as runThinkingStreamTests } from '../unit-tests/thinking-stream-test.js';
@@ -388,6 +389,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:footer-meta', run: runFooterMetaTests },
   { name: 'unit:write-file-action', run: runWriteFileActionTests },
   { name: 'unit:yjs-compat', run: runYjsCompatTests },
+  { name: 'unit:base64', run: runBase64Tests },
   { name: 'unit:render-performance', run: runRenderPerformanceTests },
   { name: 'unit:sync-batch-backoff', run: runSyncBatchBackoffTests },
   { name: 'unit:thinking-stream', run: runThinkingStreamTests },
