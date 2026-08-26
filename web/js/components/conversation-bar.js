@@ -417,12 +417,14 @@ class ConversationBar extends JugglerElement {
         }
       }
 
-      // Re-render tab buttons whenever conversations change. The discrete events
-      // render immediately — callers read tab state straight after them — while
-      // conversation:changed, which streams in at the sync rate for the whole
-      // duration of a turn, is coalesced to one render per frame.
+      // Re-render tab buttons whenever conversations change. Discrete events,
+      // including a folder rename, render immediately — callers read tab state
+      // straight after them, and requestAnimationFrame may be suspended while a
+      // WebView is hidden. conversation:changed streams at the sync rate for the
+      // whole duration of a turn, so only that event is coalesced per frame.
       if (event.type === 'conversation:created' ||
           event.type === 'conversation:deleted' ||
+          event.type === 'conversation:renamed' ||
           event.type === 'conversation:switched' ||
           event.type === 'conversation:reordered') {
         this.render();

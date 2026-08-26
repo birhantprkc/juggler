@@ -239,6 +239,22 @@ export async function runTests() {
     assert(!!renameInputAfter,
       `after the broadcast echo, the rename input must still be in the document`);
 
+    // A session refresh can populate the name cache just before the targeted
+    // auto-name broadcast arrives. The equal broadcast must still repaint the
+    // tab synchronously: cache equality does not mean the DOM saw the update,
+    // and hidden WebViews do not reliably service requestAnimationFrame.
+    renameInputAfter.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    const paintedName = /** @type {HTMLElement|null} */ (
+      newTab.querySelector('.conversation-tab-name')
+    );
+    assert(!!paintedName, 'new tab must contain its painted name');
+    paintedName.textContent = canonicalName;
+    const autoName = `Auto-named ${newId}`;
+    session.setConversationName(newId, autoName);
+    session.applyConversationRenamed(newId, autoName);
+    assert(paintedName.textContent === autoName,
+      `equal cached rename must repaint synchronously; got "${paintedName.textContent}"`);
+
     passed = 1;
   } catch (e) {
     failed = 1;

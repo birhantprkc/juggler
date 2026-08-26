@@ -526,9 +526,11 @@ class Session {
    * @returns {void}
    */
   applyConversationRenamed(id, name) {
-    if (this.getConversationName(id) === name) return;
     this.setConversationName(id, name);
-    this.notifyConversationChange('conversation:changed', { conversationId: id });
+    // A full refresh may already have put this value in the cache without
+    // painting it. Rename is a discrete server event, so always announce it:
+    // cache equality is not evidence that subscribers have rendered the name.
+    this.notifyConversationChange('conversation:renamed', { conversationId: id });
   }
 
   /**
@@ -2238,7 +2240,7 @@ class Session {
     // Update _conversationNames, the single in-memory cache of the on-disk
     // folder name, so `conv.name` (a getter) reflects the rename immediately.
     this.setConversationName(conversationId, canonical);
-    this.notifyConversationChange('conversation:changed', { conversationId });
+    this.notifyConversationChange('conversation:renamed', { conversationId });
     return canonical;
   }
 
@@ -2254,13 +2256,22 @@ class Session {
     const serverOrder = data.conversationOrder;
     const reordered = new Map();
 
-    // Folder names on disk are the source of truth. The cache replaces
-    // every existing entry so any conversation rendered via conv.name
-    // immediately reflects renames / restores done elsewhere.
+    // Folder names on disk are the source of truth. Keep the last known name
+    // for conversations which this refresh is about to remove: worker teardown
+    // is asynchronous, and the old conversation remains renderable until it
+    // finishes. The next refresh drops names whose conversations are already
+    // gone.
     const names = /** @type {Record<string, string>} */ (
       (data && /** @type {any} */(data).conversationNames) || {}
     );
-    this._conversationNames = { ...names };
+    /** @type {Record<string, string>} */
+    const retainedNames = {};
+    for (const id of this.conversations.keys()) {
+      if (!Object.hasOwn(names, id) && this._conversationNames[id]) {
+        retainedNames[id] = this._conversationNames[id];
+      }
+    }
+    this._conversationNames = { ...retainedNames, ...names };
     this.binnedCount = Number(/** @type {any} */(data).binnedCount) || 0;
     this.binSizeBytes = Number(/** @type {any} */(data).binSizeBytes) || 0;
     if (data.metadata) {
