@@ -135,7 +135,9 @@ export function renderLiveTaskOutput(wrapper, {
   copyHeader.appendChild(createCopyButton(() => stripAnsi(text)));
   copyable.appendChild(copyHeader);
   const pre = document.createElement('pre');
-  pre.className = 'properties-panel-text';
+  // Same class the finished-result box uses, so live terminal output is laid out
+  // monospaced and column-aligned rather than as prose.
+  pre.className = 'properties-panel-result';
   pre.textContent = '(no output yet)';
   copyable.appendChild(pre);
   section.appendChild(copyable);
