@@ -27,6 +27,7 @@ func (f *forkFakeWM) SnapshotParkedState(string) ([]byte, bool) {
 }
 func (f *forkFakeWM) FlushConversation(string) error { f.flushed = true; return nil }
 func (f *forkFakeWM) Remove(string)                  {}
+func (f *forkFakeWM) ConversationRestored(string)    {}
 func (f *forkFakeWM) RemoveAndPurgeLogs(string)      {}
 func (f *forkFakeWM) RenameLog(string)               {}
 func (f *forkFakeWM) SeedNewConversation(string, string, string, string, *core.ModelRef) error {

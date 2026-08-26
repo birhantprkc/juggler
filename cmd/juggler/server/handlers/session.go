@@ -66,7 +66,12 @@ func (api *SessionAPI) SetConvOwnershipHooks(
 // WorkerManager interface for worker cleanup during conversation deletion.
 // Uses an interface to avoid circular import with worker package.
 type WorkerManager interface {
+	// Remove stops the worker and blocks the conversation from loading another
+	// one, so a client message in flight during the folder move cannot recreate
+	// it. Only ConversationRestored lifts that block.
 	Remove(conversationID string)
+	// ConversationRestored re-admits a conversation brought back out of the bin.
+	ConversationRestored(conversationID string)
 	// RemoveAndPurgeLogs is Remove plus deletion of the conversation's
 	// per-conversation log file(s) — for a PERMANENT delete only, never a bin.
 	RemoveAndPurgeLogs(conversationID string)
@@ -802,6 +807,12 @@ func (api *SessionAPI) HandleRestoreConversation(w http.ResponseWriter, r *http.
 		}
 		WriteError(w, r, http.StatusInternalServerError, err.Error())
 		return
+	}
+
+	// The conversation is workable again, so lift the block binning placed on
+	// it — otherwise the restored tab opens to a worker that is never created.
+	if api.workerManager != nil {
+		api.workerManager.ConversationRestored(convID)
 	}
 
 	// Resolve the canonical folder name so clients can populate their

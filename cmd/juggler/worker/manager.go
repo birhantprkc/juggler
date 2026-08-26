@@ -41,6 +41,7 @@ const (
 	mgrAnyActive
 	mgrActiveIDs
 	mgrSetAutoNamer
+	mgrConversationRestored
 )
 
 // CancelLLMSessionFunc tears down provider-side state for an in-flight LLM
@@ -124,6 +125,13 @@ func NewManager() *Manager {
 func (m *Manager) run() {
 	workers := make(map[string]*ConversationWorker)         // conversationID -> worker
 	clientConversations := make(map[string]map[string]bool) // clientID -> set of conversationIDs
+	// removedConvs holds ids torn down by Remove (bin or permanent delete).
+	// Remove returns before the caller moves the folder, so for that window the
+	// path provider still resolves the id and a late client message would
+	// recreate a worker for a conversation that is about to stop existing — one
+	// whose every save is then silently dropped as unowned, and whose tab
+	// outlives it. The id is cleared again by ConversationRestored.
+	removedConvs := make(map[string]bool)
 	var llmCallFunc LLMCallFunc
 	var windowResolver WindowResolverFunc
 	var autoCompactGate AutoCompactGateFunc
@@ -137,14 +145,21 @@ func (m *Manager) run() {
 	var syncThrottle time.Duration
 
 	// Helper to create a worker and register engine client. If requireKnown is
-	// true, the current pathProvider must still resolve the conversation id;
-	// this prevents stale browser messages after delete/archive from recreating
-	// workers for ids that no longer have active folders.
+	// true, the conversation must not have been torn down by Remove and the
+	// current pathProvider must still resolve the conversation id; this prevents
+	// stale browser messages after delete/archive from recreating workers for
+	// ids that no longer have active folders.
 	createWorker := func(conversationID, authorID string, requireKnown bool) *ConversationWorker {
-		if requireKnown && pathProvider != nil {
-			if _, ok := pathProvider(conversationID); !ok {
-				jlog.Info("[worker.Manager] rejecting stale worker message for unknown/deleted conv=%s", conversationID)
+		if requireKnown {
+			if removedConvs[conversationID] {
+				jlog.Info("[worker.Manager] rejecting stale worker message for removed conv=%s", conversationID)
 				return nil
+			}
+			if pathProvider != nil {
+				if _, ok := pathProvider(conversationID); !ok {
+					jlog.Info("[worker.Manager] rejecting stale worker message for unknown/deleted conv=%s", conversationID)
+					return nil
+				}
 			}
 		}
 		w := NewConversationWorker(conversationID, authorID)
@@ -306,6 +321,10 @@ func (m *Manager) run() {
 			op.workerResult <- workers[op.conversationID]
 
 		case mgrRemove:
+			// Recorded before the caller is acknowledged: the folder move
+			// happens after Remove returns, so the id must already be refused
+			// by createWorker when that call unblocks.
+			removedConvs[op.conversationID] = true
 			w, ok := workers[op.conversationID]
 			if ok {
 				// Mark deleting before acknowledging the caller. The HTTP handler
@@ -323,6 +342,12 @@ func (m *Manager) run() {
 				go w.StopForRemoval()
 			} else {
 				jlog.Info("[worker.Remove] no worker for conv=%s (already gone)", op.conversationID)
+			}
+
+		case mgrConversationRestored:
+			delete(removedConvs, op.conversationID)
+			if op.done != nil {
+				op.done <- struct{}{}
 			}
 
 		case mgrHandleMessage:
@@ -605,10 +630,23 @@ func (m *Manager) DumpTape(conversationID string) any {
 	return w.tape.DumpAll()
 }
 
-// Remove stops and removes a worker. Blocks until the worker is stopped.
+// Remove stops and removes a worker, and refuses to recreate one for that
+// conversation from a later client message. Blocks until the worker is stopped.
+// Reserved for binning and permanent deletion — a conversation removed here
+// only becomes workable again through ConversationRestored.
 func (m *Manager) Remove(conversationID string) {
 	done := make(chan struct{}, 1)
 	m.ops <- managerOp{kind: mgrRemove, conversationID: conversationID, done: done}
+	<-done
+}
+
+// ConversationRestored lifts the block Remove placed on a conversation id, so a
+// conversation brought back out of the bin can load a worker again. Blocks until
+// the manager has recorded it, so the restore endpoint cannot answer the client
+// before a reopened tab would be served.
+func (m *Manager) ConversationRestored(conversationID string) {
+	done := make(chan struct{}, 1)
+	m.ops <- managerOp{kind: mgrConversationRestored, conversationID: conversationID, done: done}
 	<-done
 }
 

@@ -382,9 +382,22 @@ func (m *SessionManager) LoadConversationBinary(convID string) ([]byte, error) {
 // onto the manifest so unmentioned conversations keep their slots rather than
 // being dropped. When the client posts the full set (the production case) the
 // merge is an exact replacement.
+//
+// Ids with no folder on disk are dropped before merging. A viewer posts its
+// whole tab list, and it keeps a tab for a conversation whose load failed, so
+// without this an id binned in one window is put straight back into the
+// manifest by the next reorder from another — reinstating a tab that names no
+// conversation, cannot be renamed, and cannot be duplicated. A conversation
+// enters the order by being created or restored, never by being mentioned here.
 func (m *SessionManager) ReorderConversations(order []string) error {
 	_, err := runWrite(m, func(s *sessionState) (struct{}, error) {
-		s.session.ConversationOrder = mergeConversationOrder(s.session.ConversationOrder, order)
+		known := make([]string, 0, len(order))
+		for _, id := range order {
+			if _, ok := s.store.ConvDir(id); ok {
+				known = append(known, id)
+			}
+		}
+		s.session.ConversationOrder = mergeConversationOrder(s.session.ConversationOrder, known)
 		return struct{}{}, s.store.Save(s.session)
 	})
 	return err
