@@ -13,11 +13,39 @@ package ops
 
 // TaskSnapshot is an immutable view of a background task's state.
 type TaskSnapshot struct {
-	Status   string // "running" | "completed" | "failed"
-	Output   string // accumulated stdout+stderr (head+tail capped)
-	ExitCode int
-	Error    string
-	Found    bool // false when no task with this id exists (or it was reaped)
+	Status          string // "running" | "completed" | "failed"
+	Output          string // accumulated stdout+stderr (head+tail capped)
+	ExitCode        int
+	Error           string
+	OutputFile      string
+	OutputBytes     int64
+	OutputTruncated bool
+	Found           bool // false when no task with this id exists (or it was reaped)
+}
+
+// BackgroundTaskSnapshot is the durable, observable state of a background task.
+// The live process handle remains in the shell registry; consumers persist this
+// bounded snapshot so its output and terminal result survive registry reaping.
+type BackgroundTaskSnapshot struct {
+	TaskID          string `json:"taskId"`
+	ConvID          string `json:"-"`
+	ToolUseID       string `json:"toolUseId"`
+	Status          string `json:"status"`
+	Output          string `json:"output"`
+	ExitCode        int    `json:"exitCode"`
+	Error           string `json:"error,omitempty"`
+	OutputFile      string `json:"outputFile,omitempty"`
+	OutputBytes     int64  `json:"outputBytes,omitempty"`
+	OutputTruncated bool   `json:"truncated,omitempty"`
+}
+
+// BackgroundTaskObserver receives bounded snapshots outside the registry actor.
+type BackgroundTaskObserver func(BackgroundTaskSnapshot)
+
+// SetBackgroundTaskObserver installs the process-wide persistence sink. The
+// server wires it to the owning conversation worker; tests may replace or clear it.
+func SetBackgroundTaskObserver(observer BackgroundTaskObserver) {
+	setBackgroundTaskObserver(observer)
 }
 
 // TaskState returns a snapshot of a background task by id. Found is false when
@@ -29,11 +57,14 @@ func TaskState(taskID string) TaskSnapshot {
 		return TaskSnapshot{}
 	}
 	return TaskSnapshot{
-		Status:   s.Status,
-		Output:   s.Output,
-		ExitCode: s.ExitCode,
-		Error:    s.Error,
-		Found:    true,
+		Status:          s.Status,
+		Output:          s.Output,
+		ExitCode:        s.ExitCode,
+		Error:           s.Error,
+		OutputFile:      s.OutputFile,
+		OutputBytes:     s.OutputBytes,
+		OutputTruncated: s.OutputTruncated,
+		Found:           true,
 	}
 }
 

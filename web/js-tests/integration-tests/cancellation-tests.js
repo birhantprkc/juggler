@@ -88,8 +88,8 @@ export const cancelPreservesPartialOutputTest = {
     // Start capturing progress to detect when output arrives
     { type: 'start-capture-progress', toolUseId: 'call_1' },
     { type: 'approve-no-wait', toolUseId: 'call_1' },
-    // Wait for at least 1 progress event (the "before" output)
-    { type: 'wait-for-progress', toolUseId: 'call_1', minEvents: 1 },
+    // Wait for the start status and the "before" output chunk.
+    { type: 'wait-for-progress', toolUseId: 'call_1', minEvents: 2 },
     // Cancel after partial output
     { type: 'cancel' }
   ],
@@ -104,7 +104,18 @@ export const cancelPreservesPartialOutputTest = {
       toolInput: { command: 'env echo "before"; sleep 10' },
       state: 'cancelled'
     }
-  ]
+  ],
+
+  customAssertions: (conversation) => {
+    const action = conversation.rootMessageThread.items.find(
+      (item) => item.get?.('type') === 'tool-action' && item.get('toolUseId') === 'call_1'
+    );
+    const displayData = action?.get('displayData');
+    const output = (displayData?.toJSON ? displayData.toJSON() : displayData)?.output || '';
+    if (!output.includes('before')) {
+      throw new Error(`Cancelled bash lost its partial output; displayData.output was ${JSON.stringify(output)}`);
+    }
+  }
 };
 
 // ============================================================================

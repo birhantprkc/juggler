@@ -260,6 +260,26 @@ func (cd *ConversationDocument) UpdateToolActionFieldsRecursive(toolUseID string
 	return updateToolActionFieldsInArray(cd.doc, docInternalOrigin, cd.getItems(), toolUseID, fields)
 }
 
+// UpdateToolActionDisplayDataRecursive merges one durable display-data value
+// without discarding display fields owned by another part of the tool renderer.
+func (cd *ConversationDocument) UpdateToolActionDisplayDataRecursive(toolUseID, key string, value any) bool {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	return walkAllItems(cd.getItems(), "", func(m *ycrdt.YMap, _ string) bool {
+		if id, _ := m.Get("toolUseId").(string); id != toolUseID {
+			return false
+		}
+		cd.doc.Transact(func(_ *ycrdt.Transaction) {
+			if displayData, ok := m.Get("displayData").(*ycrdt.YMap); ok {
+				displayData.Set(key, convertToYcrdt(value))
+				return
+			}
+			m.Set("displayData", convertToYcrdt(map[string]any{key: value}))
+		}, docInternalOrigin)
+		return true
+	})
+}
+
 // updateToolActionFieldsInArray finds the Y.Map whose toolUseId matches and updates all fields atomically.
 func updateToolActionFieldsInArray(doc *ycrdt.Doc, origin string, arr *ycrdt.YArray, toolUseID string, fields map[string]any) bool {
 	return walkAllItems(arr, "", func(m *ycrdt.YMap, _ string) bool {

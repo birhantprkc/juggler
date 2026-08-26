@@ -871,8 +871,11 @@ class ExecuteContextItem extends ContextItem {
           : {})
       };
     } catch (streamError) {
-      // Clean up throttle timer
+      // The progress event is immediate but the durable Yjs preview is throttled.
+      // Preserve chunks the user has already seen before cancellation or a
+      // streaming transport failure unwinds this execution.
       clearTimeout(displayDataTimer);
+      if (displayDataDirty) flushDisplayData();
 
       // If streaming fails due to WebSocket issues, fall back to blocking execution
       if (streamError instanceof Error && streamError.message.includes('WebSocket')) {
@@ -1109,11 +1112,12 @@ class ExecuteContextItem extends ContextItem {
     // generic result section to report it.
     if (!taskId) return;
 
-    // The tool result for a background run is only the handle and how to read it
-    // — the process's actual output never enters the conversation. Show both: the
-    // text the model was handed, then the live buffer the server is accumulating.
+    // The launch receipt stays beside the process output the user owns. Live
+    // registry state overlays the durable snapshot while the process is reachable.
     const resultText = ExecuteContextItem._resultText(toolAction);
     if (resultText) helpers.addSubsection(wrapper, 'Result', resultText, 'properties-panel-result');
+    const displayData = toolAction?.get?.('displayData');
+    const persistedTask = (displayData?.toJSON ? displayData.toJSON() : displayData)?.backgroundTask;
     // A background run has no delivery binding to cancel (the way Monitor does),
     // so the panel is the only place a user can reach the process: kill it
     // directly through the same op TaskStop calls.
@@ -1121,6 +1125,7 @@ class ExecuteContextItem extends ContextItem {
       taskId,
       helpers,
       describeStatus: describeTaskStatus,
+      initialState: persistedTask,
       onStop: () => shellKill({ shell_id: taskId }),
       stopLabel: 'Stop task'
     });

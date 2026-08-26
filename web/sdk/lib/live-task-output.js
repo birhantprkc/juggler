@@ -64,6 +64,10 @@ const DEFAULT_POLL_MS = 1000;
  *   only while the task is running. Callers that already offer a kill elsewhere
  *   (Monitor's delivery control) leave this unset.
  * @param {string} [opts.stopLabel] - Stop button text (default "Stop").
+ * @param {TaskOutputState} [opts.initialState] - Durable state shown before and
+ *   underneath live registry reads.
+ * @param {(params: {task_id: string}) => Promise<TaskOutputState>} [opts.readOutput]
+ *   Output reader; injectable for deterministic tests.
  * @returns {HTMLElement|null} The section element, or null if it wasn't rendered.
  */
 export function renderLiveTaskOutput(wrapper, {
@@ -74,7 +78,9 @@ export function renderLiveTaskOutput(wrapper, {
   isRunning = (state) => state.status === 'running',
   describeStatus,
   onStop,
-  stopLabel = 'Stop'
+  stopLabel = 'Stop',
+  initialState,
+  readOutput = shellOutput
 }) {
   if (!taskId || !helpers) return null;
 
@@ -171,6 +177,20 @@ export function renderLiveTaskOutput(wrapper, {
     text = next;
   };
 
+  /** @param {TaskOutputState} state */
+  const paintState = (state) => {
+    applyOutput(typeof state.output === 'string' ? state.output : '');
+    if (placeholderShown && state.status === 'not_found') pre.textContent = '(no output available)';
+    if (statusEl && describeStatus) statusEl.textContent = describeStatus(state);
+    if (state.truncated && state.outputFile) {
+      spillNote.hidden = false;
+      spillNote.textContent = `Middle dropped — the complete output is in ${state.outputFile}`;
+    }
+  };
+
+  let persistedState = initialState;
+  if (persistedState) paintState(persistedState);
+
   let timer = /** @type {ReturnType<typeof setInterval>|null} */ (null);
   const stopPolling = () => {
     if (timer !== null) { clearInterval(timer); timer = null; }
@@ -194,19 +214,26 @@ export function renderLiveTaskOutput(wrapper, {
     /** @type {TaskOutputState} */
     let state;
     try {
-      state = await shellOutput({ task_id: taskId });
+      state = await readOutput({ task_id: taskId });
     } catch {
       return;
     }
     if (gone()) { stopPolling(); return; }
 
-    applyOutput(typeof state.output === 'string' ? state.output : '');
-    if (placeholderShown && state.status === 'not_found') pre.textContent = '(no output available)';
-    if (statusEl && describeStatus) statusEl.textContent = describeStatus(state);
-    if (state.truncated && state.outputFile) {
-      spillNote.hidden = false;
-      spillNote.textContent = `Middle dropped — the complete output is in ${state.outputFile}`;
+    // A missing live handle says nothing about historical data. A terminal
+    // durable snapshot is authoritative after restart/reaping; a running one
+    // contributes its last output while not_found honestly reports that the
+    // process itself can no longer be reached.
+    if (state.status === 'not_found' && persistedState) {
+      if (persistedState.status === 'completed' || persistedState.status === 'failed') {
+        state = persistedState;
+      } else {
+        state = { ...persistedState, status: 'not_found' };
+      }
+    } else if (state.status !== 'not_found') {
+      persistedState = state;
     }
+    paintState(state);
 
     const running = isRunning(state);
     if (stopBtn) {

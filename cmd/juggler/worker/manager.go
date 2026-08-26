@@ -42,6 +42,7 @@ const (
 	mgrActiveIDs
 	mgrSetAutoNamer
 	mgrConversationRestored
+	mgrRecordBackgroundTaskSnapshot
 )
 
 // CancelLLMSessionFunc tears down provider-side state for an in-flight LLM
@@ -64,6 +65,19 @@ type PathProviderFunc func(convID string) (string, bool)
 // atomically.
 type SaveBinaryFunc func(convID string, data []byte) error
 
+// BackgroundTaskSnapshot is the bounded task history persisted on its tool action.
+type BackgroundTaskSnapshot struct {
+	TaskID          string `json:"taskId"`
+	ToolUseID       string `json:"toolUseId"`
+	Status          string `json:"status"`
+	Output          string `json:"output"`
+	ExitCode        int    `json:"exitCode"`
+	Error           string `json:"error,omitempty"`
+	OutputFile      string `json:"outputFile,omitempty"`
+	OutputBytes     int64  `json:"outputBytes,omitempty"`
+	OutputTruncated bool   `json:"truncated,omitempty"`
+}
+
 // managerOp is a message sent to the Manager's run goroutine.
 type managerOp struct {
 	kind            managerOpKind
@@ -84,6 +98,7 @@ type managerOp struct {
 	engineReadyFn   func() bool
 	syncThrottle    time.Duration
 	initMessage     *InitMessage
+	backgroundTask  *BackgroundTaskSnapshot
 
 	// Response channels
 	workerResult chan *ConversationWorker
@@ -350,6 +365,16 @@ func (m *Manager) run() {
 				op.done <- struct{}{}
 			}
 
+		case mgrRecordBackgroundTaskSnapshot:
+			w := workers[op.conversationID]
+			if w == nil || op.backgroundTask == nil {
+				continue
+			}
+			payload, err := json.Marshal(op.backgroundTask)
+			if err == nil {
+				w.Send("background-task-snapshot", payload)
+			}
+
 		case mgrHandleMessage:
 			w, exists := workers[op.conversationID]
 			if !exists {
@@ -561,6 +586,13 @@ func (m *Manager) Get(conversationID string) *ConversationWorker {
 	result := make(chan *ConversationWorker, 1)
 	m.ops <- managerOp{kind: mgrGet, conversationID: conversationID, workerResult: result}
 	return <-result
+}
+
+// RecordBackgroundTaskSnapshot persists task history only when its owning
+// conversation is already loaded. An asynchronous task must never resurrect a
+// removed conversation merely to write a late snapshot.
+func (m *Manager) RecordBackgroundTaskSnapshot(conversationID string, snapshot BackgroundTaskSnapshot) {
+	m.ops <- managerOp{kind: mgrRecordBackgroundTaskSnapshot, conversationID: conversationID, backgroundTask: &snapshot}
 }
 
 // FlushConversation forces the worker for conversationID (if one is loaded) to

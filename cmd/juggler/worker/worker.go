@@ -1145,6 +1145,9 @@ func (w *ConversationWorker) dispatchMessage(msg workerMessage) {
 	case "update-tool-action-for-retry":
 		w.handleUpdateToolActionForRetry(msg.Payload)
 
+	case "background-task-snapshot":
+		w.handleBackgroundTaskSnapshot(msg.Payload)
+
 	case "reposition-context-item-placeholder":
 		w.handleRepositionContextItemPlaceholder(msg.Payload)
 

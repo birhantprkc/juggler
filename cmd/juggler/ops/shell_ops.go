@@ -127,10 +127,11 @@ func (shell *BackgroundShell) snapshot() shellStateSnapshot {
 
 // registryOp is a request sent to the global registry goroutine
 type registryOp struct {
-	kind   string // "register", "get", "remove", "list", "cleanup", "getState", "getDelta", "updateCmd", "appendOutput", "updateStatus", "kill"
-	id     string
-	shell  *BackgroundShell
-	convID string
+	kind     string // "register", "get", "remove", "list", "cleanup", "getState", "getDelta", "updateCmd", "appendOutput", "updateStatus", "kill", "setObserver", "persistenceState"
+	id       string
+	shell    *BackgroundShell
+	convID   string
+	observer BackgroundTaskObserver
 	// updateCmd/updateStatus fields
 	cmd      *exec.Cmd
 	status   string
@@ -150,6 +151,8 @@ type registryResp struct {
 	shell    *BackgroundShell
 	shells   []map[string]any
 	snapshot shellStateSnapshot
+	observer BackgroundTaskObserver
+	current  bool
 }
 
 var registryCh = make(chan registryOp, 16)
@@ -158,15 +161,42 @@ var registryCh = make(chan registryOp, 16)
 // serialized through registryCh. Started by RegisterAll().
 func runShellRegistry() {
 	shells := make(map[string]*BackgroundShell)
+	latestByOwner := make(map[string]string)
+	var observer BackgroundTaskObserver
 	for op := range registryCh {
 		switch op.kind {
 		case "register":
 			shells[op.shell.ID] = op.shell
+			if op.shell.ConvID != "" && op.shell.ToolUseID != "" {
+				latestByOwner[op.shell.ConvID+"\x00"+op.shell.ToolUseID] = op.shell.ID
+			}
+
+		case "setObserver":
+			observer = op.observer
+
+		case "persistenceState":
+			shell := shells[op.id]
+			current := shell != nil
+			if current && shell.ConvID != "" && shell.ToolUseID != "" {
+				current = latestByOwner[shell.ConvID+"\x00"+shell.ToolUseID] == shell.ID
+			}
+			op.resp <- registryResp{shell: shell, snapshot: func() shellStateSnapshot {
+				if shell == nil {
+					return shellStateSnapshot{}
+				}
+				return shell.snapshot()
+			}(), observer: observer, current: current}
 
 		case "get":
 			op.resp <- registryResp{shell: shells[op.id]}
 
 		case "remove":
+			if shell := shells[op.id]; shell != nil && shell.ConvID != "" && shell.ToolUseID != "" {
+				owner := shell.ConvID + "\x00" + shell.ToolUseID
+				if latestByOwner[owner] == shell.ID {
+					delete(latestByOwner, owner)
+				}
+			}
 			delete(shells, op.id)
 
 		case "list":
@@ -194,6 +224,7 @@ func runShellRegistry() {
 				}
 				delete(shells, shellID)
 			}
+			clear(latestByOwner)
 
 		case "getState":
 			shell := shells[op.id]
@@ -295,6 +326,40 @@ func getBackgroundShell(id string) *BackgroundShell {
 // registerBackgroundShell adds a shell to the registry
 func registerBackgroundShell(shell *BackgroundShell) {
 	registryCh <- registryOp{kind: "register", shell: shell}
+}
+
+func setBackgroundTaskObserver(observer BackgroundTaskObserver) {
+	registryCh <- registryOp{kind: "setObserver", observer: observer}
+}
+
+// publishBackgroundTaskSnapshots copies the bounded observable state to the
+// server's persistence sink. It never invokes that sink on the registry actor,
+// where a slow conversation save would block every background task.
+func publishBackgroundTaskSnapshots(shellID string) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	last := shellStateSnapshot{}
+	for {
+		respCh := make(chan registryResp, 1)
+		registryCh <- registryOp{kind: "persistenceState", id: shellID, resp: respCh}
+		resp := <-respCh
+		if !resp.current || resp.shell == nil {
+			return
+		}
+		state := resp.snapshot
+		if state != last && resp.observer != nil {
+			resp.observer(BackgroundTaskSnapshot{
+				TaskID: shellID, ConvID: resp.shell.ConvID, ToolUseID: resp.shell.ToolUseID,
+				Status: state.Status, Output: state.Output, ExitCode: state.ExitCode, Error: state.Error,
+				OutputFile: state.OutputFile, OutputBytes: state.OutputBytes, OutputTruncated: state.OutputTruncated,
+			})
+			last = state
+		}
+		if state.Status != "running" {
+			return
+		}
+		<-ticker.C
+	}
 }
 
 // removeBackgroundShell removes a shell from the registry
@@ -633,6 +698,7 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 
 	// Register the shell (registry goroutine now owns mutable state)
 	registerBackgroundShell(shell)
+	go publishBackgroundTaskSnapshots(shellID)
 
 	// Start command execution in goroutine
 	go func() {

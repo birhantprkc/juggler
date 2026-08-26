@@ -1338,6 +1338,24 @@ func (w *ConversationWorker) handleUpdateToolActionForRetry(payload json.RawMess
 	}
 }
 
+// handleBackgroundTaskSnapshot records the bounded output and terminal state on
+// the originating tool action. The live process registry is deliberately not the
+// historical source of truth: it is reaped and cannot survive a server restart.
+func (w *ConversationWorker) handleBackgroundTaskSnapshot(payload json.RawMessage) {
+	var snapshot BackgroundTaskSnapshot
+	var displayData map[string]any
+	if err := json.Unmarshal(payload, &snapshot); err != nil || snapshot.TaskID == "" || snapshot.ToolUseID == "" {
+		return
+	}
+	if err := json.Unmarshal(payload, &displayData); err != nil {
+		return
+	}
+	if snapshot.Status != "running" && snapshot.Status != "completed" && snapshot.Status != "failed" {
+		return
+	}
+	w.doc.UpdateToolActionDisplayDataRecursive(snapshot.ToolUseID, "backgroundTask", displayData)
+}
+
 // handleRepositionContextItemPlaceholder clears itemId and sets placeholder content for a context item
 func (w *ConversationWorker) handleRepositionContextItemPlaceholder(payload json.RawMessage) {
 	var msg struct {

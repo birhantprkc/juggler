@@ -127,6 +127,15 @@ export const backgroundOutputInPanelTest = {
       throw new Error(`[background-output] the output section never reported the exit code; got ${JSON.stringify(sectionText('Output'))}`);
     }
 
+    const durable = await pollFor(() => {
+      const displayData = action.get('displayData');
+      const task = (displayData?.toJSON ? displayData.toJSON() : displayData)?.backgroundTask;
+      return task?.status === 'completed' ? task : null;
+    }, 6000);
+    if (!durable || durable.taskId !== taskId || durable.output !== `${MARKER}\n` || durable.exitCode !== 0) {
+      throw new Error(`[background-output] completed output was not persisted on the tool action; got ${JSON.stringify(durable)}`);
+    }
+
     // The text the MODEL was handed stays on show beside the live output: the
     // handle plus how to read it, which is all a background launch returns.
     const resultText = sectionText('Result');

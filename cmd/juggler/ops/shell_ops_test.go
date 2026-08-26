@@ -127,6 +127,46 @@ func TestStartBackground_CompletedOutputNotDoubled(t *testing.T) {
 	}
 }
 
+func TestStartBackground_PublishesDurableFinalSnapshot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only shell command")
+	}
+
+	snapshots := make(chan BackgroundTaskSnapshot, 16)
+	SetBackgroundTaskObserver(func(snapshot BackgroundTaskSnapshot) {
+		if snapshot.ConvID == "conv-persist" && snapshot.ToolUseID == "tool-persist" {
+			snapshots <- snapshot
+		}
+	})
+	t.Cleanup(func() { SetBackgroundTaskObserver(nil) })
+
+	shellOps := NewShellOperations(NewPathScope(t.TempDir(), nil))
+	res, err := shellOps.startBackground(map[string]any{
+		"command": "printf 'durable output\\n'",
+		"conv_id": "conv-persist", "tool_use_id": "tool-persist",
+	})
+	if err != nil {
+		t.Fatalf("startBackground failed: %v", err)
+	}
+	id, _ := res.(map[string]any)["task_id"].(string)
+
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case snapshot := <-snapshots:
+			if snapshot.Status != "completed" {
+				continue
+			}
+			if snapshot.TaskID != id || snapshot.Output != "durable output\n" || snapshot.ExitCode != 0 {
+				t.Fatalf("unexpected final snapshot: %+v", snapshot)
+			}
+			return
+		case <-deadline:
+			t.Fatal("timed out waiting for durable final snapshot")
+		}
+	}
+}
+
 // TestGetOutput_ReturnsDeltaNotCumulative is the regression test for the
 // TaskOutput context-bloat fix: successive getOutput calls must each return only
 // the output produced since the previous call (BashOutput semantics), never an
