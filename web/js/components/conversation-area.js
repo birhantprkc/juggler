@@ -1415,6 +1415,16 @@ class ConversationArea extends HTMLElement {
   }
 
   /**
+   * Let go of the reader's place: the view is being moved on purpose, so there
+   * is no place left to keep. Without this the anchor observer would measure the
+   * move as drift and undo it (_holdReaderAnchor). The next scroll or resize
+   * records wherever the reader ends up.
+   */
+  releaseReaderAnchor() {
+    this._readerAnchor = null;
+  }
+
+  /**
    * Persist current scroll state (atBottom + element anchor) to localStorage.
    * Called on pagehide.
    */

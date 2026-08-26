@@ -28,11 +28,12 @@
  *      on each conversation-area column. Suppressed by rule 4
  *      (origin === 'user').
  *   3. A new user message resets auto-follow (ready to track the response)
- *      AND forces the follow target into view, bypassing the rule-11
- *      near-bottom gate — the user just acted, so showing the footer
- *      spinner/status is what they're waiting for. The tall user message
- *      itself often pushes the footer below the viewport, so we can't
- *      rely on isScrolledNearBottom() returning true at this point.
+ *      AND scrolls to the end of the conversation, from wherever the reader
+ *      was — the user just acted, so their message and the spinner working
+ *      on it are what they're waiting to see. No gate may veto this: not the
+ *      rule-11 near-bottom band, not rule 4's pin, not rule 4b. It is the one
+ *      move in this file the user asked for directly, so it runs last and
+ *      overrides whatever the automatic rules decided (see onItemsInserted).
  *      (Combined with the tail-only rule in getFollowTarget, this
  *      lands cleanly on the footer rather than on a busy sub-thread
  *      tile higher up.)
@@ -50,7 +51,9 @@
  *      so an auto-selection made "quietly" behind a reader's back would
  *      close the sub-thread column they are reading. A new user message
  *      (rule 3) overrides the gate — submitting is a request to watch the
- *      answer.
+ *      answer — and because this rule can withhold a selection's scroll
+ *      without withholding the selection, rule 3 never delegates its scroll
+ *      to one.
  *   5. Never select an item that isn't visible in the DOM.
  *   5b. When a selected item is deleted, auto-select the nearest visible
  *       neighbor (next preferred, previous if last). Driven by the
@@ -90,6 +93,7 @@ import {
   isScrolledNearBottom,
   scrollItemIntoView,
   scrollToFollowIfNeeded,
+  scrollUserSendIntoView,
 } from './conversation-area-scroll.js';
 
 /** @typedef {import('../../sdk/lib/message.js').Message} Message */
@@ -127,28 +131,38 @@ export function onItemsInserted(area, insertedItemIds, items) {
   const following = sawUserMessage || isScrolledNearBottom(area);
 
   // Rule 2: find best auto-select candidate (suppressed by rules 4 and 4b)
+  let autoSelected = false;
   if (following && area._selectionOrigin !== 'user') {
     const candidate = pickAutoSelectCandidate(area, insertedItemIds, itemMap);
     if (candidate) {
       const candidateId = candidate.get('itemId');
       if (candidateId && candidateId !== area._localSelectedItemId) {
         selectItem(area, candidateId, 'auto');
-        return; // selectItem already scrolls
+        autoSelected = true;
       }
     }
   }
 
-  // A new user message just landed in the DOM — force-follow regardless
-  // of the near-bottom check. This is the right moment for the
-  // "show me the spinner working on my message" scroll: the user-msg
-  // element is now real, and the follow target (footer / spinner) sits
-  // just below it. Doing this here (rather than at submitMessage time)
-  // means we never scroll into a phantom position before the user msg
-  // is rendered, which would push the new user message offscreen.
+  // Rule 3/8b: the user's own message just landed in the DOM — show it, from
+  // wherever they were reading. This is the right moment for the "show me the
+  // spinner working on my message" scroll: the user-msg element is now real,
+  // and the follow target (footer / spinner) sits just below it. Doing this
+  // here (rather than at submitMessage time) means we never scroll into a
+  // phantom position before the user msg is rendered, which would push the new
+  // user message offscreen.
+  //
+  // It runs last and unconditionally, AFTER any auto-selection above, because
+  // it is the only move here that is not the system's own idea. The selection
+  // scroll can't stand in for it: rule 4b silently withholds that scroll from
+  // a reader who is scrolled away — which is exactly the reader this rule
+  // exists for — so treating "an item was auto-selected" as "the view has been
+  // taken care of" loses the user's message off the top of a long conversation.
   if (sawUserMessage) {
-    scrollToFollowIfNeeded(area, true);
+    scrollUserSendIntoView(area);
     return;
   }
+
+  if (autoSelected) return; // selectItem has already scrolled, rule 4b permitting
 
   // No candidate selected — scroll follow target into view if near bottom (rule 8)
   if (isScrolledNearBottom(area)) {

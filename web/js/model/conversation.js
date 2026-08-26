@@ -1622,13 +1622,12 @@ class Conversation {
     // hydration, no send) leaves every window's settled order untouched.
     this._session.bumpConversation?.(this.id, { forceTop: true });
 
-    // Force scroll to bottom when user sends message. The real
-    // "land the follow target on the new user message + spinner"
-    // happens later, when onItemsInserted observes the user-message
-    // insertion and updateFooter's rising edge observes the spinner
-    // becoming visible. Scrolling to anything more specific here is
-    // unsafe because neither the user-message DOM nor the spinner
-    // exist yet at this point.
+    // Move to the end of the conversation the moment the user sends, rather
+    // than making them wait out the round-trip to see anything happen. This is
+    // the responsiveness half only: the guarantee that the message is shown is
+    // rule 3/8b in conversation-area-selection.js, which runs when the message
+    // itself lands in the DOM. Scrolling to anything more specific here is
+    // unsafe because neither the user-message DOM nor the spinner exist yet.
     if (this._conversationArea) {
       this._conversationArea.scrollToBottom(true);
     }

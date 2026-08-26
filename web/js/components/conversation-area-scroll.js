@@ -26,16 +26,22 @@
  *      routes to scrollEndIntoView (it IS the end).
  *   8. New items arrive but none auto-selected → scroll the follow target
  *      (status spinner or footer) into view, if near bottom.
+ *   8b. The reader's own message arrives → show it, from wherever they were
+ *      reading (scrollUserSendIntoView). This is the one move no gate may
+ *      veto: sending is an explicit request to see the result.
  *   9. Streaming content grows → keep follow target visible, but only while the
  *      user was already near bottom.
  *  10. LLM busy indicator appears → scroll follow target into view (same
  *      conditions as rule 9).
  *  11. User scrolls far from the bottom (>~20rem) → stop auto-scrolling. No
  *      fighting. Scrolling near the bottom (~20rem) allows auto-scrolling to
- *      continue. This governs every automatic move without exception, including
- *      auto-selection (rule 4b in conversation-area-selection.js): a selection
- *      the system makes may scroll only while the reader is at the end, because
- *      scrolling away is the whole instruction. What holds the reader's place
+ *      continue. This governs every AUTOMATIC move, including auto-selection
+ *      (rule 4b in conversation-area-selection.js): a selection the system
+ *      makes may scroll only while the reader is at the end, because scrolling
+ *      away is the whole instruction. The reader's own actions are not
+ *      automatic moves and are never gated by it — selecting an item (rules
+ *      6-7) and sending a message (rule 8b) both scroll from wherever the view
+ *      happens to be. What holds the reader's place
  *      against content arriving below them is a pair of anchors in
  *      conversation-area.js — one across a streaming bubble's growth, one across
  *      a structural insert — not this module.
@@ -200,27 +206,23 @@ function getFollowTarget(area) {
 }
 
 /**
- * Rules 7–10: Keep the end of the conversation visible. By default skips work
- * when the view is already pinned to the very bottom of all content (avoids
- * fighting the user's scroll position or causing jank). Pass `force = true` to
- * scroll even from a partially-scrolled position — used on edges that must
- * reveal the end completely (e.g. the processing spinner just becoming visible
- * after a user submit; rules 8 + 10).
+ * Rules 7–10: Keep the end of the conversation visible. Skips the work when the
+ * view is already pinned to the very bottom of all content (avoids fighting the
+ * user's scroll position or causing jank). Callers gate this on rule 11
+ * themselves; the reader's own message goes through scrollUserSendIntoView,
+ * which answers to no gate at all.
  * @param {any} area - ConversationArea instance
- * @param {boolean} [force=false]
  */
-export function scrollToFollowIfNeeded(area, force = false) {
+export function scrollToFollowIfNeeded(area) {
   const messageList = area.querySelector('#message-list');
   if (!messageList) return;
   if (!getFollowTarget(area)) return;
 
-  if (!force) {
-    // "Already there?" — in the reversed scroller the very bottom of ALL
-    // content (footer + any queued bubbles) sits at scrollTop 0, so the
-    // distance from the bottom is just |scrollTop| (WebKit reports it negative
-    // when scrolled up). No scrollHeight/clientHeight arithmetic needed.
-    if (Math.abs(messageList.scrollTop) <= 1) return;
-  }
+  // "Already there?" — in the reversed scroller the very bottom of ALL
+  // content (footer + any queued bubbles) sits at scrollTop 0, so the
+  // distance from the bottom is just |scrollTop| (WebKit reports it negative
+  // when scrolled up). No scrollHeight/clientHeight arithmetic needed.
+  if (Math.abs(messageList.scrollTop) <= 1) return;
 
   // One consistent, layout-safe code-path: pin the very end of the content
   // (footer + queued items) above the composer, no matter how tall the
@@ -229,6 +231,31 @@ export function scrollToFollowIfNeeded(area, force = false) {
   // conversation, where a glide reads well. (Selection-driven and correction
   // scrolls call scrollEndIntoView() with no arg and stay instant.)
   scrollEndIntoView(area, true);
+}
+
+/**
+ * Rule 8b: show the reader the message they just sent, from wherever in the
+ * conversation they were. Sending is an explicit request to see what comes
+ * back, so this move is unconditional — it consults neither rule 11's
+ * near-bottom band nor the selection rules, and every other follow path defers
+ * to it rather than the other way round.
+ *
+ * Instant, and it drops the reader's anchor, because the guarantee is that the
+ * view IS at the end by the time the next item lands, not that it is on its way
+ * there. Both of the things that could take it back read the live scroll
+ * position: the anchor observer in conversation-area.js, and the near-bottom
+ * gate every arriving item is tested against. A glide leaves that position
+ * reading "scrolled away" for its whole duration — and over the distance this
+ * scroll can cover, in a conversation long enough to get lost in, the answer's
+ * first tokens arrive inside it. The instant, anchor-free move leaves nothing
+ * for them to fight.
+ * @param {any} area - ConversationArea instance
+ */
+export function scrollUserSendIntoView(area) {
+  const messageList = area.querySelector('#message-list');
+  if (!messageList) return;
+  area.releaseReaderAnchor();
+  scrollEndIntoView(area);
 }
 
 /**
@@ -346,6 +373,11 @@ export function scrollToBottom(area, force = false) {
   if (!force && !isScrolledNearBottom(area)) {
     return;
   }
+
+  // A forced move is a deliberate one (a send, a reveal, a fresh load), so the
+  // reader has no place left to keep — drop it, or the anchor observer measures
+  // the move as drift and undoes it.
+  if (force) area.releaseReaderAnchor();
 
   // Cancel any pending scroll animation to prevent multiple queued scrolls
   if (area._scrollAnimationFrame !== null) {
