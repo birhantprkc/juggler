@@ -139,7 +139,7 @@ export async function runTests(_ctx) {
 
   await run('the chip reaches the collapsed button, alongside the thinking chip', () => {
     const el = makeChip({ tiers: [FAST], levels: ['low', 'high'], serviceTier: 'priority' });
-    const html = el._contentHTML({ modelDisplay: 'Model X', hasOverride: false });
+    const html = el._contentHTML({ modelDisplay: 'Model X' });
     assert(html.includes('service-tier-chip'), 'the button markup must carry the tier chip');
     assert(html.includes('thinking-chip'), 'the thinking chip must survive alongside it');
     assert(html.indexOf('thinking-chip') < html.indexOf('service-tier-chip'),
@@ -149,7 +149,7 @@ export async function runTests(_ctx) {
   await run('the button is unchanged for a model with no tier bought', () => {
     const withTiers = makeChip({ tiers: [FAST], levels: ['low', 'high'] });
     const standardOnly = makeChip({ levels: ['low', 'high'] });
-    const state = { modelDisplay: 'Model X', hasOverride: false };
+    const state = { modelDisplay: 'Model X' };
     assert(withTiers._contentHTML(state) === standardOnly._contentHTML(state),
       'offering a tier must not itself alter the button — only buying one does');
   });

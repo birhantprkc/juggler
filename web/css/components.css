@@ -3059,22 +3059,11 @@ composer-box .model-selector-button .model-name {
     white-space: nowrap;
 }
 
-/* Model Selector - override indicator dot */
-.model-selector-button .override-dot {
-    display: inline-block;
-    width: 0.375rem;
-    height: 0.375rem;
-    border-radius: 50%;
-    background: var(--accent-color, #6366f1);
-    margin-left: 0.375rem;
-    flex-shrink: 0;
-}
-
 /* Model Selector - compact thinking-level chip on the button. Muted pill that
-   survives the has-override / model-unavailable button states. A click target
-   in its own right — it opens the mini thinking popover (.thinking-mini) — so
-   it carries a hover affordance and an enlarged pseudo-element hit area. The
-   transparent border keeps the solid and hollow variants the same size. */
+   survives the model-unavailable button state. A click target in its own right
+   — it opens the mini thinking popover (.thinking-mini) — so it carries a hover
+   affordance and an enlarged pseudo-element hit area. The transparent border
+   keeps the solid and hollow variants the same size. */
 .model-selector-button .thinking-chip {
     display: inline-block;
     position: relative;

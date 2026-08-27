@@ -51,8 +51,6 @@ class ModelChip extends HTMLElement {
     this._placeholder = 'Select Model';
     /** @type {import('../../services/connection-status.js').ConnectionStatus} @private */
     this._connectionState = null;
-    /** @type {boolean} @private - Whether this scope overrides an inherited model. */
-    this._hasOverride = false;
     /** @type {boolean} @private - Whether an empty selection should pulse for attention. */
     this._pulseWhenEmpty = false;
     /** @type {string} @private - The button's tooltip. */
@@ -159,17 +157,6 @@ class ModelChip extends HTMLElement {
     return this._connectionState;
   }
 
-  /** @param {boolean} on - Whether this scope overrides an inherited model. */
-  set hasOverride(on) {
-    this._hasOverride = !!on;
-    this._update();
-  }
-
-  /** @returns {boolean} Whether this scope overrides an inherited model. */
-  get hasOverride() {
-    return this._hasOverride;
-  }
-
   /** @param {boolean} on - Whether an empty selection should pulse for attention. */
   set pulseWhenEmpty(on) {
     this._pulseWhenEmpty = !!on;
@@ -208,7 +195,7 @@ class ModelChip extends HTMLElement {
   /**
    * The button's display state: the label text plus the flags its state classes
    * key off.
-   * @returns {{modelDisplay: string, noModelSelected: boolean, modelUnavailable: boolean, hasOverride: boolean}}
+   * @returns {{modelDisplay: string, noModelSelected: boolean, modelUnavailable: boolean}}
    *   The button's display state.
    * @private
    */
@@ -243,7 +230,6 @@ class ModelChip extends HTMLElement {
       modelDisplay,
       noModelSelected: modelDisplay === this._placeholder,
       modelUnavailable,
-      hasOverride: this._hasOverride,
     };
   }
 
@@ -309,14 +295,13 @@ class ModelChip extends HTMLElement {
   }
 
   /**
-   * The button's inner markup: icon, label, thinking chip, serving-tier chip,
-   * override dot.
-   * @param {{modelDisplay: string, hasOverride: boolean}} state - From `_displayState`.
+   * The button's inner markup: icon, label, thinking chip, serving-tier chip.
+   * @param {{modelDisplay: string}} state - From `_displayState`.
    * @returns {string} HTML for the button's content.
    * @private
    */
   _contentHTML(state) {
-    return `<span class="icon-auto-awesome"></span><span class="model-name">${escapeHtml(state.modelDisplay)}</span>${this.thinkingChipHTML()}${this.serviceTierChipHTML()}${state.hasOverride ? '<span class="override-dot"></span>' : ''}`;
+    return `<span class="icon-auto-awesome"></span><span class="model-name">${escapeHtml(state.modelDisplay)}</span>${this.thinkingChipHTML()}${this.serviceTierChipHTML()}`;
   }
 
   /**
@@ -331,7 +316,6 @@ class ModelChip extends HTMLElement {
       return;
     }
     const state = this._displayState();
-    button.classList.toggle('has-override', state.hasOverride);
     button.classList.toggle('model-unavailable', state.modelUnavailable);
     button.classList.toggle('pulse', this._pulseWhenEmpty && state.noModelSelected);
     button.title = this._buttonTitle;
@@ -486,7 +470,6 @@ class ModelChip extends HTMLElement {
 
     const state = this._displayState();
     const classes = ['model-selector-button', 'input-ctrl-btn'];
-    if (state.hasOverride) classes.push('has-override');
     if (state.modelUnavailable) classes.push('model-unavailable');
     if (this._pulseWhenEmpty && state.noModelSelected) classes.push('pulse');
 

@@ -305,7 +305,6 @@ class ModelSelector extends HTMLElement {
     this._chip?.update({
       providers: this.providers,
       liveConfig: this._currentConfig,
-      hasOverride: !!(this._messageThread?.threadItemId && this._messageThread?.ownModelConfig),
       connectionState: this.connectionStatus,
       config: this._displayConfig(),
     });
