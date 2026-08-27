@@ -293,7 +293,7 @@ func hasThreadResult(item ConversationItem) bool {
 // sets the needsReconcile flag; the main event loop's tryReconcile()
 // dispatches the actual action at the top level.
 func (w *ConversationWorker) reconcileThread() {
-	w.needsReconcile = true
+	w.needsReconcile.Store(true)
 }
 
 // updateApprovalWaitAnchor keeps the spinner's elapsed digit measuring active
@@ -321,19 +321,18 @@ func (r *run) updateApprovalWaitAnchor() {
 		return // no edge this tick
 	}
 	r.t.wasBlockedOnApprovals = parked
-	if r.t.processingStartedAt == 0 {
+	if r.t.processingStartedAt.Load() == 0 {
 		return // no active turn to anchor
 	}
 	now := time.Now().UnixMilli()
 	if parked {
-		r.t.approvalWaitStartedAt = now
+		r.t.approvalWaitStartedAt.Store(now)
 		r.hideElapsedAnchor()
 		return
 	}
 	// Park ended. Exclude the wait only when real work resumed; on a cancel at
 	// the prompt there is nothing to resume.
-	waitStart := r.t.approvalWaitStartedAt
-	r.t.approvalWaitStartedAt = 0
+	waitStart := r.t.approvalWaitStartedAt.Swap(0)
 	if hasExecuting && waitStart != 0 {
 		r.advanceElapsedAnchor(now - waitStart)
 	}
@@ -356,8 +355,16 @@ const maxReconcilePasses = 10
 // drainReconcile runs tryReconcile until the reducer is quiet, bounded by
 // maxReconcilePasses. The run() loop drains after every event; requestReconcile
 // drains here directly when there is no loop to hand the pass to.
+//
+// It stands down entirely while a turn is on its own goroutine. The reducer
+// drives tool execution and thread dispatch, and the running turn is writing
+// exactly that state — so the pass waits for the turn to retire, which is when
+// it always ran, back when a turn owned the loop and no pass could land mid-turn
+// at all. finishRetiredTurn re-raises the flag, so nothing is dropped by
+// waiting. Narrowing this to the threads a live run does NOT own is Phase G's
+// job, and the point of the whole exercise.
 func (r *run) drainReconcile() {
-	for i := 0; i < maxReconcilePasses && r.needsReconcile; i++ {
+	for i := 0; i < maxReconcilePasses && r.needsReconcile.Load() && !r.hasLiveRun(); i++ {
 		r.tryReconcile()
 	}
 }
@@ -374,6 +381,7 @@ func (r *run) drainReconcile() {
 // back to draining inline — the behaviour every one of those call sites has
 // always had.
 func (r *run) requestReconcile() {
+	r.needsReconcile.Store(true)
 	if r.actorStarted.Load() {
 		select {
 		case r.reconcileRequest <- struct{}{}:
@@ -381,15 +389,13 @@ func (r *run) requestReconcile() {
 		}
 		return
 	}
-	r.needsReconcile = true
 	r.drainReconcile()
 }
 
 func (r *run) tryReconcile() {
-	if !r.needsReconcile {
+	if !r.needsReconcile.Swap(false) {
 		return
 	}
-	r.needsReconcile = false
 
 	// Guard: the reducer fires on every event-loop tick via handleItemsChange.
 	// During partial Yjs sync (mid-update, reconnect, etc.) the items array
@@ -418,7 +424,7 @@ func (r *run) tryReconcile() {
 	if r.checkForNewThreads() {
 		// The pickup claimed a thread and marked the conversation busy; re-evaluate
 		// from scratch rather than walking down with items read before it.
-		r.needsReconcile = true
+		r.needsReconcile.Store(true)
 		return
 	}
 
@@ -550,7 +556,7 @@ func (r *run) dispatchCallLLMOnThread(threadItemID string) {
 	// Conversation-wide, and paired with the isLLMClaimed gate below: the turn
 	// this dispatches runs inline on the run() goroutine. Phase G narrows both.
 	if r.anyRunState() != StateIdle {
-		r.needsReconcile = true
+		r.needsReconcile.Store(true)
 		return
 	}
 
@@ -572,37 +578,38 @@ func (r *run) dispatchCallLLMOnThread(threadItemID string) {
 	// to dispatch; if the dispatch is refused, leave it for the next reconcile tick.
 	//
 	// isLLMClaimed is the serial-execution gate, and it is deliberately
-	// conversation-wide: the claim is per-thread, but a turn still RUNS inline on
-	// the run() goroutine, so dispatching a second one would re-enter the strategy
-	// loop underneath the first. This is the line Phase G narrows — to "in
-	// parallel, but only for read-only children".
+	// conversation-wide: the claim is per-thread, but only one turn is admitted at
+	// a time, so the reducer, the tool drive and the document sequences that
+	// straddle a lock release all still have a single writer. This is the line
+	// Phase G narrows — to "in parallel, but only for read-only children".
 	if r.isLLMClaimed() || !r.claimLLM(threadItemID) {
 		// A turn is already in flight — re-tickle so the next reconcile
 		// tick picks this up after that call completes.
-		r.needsReconcile = true
+		r.needsReconcile.Store(true)
 		return
 	}
 	explicitContinuation := r.consumeExplicitContinuation(threadItemID)
 
-	// Set up thread context from doc state.
-	r.t.thread.itemID = threadItemID
-	if threadItemID != "" {
-		r.t.thread.itemsArray = r.doc.GetThreadItemsArray(threadItemID)
-	} else {
-		r.t.thread.itemsArray = nil
-	}
+	// Set up the run this turn executes on, from doc state. Under a live run loop
+	// that is a goroutine of its own, so the mailbox keeps being served — a
+	// cancel, a pause or a sync update arriving mid-stream is handled while the
+	// turn streams rather than after it.
+	tr := r.beginTurn(threadItemID)
 
 	// Turn-scoped anchor: only stamp the start when beginning a fresh turn (from
 	// idle, where it was zeroed). Preserving it across re-dispatches within a turn
 	// keeps the spinner's elapsed digit measuring the whole turn, instead of
 	// resetting to 0 every time a tool completes and the next LLM call dispatches.
-	if r.t.processingStartedAt == 0 {
-		r.t.processingStartedAt = time.Now().UnixMilli()
+	// seedTurnBoundary is what carries it from one dispatch to the next.
+	if tr.t.processingStartedAt.Load() == 0 {
+		tr.t.processingStartedAt.Store(time.Now().UnixMilli())
 	}
-	r.storeState(StateProcessing)
-	r.sendStatus("preparing", "")
-	r.batcher.Flush()
-	r.runStrategyLoopWithIntent("", true, explicitContinuation)
+	tr.storeState(StateProcessing)
+	tr.sendStatus("preparing", "")
+	tr.batcher.Flush()
+	r.runTurn(tr, func(tr *run) {
+		tr.runStrategyLoopWithIntent("", true, explicitContinuation)
+	})
 }
 
 // selectThreadFallbackResult returns a run's trailing assistant text — what a

@@ -358,7 +358,7 @@ func (m *Manager) run() {
 				op.done <- struct{}{}
 			}
 			if ok {
-				inflight := w.turn.cancelLLM.Load() != nil
+				inflight := w.hasLLMInFlight()
 				jlog.Info("[worker.Remove] stopping worker conv=%s llmInFlight=%v", op.conversationID, inflight)
 				go w.StopForRemoval()
 			} else {

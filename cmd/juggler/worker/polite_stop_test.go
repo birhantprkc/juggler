@@ -77,8 +77,8 @@ func TestPoliteStop_ReducerRestsBeforeNextTurn(t *testing.T) {
 	}()
 
 	// Drive the reducer exactly as the event loop would after the tool completes.
-	w.needsReconcile = true
-	for i := 0; i < 10 && w.needsReconcile; i++ {
+	w.needsReconcile.Store(true)
+	for i := 0; i < 10 && w.needsReconcile.Load(); i++ {
 		w.currentRun().tryReconcile()
 	}
 

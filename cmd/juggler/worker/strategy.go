@@ -537,8 +537,8 @@ func (r *run) finishStrategyRun() {
 	}
 
 	r.storeState(StateIdle)
-	r.t.processingStartedAt = 0
-	r.t.approvalWaitStartedAt = 0
+	r.t.processingStartedAt.Store(0)
+	r.t.approvalWaitStartedAt.Store(0)
 	r.t.lastProgressWriteMs = 0
 	r.t.lastCacheMissNotice = ""
 	r.resetThreadContext()
@@ -833,7 +833,7 @@ func (w *ConversationWorker) signalParentThread(completedThreadID string) bool {
 	if !w.requestLLM(parentThreadID) {
 		return false
 	}
-	w.needsReconcile = true
+	w.needsReconcile.Store(true)
 	return true
 }
 

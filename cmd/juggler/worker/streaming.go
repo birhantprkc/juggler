@@ -674,19 +674,10 @@ func (r *run) waitForLLMResponse(turnID string, timeout time.Duration) (*LLMResp
 			}
 		case chunk := <-r.t.chunks:
 			r.processCoalescedStreamChunks(turnID, chunk)
-		case msg := <-r.inbound:
-			r.handleMessageInWait(msg)
+		case <-r.t.wake:
 			if r.loadState() == StateCancelling {
 				return nil, ErrCancelled
 			}
-		case <-r.doc.UpdateSignal():
-			r.batcher.Schedule()
-		case <-r.livenessC():
-			// A machine freeze (sleep, hibernate, host suspend) during the LLM
-			// call would otherwise inflate the elapsed digit by the frozen span;
-			// service the detector here too so it self-corrects within a tick of
-			// the process resuming, without waiting for the call to return.
-			r.detectFrozenGap()
 		case <-timer.C:
 			return nil, fmt.Errorf("LLM request timed out")
 		case <-r.done:
@@ -719,15 +710,10 @@ func (r *run) waitForContextAndTools(timeout time.Duration, contextReply, toolsR
 		select {
 		case contextResult = <-ctxChan:
 		case toolsResult = <-toolsChan:
-		case msg := <-r.inbound:
-			r.handleMessageInWait(msg)
+		case <-r.t.wake:
 			if r.loadState() == StateCancelling {
 				return nil, nil, ErrCancelled
 			}
-		case <-r.doc.UpdateSignal():
-			r.batcher.Schedule()
-		case <-r.livenessC():
-			r.detectFrozenGap()
 		case <-timer.C:
 			// Report which half never answered — the context reply is engine-only
 			// (single responder), so a wedge is almost always the context side.
@@ -796,12 +782,23 @@ type RetryWaitResult struct {
 	NewMessage bool // user sent a new message; caller should restart the outer strategy loop
 }
 
-// waitForRetryDelay parks for d while processing worker messages (cancel,
-// send-message, Yjs updates).
+// waitForRetryDelay parks for d, and reports the two things that can end the
+// backoff early: a cancel, and a fresh user message queued for this run's thread.
+//
+// The second is why retryWaiting exists. Every other wait a turn does ends on
+// its own — a response lands, a reply comes back — and a message that arrives
+// meanwhile is drained at the next turn boundary. A backoff has no such
+// boundary: the wait is dead time on a request the user has already superseded.
+// So the intake signals interject (see nudgeRetryWait), the backoff is abandoned
+// and the strategy loop restarts, promoting the queue at the top of the next
+// turn.
 func (r *run) waitForRetryDelay(d time.Duration) RetryWaitResult {
 	// Chunks from the attempt that just failed can still be draining into the
 	// throttle; whichever way the wait ends, the document catches up with them.
 	defer r.flushPendingStreamWrites()
+
+	r.t.retryWaiting.Store(true)
+	defer r.t.retryWaiting.Store(false)
 
 	timer := time.NewTimer(d)
 	defer timer.Stop()
@@ -811,49 +808,21 @@ func (r *run) waitForRetryDelay(d time.Duration) RetryWaitResult {
 		case <-timer.C:
 			return RetryWaitResult{}
 
-		case msg := <-r.inbound:
-			switch msg.Type {
-			case "cancel":
-				r.logCancel(cancelReasonFromPayload(msg.Payload))
-				if p := r.t.cancelLLM.Swap(nil); p != nil {
-					(*p)()
-				}
-				r.storeState(StateCancelling)
+		case <-r.t.wake:
+			if r.loadState() == StateCancelling {
 				return RetryWaitResult{Cancelled: true}
+			}
 
-			case "send-message":
-				// Only redirect when no tokens have streamed yet (pure retry — no partial response).
-				if r.t.streaming.textContent == "" && r.t.streaming.thinkingContent == "" {
-					var sm SendMessageMessage
-					if err := json.Unmarshal(msg.Payload, &sm); err == nil {
-						if input := sm.UserInput(); !input.isEmpty() {
-							if sm.ThreadItemID != r.t.thread.itemID {
-								r.t.thread.itemID = sm.ThreadItemID
-								if sm.ThreadItemID != "" {
-									r.t.thread.itemsArray = r.doc.GetThreadItemsArray(sm.ThreadItemID)
-								} else {
-									r.t.thread.itemsArray = nil
-								}
-							}
-							r.addUserMessage(input)
-							r.batcher.Flush()
-							return RetryWaitResult{NewMessage: true}
-						}
-					}
-				}
-				// Has partial streamed tokens — composer should still be locked; ignore.
-
-			default:
-				r.handleMessageInWait(msg)
-				if r.loadState() == StateCancelling {
-					return RetryWaitResult{Cancelled: true}
-				}
+		case <-r.t.interject:
+			// Only redirect when no tokens have streamed yet (pure retry — no
+			// partial response). With partial output on screen the composer is
+			// still locked, so the queued message waits for the ordinary boundary.
+			if r.t.streaming.textContent == "" && r.t.streaming.thinkingContent == "" {
+				return RetryWaitResult{NewMessage: true}
 			}
 
 		case chunk := <-r.t.chunks:
 			r.processCoalescedStreamChunks(r.t.llmTurnID, chunk)
-		case <-r.doc.UpdateSignal():
-			r.batcher.Schedule()
 		case <-r.done:
 			return RetryWaitResult{Cancelled: true}
 		}

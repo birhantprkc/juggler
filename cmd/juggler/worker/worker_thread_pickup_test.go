@@ -134,8 +134,8 @@ func TestCompactionSubthread_DrainsRootQueueOnCompletion(t *testing.T) {
 
 	// Drive reconcile as the event loop would, in case the completion path
 	// scheduled a root turn rather than running it entirely inline.
-	for i := 0; i < 20 && (w.needsReconcile || w.HasPendingItems("")); i++ {
-		w.needsReconcile = true
+	for i := 0; i < 20 && (w.needsReconcile.Load() || w.HasPendingItems("")); i++ {
+		w.needsReconcile.Store(true)
 		w.currentRun().tryReconcile()
 	}
 

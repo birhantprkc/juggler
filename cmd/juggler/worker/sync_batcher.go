@@ -23,6 +23,12 @@ import "time"
 // had to service that timer itself, and none of them own it any more.
 type syncBatcher struct {
 	commands chan batchCommand
+	// retired is closed when the actor has returned, so a caller that arrives
+	// after the last flush is turned away instead of parking forever on the
+	// unbuffered command channel. A turn on its own goroutine can still be
+	// unwinding — flushing at its own boundaries — when shutdown retires the
+	// batcher, and there is nothing left to broadcast to by then anyway.
+	retired  chan struct{}
 	doc      *ConversationDocument // for drain + broadcast resolution at flush time
 	throttle time.Duration
 }
@@ -46,6 +52,7 @@ type batchCommand struct {
 func newSyncBatcher(doc *ConversationDocument, throttle time.Duration) *syncBatcher {
 	b := &syncBatcher{
 		commands: make(chan batchCommand),
+		retired:  make(chan struct{}),
 		doc:      doc,
 		throttle: throttle,
 	}
@@ -60,6 +67,7 @@ func newSyncBatcher(doc *ConversationDocument, throttle time.Duration) *syncBatc
 // the last batch after done is already closed — that final broadcast is the only
 // one a mid-turn conversation gets — so the actor lives until it is told to stop.
 func (b *syncBatcher) run() {
+	defer close(b.retired)
 	var pending [][]byte
 	var timer *time.Timer
 	var timerC <-chan time.Time
@@ -114,27 +122,47 @@ func (b *syncBatcher) run() {
 // (once per update signal, per worker) would pile contention onto that shared
 // lock. Flush drains instead — once per broadcast window.
 //
-// Asynchronous: arming a timer has nothing to report back.
+// Asynchronous: arming a timer has nothing to report back. A no-op once the
+// actor has retired — a window with nothing left to broadcast in it.
 func (b *syncBatcher) Schedule() {
-	b.commands <- batchCommand{kind: batchSchedule}
+	select {
+	case b.commands <- batchCommand{kind: batchSchedule}:
+	case <-b.retired:
+	}
 }
 
 // Flush broadcasts the pending batch and returns once it is out. Safe to call
-// when nothing is pending, and safe from any goroutine.
+// when nothing is pending, safe from any goroutine, and a no-op once the actor
+// has retired — a turn unwinding past shutdown flushes into a conversation with
+// no clients left rather than parking on a channel nobody reads.
 //
 // It cannot be called while holding ycrdtMu: the actor takes that lock to drain
 // the doc. That was already true when Flush ran inline — the same call would
 // have self-deadlocked on a non-reentrant lock — so no existing caller does.
 func (b *syncBatcher) Flush() {
 	ack := make(chan struct{})
-	b.commands <- batchCommand{kind: batchFlush, ack: ack}
-	<-ack
+	select {
+	case b.commands <- batchCommand{kind: batchFlush, ack: ack}:
+	case <-b.retired:
+		return
+	}
+	select {
+	case <-ack:
+	case <-b.retired:
+	}
 }
 
 // stop flushes one last time and retires the actor. Called once, from
 // onShutdown, after every other flush has had its chance.
 func (b *syncBatcher) stop() {
 	ack := make(chan struct{})
-	b.commands <- batchCommand{kind: batchStop, ack: ack}
-	<-ack
+	select {
+	case b.commands <- batchCommand{kind: batchStop, ack: ack}:
+	case <-b.retired:
+		return
+	}
+	select {
+	case <-ack:
+	case <-b.retired:
+	}
 }

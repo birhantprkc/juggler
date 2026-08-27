@@ -294,6 +294,11 @@ func (r *run) handleSendMessage(payload json.RawMessage) {
 			}
 			if !input.isEmpty() {
 				r.enqueuePendingMessage(msg.ThreadItemID, input)
+				// A run backing off between LLM attempts has no boundary coming to
+				// drain that queue — the wait is dead time on a request this message
+				// has already superseded. Tell it so; every other busy run drains the
+				// queue at its next turn boundary on its own.
+				r.nudgeRetryWait(msg.ThreadItemID)
 			}
 		}
 		return
@@ -417,7 +422,7 @@ func (r *run) handleSendMessage(payload json.RawMessage) {
 		r.injectSkillPreloads(skillsToLoad)
 		r.batcher.Flush()
 		r.handleItemsChange()
-		r.needsReconcile = true
+		r.needsReconcile.Store(true)
 		return
 	}
 
@@ -434,7 +439,7 @@ func (r *run) handleSendMessage(payload json.RawMessage) {
 	// activity="awaiting_llm" atomically; the reducer picks it up on
 	// the next event-loop tick via tryReconcile → dispatchCallLLM.
 	r.requestLLM(msg.ThreadItemID)
-	r.needsReconcile = true
+	r.needsReconcile.Store(true)
 }
 
 // firstRootUserMessageText returns the text of the conversation's first
@@ -636,17 +641,27 @@ func (r *run) logCancel(reason cancelReason) {
 }
 
 func (r *run) handleCancel(reason cancelReason) {
-	r.logCancel(reason)
+	// The run this cancel applies to. A turn executes on a goroutine of its own,
+	// so the run handling this message is never the one streaming; the live-run
+	// registry is what names it. With nothing live — between turns, or a strategy
+	// loop driven inline by a test — this run is its own target, which is exactly
+	// what it has always been.
+	target := r
+	threadID := r.t.thread.itemID
+	if live := r.liveRun(); live != nil {
+		target = r.runFor(live.t)
+		threadID = live.threadItemID
+	}
+	target.logCancel(reason)
 
 	// The thread this cancel applies to. A cancel frame carries no thread of its
 	// own — the browser decides whose Stop it is and only sends one when that
 	// thread owns the active work — so the worker resolves it from the run it is
-	// about to stop: this run's own thread while it is processing, otherwise the
+	// about to stop: that run's own thread while it is processing, otherwise the
 	// thread the document names as the current operation's target. Everything
 	// below is scoped to it, so stopping one thread leaves a sibling's tools,
 	// provider session and turn alone.
-	threadID := r.t.thread.itemID
-	if r.loadState() != StateProcessing {
+	if target.loadState() != StateProcessing {
 		threadID = r.getProcessingThreadItemID()
 	}
 
@@ -662,9 +677,11 @@ func (r *run) handleCancel(reason cancelReason) {
 	// rather than continuing to the next step. Fire-and-forget to the engine.
 	r.dispatchCancelStrategyExecution()
 
-	if r.loadState() == StateProcessing {
-		r.storeState(StateCancelling)
-		if p := r.t.cancelLLM.Swap(nil); p != nil {
+	if target.loadState() == StateProcessing {
+		// acceptCancel both records the decision and releases whichever wait loop
+		// the turn is parked in — its own goroutine is not reading this mailbox.
+		target.acceptCancel()
+		if p := target.t.cancelLLM.Swap(nil); p != nil {
 			(*p)()
 		}
 		// Release any parked provider subprocess that the ctx-cancel above
@@ -720,7 +737,7 @@ func (r *run) handleCancel(reason cancelReason) {
 			// hand off to the reducer, which continues a queued turn or rests.
 			// Deliberately does NOT write idle here — that would clear
 			// awaiting_llm before the reducer runs and strand the continuation.
-			r.needsReconcile = true
+			r.needsReconcile.Store(true)
 			return
 		}
 
@@ -1082,7 +1099,7 @@ func (r *run) handleUndoOrRedo(fn func() bool, payload json.RawMessage) {
 	default:
 	}
 	r.suppressItemsChange = false
-	r.needsReconcile = false
+	r.needsReconcile.Store(false)
 
 	// Clear any in-flight activity marker. The user explicitly reverted
 	// state; awaiting_llm or calling_llm semantics from before the undo

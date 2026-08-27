@@ -42,9 +42,13 @@ type turnState struct {
 
 	// processingStartedAt is the single anchor every client renders the spinner's
 	// elapsed digit against. Approval waits advance it so they are excluded.
-	processingStartedAt int64
+	// Atomic because the run loop's frozen-gap detector corrects the anchor of
+	// whichever turn is streaming, and that turn is a goroutine of its own.
+	processingStartedAt atomic.Int64
 	// approvalWaitStartedAt records when this turn parked solely for approval.
-	approvalWaitStartedAt int64
+	// Atomic for the same reason as processingStartedAt: the detector reads it to
+	// decide whether the park already excludes the frozen span.
+	approvalWaitStartedAt atomic.Int64
 	// wasBlockedOnApprovals records the previous approval reconciliation state.
 	wasBlockedOnApprovals bool
 
@@ -126,10 +130,81 @@ type turnState struct {
 	// the next attempt — which may itself spend minutes backing off — until real
 	// content flips it back; see clearRetryingStatus.
 	retryStatusActive bool
+
+	// wake releases whichever wait loop this run is parked in when something off
+	// its goroutine has changed state it must react to — today a cancel accepted
+	// by the run loop. The loops read state, not the signal, so a spurious or
+	// late wake costs one re-check of a value that has not changed; buffered by
+	// one and sent to non-blockingly, because "look again" needs no queue.
+	//
+	// A signal, not a closed channel: the ambient turn is re-run by the tests
+	// that drive the strategy loop directly, and a one-shot close would leave
+	// every later run on it cancelled from the first instruction.
+	wake chan struct{}
+
+	// interject releases a run parked in a retry backoff because a fresh user
+	// message has been queued for its thread. That message is a new intent and
+	// there is no turn boundary coming to notice it, so the backoff is abandoned
+	// and the strategy loop restarts — promotePendingItems at the top of the next
+	// turn is what actually moves the message in. Buffered by one and sent to
+	// non-blockingly, like wake.
+	interject chan struct{}
+
+	// retryWaiting reports that this run is parked in waitForRetryDelay, so the
+	// intake can tell a backoff worth interrupting from an ordinary turn boundary
+	// that will drain the queue on its own.
+	retryWaiting atomic.Bool
+
+	// finished is closed when this run's goroutine has returned. Stop waits on it
+	// so no turn is still writing to the document when the worker tears it down.
+	// Never closed for a run driven inline, which has no goroutine to outlive its
+	// caller and is never in the live-run registry Stop reads.
+	finished chan struct{}
 }
 
+// currentRun is a handle onto the worker's AMBIENT turn: the one the run loop
+// itself carries, and the one every test that drives the strategy loop directly
+// runs on. While a dispatched turn is streaming on its own goroutine the ambient
+// turn is idle and holds that turn's boundary state between dispatches — see
+// adoptTurnBoundary. Ask liveRun for the turn that is actually running.
 func (w *ConversationWorker) currentRun() *run {
 	return &run{ConversationWorker: w, t: w.turn}
+}
+
+// runFor builds a handle onto one particular turn, so a caller on another
+// goroutine can act on the run that owns it rather than on its own.
+func (w *ConversationWorker) runFor(t *turnState) *run {
+	return &run{ConversationWorker: w, t: t}
+}
+
+// acceptCancel moves this run to Cancelling and releases whichever wait loop it
+// is parked in. The state is the decision every frame of the turn reads on its
+// way out; the wake is only what stops the loop waiting for it.
+func (r *run) acceptCancel() {
+	r.storeState(StateCancelling)
+	r.t.signalWake()
+}
+
+// signalWake nudges this run's wait loop to re-read its state. Non-blocking: the
+// buffered slot already holds "look again", which is the whole message.
+func (t *turnState) signalWake() {
+	select {
+	case t.wake <- struct{}{}:
+	default:
+	}
+}
+
+// signalInterject asks a run parked in a retry backoff to abandon it. Refused
+// when the run is not in one, so the slot never holds a wake for a backoff that
+// has already ended.
+func (t *turnState) signalInterject() {
+	if !t.retryWaiting.Load() {
+		return
+	}
+	select {
+	case t.interject <- struct{}{}:
+	default:
+	}
 }
 
 func (w *ConversationWorker) Start(ctx context.Context) { w.currentRun().Start(ctx) }
@@ -148,6 +223,9 @@ func newTurnState() *turnState {
 	t := &turnState{
 		responseChan: make(chan llmCallResult, 1),
 		chunks:       make(chan StreamChunk, 4096),
+		wake:         make(chan struct{}, 1),
+		interject:    make(chan struct{}, 1),
+		finished:     make(chan struct{}),
 	}
 	t.state.Store(StateIdle)
 	return t

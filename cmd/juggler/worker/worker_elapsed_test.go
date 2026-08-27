@@ -72,7 +72,7 @@ func TestApprovalWaitHidesThenExcludesElapsedTimer(t *testing.T) {
 
 	// A turn that began a minute ago and is now parked awaiting approval.
 	oldAnchor := time.Now().Add(-60 * time.Second).UnixMilli()
-	w.turn.processingStartedAt = oldAnchor
+	w.turn.processingStartedAt.Store(oldAnchor)
 	w.doc.SetMetadata("processingState", map[string]any{
 		"activity":     ActivityAwaitingLLM,
 		"threadItemId": "",
@@ -90,16 +90,16 @@ func TestApprovalWaitHidesThenExcludesElapsedTimer(t *testing.T) {
 	if startedAtPresent(t, w) {
 		t.Error("on entering an approval park: expected startedAt to be removed (digit hidden)")
 	}
-	if w.turn.approvalWaitStartedAt == 0 {
+	if w.turn.approvalWaitStartedAt.Load() == 0 {
 		t.Error("on entering an approval park: expected approvalWaitStartedAt to be recorded")
 	}
-	if w.turn.processingStartedAt != oldAnchor {
-		t.Errorf("while parked: in-memory anchor must not move, got %d want %d", w.turn.processingStartedAt, oldAnchor)
+	if w.turn.processingStartedAt.Load() != oldAnchor {
+		t.Errorf("while parked: in-memory anchor must not move, got %d want %d", w.turn.processingStartedAt.Load(), oldAnchor)
 	}
 
 	// Simulate a 10s deliberation by backdating the in-memory wait marker.
 	waitMs := int64(10_000)
-	w.turn.approvalWaitStartedAt = time.Now().UnixMilli() - waitMs
+	w.turn.approvalWaitStartedAt.Store(time.Now().UnixMilli() - waitMs)
 
 	// The user approves: the pending tool becomes approved (executing).
 	if !w.doc.UpdateToolActionFieldsRecursive("tu-pend", map[string]any{"state": StateApproved}) {
@@ -112,15 +112,15 @@ func TestApprovalWaitHidesThenExcludesElapsedTimer(t *testing.T) {
 	if w.turn.wasBlockedOnApprovals {
 		t.Error("after approve: expected wasBlockedOnApprovals=false (work executing)")
 	}
-	if w.turn.approvalWaitStartedAt != 0 {
+	if w.turn.approvalWaitStartedAt.Load() != 0 {
 		t.Error("after approve: expected approvalWaitStartedAt to be cleared")
 	}
 	if !startedAtPresent(t, w) {
 		t.Fatal("after approve: expected startedAt to reappear")
 	}
 	got := startedAtMillis(t, w)
-	if got != w.turn.processingStartedAt {
-		t.Errorf("after approve: doc startedAt (%d) must match in-memory anchor (%d)", got, w.turn.processingStartedAt)
+	if got != w.turn.processingStartedAt.Load() {
+		t.Errorf("after approve: doc startedAt (%d) must match in-memory anchor (%d)", got, w.turn.processingStartedAt.Load())
 	}
 	// startedAt should have advanced by ~waitMs (allow generous slack for the
 	// real elapsed between backdating and the resume tick).
@@ -148,7 +148,7 @@ func TestAutoApproveLeavesElapsedTimerUntouched(t *testing.T) {
 	})
 
 	oldAnchor := time.Now().Add(-30 * time.Second).UnixMilli()
-	w.turn.processingStartedAt = oldAnchor
+	w.turn.processingStartedAt.Store(oldAnchor)
 	w.doc.SetMetadata("processingState", map[string]any{
 		"activity":     ActivityCallingLLM,
 		"threadItemId": "",
@@ -170,11 +170,11 @@ func TestAutoApproveLeavesElapsedTimerUntouched(t *testing.T) {
 	// Tick 2: now executing, but the turn was never parked on approval, so the
 	// digit is never hidden and the anchor must NOT move.
 	w.currentRun().updateApprovalWaitAnchor()
-	if w.turn.approvalWaitStartedAt != 0 {
+	if w.turn.approvalWaitStartedAt.Load() != 0 {
 		t.Error("auto-approve must never record an approval wait")
 	}
-	if w.turn.processingStartedAt != oldAnchor {
-		t.Errorf("auto-approve must not move the anchor: got %d want %d", w.turn.processingStartedAt, oldAnchor)
+	if w.turn.processingStartedAt.Load() != oldAnchor {
+		t.Errorf("auto-approve must not move the anchor: got %d want %d", w.turn.processingStartedAt.Load(), oldAnchor)
 	}
 	if got := startedAtMillis(t, w); got != oldAnchor {
 		t.Errorf("auto-approve must not touch doc startedAt: got %d want %d", got, oldAnchor)
@@ -193,7 +193,7 @@ func TestFrozenGapExcludesSuspendedTimeFromElapsed(t *testing.T) {
 
 	// A turn that began a minute ago, actively running (anchor in memory + doc).
 	oldAnchor := time.Now().Add(-60 * time.Second).UnixMilli()
-	w.turn.processingStartedAt = oldAnchor
+	w.turn.processingStartedAt.Store(oldAnchor)
 	w.doc.SetMetadata("processingState", map[string]any{
 		"activity":  ActivityCallingLLM,
 		"status":    "streaming",
@@ -202,8 +202,8 @@ func TestFrozenGapExcludesSuspendedTimeFromElapsed(t *testing.T) {
 
 	// First tick just seeds lastLivenessMs — no comparison point yet, no change.
 	w.currentRun().detectFrozenGap()
-	if w.turn.processingStartedAt != oldAnchor {
-		t.Fatalf("first tick must not move the anchor: got %d want %d", w.turn.processingStartedAt, oldAnchor)
+	if w.turn.processingStartedAt.Load() != oldAnchor {
+		t.Fatalf("first tick must not move the anchor: got %d want %d", w.turn.processingStartedAt.Load(), oldAnchor)
 	}
 
 	// Simulate the process having been frozen for 30s: backdate the last tick so
@@ -215,12 +215,12 @@ func TestFrozenGapExcludesSuspendedTimeFromElapsed(t *testing.T) {
 
 	// The anchor must advance by ~the frozen span, so `now - startedAt` sheds the
 	// dead time instead of counting it.
-	advance := w.turn.processingStartedAt - oldAnchor
+	advance := w.turn.processingStartedAt.Load() - oldAnchor
 	if advance < frozenMs-2_000 || advance > frozenMs+2_000 {
 		t.Errorf("frozen gap: anchor should advance by ~%dms, advanced %dms", frozenMs, advance)
 	}
-	if got := startedAtMillis(t, w); got != w.turn.processingStartedAt {
-		t.Errorf("frozen gap: doc startedAt (%d) must match in-memory anchor (%d)", got, w.turn.processingStartedAt)
+	if got := startedAtMillis(t, w); got != w.turn.processingStartedAt.Load() {
+		t.Errorf("frozen gap: doc startedAt (%d) must match in-memory anchor (%d)", got, w.turn.processingStartedAt.Load())
 	}
 }
 
@@ -237,22 +237,22 @@ func TestFrozenGapIgnoredWhenIdleOrParked(t *testing.T) {
 	}
 
 	// Idle: no anchor. A large gap must not create one.
-	w.turn.processingStartedAt = 0
+	w.turn.processingStartedAt.Store(0)
 	w.currentRun().detectFrozenGap() // seed
 	backdate()
 	w.currentRun().detectFrozenGap()
-	if w.turn.processingStartedAt != 0 {
-		t.Errorf("idle: frozen gap must not set an anchor, got %d", w.turn.processingStartedAt)
+	if w.turn.processingStartedAt.Load() != 0 {
+		t.Errorf("idle: frozen gap must not set an anchor, got %d", w.turn.processingStartedAt.Load())
 	}
 
 	// Parked on an approval: anchor present but approvalWaitStartedAt set. The
 	// detector must leave the anchor alone (the approval-wait path owns exclusion).
 	oldAnchor := time.Now().Add(-60 * time.Second).UnixMilli()
-	w.turn.processingStartedAt = oldAnchor
-	w.turn.approvalWaitStartedAt = time.Now().UnixMilli()
+	w.turn.processingStartedAt.Store(oldAnchor)
+	w.turn.approvalWaitStartedAt.Store(time.Now().UnixMilli())
 	backdate()
 	w.currentRun().detectFrozenGap()
-	if w.turn.processingStartedAt != oldAnchor {
-		t.Errorf("parked: frozen gap must not move the anchor, got %d want %d", w.turn.processingStartedAt, oldAnchor)
+	if w.turn.processingStartedAt.Load() != oldAnchor {
+		t.Errorf("parked: frozen gap must not move the anchor, got %d want %d", w.turn.processingStartedAt.Load(), oldAnchor)
 	}
 }

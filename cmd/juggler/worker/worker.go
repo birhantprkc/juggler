@@ -324,11 +324,11 @@ type ConversationWorker struct {
 	// in-flight work (the current LLM stream, running tools, pending approvals)
 	// finish and record its real result, then rests at idle at the next
 	// boundary — before the model is invoked again. Set by a "pause" message
-	// (handlePause / handleMessageInWait); consumed with Swap(false) at whichever
+	// (handlePause); consumed with Swap(false) at whichever
 	// boundary drives the worker to idle (dispatchCallLLMOnThread or the strategy
 	// loop's top-of-turn check). Nothing is marked Interrupted or Cancelled. It is
 	// cleared by an "unpause" message (the Pause button toggled back off before the
-	// latch was consumed — handleUnpause / handleMessageInWait), cleared defensively
+	// latch was consumed — handleUnpause), cleared defensively
 	// by an explicit send (resume), and superseded by a hard cancel. Atomic so a
 	// pause arriving on the worker goroutine mid-wait is visible to the
 	// reducer/strategy boundaries without a lock. Mirrored into the synced
@@ -363,9 +363,15 @@ type ConversationWorker struct {
 	// document observer (handleItemsChange) which fires synchronously —
 	// it cannot run the LLM inline. Instead it sets needsReconcile=true;
 	// the main event loop calls tryReconcile() after every event and
-	// dispatches the action at the top level. Run goroutine only — anywhere
-	// else asks for a pass through requestReconcile.
-	needsReconcile bool
+	// dispatches the action at the top level.
+	//
+	// Atomic because a turn on its own goroutine finds work for the reducer too
+	// (promoting a queued message re-enters the observer), and this is one bit
+	// whose only meaning is "look again". Only the run goroutine clears it, and
+	// only tryReconcile acts on it, so the reducer itself stays single-threaded;
+	// requestReconcile is still what a caller uses when it also needs the loop
+	// woken to run the pass.
+	needsReconcile atomic.Bool
 
 	// reconcileRequest carries "the reducer needs another pass" to the run loop,
 	// which owns needsReconcile. Buffered by one and sent to non-blockingly: the
@@ -384,6 +390,16 @@ type ConversationWorker struct {
 	// Buffered by one and never contended: the claim checkForNewThreads holds is
 	// what bounds this to a single outstanding dispatch.
 	threadDispatch chan string
+
+	// liveRunsPtr publishes the live-run registry: the turns currently executing
+	// on goroutines of their own. See live_runs.go for who may write it.
+	liveRunsPtr atomic.Pointer[[]liveRunEntry]
+
+	// turnRetired carries a finished turn's state back to the run loop, which
+	// drops it from the registry, folds its turn-boundary bookkeeping into the
+	// ambient turn and asks the reducer for the pass that settles what is left.
+	// Buffered so a turn never parks on the way out.
+	turnRetired chan *turnState
 
 	// actorStarted reports that run() is live and owns the reducer, so
 	// requestReconcile and dispatchThreadRun hand work to it instead of doing it
@@ -457,6 +473,7 @@ func NewConversationWorker(conversationID, authorID string) *ConversationWorker 
 		docChangeChan:    make(chan struct{}, 1),
 		reconcileRequest: make(chan struct{}, 1),
 		threadDispatch:   make(chan string, 1),
+		turnRetired:      make(chan *turnState, 4),
 		toolDrive: toolDrive{
 			tools:                     newToolCommandTracker(),
 			redriveInterval:           defaultRedriveInterval,
@@ -544,13 +561,23 @@ func (r *run) Start(ctx context.Context) {
 }
 
 func (r *run) Stop() {
-	// Cancel any in-flight LLM call first so waitForLLMResponse returns
-	// promptly instead of parking on the LLMTimeout backstop.
-	if p := r.t.cancelLLM.Load(); p != nil {
-		(*p)()
+	// Cancel every in-flight LLM call first — this run's and any turn goroutine's
+	// — so their wait loops return promptly instead of parking on the LLMTimeout
+	// backstop.
+	for _, t := range r.allTurnStates() {
+		if p := t.cancelLLM.Load(); p != nil {
+			(*p)()
+		}
 	}
 	close(r.done)
 	<-r.stopped
+	// The loop has gone, so nothing more can be dispatched and this snapshot is
+	// final. Wait the turns out: they unwind on r.done, and a turn still writing
+	// to the document after Stop returns would be writing into a doc the caller
+	// is about to destroy.
+	for _, e := range r.liveRuns() {
+		<-e.t.finished
+	}
 }
 
 // StopForRemoval tears the worker down when its conversation is being removed
@@ -737,11 +764,27 @@ func (w *ConversationWorker) SetCancelLLMSession(fn CancelLLMSessionFunc) {
 // pointer and the cancel func itself is goroutine-safe and idempotent, so
 // this composes with callLLM's defer and handleCancel's swap without locks.
 func (r *run) interruptInFlightLLMForWake() {
-	if p := r.t.cancelLLM.Swap(nil); p != nil {
-		r.t.wakeInterrupt.Store(true)
-		r.log.Info("☀️ system wake: cancelling in-flight LLM request conv=%s (connection likely dropped during sleep)", r.conversationID)
-		(*p)()
+	// Every turn this worker owns: the wake is the machine's, not one run's, and
+	// the call that was streaming through the sleep is on whichever goroutine
+	// happens to hold it.
+	for _, t := range r.allTurnStates() {
+		if p := t.cancelLLM.Swap(nil); p != nil {
+			t.wakeInterrupt.Store(true)
+			r.log.Info("☀️ system wake: cancelling in-flight LLM request conv=%s (connection likely dropped during sleep)", r.conversationID)
+			(*p)()
+		}
 	}
+}
+
+// hasLLMInFlight reports whether any turn this worker owns holds a live LLM
+// context. Diagnostic only — the teardown paths cancel unconditionally.
+func (w *ConversationWorker) hasLLMInFlight() bool {
+	for _, t := range w.allTurnStates() {
+		if t.cancelLLM.Load() != nil {
+			return true
+		}
+	}
+	return false
 }
 
 const (
@@ -785,8 +828,9 @@ func (w *ConversationWorker) livenessC() <-chan time.Time {
 // advanceElapsedAnchor), so the digit resumes with the dead time removed.
 //
 // Deliberately not sleep-specific: it corrects for ANY cause of missed ticks, which is
-// why it doesn't hook the sleep/wake notification. Runs only on the run() goroutine, so
-// the in-memory anchor reads are race-free.
+// why it doesn't hook the sleep/wake notification. Runs only on the run() goroutine;
+// the anchor it corrects belongs to the turn that is streaming, which is why that
+// field is atomic.
 func (r *run) detectFrozenGap() {
 	now := time.Now().UnixMilli()
 	last := r.lastLivenessMs
@@ -798,14 +842,21 @@ func (r *run) detectFrozenGap() {
 	if excess < frozenGapThresholdMs {
 		return // normal cadence (or a backward clock step) — not a freeze
 	}
+	// The anchor to correct is the running turn's. The ambient turn holds it only
+	// between dispatches, so a freeze during the LLM call — the span this exists
+	// for — has to be charged to the goroutine actually streaming.
+	target := r
+	if live := r.liveRun(); live != nil {
+		target = r.runFor(live.t)
+	}
 	// Only meaningful while a turn's timer is actively running. Idle has no anchor;
 	// while parked on an approval the wait mechanism already excludes the entire park
 	// (this freeze included), so advancing here too would double-count it.
-	if r.t.processingStartedAt == 0 || r.t.approvalWaitStartedAt != 0 {
+	if target.t.processingStartedAt.Load() == 0 || target.t.approvalWaitStartedAt.Load() != 0 {
 		return
 	}
 	r.log.Info("⏱️ excluding %ds of frozen time from elapsed (process was suspended) conv=%s", excess/1000, r.conversationID)
-	r.advanceElapsedAnchor(excess)
+	target.advanceElapsedAnchor(excess)
 }
 
 // Document returns the conversation document.
@@ -860,12 +911,18 @@ func (r *run) storeState(s WorkerState) {
 	}
 }
 
-// anyRunState reports the state of the busiest run this worker owns — today the
-// single run it always has, so it is that run's state. It is the question every
+// anyRunState reports the state of the busiest run this worker owns: any turn on
+// a goroutine of its own that is not idle, else the ambient turn — which is what
+// a dispatch driven inline runs on, and what carries the busy frame across the
+// moment a pickup hands a thread to the loop. It is the question every
 // conversation-wide gate asks ("is anything in flight in this conversation?"),
-// spelled apart from threadRunState so the two are never confused again and so
-// Phase F has one place to widen when a worker owns several runs at once.
+// spelled apart from threadRunState so the two are never confused.
 func (w *ConversationWorker) anyRunState() WorkerState {
+	for _, e := range w.liveRuns() {
+		if state, ok := e.t.state.Load().(WorkerState); ok && state != StateIdle {
+			return state
+		}
+	}
 	return w.currentRun().loadState()
 }
 
@@ -874,6 +931,14 @@ func (w *ConversationWorker) anyRunState() WorkerState {
 // intake gates: a send, an injected message or a fold each concern ONE thread,
 // and a run streaming on a sibling is not a reason to refuse them.
 func (w *ConversationWorker) threadRunState(threadItemID string) WorkerState {
+	for _, e := range w.liveRuns() {
+		if e.threadItemID != threadItemID {
+			continue
+		}
+		if state, ok := e.t.state.Load().(WorkerState); ok {
+			return state
+		}
+	}
 	r := w.currentRun()
 	if r.t.thread.itemID != threadItemID {
 		return StateIdle
@@ -937,18 +1002,27 @@ func (r *run) run(ctx context.Context) {
 		case <-r.docChangeChan:
 			r.handleItemsChange()
 		case <-r.reconcileRequest:
-			r.needsReconcile = true
+			r.needsReconcile.Store(true)
 		case threadItemID := <-r.threadDispatch:
 			r.startThreadRun(threadItemID)
+		case t := <-r.turnRetired:
+			r.finishRetiredTurn(t)
 		case <-r.livenessC():
 			r.detectFrozenGap()
-			r.finalizeToolsAbsentFromExecReport()
-			// Age-based re-drive of a silently-dropped tool-command. driveToolActions
-			// is otherwise only called event-driven (tryReconcile); this periodic tick
-			// is the sole guaranteed wakeup that recovers a dropped command on an
-			// otherwise-idle worker (it early-returns with no engine attached and dedups
-			// on redriveInterval, so running it every tick is cheap).
-			r.driveToolActions()
+			// Both recoveries below write tool state, which the running turn owns
+			// for as long as it is running. They are age-based ticks with no
+			// deadline of their own, so a turn simply defers them to the first tick
+			// after it retires — the same order they have always run in, when a turn
+			// held the loop and no tick could land mid-turn at all.
+			if !r.hasLiveRun() {
+				r.finalizeToolsAbsentFromExecReport()
+				// Age-based re-drive of a silently-dropped tool-command. driveToolActions
+				// is otherwise only called event-driven (tryReconcile); this periodic tick
+				// is the sole guaranteed wakeup that recovers a dropped command on an
+				// otherwise-idle worker (it early-returns with no engine attached and dedups
+				// on redriveInterval, so running it every tick is cheap).
+				r.driveToolActions()
+			}
 		}
 		// After every event, drain the reducer. A dispatch may complete
 		// and set needsReconcile again (e.g., child thread completes →
@@ -958,9 +1032,9 @@ func (r *run) run(ctx context.Context) {
 	}
 }
 
-// recoverWorkerPanic is the shared deferred-recover for handleMessage and
-// handleMessageInWait. On panic it marks the active thread (if any) as
-// failed, resets thread context, and sends an error to the UI.
+// recoverWorkerPanic is handleMessage's deferred recover. On panic it marks the
+// active thread (if any) as failed, resets thread context, and sends an error to
+// the UI.
 func (r *run) recoverWorkerPanic(msgType string) {
 	panicValue := recover()
 	if panicValue == nil {
@@ -982,11 +1056,13 @@ func (r *run) recoverWorkerPanic(msgType string) {
 	r.sendError(fmt.Sprintf("Internal error: %v", panicValue), "")
 }
 
-// handlePause latches a polite stop when the worker is actually busy. Sent from
-// dispatchMessage for a "pause" message that arrives between turns. When the
-// worker is already idle it is a no-op: latching then would strand the flag and
-// suppress the next user-initiated turn (verification item V3). A pause that
-// arrives mid-turn is handled in the wait loop (handleMessageInWait), not here.
+// handlePause latches a polite stop when the worker is actually busy — whether
+// the pause arrives between turns or while one is streaming, since the run loop
+// keeps servicing the mailbox either way. When the worker is already idle it is a
+// no-op: latching then would strand the flag and suppress the next
+// user-initiated turn (verification item V3). Deliberately non-destructive: the
+// in-flight turn keeps its LLM call and its provider session, and consumes the
+// latch at its next boundary.
 func (w *ConversationWorker) handlePause() {
 	if !w.hasActiveRun() && w.anyRunState() == StateIdle {
 		return // nothing running — a pause is meaningless, don't strand the latch
@@ -1004,58 +1080,6 @@ func (w *ConversationWorker) handleUnpause() {
 	w.clearPolitePending()
 }
 
-// handleMessageInWait processes a message while the worker is blocked in a
-// wait loop (e.g. waiting for an LLM response or context items). A cancel
-// here cooperatively cancels the LLM call and transitions to Cancelling;
-// a pause latches a polite stop without touching the in-flight work; every
-// other message routes through the normal dispatch.
-func (r *run) handleMessageInWait(msg workerMessage) {
-	defer r.recoverWorkerPanic(msg.Type)
-
-	// A message handled mid-stream may read, serialise or persist the document
-	// (undo, save, a round-trip that rebuilds the item list), and the streaming
-	// throttle may be holding the tail of the current block back. Level it up
-	// before the handler runs so nothing reads a message shorter than it is.
-	r.flushPendingStreamWrites()
-
-	// Polite stop: latch and keep waiting. Deliberately BEFORE the cancel branch
-	// and non-destructive — no turn.cancelLLM swap, no session release, no state
-	// change. The wait loop returns the LLM response normally when it lands; the
-	// latch is consumed at the next turn boundary (D5, §10.2).
-	if msg.Type == "pause" {
-		r.setPolitePending()
-		return
-	}
-
-	// Un-pause: the user toggled Pause back off before the latch was consumed.
-	// Symmetric to the pause branch above and equally non-destructive — just drop
-	// the latch and keep waiting; the wait loop returns the in-flight LLM response
-	// normally and the turn proceeds to its next boundary.
-	if msg.Type == "unpause" {
-		r.clearPolitePending()
-		return
-	}
-
-	if msg.Type == "cancel" {
-		r.logCancel(cancelReasonFromPayload(msg.Payload))
-		if p := r.t.cancelLLM.Swap(nil); p != nil {
-			(*p)()
-		}
-		// Same rationale as handleCancel's StateProcessing branch: release any
-		// parked provider subprocess that the ctx-cancel above doesn't reach,
-		// while preserving the resume token so the next turn stays cache-warm.
-		// Scoped to the thread this run is streaming on, so a cancel arriving
-		// mid-stream leaves a sibling thread's provider session alone.
-		if r.cancelLLMSession != nil {
-			r.cancelLLMSession(r.conversationID, r.t.thread.itemID)
-		}
-		r.storeState(StateCancelling)
-		return
-	}
-
-	r.dispatchMessage(msg)
-}
-
 // handleMessage processes a single message from the main event loop.
 func (r *run) handleMessage(msg workerMessage) {
 	defer r.recoverWorkerPanic(msg.Type)
@@ -1063,7 +1087,6 @@ func (r *run) handleMessage(msg workerMessage) {
 }
 
 // dispatchMessage routes a message to its type-specific handler.
-// Shared by handleMessage and handleMessageInWait.
 func (r *run) dispatchMessage(msg workerMessage) {
 	if msg.Ack != nil {
 		defer func() {
@@ -1366,8 +1389,8 @@ func (r *run) updateElapsedAnchor(status string) {
 	// sendStatus(non-idle) without having set processingStartedAt still gets
 	// a single shared anchor written to the doc.
 	if statusHoldsClaim(status) {
-		if r.t.processingStartedAt == 0 {
-			r.t.processingStartedAt = time.Now().UnixMilli()
+		if r.t.processingStartedAt.Load() == 0 {
+			r.t.processingStartedAt.Store(time.Now().UnixMilli())
 		}
 	} else {
 		// Resting transition (idle, or a terminal-error status): clear the
@@ -1381,7 +1404,7 @@ func (r *run) updateElapsedAnchor(status string) {
 		// the stale anchor survives, and the next Continue's dispatchCallLLMOnThread
 		// sees processingStartedAt != 0, preserves it, and the spinner counts from
 		// the cancelled turn's start.
-		r.t.processingStartedAt = 0
+		r.t.processingStartedAt.Store(0)
 	}
 }
 
@@ -1418,7 +1441,7 @@ func (r *run) writeProcessingState(status, message, code string) {
 	}
 	holdsClaim := statusHoldsClaim(status)
 	if holdsClaim {
-		stateMap["startedAt"] = r.t.processingStartedAt
+		stateMap["startedAt"] = r.t.processingStartedAt.Load()
 		// Mirror the polite-stop (Pause) latch into the synced state so a client
 		// reloading mid-pause restores the "Pausing…" cue. Only ever on a busy
 		// frame — a pending pause is meaningless at idle, so a latch stranded past
@@ -1624,7 +1647,7 @@ func (r *run) handleItemsChange() {
 	if r.suppressReconcileAfterHistoryNavUntilMs > 0 {
 		if time.Now().UnixMilli() < r.suppressReconcileAfterHistoryNavUntilMs {
 			r.releaseAllLLM()
-			r.needsReconcile = false
+			r.needsReconcile.Store(false)
 			return
 		}
 		r.suppressReconcileAfterHistoryNavUntilMs = 0
@@ -1726,7 +1749,7 @@ func (r *run) checkForNewThreads() bool {
 		// release that frees the claim writes processingState, not items, so the
 		// items observer never fires again and nothing revisits the pickup.
 		if r.isLLMClaimed() || !r.claimLLM(item.ItemID) {
-			r.needsReconcile = true
+			r.needsReconcile.Store(true)
 			return false
 		}
 
@@ -1760,8 +1783,8 @@ func (r *run) checkForNewThreads() bool {
 		//
 		// Turn-scoped anchor (see dispatchCallLLMOnThread): set once at turn start,
 		// preserved across re-dispatches so the elapsed digit spans the whole turn.
-		if r.t.processingStartedAt == 0 {
-			r.t.processingStartedAt = time.Now().UnixMilli()
+		if r.t.processingStartedAt.Load() == 0 {
+			r.t.processingStartedAt.Store(time.Now().UnixMilli())
 		}
 		r.storeState(StateProcessing)
 		r.sendStatus("preparing", "")
@@ -1805,18 +1828,27 @@ func (r *run) dispatchThreadRun(threadItemID string) {
 
 // startThreadRun runs a claimed thread's strategy loop. Run goroutine only.
 //
-// The thread's items array is resolved here rather than carried from the pickup:
-// a pointer resolved under an earlier ycrdtMu hold can be tombstoned by a sync
-// update applied since. A thread deleted in that window has no run to start.
+// The thread's items array is resolved by beginTurn rather than carried from the
+// pickup: a pointer resolved under an earlier ycrdtMu hold can be tombstoned by
+// a sync update applied since. A thread deleted in that window has no run to
+// start, so the pickup is unwound instead.
+//
+// The busy frame the pickup published is the ambient turn's; the run started
+// here takes it over, which is why it stores Processing before runTurn hands the
+// ambient turn back to idle.
 func (r *run) startThreadRun(threadItemID string) {
-	threadItems := r.doc.GetThreadItemsArray(threadItemID)
-	if threadItems == nil {
+	tr := r.beginTurn(threadItemID)
+	if tr.t.thread.itemsArray == nil {
+		if tr == r {
+			r.resetThreadContext()
+		} else {
+			r.retireLiveRun(tr.t)
+		}
 		r.abandonThreadRun(threadItemID)
 		return
 	}
-	r.t.thread.itemID = threadItemID
-	r.t.thread.itemsArray = threadItems
-	r.runStrategyLoop("", true)
+	tr.storeState(StateProcessing)
+	r.runTurn(tr, func(tr *run) { tr.runStrategyLoop("", true) })
 }
 
 // abandonThreadRun undoes the pickup for a thread whose run never started: it
@@ -1826,7 +1858,7 @@ func (r *run) startThreadRun(threadItemID string) {
 func (r *run) abandonThreadRun(threadItemID string) {
 	r.releaseLLM(threadItemID)
 	r.storeState(StateIdle)
-	r.t.processingStartedAt = 0
+	r.t.processingStartedAt.Store(0)
 	r.sendStatus("idle", "")
 	r.requestReconcile()
 }

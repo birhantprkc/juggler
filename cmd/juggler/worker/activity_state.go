@@ -439,10 +439,11 @@ func (w *ConversationWorker) hideElapsedAnchor() {
 // derived startedAt field touches the doc, and that single write propagates to
 // every connected client at once.
 func (r *run) advanceElapsedAnchor(waitMs int64) {
+	anchor := r.t.processingStartedAt.Load()
 	if waitMs > 0 {
-		r.t.processingStartedAt += waitMs
+		anchor += waitMs
+		r.t.processingStartedAt.Store(anchor)
 	}
-	anchor := r.t.processingStartedAt
 	r.patchProcessingState(func(m map[string]any) {
 		m["startedAt"] = anchor
 	})

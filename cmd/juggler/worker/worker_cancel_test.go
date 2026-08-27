@@ -284,7 +284,7 @@ func TestCancelParksWhenToolExecuting(t *testing.T) {
 
 	// A turn that began a minute ago is anchored in memory and in the doc.
 	oldAnchor := time.Now().Add(-60 * time.Second).UnixMilli()
-	w.turn.processingStartedAt = oldAnchor
+	w.turn.processingStartedAt.Store(oldAnchor)
 
 	// Record that the worker released the provider session (warm-preserving).
 	var released bool
@@ -311,8 +311,8 @@ func TestCancelParksWhenToolExecuting(t *testing.T) {
 	// sendStatus("idle"), so the NEXT turn — a Continue the user presses to start
 	// the queued message — begins its timer from zero instead of inheriting this
 	// cancelled turn's minute-old anchor (the "elapsed time didn't reset" bug).
-	if w.turn.processingStartedAt != 0 {
-		t.Errorf("park: expected in-memory elapsed anchor reset to 0, got %d", w.turn.processingStartedAt)
+	if w.turn.processingStartedAt.Load() != 0 {
+		t.Errorf("park: expected in-memory elapsed anchor reset to 0, got %d", w.turn.processingStartedAt.Load())
 	}
 	if startedAtPresent(t, w) {
 		t.Error("park: expected doc startedAt dropped once the turn rests at idle")
@@ -411,7 +411,7 @@ func TestPureApprovalCancelPreservesWarmSession(t *testing.T) {
 	// Pure-approval cancel hands to the reducer (continue what's queued) rather
 	// than parking: it sets needsReconcile and deliberately leaves activity at
 	// awaiting_llm so the reducer can run, rather than clearing it to idle.
-	if !w.needsReconcile {
+	if !w.needsReconcile.Load() {
 		t.Error("pure-approval cancel: expected needsReconcile=true (hand off to reducer)")
 	}
 	if got := w.getActivity(); got != ActivityAwaitingLLM {

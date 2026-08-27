@@ -260,8 +260,8 @@ func TestReducer_EmptyUserThreadDoesNotAutoRunUnderAwaitingLLM(t *testing.T) {
 	}, w.doc.authorID)
 
 	// Drive the reducer exactly as the event loop would after the insert.
-	w.needsReconcile = true
-	for i := 0; i < 10 && w.needsReconcile; i++ {
+	w.needsReconcile.Store(true)
+	for i := 0; i < 10 && w.needsReconcile.Load(); i++ {
 		w.currentRun().tryReconcile()
 	}
 

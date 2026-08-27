@@ -11,11 +11,10 @@ import (
 )
 
 // newToolsRequestHarness wires a worker whose client answers every request-tools
-// the way a real one does: by queueing a tools-result message, which the wait
-// loop drains and dispatches to handleToolsResult on the worker's own goroutine.
-// Most worker tests inject straight into the slot, but the correlation
-// these tests pin lives in that handler, so it is the one thing that must not be
-// bypassed.
+// the way a real one does: through handleToolsResult, from a goroutine that is
+// not the one waiting. Most worker tests inject straight into the slot, but the
+// correlation these tests pin lives in that handler, so it is the one thing that
+// must not be bypassed.
 //
 // respond is called once per request-tools with the 1-based turn number and that
 // request's id. It runs on the callback registry's goroutine, which serialises
@@ -52,16 +51,19 @@ func newToolsRequestHarness(t *testing.T, respond func(w *ConversationWorker, tu
 	return w, requestIDs
 }
 
-// sendToolsReply queues a tools-result carrying a single tool named for the turn
-// it answers, so a list consumed by the wrong turn is visible by name. The queue
-// is FIFO, so replies reach the worker in the order they are sent.
+// sendToolsReply delivers a tools-result carrying a single tool named for the
+// turn it answers, so a list consumed by the wrong turn is visible by name.
+// This is the door the run loop puts an inbound tools-result through, and it is
+// called from the callback registry's goroutine — the same shape production has,
+// where the loop dispatches the reply while the turn waits on its own goroutine.
+// Replies are handed over in the order they are sent.
 func sendToolsReply(w *ConversationWorker, requestID, toolName string) {
 	payload, _ := json.Marshal(ToolsResultMessage{
 		Type:      "tools-result",
 		RequestID: requestID,
 		Tools:     []ToolDefinition{{Name: toolName, Category: "read"}},
 	})
-	w.Send("tools-result", payload)
+	w.handleToolsResult(payload)
 }
 
 // offeredToolName runs one context/tools round-trip with no context items (so

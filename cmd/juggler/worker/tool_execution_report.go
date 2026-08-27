@@ -163,7 +163,7 @@ func (w *ConversationWorker) finalizeToolsAbsentFromExecReport() {
 	for _, c := range cands {
 		if w.finalizeStuckRunningToolOnField(c.id, "runningEpoch", float64(c.epoch), "exec-report-absent") {
 			// Settle the parked turn now that the tool reached terminal.
-			w.needsReconcile = true
+			w.needsReconcile.Store(true)
 		}
 	}
 }

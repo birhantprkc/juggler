@@ -278,14 +278,14 @@ func TestStrategyRunThreadRecoveredByReconcileTick(t *testing.T) {
 	if got, _ := w.doc.GetThreadYMap(threadID).Get("result").(string); got != "" {
 		t.Fatalf("fold summarized while the claim was held: %q", got)
 	}
-	if !w.needsReconcile {
+	if !w.needsReconcile.Load() {
 		t.Fatal("a fold that lost the claim race left no reconcile armed — nothing will ever revisit it")
 	}
 
 	// The in-flight operation ends, freeing the claim; the reducer ticks.
 	w.releaseLLM("")
 	w.currentRun().storeState(StateIdle)
-	for i := 0; i < maxReconcilePasses && w.needsReconcile; i++ {
+	for i := 0; i < maxReconcilePasses && w.needsReconcile.Load(); i++ {
 		w.currentRun().tryReconcile()
 	}
 

@@ -11,21 +11,20 @@ import (
 
 // Engine round-trip helpers. Several worker→engine requests (run-strategy-hook,
 // build-subthread-spec) share the same shape: register a request id, send the
-// targeted request, then block on that request's private reply channel while
-// servicing inbound messages and doc/batcher signals so the single run
-// goroutine never deadlocks. This file factors that shape out of the
-// individual round-trip call sites.
+// targeted request, then block on that request's private reply channel. This
+// file factors that shape out of the individual round-trip call sites.
 
 // waitForEngineReply blocks until match returns (value, true) for a reply on the
-// reply channel, or the timeout / worker shutdown fires. While waiting it keeps
-// servicing inbound worker messages (returning the zero value if a cancel
-// arrives) and doc/batcher signals. Correlation is not match's job — the registry
-// has already refused everything but this request's answer — so match decides
-// answer MEANS: it returns (value, true) to stop and yield value, or (_, false)
-// to keep waiting (a reply it cannot read at all).
+// reply channel, or a cancel / the timeout / worker shutdown fires. Correlation
+// is not match's job — the registry has already refused everything but this
+// request's answer — so match decides answer MEANS: it returns (value, true) to
+// stop and yield value, or (_, false) to keep waiting (a reply it cannot read at
+// all).
 //
-// It deliberately does NOT service livenessC/detectFrozenGap — these short
-// engine round-trips never did, unlike the LLM-call wait.
+// It waits on this run's own channels and nothing else. The worker's mailbox,
+// its doc signal and its liveness ticker all belong to the run loop, which keeps
+// serving them for the whole of a turn; a cancel reaches here as a state change
+// plus a wake, which is the only thing a wait loop has ever done with one.
 func waitForEngineReply[T any](
 	r *run,
 	reply <-chan json.RawMessage,
@@ -43,13 +42,10 @@ func waitForEngineReply[T any](
 			if v, ok := match(raw); ok {
 				return v, true
 			}
-		case msg := <-r.inbound:
-			r.handleMessageInWait(msg)
+		case <-r.t.wake:
 			if r.loadState() == StateCancelling {
 				return zero, false
 			}
-		case <-r.doc.UpdateSignal():
-			r.batcher.Schedule()
 		case <-timer.C:
 			if onTimeout != nil {
 				onTimeout()
