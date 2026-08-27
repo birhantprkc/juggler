@@ -55,6 +55,8 @@ func (l LocalHost) BaseURLFunc() func() string {
 
 // AutoDetect returns a probe suitable for Descriptor.AutoDetect: a short-timeout
 // GET of HealthPath at the configured host, reporting whether it answers 200.
+// The body is deliberately ignored: LM Studio answers 200 with an error-shaped
+// body for unsupported health paths, and that still proves the local host is up.
 func (l LocalHost) AutoDetect() func() bool {
 	return func() bool {
 		client := &http.Client{Timeout: 300 * time.Millisecond}

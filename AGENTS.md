@@ -55,6 +55,11 @@ make build-windows  # Cross-compile bin/windows/*.exe (pure-Go, no cgo)
   `web/` tree. Once `bin/juggler` exists, web-only edits don't need a rebuild —
   rerun `make test RUN='<name>'` (Go builds are incremental, so this is cheap).
   Rebuild only for Go / embedded-asset / build-file changes.
+- Browser-test lanes share one offscreen pool window. They do not reliably paint,
+  so a test must not await `requestAnimationFrame` or a post-layout
+  `ResizeObserver` delivery; exercise a synchronous seam instead. Lane viewport
+  width also varies by platform and may cross the 36rem phone breakpoint, so
+  geometry that depends on a breakpoint belongs in an explicitly sized iframe.
 
 ## Git commits
 
