@@ -266,13 +266,14 @@ export const ACTION_STATES = Object.freeze({
 
 /** @typedef {YMapItem & {type: 'system-reminder', content: string, source?: string, itemId?: string}} SystemReminderMessage */
 
-/** @typedef {YMapItem & {type: 'error', message: string, content?: string, summary?: string, stack?: string, hasRetryButton?: boolean, itemId?: string, transactionId?: string}} ErrorMessage */
+/** @typedef {YMapItem & {type: 'error', message: string, content?: string, summary?: string, stack?: string, itemId?: string, transactionId?: string}} ErrorMessage */
 
 /**
  * NoticeMessage - a durable record of something that happened to a turn and is
  * worth reading after the fact (a provider rebuilding its context cache, say).
- * It stands in the transcript at the point the event occurred: `summary` is the
- * terse title, `content` the detail, `source` what reported it.
+ * It stands in the transcript at the point the event occurred: `summary` is a
+ * one-line explanation (the row's only text, under a fixed "Warning" lozenge),
+ * `content` the detail, `source` what reported it.
  *
  * Purely for the reader — it emits nothing to the provider (the worker's
  * itemWireMessages has no case for it) and is excluded from the context-cache
@@ -497,19 +498,19 @@ export function createContextItemMessage({ itemId, isNew, itemType, error, data,
 }
 
 /**
- * Creates an error message
+ * Creates an error message. Whether the row offers a Retry is the renderer's
+ * call, not the message's: it depends on where the error ends up sitting in the
+ * thread, which nothing here can know.
  * @param {object} params - Parameters for the error message
  * @param {string} params.message - Error message text
  * @param {string} [params.stack] - Error stack trace
- * @param {boolean} [params.hasRetryButton] - Whether to show retry button
  * @returns {ErrorMessage} The created error message
  */
-export function createErrorMessage({ message, stack, hasRetryButton }) {
+export function createErrorMessage({ message, stack }) {
   return /** @type {any} */ ({
     type: MESSAGE_TYPES.ERROR,
     message,
-    stack,
-    hasRetryButton
+    stack
   });
 }
 
@@ -517,15 +518,15 @@ export function createErrorMessage({ message, stack, hasRetryButton }) {
  * Creates a notice message — a durable record of something that happened to a
  * turn, standing in the transcript where it happened.
  * @param {object} params - Parameters for the notice message
- * @param {string} params.title - Terse title (stored as `summary`)
- * @param {string} params.detail - The explanation, ending in the underlying reason verbatim
+ * @param {string} params.summary - One-line explanation; the transcript row's only text
+ * @param {string} params.detail - The full detail, ending in the underlying reason verbatim
  * @param {string} [params.source] - What reported it (provider or plugin id)
  * @returns {NoticeMessage} The created notice message
  */
-export function createNoticeMessage({ title, detail, source }) {
+export function createNoticeMessage({ summary, detail, source }) {
   return /** @type {any} */ ({
     type: MESSAGE_TYPES.NOTICE,
-    summary: title,
+    summary,
     content: detail,
     source
   });

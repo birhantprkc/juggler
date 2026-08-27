@@ -2,7 +2,7 @@
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
-import BaseMessage from './base-message.js';
+import BaseMessage, { FINAL_ITEM_ATTR } from './base-message.js';
 import { createErrorArticle } from '../utils/icon-message-renderer.js';
 
 /**
@@ -31,8 +31,19 @@ const RETRY_ICON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 
  * network blip) are worth simply trying again, so the error item carries its
  * own retry affordance: clicking it deletes this error item and continues the
  * thread — the same continue the footer button triggers, minus the dead error.
+ *
+ * The button appears only while the error is the thread's LAST item. Continuing
+ * always resumes from the end of the transcript, so on an error further back
+ * there is no failed turn left to retry: pressing it would start an ordinary
+ * continue and silently delete a piece of history on the way past. Anything
+ * after the error is the answer to the question of what happened next, and it
+ * already happened.
  */
 class ErrorMessage extends BaseMessage {
+  static get observedAttributes() {
+    return ['content', FINAL_ITEM_ATTR];
+  }
+
   /**
    * Render the message
    * @override
@@ -48,21 +59,23 @@ class ErrorMessage extends BaseMessage {
       contentBox.prepend(leadEl);
     }
 
-    const actions = document.createElement('div');
-    actions.className = 'error-message-actions message-row-body';
+    if (this.isFinalItem) {
+      const actions = document.createElement('div');
+      actions.className = 'error-message-actions message-row-body';
 
-    const retryBtn = document.createElement('button');
-    retryBtn.type = 'button';
-    retryBtn.className = 'message-action-btn error-retry-btn';
-    retryBtn.title = 'Delete this error and continue the conversation';
-    retryBtn.innerHTML = `${RETRY_ICON}Retry`;
-    retryBtn.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      this._retry();
-    });
-    actions.appendChild(retryBtn);
-    article.appendChild(actions);
+      const retryBtn = document.createElement('button');
+      retryBtn.type = 'button';
+      retryBtn.className = 'message-action-btn error-retry-btn';
+      retryBtn.title = 'Delete this error and continue the conversation';
+      retryBtn.innerHTML = `${RETRY_ICON}Retry`;
+      retryBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this._retry();
+      });
+      actions.appendChild(retryBtn);
+      article.appendChild(actions);
+    }
 
     this.replaceChildren(article);
   }

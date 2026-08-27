@@ -146,9 +146,15 @@ func TestServiceTierDowngradeIsReported(t *testing.T) {
 				t.Fatalf("notice dropped the underlying values: %q", content)
 			}
 			// The provider's own label for the tier, not the raw id, leads the
-			// sentence — the user picked "Fast", not "priority".
-			if !strings.HasPrefix(content, "Fast was requested") {
+			// sentence — the user picked "Fast", not "priority" — and it says
+			// outright that the choice was declined.
+			if !strings.HasPrefix(content, "Fast was declined") {
 				t.Fatalf("notice did not lead with the catalog label: %q", content)
+			}
+			// The row shows the summary and nothing else, so it has to explain
+			// itself rather than title itself: the same lead, no ids.
+			if !strings.HasPrefix(summary, "Fast was declined") {
+				t.Fatalf("notice summary does not explain itself: %q", summary)
 			}
 			if source != "openaicodex" {
 				t.Fatalf("notice source = %q, want the provider that reported it", source)

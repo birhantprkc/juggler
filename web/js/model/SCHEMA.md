@@ -207,11 +207,16 @@ A nested sub-conversation.
 | `content` | string \| undefined | Long form / detail. |
 | `summary` | string \| undefined | Renderer subtitle. |
 | `stack` | string \| undefined | Stack trace. |
-| `hasRetryButton` | boolean \| undefined | Whether the UI should offer a retry. |
+
+The row offers a Retry — delete this error and continue the thread — only while
+the error is the **last** item in its thread, since that is the only position
+where continuing resumes the turn that failed rather than simply carrying on and
+quietly dropping a piece of history.
 
 ### `type: 'notice'` — `NoticeMessage`
 A durable record of something that happened to a turn and is worth reading after
-the fact — currently a provider rebuilding its context cache. It stands in the
+the fact — a provider rebuilding its context cache, a reply stopped at its output
+limit, a serving tier the backend declined. It stands in the
 transcript at the point the event occurred (the worker's `insertCacheMissNotice`
 appends it mid-turn, so it lands after the message that triggered the turn and
 before the reply it paid for) rather than as a transient badge, because the
@@ -219,8 +224,8 @@ reader is rarely looking at the moment it happens.
 
 | Key | Type | Notes |
 |---|---|---|
-| `summary` | string | Terse title, e.g. `Cache miss`. It is the transcript row's whole label (rendered as the lozenge beside the warning triangle), so keep it short. |
-| `content` | string | The detail: a plain-English lead, then the underlying reason verbatim. Read in the properties panel, not the row. |
+| `summary` | string | A one-line explanation, e.g. `Claude Code re-read the whole conversation, so this turn cost more than it needed to.` It is the transcript row's only text — the lozenge beside the warning triangle is a fixed `Warning` — so it has to say why the notice is there, in a sentence that fits a row. |
+| `content` | string | The detail: the same plain-English lead, then the underlying reason or measured values verbatim. Read in the properties panel, not the row. |
 | `source` | string | What reported it (provider or plugin id). |
 
 Purely for the reader, in two senses that both need holding: the worker's

@@ -388,7 +388,7 @@ type StreamChunk struct {
 // knows what happened and in what words; the worker decides where it lands and
 // that it lands only once.
 type StreamNotice struct {
-	Summary string `json:"summary"`          // Terse lozenge label, e.g. "Standard speed"
+	Summary string `json:"summary"`          // One-line explanation; the transcript row's only text
 	Content string `json:"content"`          // Plain-English lead, then the underlying values verbatim
 	Source  string `json:"source,omitempty"` // What reported it, e.g. "openaicodex"
 }
@@ -1101,8 +1101,9 @@ const (
 	ItemTypeCompactionSummary = "compaction-summary"
 	// ItemTypeNotice is a durable, user-facing record of something that happened
 	// to a turn and is worth reading after the fact — a provider rebuilding its
-	// context cache, say. It carries Summary (the terse title), Content (the
-	// detail, ending in the underlying reason verbatim) and Source (what
+	// context cache, say. It carries Summary (a one-line explanation, the whole
+	// of the transcript row), Content (the detail, ending in the underlying
+	// reason verbatim) and Source (what
 	// reported it). It stands in the transcript at the point the event occurred,
 	// and is never sent to the LLM: itemWireMessages has no case for it, so it
 	// emits nothing (TestNoticeItemEmitsNothingToTheLLM pins that).

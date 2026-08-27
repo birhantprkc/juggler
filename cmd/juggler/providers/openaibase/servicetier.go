@@ -86,18 +86,22 @@ func (c *Client) serviceTierDowngrade(sent, served string) (provider.StreamChunk
 		return provider.StreamChunk{}, false
 	}
 	name := c.serviceTierSpec.label(sent)
+	// The lead names the tier the user chose and says plainly that they did not
+	// get it. It stops at "a different tier" rather than naming standard speed:
+	// the only thing known here is that the echo disagreed with what was sent,
+	// and the served id is right below for anyone who needs it.
+	lead := name + " was declined; " + c.providerName + " served this turn at a different tier and gave no reason."
 	return provider.StreamChunk{
 		Type: provider.ContentBlockTypeStatus,
 		// Rides the spinner for the rest of the turn; the notice below is what
 		// survives it.
-		Content: "Served at standard speed",
+		Content: name + " was declined",
 		Metadata: map[string]any{
-			"noticeSummary": "Standard speed",
+			"noticeSummary": lead,
 			// The raw ids go in verbatim under the plain-English lead — they are
 			// the only thing that makes an unexpected value diagnosable.
-			"noticeContent": name + " was requested for this turn. " + c.providerName +
-				" served it at a different tier and gave no reason.\n\nRequested: " + sent + "\nServed: " + served,
-			"noticeSource": c.providerName,
+			"noticeContent": lead + "\n\nRequested: " + sent + "\nServed: " + served,
+			"noticeSource":  c.providerName,
 		},
 	}, true
 }

@@ -24,6 +24,14 @@ import { TYPE_ICONS, TYPE_COLORS } from './icon-message-renderer.js';
 import contextItemRegistry from '../registries/context-item-registry.js';
 import { yGet } from '../model/item-accessor.js';
 
+/**
+ * The lozenge label every notice wears, in the row and the panel header alike.
+ * A notice's own text is a sentence explaining what happened, not a title, so
+ * the lozenge names the kind of item and nothing else.
+ * @type {string}
+ */
+export const NOTICE_TYPE_NAME = 'Warning';
+
 const USER_AVATAR_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="14" viewBox="0 -960 960 960" width="14" fill="white"><path d="M480-480q-66 0-113-47t-47-113q0-66 47-113t113-47q66 0 113 47t47 113q0 66-47 113t-113 47ZM160-160v-112q0-34 17.5-62.5T224-378q62-31 126-46.5T480-440q66 0 130 15.5T736-378q29 15 46.5 43.5T800-272v112H160Z"/></svg>';
 
 /**
@@ -233,9 +241,10 @@ export function typeNameForItem(item, ctx = {}) {
   const type = item?.get?.('type') ?? ctx.fallbackType;
   switch (type) {
     case 'error': return 'Error';
-    // A notice's summary IS its label — the row shows nothing but this lozenge,
-    // so the panel header has to read the same way.
-    case 'notice': return item?.get?.('summary') || 'Notice';
+    // A notice is labelled by kind, not by incident: its summary is the
+    // explanation the row prints beside this lozenge, and the panel prints the
+    // same pair.
+    case 'notice': return NOTICE_TYPE_NAME;
     case 'user': return 'User Message';
     case 'thinking': return 'Thinking';
     case 'assistant': return 'Assistant Message';

@@ -688,7 +688,7 @@ func TestEstimateMessageRequestTokensCoversCompleteEnvelope(t *testing.T) {
 			ToolUseID: "id", ToolName: "tool", ToolInput: map[string]any{"query": "value"},
 			IsError: true, ResultType: "action", FullResult: map[string]any{"nested": map[string]any{"value": "full"}},
 			ItemID: "item", IsNew: true, IsGlobal: true, Message: "message", Stack: "stack",
-			HasRetryButton: true, EventType: "event", Source: "source",
+			EventType: "event", Source: "source",
 			Parts: []MediaPart{{Type: "image", Mime: "image/png", AssetID: "asset", Width: 1500, Height: 750}},
 		}},
 	}

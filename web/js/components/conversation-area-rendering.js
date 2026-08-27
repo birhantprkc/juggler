@@ -38,6 +38,7 @@ import {
   isNoticeMessage,
   isThreadMessage,
 } from '../../sdk/lib/message.js';
+import { FINAL_ITEM_ATTR } from './base-message.js';
 import { isGroupEntry } from '../utils/item-grouping.js';
 import { wrapWithIcon } from '../utils/icon-message-renderer.js';
 import { normalizeAttachments } from '../utils/attachments.js';
@@ -386,6 +387,22 @@ export function removeDeletedElements(currentElements, elementsToKeep) {
 }
 
 /**
+ * Mark (or unmark) an element as belonging to the thread's final item.
+ *
+ * An explicit marker rather than a `:last-child` rule or an index comparison
+ * inside the component: the element is created once and then only moved, so
+ * nothing in it re-runs when an item is appended after it, and the managed
+ * non-items (footer, thread result) sit after the items anyway. Elements that
+ * care observe the attribute; for everything else it is inert.
+ * @param {HTMLElement} element - Element rendering a conversation item
+ * @param {boolean} isFinal - Whether its item is the last in the thread
+ */
+function markFinalItem(element, isFinal) {
+  if (element.hasAttribute(FINAL_ITEM_ATTR) === isFinal) return;
+  element.toggleAttribute(FINAL_ITEM_ATTR, isFinal);
+}
+
+/**
  * Position elements in correct order (backwards iteration, insert before next).
  * Elements handle their own updates via Yjs observers - this just creates/removes/positions.
  * @param {any} area - ConversationArea instance (passed to bubble creators that need _messageThread)
@@ -403,6 +420,7 @@ export function positionElements(area, messageList, footer, items, currentElemen
 
     const itemId = getItemId(item);
     const existingElement = currentElements.get(itemId);
+    const isFinal = i === items.length - 1;
 
     if (existingElement) {
       // Update item-index attribute to match current position
@@ -410,6 +428,7 @@ export function positionElements(area, messageList, footer, items, currentElemen
       if (currentIndex !== i.toString()) {
         existingElement.setAttribute('item-index', i.toString());
       }
+      markFinalItem(existingElement, isFinal);
 
       // Sync content from live Yjs item for streamable elements
       if (typeof /** @type {any} */ (existingElement).updateFromItem === 'function') {
@@ -425,6 +444,7 @@ export function positionElements(area, messageList, footer, items, currentElemen
       // CREATE new element(s)
       const newElements = createBubblesForEvent(area, /** @type {Message} */ (item), i);
       for (const el of newElements) {
+        markFinalItem(el, isFinal);
         messageList.insertBefore(el, insertBefore);
         insertBefore = el;
       }
@@ -610,8 +630,9 @@ function createErrorBubble(message, itemIndex) {
 
 /**
  * Create a notice message element — a durable record of something that happened
- * to a turn, standing where it happened. Only the title crosses into the row;
- * the detail is the properties panel's, which reads it from the item itself.
+ * to a turn, standing where it happened. The row gets the one-line explanation;
+ * the measured detail is the properties panel's, which reads it from the item
+ * itself.
  * @param {Message} message
  * @param {number} [itemIndex]
  * @returns {HTMLElement} Created element.
@@ -620,7 +641,7 @@ function createNoticeBubble(message, itemIndex) {
   return createMessageElement('notice-message', {
     itemId: message.get('itemId'),
     itemIndex,
-    attributes: { 'notice-title': message.get('summary') || '' }
+    attributes: { 'notice-text': message.get('summary') || '' }
   });
 }
 

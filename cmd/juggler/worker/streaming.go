@@ -462,6 +462,11 @@ func (w *ConversationWorker) mergeProcessingPhase(phase string) {
 // the underlying text, never in place of it.
 const cacheMissNoticeLead = "Claude Code re-read the whole conversation instead of using its cached copy, so this turn cost more than it needed to."
 
+// cacheMissNoticeSummary is the same statement cut to a transcript row. The row
+// has one line to say what happened in, so it drops the cache the lead names and
+// keeps the cost, which is the part worth reading in passing.
+const cacheMissNoticeSummary = "Claude Code re-read the whole conversation, so this turn cost more than it needed to."
+
 // insertCacheMissNotice records a consequential provider cache miss in the
 // transcript, at the point in the conversation where it happened — after the
 // message that triggered the turn, before the reply it paid for. A miss is
@@ -481,10 +486,11 @@ func (r *run) insertCacheMissNotice(reason string) {
 	r.appendTargetMessage(ConversationItem{
 		Type:   ItemTypeNotice,
 		ItemID: generateItemID(),
-		// The summary is the row's entire label — the transcript shows a warning
-		// triangle and this text as a lozenge, nothing else — so it stays short
-		// enough to read as one. The detail is in Content, for the panel.
-		Summary:   "Cache miss",
+		// The summary is the row's only text — the transcript shows a warning
+		// triangle, a "Warning" lozenge and this — so it is a sentence that
+		// explains itself, kept to one line. The detail is in Content, for the
+		// panel.
+		Summary:   cacheMissNoticeSummary,
 		Content:   cacheMissNoticeLead + "\n\nReason: " + reason,
 		Source:    "claudecode",
 		Timestamp: time.Now().Format(time.RFC3339),
@@ -565,9 +571,11 @@ func (r *run) insertTruncationNotice(response *LLMResponse) {
 		source = mc.Provider
 	}
 	r.appendTargetMessage(ConversationItem{
-		Type:      ItemTypeNotice,
-		ItemID:    generateItemID(),
-		Summary:   "Reply cut off",
+		Type:   ItemTypeNotice,
+		ItemID: generateItemID(),
+		// The lead alone is the row: it already says what happened in one line,
+		// and the measured numbers that follow it are the panel's business.
+		Summary:   truncationNoticeLead,
 		Content:   detail.String(),
 		Source:    source,
 		Timestamp: time.Now().Format(time.RFC3339),

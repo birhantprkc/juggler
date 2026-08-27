@@ -6,6 +6,15 @@ import JugglerElement from './juggler-element.js';
 import { createCopyButton } from '../utils/properties-panel-helpers.js';
 
 /**
+ * Attribute marking the element that renders the thread's final item, written
+ * by the rendering pass (`conversation-area-rendering.positionElements`) as the
+ * item list grows and shrinks. Elements whose affordances only make sense at the
+ * end of a thread observe it; for everything else it is inert.
+ * @type {string}
+ */
+export const FINAL_ITEM_ATTR = 'item-final';
+
+/**
  * Base class for message components with shared functionality:
  * - Common attribute getters (itemId, itemIndex, content)
  * - Lifecycle management with proper cleanup (inherited from JugglerElement)
@@ -55,6 +64,11 @@ class BaseMessage extends JugglerElement {
   get itemIndex() {
     const index = this.getAttribute('item-index');
     return index !== null ? parseInt(index, 10) : null;
+  }
+
+  /** @returns {boolean} Whether this element renders the thread's final item */
+  get isFinalItem() {
+    return this.hasAttribute(FINAL_ITEM_ATTR);
   }
 
   /**

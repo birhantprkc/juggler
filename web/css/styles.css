@@ -2481,10 +2481,10 @@ error-message article.error {
     color: var(--accent-red, #f85149);
 }
 
-/* A notice takes no card and no extra room: the amber triangle and its lozenge
-   are the whole row, laid out by the shared .message-with-icon rules. Nothing
-   has failed and there is nothing to act on, so the detail waits in the
-   properties panel. */
+/* A notice takes no card and no extra room: the amber triangle, a "Warning"
+   lozenge and one line saying what happened are the whole row, laid out by the
+   shared .message-with-icon rules. Nothing has failed and there is nothing to
+   act on, so the measured detail waits in the properties panel. */
 notice-message article.notice {
     max-width: 100%;
     overflow: hidden;

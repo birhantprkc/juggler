@@ -38,9 +38,8 @@ type Message struct {
 	IsGlobal bool   `json:"isGlobal,omitempty"` // Whether context item is global session-level
 
 	// Error-specific fields
-	Message        string `json:"message,omitempty"`        // Error message (also used by system messages)
-	Stack          string `json:"stack,omitempty"`          // Error stack trace
-	HasRetryButton bool   `json:"hasRetryButton,omitempty"` // Whether to show retry button
+	Message string `json:"message,omitempty"` // Error message (also used by system messages)
+	Stack   string `json:"stack,omitempty"`   // Error stack trace
 
 	// System-specific fields
 	EventType string `json:"eventType,omitempty"` // Event type for system messages

@@ -123,22 +123,26 @@ export async function runTests() {
     }
   });
 
-  test('a notice is a one-line tile: icon, title lozenge, nothing else', () => {
+  test('a notice explains itself on the row, under a fixed Warning lozenge', () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
+    const explanation = 'Claude Code re-read the whole conversation, so this turn cost more than it needed to.';
     try {
       const el = /** @type {any} */ (document.createElement('notice-message'));
       el.setAttribute('message-id', 'NOTICE_1');
-      el.setAttribute('notice-title', 'Cache miss');
+      el.setAttribute('notice-text', explanation);
       container.appendChild(el);
 
       assert(el instanceof NoticeMessage, 'notice-message must upgrade to the NoticeMessage class');
       const badge = el.querySelector('.message-icon-badge .context-item-type-badge');
       assert(!!badge, 'notice must label itself with a lozenge beside the icon');
-      assert(badge.textContent === 'Cache miss', `lozenge must carry the title, got ${badge.textContent}`);
+      assert(badge.textContent === 'Warning',
+        `lozenge names the kind of item, got ${badge.textContent}`);
       assert(!!el.querySelector('.message-icon-box svg'), 'notice must keep its warning triangle');
-      assert((el.textContent || '').trim() === 'Cache miss',
-        `the row carries the title and nothing more, got ${el.textContent}`);
+      // The whole point: a reader who never opens the panel is still told why
+      // the row is there.
+      assert((el.textContent || '').includes(explanation),
+        `the row must carry the explanation, got ${el.textContent}`);
       assert(!el.querySelector('button'), 'a notice reports; it must offer no action button');
     } finally {
       container.remove();
@@ -146,11 +150,11 @@ export async function runTests() {
   });
 
   test('the panel labels a notice the same way the row does', () => {
-    const notice = item({ type: 'notice', summary: 'Cache miss', content: 'lead\n\nReason: diverged' });
-    assert(typeNameForItem(notice) === 'Cache miss',
-      `panel header must reuse the notice's own title, got ${typeNameForItem(notice)}`);
-    assert(typeNameForItem(item({ type: 'notice' })) === 'Notice',
-      'a notice with no title still needs a label');
+    const notice = item({ type: 'notice', summary: 'Cache miss happened', content: 'lead\n\nReason: diverged' });
+    assert(typeNameForItem(notice) === 'Warning',
+      `panel header must wear the same lozenge as the row, got ${typeNameForItem(notice)}`);
+    assert(typeNameForItem(item({ type: 'notice' })) === 'Warning',
+      'the lozenge is the item kind, so it never depends on the notice having text');
   });
 
   test('adding and removing a notice never reads as a cache bust', () => {
