@@ -223,6 +223,24 @@
                 await runOneTest(urlParams.get('test'), urlParams.get('projectPath'));
             }
 
+            // How many tests a lane runs before reloading its own page.
+            //
+            // A lane page is a JS realm that lives for the whole run, and the
+            // tests it hosts do not fully release what they build: the residue
+            // is small per test and ruinous by the fiftieth, because every lane
+            // in a subprocess shares ONE WebKit content process and therefore
+            // one heap and one main thread. Past roughly a gigabyte that heap
+            // spends its time collecting, and the pause lands on every lane at
+            // once — the whole pool slows together and tests start failing on
+            // their own timeouts, chosen by luck rather than by fault.
+            //
+            // Reloading is the one reclaim that cannot miss anything, since it
+            // discards the realm entire. It costs a module reload and a socket
+            // reconnect, so it is done between tests, never during one, and
+            // rarely: at 25 a lane recycles about twice in a full run.
+            const LANE_RECYCLE_EVERY = 25;
+            let testsSinceLoad = 0;
+
             while (true) {
                 // Nothing here may be allowed to throw: this loop IS the lane.
                 // An escaped rejection would end the top-level module await and
@@ -245,6 +263,17 @@
                         break;
                     }
                     await runOneTest(entry.name, entry.projectPath);
+
+                    // Recycle only here: the result is posted and no entry is
+                    // held. Reloading with an entry in hand would consume work
+                    // the queue cannot hand out twice — the dispatch is a
+                    // destructive read — and the Go side would sit out its full
+                    // 60s waiting for an answer no one is going to give.
+                    if (urlParams.has('lane') && ++testsSinceLoad >= LANE_RECYCLE_EVERY) {
+                        window.location.href =
+                            `/headless-test?lane=${encodeURIComponent(urlParams.get('lane'))}`;
+                        break;
+                    }
                 } catch (err) {
                     window.__earlyErrors.push('lane loop error (lane survived): ' + (err && err.message || err));
                 }

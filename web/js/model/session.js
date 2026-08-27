@@ -185,6 +185,13 @@ class Session {
     this._apiService = apiService;
 
     /**
+     * Set once destroy() has run, so a second call is a no-op.
+     * @type {boolean}
+     * @private
+     */
+    this._destroyed = false;
+
+    /**
      * Conversations map (id -> Conversation instance)
      * @type {Map<string, import('./conversation.js').default>}
      */
@@ -2532,9 +2539,26 @@ class Session {
    * Clean up resources when session is destroyed
    */
   destroy() {
+    // Idempotent: destroy() terminates every worker through the shared
+    // workerManager singleton, so a second call would reach past this session
+    // and tear down whatever has since taken its place.
+    if (this._destroyed) return;
+    this._destroyed = true;
+
     if (this._saveTimer) {
       clearTimeout(this._saveTimer);
       this._saveTimer = null;
+    }
+
+    // Stop background hydration before anything else. The queue holds this
+    // session and re-pumps itself from the finally{} of every load, so one
+    // left running outlives destroy(): each load it goes on to complete spawns
+    // a worker and puts a fresh Conversation — its own Yjs doc, its own update
+    // observer — back into the map destroy() has already walked and cleared,
+    // where nothing will ever destroy it.
+    if (this._loadQueue) {
+      this._loadQueue.destroy();
+      this._loadQueue = null;
     }
 
     // Remove WebSocket listeners registered in _doLoad (all three, not just

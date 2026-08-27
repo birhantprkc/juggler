@@ -398,6 +398,17 @@ export class UITestHarness {
   }
 
   /**
+   * Wait for a running action's accumulated output to contain a substring.
+   * @param {string} toolUseId
+   * @param {string} substring
+   * @param {number} [timeoutMs]
+   * @returns {Promise<void>}
+   */
+  async waitForActionOutput(toolUseId, substring, timeoutMs) {
+    return this.innerHarness.waitForActionOutput(toolUseId, substring, timeoutMs);
+  }
+
+  /**
    * Assert streaming chunks.
    * @param {string} toolUseId
    * @param {number} minChunks

@@ -26,7 +26,7 @@
  * @module unit-tests/conversation-focus-policy-test
  */
 
-import { assert } from '../utilities/test-helpers.js';
+import { assert, trackTestSession } from '../utilities/test-helpers.js';
 import Session from '../../js/model/session.js';
 
 /**
@@ -47,7 +47,7 @@ import Session from '../../js/model/session.js';
  *   conversation id switchConversation was asked to show.
  */
 function makeSession({ composerText = false } = {}) {
-  const session = /** @type {any} */ (new Session(/** @type {any} */ ({})));
+  const session = /** @type {any} */ (trackTestSession(new Session(/** @type {any} */ ({}))));
 
   /**
    * @param {string} id - Conversation id

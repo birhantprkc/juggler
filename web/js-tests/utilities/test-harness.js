@@ -1416,7 +1416,14 @@ export class IntegrationTestHarness {
     /** @type {(e: CustomEvent) => void} */
     const handler = (e) => {
       if (e.detail?.toolUseId === toolUseId) {
-        events.push({ ...e.detail.event, timestamp: Date.now() });
+        // accumulatedOutput is the executor's running total for the action,
+        // not this chunk — it is what waitForActionOutput matches against, and
+        // what the tool-action's displayData.output ends up holding.
+        events.push({
+          ...e.detail.event,
+          accumulatedOutput: e.detail.accumulatedOutput ?? '',
+          timestamp: Date.now()
+        });
       }
     };
     document.addEventListener('action-progress', /** @type {EventListener} */ (handler));
@@ -1468,6 +1475,55 @@ export class IntegrationTestHarness {
       const listener = (/** @type {Event} */ e) => {
         if (/** @type {CustomEvent} */ (e).detail?.toolUseId !== toolUseId) return;
         if (this.getProgressCount(toolUseId) >= minEvents) {
+          clearTimeout(timeout);
+          document.removeEventListener('action-progress', listener);
+          resolve();
+        }
+      };
+      document.addEventListener('action-progress', listener);
+    }));
+  }
+
+  /**
+   * Wait until a running action's accumulated output contains `substring`.
+   *
+   * Counting progress events is not a substitute for this. How many events a
+   * tool emits before its first byte of output is the engine's business — a
+   * start status, a claim, a heartbeat all count — so a test that waits for N
+   * events and then acts on the output is asserting on something it never
+   * established, and fails whenever the engine emits one status more than the
+   * test's author happened to observe. Wait for the output itself.
+   * @param {string} toolUseId - Tool use ID (must already be capturing)
+   * @param {string} substring - Text the accumulated output must contain
+   * @param {number} [timeoutMs=5000] - Timeout
+   * @returns {Promise<void>}
+   */
+  async waitForActionOutput(toolUseId, substring, timeoutMs = 5000) {
+    const capture = this._progressCaptures.get(toolUseId);
+    if (!capture) {
+      throw new Error(
+        `waitForActionOutput(${toolUseId}): no progress capture — ` +
+        'the test must run start-capture-progress before approving the tool'
+      );
+    }
+    /** @returns {boolean} True once some captured event carries the substring */
+    const seen = () => capture.events.some(
+      (/** @type {any} */ ev) => String(ev.accumulatedOutput || '').includes(substring)
+    );
+    if (seen()) return;
+    await /** @type {Promise<void>} */ (new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        document.removeEventListener('action-progress', listener);
+        const last = capture.events[capture.events.length - 1];
+        reject(new Error(
+          `Timeout waiting for ${toolUseId} output to contain ${JSON.stringify(substring)} ` +
+          `after ${capture.events.length} progress event(s); last accumulated output was ` +
+          JSON.stringify(last ? String(last.accumulatedOutput || '') : '')
+        ));
+      }, timeoutMs);
+      const listener = (/** @type {Event} */ e) => {
+        if (/** @type {CustomEvent} */ (e).detail?.toolUseId !== toolUseId) return;
+        if (seen()) {
           clearTimeout(timeout);
           document.removeEventListener('action-progress', listener);
           resolve();

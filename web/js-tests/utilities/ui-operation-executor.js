@@ -88,7 +88,8 @@ function waitForElementGone(selector, timeoutMs = 3000) {
  */
 const OBSERVE_ONLY_OPS = new Set([
   'wait-for-idle', 'wait-for-state', 'wait-for-approval', 'wait-for-thread-approval',
-  'wait-for-progress', 'wait-for-execution', 'wait-for-mock-paused', 'wait-ms',
+  'wait-for-progress', 'wait-for-action-output', 'wait-for-execution',
+  'wait-for-mock-paused', 'wait-ms',
   'assert-document', 'assert-dom', 'assert-no-result', 'assert-input-warning',
   'assert-streaming-chunks', 'assert-transaction-markers', 'assert-thread-item-count',
   'assert-tool-exec-count', 'assert-spinner-was-visible', 'assert-tool-result-changed',
@@ -625,6 +626,17 @@ export async function executeUIOperation(harness, op) {
         throw new Error('wait-for-progress operation requires toolUseId');
       }
       await harness.waitForProgress(op.toolUseId, op.minEvents || 1, op.timeoutMs);
+      break;
+    }
+
+    case 'wait-for-action-output': {
+      if (!op.toolUseId) {
+        throw new Error('wait-for-action-output operation requires toolUseId');
+      }
+      if (!op.contains) {
+        throw new Error('wait-for-action-output operation requires contains');
+      }
+      await harness.waitForActionOutput(op.toolUseId, op.contains, op.timeoutMs);
       break;
     }
 

@@ -99,6 +99,52 @@ async function createMockServices() {
 }
 
 /**
+ * Every Session a unit test has built and not yet destroyed.
+ *
+ * A lane page is never reloaded between the tests of a suite, so a Session
+ * left alive is left alive for the rest of the lane's life — and it is not
+ * cheap company. Session.load() builds a stub Conversation, and in time a
+ * hydrated Yjs doc, for EVERY conversation in the pool's shared project, so
+ * one undestroyed Session retains a document per sibling lane's work, not
+ * just its own. Across a suite run that is the difference between a lane
+ * holding tens of megabytes and holding hundreds.
+ *
+ * Integration tests are covered by runIntegrationTest's finally{}, which
+ * tears its harness down. Unit suites have no such per-test frame, so they
+ * register here instead and the suite runner sweeps the survivors.
+ * @type {Set<Session>}
+ */
+const trackedTestSessions = new Set();
+
+/**
+ * Put a Session under the suite-end sweep. Sessions from createTestSession
+ * are tracked already; this is for tests that construct their own.
+ * @param {Session} session - Session to track
+ * @returns {Session} The same session, for chaining
+ */
+export function trackTestSession(session) {
+  trackedTestSessions.add(session);
+  return session;
+}
+
+/**
+ * Destroy every tracked Session still alive and empty the registry. Session
+ * destroy() is idempotent, so sweeping one a test already tore down is a
+ * no-op. Best-effort per session: one that throws must not strand the rest.
+ * @returns {void}
+ */
+export function destroyTrackedTestSessions() {
+  for (const session of trackedTestSessions) {
+    try {
+      session.destroy();
+    } catch (err) {
+      console.error('[test-helpers] session sweep failed:', err);
+    }
+  }
+  trackedTestSessions.clear();
+}
+
+/**
  * Create a test session.
  * Loads an existing session created by UnitTestExecutor.
  * @returns {Promise<Session>} Session instance
@@ -109,7 +155,7 @@ export async function createTestSession() {
   const SessionModule = await import('../../js/model/session.js');
   const Session = SessionModule.default;
 
-  const session = new Session(/** @type {any} */ (apiService));
+  const session = trackTestSession(new Session(/** @type {any} */ (apiService)));
 
   // Set up mock services (no UI for tests)
   const services = await createMockServices();

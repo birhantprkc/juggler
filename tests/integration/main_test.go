@@ -114,30 +114,45 @@ var testSkillsDir string
 
 // poolConfig controls the test-pool topology.
 //
-//   - JUGGLER_TEST_WINDOWS=N: number of Wails-window subprocesses (default 1).
+//   - JUGGLER_TEST_WINDOWS=N: number of Wails-window subprocesses (default 3).
 //     Each subprocess is fully isolated — its own SessionManager, engine,
-//     WebSocket server. Cranking this up gives perfect isolation but burns
-//     more memory and WebKit helper startup time.
+//     WebSocket server, and its own WebKit content process. Cranking this up
+//     gives perfect isolation but burns more memory and WebKit helper startup
+//     time.
 //
 //   - JUGGLER_TEST_IFRAMES=N: number of test-runner iframes per subprocess
-//     (default 9 → 3×3 grid). Each iframe is its own JS realm with its own
-//     WebSocket connection, but they share the subprocess's SessionManager,
-//     engine, and server actors. Iframes stress-test the server-side
-//     concurrency that windows-only topologies hide.
+//     (default 3). Each iframe is its own JS realm with its own WebSocket
+//     connection, but they share the subprocess's SessionManager, engine,
+//     server actors — and its content process, so also one heap and one main
+//     thread. Iframes stress-test the server-side concurrency that
+//     windows-only topologies hide.
 //
-// Total parallel-test slots = WINDOWS × IFRAMES. The defaults give 9 slots
-// (1 window × 9 iframes) which mirrors the production "many tabs, one
-// server" topology and surfaces races that a windows-only setup misses.
-// Around 8–9 lanes was chosen after benchmarking the full suite at 4/8/16
-// lanes (8 runs each): ~57s avg at 4, ~39s at 8, ~39s at 16 — that many lanes
-// saturate the single engine for a ~30% speedup, and 16 buys nothing more.
+// Total parallel-test slots = WINDOWS × IFRAMES. The defaults give 9 slots,
+// which benchmarking put at the knee of the curve: the full suite averaged
+// ~57s at 4 lanes, ~39s at 8, ~39s at 16 — enough lanes to saturate an engine,
+// and more buys nothing.
+//
+// How those 9 are SHAPED matters as much as how many there are, and 3×3 beats
+// 1×9 on the same slot count: 46s and clean against 141–214s and 5–34 arbitrary
+// failures. Lanes sharing a subprocess share its content process, so their
+// heaps are one heap. Test pages accumulate what their tests do not release,
+// and nine lanes' worth in one heap reaches ~2 GB partway through a run, at
+// which point collection pauses land on all nine lanes at once: tests fail on
+// their own timeouts, picked by luck rather than by fault, and the pool looks
+// like it is failing at random. Three lanes' worth stays under that. Spreading
+// them also thins the shared session each lane loads, which is a second-order
+// win: a lane hydrates a doc per conversation in ITS subprocess, so a third of
+// the siblings is a third of the documents.
+//
+// Three lanes per subprocess still puts several tabs on one server, which is
+// what the iframe topology is for.
 type poolConfig struct {
 	windows int
 	iframes int
 }
 
 func loadPoolConfig() poolConfig {
-	cfg := poolConfig{windows: 1, iframes: 9}
+	cfg := poolConfig{windows: 3, iframes: 3}
 	if v := os.Getenv("JUGGLER_TEST_WINDOWS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.windows = n

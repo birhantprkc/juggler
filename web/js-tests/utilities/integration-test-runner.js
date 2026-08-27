@@ -124,6 +124,7 @@ __tapeChan.onmessage = (/** @type {MessageEvent} */ ev) => {
  * @property {number} [count] - Expected distinct transaction count (for assert-transaction-markers)
  * @property {number} [minChunks] - Minimum chunks expected (for assert-streaming-chunks)
  * @property {number} [minEvents] - Minimum events to wait for (for wait-for-progress)
+ * @property {string} [contains] - Text the accumulated output must contain (for wait-for-action-output)
  * @property {number} [index] - Item index (for compact-up-to)
  * @property {number} [threadIndex] - Which thread item (0-based) in root items (for validate-thread-context, continue-sub-thread)
  * @property {number} [ms] - Milliseconds to wait (for wait-ms)
@@ -281,7 +282,7 @@ export function testDirFor(testName) {
 function _summariseOp(op) {
   const out = {};
   const keys = ['message', 'toolUseId', 'command', 'index', 'threadIndex', 'key',
-    'selector', 'path', 'minEvents', 'count', 'expectedCount'];
+    'selector', 'path', 'minEvents', 'contains', 'count', 'expectedCount'];
   for (const k of keys) {
     const v = /** @type {any} */ (op)[k];
     if (v !== undefined) out[k] = typeof v === 'string' && v.length > 40 ? v.slice(0, 40) + '…' : v;

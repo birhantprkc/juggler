@@ -178,19 +178,24 @@ jobs:
       # On Linux the spawned server needs a display, so run under xvfb; other
       # platforms render headless. Full output lands in the step log.
       #
-      # JUGGLER_TEST_IFRAMES=4 (default 9): the pool runs N concurrent test
-      # lanes against ONE shared WebKit engine (main_test.go). The default 9 is
-      # tuned for a dev workstation; a hosted CI runner (~2-4 vCPU) can't service
-      # 9 lanes on one engine, and starves them into failures that look like bugs
-      # but are pure load — lanes whose engine WS can't connect within 30s, tests
-      # that blow a 10s budget by a few ms, and an interrupted lane leaking state
-      # into the next test's preconditions. 4 lanes keeps real server-side
-      # concurrency coverage while fitting the runner. Local `make test` keeps
-      # the full 9-lane stress. Raise if runners get beefier.
+      # 2 windows x 2 iframes = 4 lanes (default 3x3 = 9). The pool runs
+      # WINDOWS x IFRAMES concurrent test lanes (main_test.go); the default is
+      # tuned for a dev workstation, and a hosted runner (~2-4 vCPU) cannot
+      # service 9 of them. It starves them into failures that look like bugs but
+      # are pure load — lanes whose engine WS can't connect within 30s, tests
+      # that blow a 10s budget by a few ms, and an interrupted lane leaking
+      # state into the next test's preconditions. 4 lanes keeps real
+      # server-side concurrency coverage while fitting the runner.
+      #
+      # Keep BOTH dimensions above 1 when tuning this. Lanes in one subprocess
+      # share a WebKit content process, so 1x4 puts four lanes' heap growth in
+      # one heap behind one main thread — the shape that degrades a run into
+      # arbitrary timeouts (see poolConfig). Raise if runners get beefier.
       - name: Run tests
         shell: bash
         env:
-          JUGGLER_TEST_IFRAMES: 4
+          JUGGLER_TEST_WINDOWS: 2
+          JUGGLER_TEST_IFRAMES: 2
         run: |
           if [ "${RUNNER_OS}" = "Linux" ]; then
             # WebKitGTK 2.4x+ (2.52 on the runner) defaults to a DMABUF/GPU

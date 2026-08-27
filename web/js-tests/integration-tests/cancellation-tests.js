@@ -88,8 +88,13 @@ export const cancelPreservesPartialOutputTest = {
     // Start capturing progress to detect when output arrives
     { type: 'start-capture-progress', toolUseId: 'call_1' },
     { type: 'approve-no-wait', toolUseId: 'call_1' },
-    // Wait for the start status and the "before" output chunk.
-    { type: 'wait-for-progress', toolUseId: 'call_1', minEvents: 2 },
+    // Wait for "before" to actually reach the action's output. The point of
+    // the test is that cancelling keeps output already produced, so there has
+    // to BE output already produced when the cancel lands. Waiting on a count
+    // of progress events instead cancels during the start status — while the
+    // command is still between its echo and its sleep — and then blames the
+    // product for losing output it had not yet emitted.
+    { type: 'wait-for-action-output', toolUseId: 'call_1', contains: 'before' },
     // Cancel after partial output
     { type: 'cancel' }
   ],

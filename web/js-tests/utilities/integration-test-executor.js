@@ -11,6 +11,7 @@
  */
 
 import { runIntegrationTests } from './integration-test-runner.js';
+import { destroyTrackedTestSessions } from './test-helpers.js';
 import { tests as readFileTests } from '../integration-tests/read-file-tests.js';
 import { tests as writeFileTests } from '../integration-tests/write-file-tests.js';
 import { tests as approvalFlowTests } from '../integration-tests/approval-flow-tests.js';
@@ -592,6 +593,11 @@ async function runUnitSuiteWithConvCleanup(suite, ctx) {
   } finally {
     neutralizeStrayModals();
     await deleteOwnConversationsCreatedSince(before, `unit-cleanup:${suite.name}`);
+    // Client-side counterpart of the delete above: that frees the server's
+    // copy, this frees ours. A Session the suite left alive holds a Yjs doc
+    // per conversation in the shared project, and the lane page outlives
+    // every suite it runs, so an unswept one is retained for the whole run.
+    destroyTrackedTestSessions();
   }
 }
 
