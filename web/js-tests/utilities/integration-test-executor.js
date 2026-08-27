@@ -466,7 +466,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:reconnect-policy', run: runReconnectPolicyTests },
   { name: 'unit:resync-offline-edit', run: runResyncOfflineEditTests },
   { name: 'unit:popup-back-button', run: runPopupBackButtonTests },
-  { name: 'unit:popup-surface', run: runPopupSurfaceTests },
+  { name: 'unit:popup-surface', run: runPopupSurfaceTests, needsExclusiveRun: true },
   { name: 'unit:model-display', run: runModelDisplayTests },
   { name: 'unit:engine-project-switch', run: runEngineProjectSwitchTests },
   { name: 'unit:window-title', run: runWindowTitleTests },

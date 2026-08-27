@@ -20,6 +20,7 @@
 import { assert } from '../utilities/test-helpers.js';
 import strategyRegistry from '../../js/registries/strategy-registry.js';
 import { REGISTRIES_RELOADED } from '../../js/registries/reload-registries.js';
+import { registerSettingsOpener } from '../../js/services/settings-launcher.js';
 import '../../js/components/strategy-selector.js';
 
 /**
@@ -110,6 +111,57 @@ export async function runTests(_ctx) {
       // Remove the relocated menu (it lives on <body>, not under the selector)
       // then the selector itself.
       document.querySelectorAll('.strategy-dropdown[data-strategy-selector="true"]').forEach(el => el.remove());
+      selector.remove();
+    }
+  });
+
+  await run('strategy info opens its extension without selecting the strategy', async () => {
+    if (!strategyRegistry.isInitialized()) await strategyRegistry.init();
+
+    const manifest = strategyRegistry.getAllManifests()[0];
+    assert(!!manifest, 'registry has at least one strategy');
+
+    let selectionCount = 0;
+    /** @type {Array<{tab?: string, options?: any}>} */
+    const settingsCalls = [];
+    const restoreOpener = registerSettingsOpener((tab, options) => {
+      settingsCalls.push({ tab, options });
+    });
+    const selector = /** @type {any} */ (document.createElement('strategy-selector'));
+    document.body.appendChild(selector);
+
+    try {
+      selector.setMessageThread(/** @type {any} */ ({
+        currentStrategyId: manifest.id,
+        setStrategy() { selectionCount++; },
+      }));
+      selector._dropdownOpen = true;
+      selector.render();
+      const dropdown = selector.querySelector('.strategy-dropdown');
+      assert(!!dropdown, 'strategy dropdown is rendered');
+      selector._menu = { surface: dropdown, close() { dropdown.remove(); } };
+
+      const rows = dropdown.querySelectorAll('.strategy-item[data-strategy-id]');
+      const infoButtons = dropdown.querySelectorAll('.strategy-info-button');
+      assert(infoButtons.length === rows.length, 'every strategy has an info button');
+
+      const infoButton = /** @type {HTMLButtonElement|null} */ (
+        dropdown.querySelector(`[data-strategy-info-id="${manifest.id}"]`));
+      assert(!!infoButton, 'the strategy has an info button');
+      assert(!!infoButton.getAttribute('aria-label'), 'the info button has an accessible label');
+      infoButton.click();
+
+      assert(settingsCalls.length === 1, 'the info button opens Settings once');
+      assert(settingsCalls[0].tab === 'extensions', 'Settings opens on Extensions');
+      assert(settingsCalls[0].options?.capability?.itemType === 'strategy',
+        'Settings reveals a strategy capability');
+      assert(settingsCalls[0].options?.capability?.id === manifest.id,
+        'Settings reveals the clicked strategy');
+      assert(selectionCount === 0, 'clicking info does not select the strategy');
+      assert(selector._dropdownOpen === false, 'clicking info closes the dropdown');
+    } finally {
+      restoreOpener();
+      selector._menu?.surface?.remove();
       selector.remove();
     }
   });

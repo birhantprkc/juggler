@@ -24,7 +24,7 @@
  * @module unit-tests/popup-surface-test
  */
 
-import { presentInlineMenu } from '../../js/utils/popup-surface.js';
+import { presentInlineMenu, presentPopup } from '../../js/utils/popup-surface.js';
 import { positionDropdown } from '../../sdk/lib/dropdown-positioning.js';
 import {
   registerOpenPopup,
@@ -170,6 +170,65 @@ export async function runTests() {
       } finally {
         menu.remove();
         button.remove();
+      }
+    });
+
+    await run('closing returns popup focus to the control used before opening', async () => {
+      __resetPopupManagerForTests();
+      const textarea = document.createElement('textarea');
+      const anchor = document.createElement('button');
+      const surface = document.createElement('nav');
+      const item = document.createElement('button');
+      surface.appendChild(item);
+      document.body.append(textarea, anchor);
+      textarea.focus();
+      try {
+        const release = presentPopup({
+          surface,
+          anchor,
+          id: 'focus-return',
+          onClose: () => {},
+        });
+        await tick();
+        item.focus();
+        assert(document.activeElement === item, 'the popup item must hold focus before closing');
+
+        release();
+        assert(document.activeElement === textarea,
+          'closing must return focus to the control used before opening');
+      } finally {
+        surface.remove();
+        textarea.remove();
+        anchor.remove();
+        document.querySelectorAll('.popup-sheet-scrim').forEach((el) => el.remove());
+        __resetPopupManagerForTests();
+      }
+    });
+
+    await run('closing does not steal focus from an outside control', () => {
+      __resetPopupManagerForTests();
+      const anchor = document.createElement('button');
+      const outside = document.createElement('button');
+      const surface = document.createElement('nav');
+      document.body.append(anchor, outside);
+      try {
+        const release = presentPopup({
+          surface,
+          anchor,
+          id: 'focus-outside',
+          onClose: () => {},
+        });
+        outside.focus();
+        assert(document.activeElement === outside, 'the outside control must hold focus before closing');
+
+        release();
+        assert(document.activeElement === outside, 'closing must preserve deliberately moved focus');
+      } finally {
+        surface.remove();
+        anchor.remove();
+        outside.remove();
+        document.querySelectorAll('.popup-sheet-scrim').forEach((el) => el.remove());
+        __resetPopupManagerForTests();
       }
     });
 

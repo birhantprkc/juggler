@@ -5,12 +5,13 @@
 import strategyRegistry from '../registries/strategy-registry.js';
 import { REGISTRIES_RELOADED } from '../registries/reload-registries.js';
 import { presentInlineMenu } from '../utils/popup-surface.js';
-import { CHECK_SVG } from '../utils/icons.js';
+import { INFO_SVG } from '../utils/icons.js';
 import CycleBuffer from '../services/cycle-buffer.js';
 import { findLastAssistantTxnId } from '../utils/transaction-anchor.js';
 import { generateToolDefinitions } from '../services/tool-generator.js';
 import { buildPrefixFingerprint, classifyContextCacheImpact, CONTEXT_CACHE_IMPACT_CHANGED } from '../services/context-cache-impact.js';
 import { contextPositionOf } from '../services/system-prompt-builder.js';
+import { openSettings } from '../services/settings-launcher.js';
 
 /**
  * Strategy Selector - Dropdown component for selecting conversation strategy
@@ -636,9 +637,9 @@ class StrategySelector extends HTMLElement {
                             ${iconHtml}
                             <span class="strategy-item-name">${manifest.name}</span>
                         </span>
-                        ${isActive ? `<span class="strategy-check" aria-hidden="true">${CHECK_SVG}</span>` : ''}
                     </header>
                     <p class="strategy-item-description">${manifest.description}</p>
+                    <button type="button" class="strategy-info-button u-btn-ghost" data-strategy-info-id="${id}" title="View strategy details" aria-label="View ${manifest.name} strategy details">${INFO_SVG}</button>
                 </li>
             `;
     }).join('');
@@ -874,6 +875,19 @@ class StrategySelector extends HTMLElement {
    * @private
    */
   _attachItemListeners(root) {
+    root.querySelectorAll('.strategy-info-button[data-strategy-info-id]').forEach(button => {
+      button.addEventListener('click', event => {
+        event.stopPropagation();
+        const strategyId = button.getAttribute('data-strategy-info-id');
+        if (!strategyId) return;
+
+        this.closeDropdown();
+        openSettings('extensions', {
+          capability: { itemType: 'strategy', id: strategyId },
+        });
+      });
+    });
+
     root.querySelectorAll('.strategy-item[data-strategy-id]').forEach(item => {
       item.addEventListener('click', () => {
         const strategyId = item.getAttribute('data-strategy-id');

@@ -75,6 +75,12 @@ export function presentPopup({
   reposition = true,
   modal = true,
 }) {
+  const focusedBeforeOpen = document.activeElement;
+  const returnFocus = focusedBeforeOpen instanceof HTMLElement
+    && focusedBeforeOpen !== document.body
+    ? focusedBeforeOpen
+    : anchor;
+
   // Hide until first placed. The surface's base `.dropdown-menu` rule pins it
   // to a default top-left corner; appending it now and positioning a frame
   // later (in the rAF below) would paint one frame at that corner before the
@@ -202,12 +208,22 @@ export function presentPopup({
   const placementFrame = requestAnimationFrame(apply);
 
   return () => {
+    const focused = document.activeElement;
+    const restoreFocus = focused === null
+      || focused === document.body
+      || (focused instanceof Node && surface.contains(focused));
+
     cancelAnimationFrame(placementFrame);
     mql.removeEventListener('change', apply);
     if (observer) observer.disconnect();
     if (scrim) scrim.remove();
     surface.remove();
     releaseDismiss();
+
+    // A popup may take focus with it when it closes. Return that focus to the
+    // control used before it opened, but leave a deliberately focused outside
+    // control alone.
+    if (restoreFocus && returnFocus.isConnected) returnFocus.focus({ preventScroll: true });
   };
 }
 
