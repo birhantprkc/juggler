@@ -3,6 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 import { wrapWithIcon } from '../utils/icon-message-renderer.js';
+import { iconOptionsForItem } from '../utils/item-badge.js';
 import { paintThreadSummary, paintThreadStatusText } from '../utils/thread-display.js';
 import { countGroupRows, getGroupStatus } from '../utils/item-grouping.js';
 
@@ -11,6 +12,76 @@ import { countGroupRows, getGroupStatus } from '../utils/item-grouping.js';
  * toggle's meaning ("these rows are collapsed").
  */
 const GROUP_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="14" viewBox="0 -960 960 960" width="14" fill="white"><path d="M480-80 120-280v-80l360 200 360-200v80L480-80Zm0-160L120-440v-80l360 200 360-200v80L480-240Zm0-166L146-590l334-184 334 184-334 184Z"/></svg>';
+
+const FAMILY_COLORS = new Set([
+  'read', 'search', 'web', 'edit', 'memory', 'execute',
+  'plan', 'meta', 'system', 'ask', 'thread', 'todo',
+]);
+
+const PRESET_COLORS = new Set([
+  'slate', 'blue', 'indigo', 'purple', 'magenta', 'pink', 'red',
+  'orange', 'amber', 'yellow', 'lime', 'green', 'emerald', 'teal',
+  'cyan', 'sky', 'brown', 'stone', 'zinc', 'crimson',
+]);
+
+/**
+ * Canonical colour family for a plugin badge. The SDK permits arbitrary strings,
+ * but a group cannot safely interpolate one into a custom-property name;
+ * unsupported names therefore take the neutral unresolved-tool fallback.
+ * @param {string} color - Badge colour name.
+ * @returns {string} A supported colour name.
+ */
+function canonicalBadgeColor(color) {
+  if (color === 'system') return 'meta';
+  if (color === 'todo') return 'plan';
+  if (FAMILY_COLORS.has(color) || PRESET_COLORS.has(color)) return color;
+  return 'slate';
+}
+
+/**
+ * @param {string} color - Canonical badge colour name.
+ * @returns {string} A CSS variable expression.
+ */
+function badgeColorValue(color) {
+  const canonical = canonicalBadgeColor(color);
+  if (FAMILY_COLORS.has(canonical)) {
+    return `var(--ci-family-badge-${canonical}, var(--ci-family-${canonical}))`;
+  }
+  return `var(--ci-preset-badge-${canonical}, var(--ci-preset-${canonical}))`;
+}
+
+/**
+ * Summarise a folded run as proportional, hard-edged colour bands. Families are
+ * combined even when their tools were interleaved, while first appearance keeps
+ * a little of the run's chronology. Deleted Y.Maps are omitted just as they are
+ * from the group's count and text summary.
+ * @param {any[]} members - Tool-action Y.Maps, live or stale.
+ * @returns {string} A solid CSS colour or linear-gradient.
+ */
+export function groupBadgeBackground(members) {
+  /** @type {Map<string, number>} */
+  const counts = new Map();
+  for (const member of members) {
+    if (member?.get?.('type') !== 'tool-action') continue;
+    const color = canonicalBadgeColor(iconOptionsForItem(member).color || 'slate');
+    counts.set(color, (counts.get(color) || 0) + 1);
+  }
+
+  const total = [...counts.values()].reduce((sum, count) => sum + count, 0);
+  if (!total) return badgeColorValue('slate');
+  if (counts.size === 1) return badgeColorValue(/** @type {string} */ (counts.keys().next().value));
+
+  let used = 0;
+  const stops = [];
+  for (const [color, count] of counts) {
+    const start = (used / total) * 100;
+    used += count;
+    const end = (used / total) * 100;
+    const value = badgeColorValue(color);
+    stops.push(`${value} ${start}%`, `${value} ${end}%`);
+  }
+  return `linear-gradient(90deg, ${stops.join(', ')})`;
+}
 
 /**
  * ToolGroupMessage — the collapsed tile for a run of adjacent tool uses.
@@ -55,6 +126,8 @@ class ToolGroupMessage extends HTMLElement {
     this._title = null;
     /** @type {HTMLElement|null} @private - Status block beneath the title. */
     this._status = null;
+    /** @type {HTMLElement|null} @private - The group icon's coloured box. */
+    this._icon = null;
     /** @type {HTMLElement|null} @private - "N tools" lozenge beside the icon. */
     this._badge = null;
   }
@@ -129,6 +202,7 @@ class ToolGroupMessage extends HTMLElement {
     this._article = article;
     this._title = title;
     this._status = status;
+    this._icon = /** @type {HTMLElement|null} */ (article.querySelector('.message-icon-box'));
     this._badge = /** @type {HTMLElement|null} */ (article.querySelector('.context-item-type-badge'));
     this._mode = null;
     this._paintedKey = null;
@@ -141,6 +215,7 @@ class ToolGroupMessage extends HTMLElement {
     // Counted the same way the summary counts, so the lozenge and the kinds
     // listed beneath it always describe the same set of rows.
     const count = countGroupRows(members);
+    const badgeBackground = groupBadgeBackground(members);
 
     // Only LIVE work pulses the icon: a member is running, or one is parked on
     // an approval. 'errored' and 'idle' are both terminal — the run is over,
@@ -158,8 +233,8 @@ class ToolGroupMessage extends HTMLElement {
     // Content signature of this tick — row count included, since the lozenge
     // shows it and a run grows as the turn streams in.
     const key = status
-      ? `${status.kind}:${status.goal}:${status.message}:${count}`
-      : 'empty';
+      ? `${status.kind}:${status.goal}:${status.message}:${count}:${badgeBackground}`
+      : `empty:${count}:${badgeBackground}`;
 
     if (!this._article || this._article.parentNode !== this) this._build(count);
     const article = /** @type {HTMLElement} */ (this._article);
@@ -176,7 +251,7 @@ class ToolGroupMessage extends HTMLElement {
       this._paintedKey = key;
       this._paintTitle(status);
       this._paintStatus(status);
-      this._paintBadge(count);
+      this._paintBadge(count, badgeBackground);
       return;
     }
 
@@ -184,7 +259,7 @@ class ToolGroupMessage extends HTMLElement {
     this._paintedKey = key;
     this._paintTitle(status);
     if (status?.message) paintThreadStatusText(/** @type {HTMLElement} */ (this._status), status);
-    this._paintBadge(count);
+    this._paintBadge(count, badgeBackground);
   }
 
   /**
@@ -223,13 +298,17 @@ class ToolGroupMessage extends HTMLElement {
   }
 
   /**
-   * Keep the lozenge in step with the run's size.
+   * Keep the lozenge and its composition colours in step with the run.
    * @param {number} count - Number of members.
+   * @param {string} background - Solid or proportional family background.
    * @private
    */
-  _paintBadge(count) {
+  _paintBadge(count, background) {
     const text = `${count} tools`;
     if (this._badge && this._badge.textContent !== text) this._badge.textContent = text;
+    for (const element of [this._icon, this._badge]) {
+      if (element && element.style.background !== background) element.style.background = background;
+    }
   }
 }
 

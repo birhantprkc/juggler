@@ -220,9 +220,9 @@ select {
     --ci-text: #fff;
     --ci-text-secondary: rgb(255 255 255 / 70%);
 
-    /* Context item semantic families — tools reference these labels, never raw
-       presets. Most alias a preset; `system` uses a bespoke in-between violet so
-       the system prompt reads as its own thing while staying next to `plan`. */
+    /* Context item semantic families. Tool badges describe the consequence of an
+       item; icons and labels carry the finer distinction. Compatibility aliases
+       keep existing extensions using `system` or `todo` on the same vocabulary. */
     --ci-family-read: var(--ci-preset-cyan);
     --ci-family-search: var(--ci-preset-emerald);
     --ci-family-web: var(--ci-preset-sky);
@@ -230,10 +230,11 @@ select {
     --ci-family-memory: var(--ci-preset-orange);
     --ci-family-execute: var(--ci-preset-purple);
     --ci-family-plan: var(--ci-preset-indigo);
-    --ci-family-system: #4a2f97;
+    --ci-family-meta: var(--ci-preset-slate);
+    --ci-family-system: var(--ci-family-meta);
     --ci-family-ask: var(--ci-preset-yellow);
     --ci-family-thread: var(--ci-preset-magenta);
-    --ci-family-todo: var(--ci-preset-teal);
+    --ci-family-todo: var(--ci-family-plan);
 
     /* Syntax highlighting colors (dark theme) */
     --syntax-comment: #8b949e;
@@ -568,8 +569,8 @@ select {
     --ci-text-secondary: #656d76;
 
     /* Context item semantic families (light theme). Base tints alias the light
-       presets; badge mid-tones alias the saturated badge presets so white icon
-       glyphs stay readable. `system` is a bespoke in-between violet. */
+       presets; badge mid-tones alias saturated presets so white glyphs remain
+       readable. */
     --ci-family-read: var(--ci-preset-cyan);
     --ci-family-search: var(--ci-preset-emerald);
     --ci-family-web: var(--ci-preset-sky);
@@ -577,10 +578,11 @@ select {
     --ci-family-memory: var(--ci-preset-orange);
     --ci-family-execute: var(--ci-preset-purple);
     --ci-family-plan: var(--ci-preset-indigo);
-    --ci-family-system: #e7e0fb;
+    --ci-family-meta: var(--ci-preset-slate);
+    --ci-family-system: var(--ci-family-meta);
     --ci-family-ask: var(--ci-preset-yellow);
     --ci-family-thread: var(--ci-preset-magenta);
-    --ci-family-todo: var(--ci-preset-teal);
+    --ci-family-todo: var(--ci-family-plan);
 
     /* badge mid-tones (saturated; white glyphs readable) */
     --ci-family-badge-read: var(--ci-preset-badge-cyan);
@@ -590,10 +592,11 @@ select {
     --ci-family-badge-memory: var(--ci-preset-badge-orange);
     --ci-family-badge-execute: var(--ci-preset-badge-purple);
     --ci-family-badge-plan: var(--ci-preset-badge-indigo);
-    --ci-family-badge-system: #6b3fd0bb;
+    --ci-family-badge-meta: var(--ci-preset-badge-slate);
+    --ci-family-badge-system: var(--ci-family-badge-meta);
     --ci-family-badge-ask: var(--ci-preset-badge-yellow);
     --ci-family-badge-thread: var(--ci-preset-badge-magenta);
-    --ci-family-badge-todo: var(--ci-preset-badge-teal);
+    --ci-family-badge-todo: var(--ci-family-badge-plan);
 
     /* Code block specific colors */
     --bg-code-dark: #f6f8fa;
@@ -2688,6 +2691,11 @@ tool-action-message {
 .color-plan {
     --preset-bg: var(--ci-family-plan);
     --preset-badge-bg: var(--ci-family-badge-plan, var(--ci-family-plan));
+}
+
+.color-meta {
+    --preset-bg: var(--ci-family-meta);
+    --preset-badge-bg: var(--ci-family-badge-meta, var(--ci-family-meta));
 }
 
 .color-system {

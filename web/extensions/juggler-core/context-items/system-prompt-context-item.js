@@ -349,7 +349,7 @@ class SystemPromptContextItem extends ContextItem {
 
   /** @returns {{color: string, icon?: string}} Badge options */
   static getBadgeOptions() {
-    return { color: 'system' };
+    return { color: 'meta' };
   }
 
   /** @returns {import('juggler/context-item').ResultStatusMessage} Status UI config */

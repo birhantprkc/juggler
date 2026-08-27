@@ -44,7 +44,7 @@ import {
   setToolGroupingEnabled,
   toggleToolGrouping,
 } from '../../js/utils/tool-grouping-pref.js';
-import '../../js/components/tool-group-message.js';
+import { groupBadgeBackground } from '../../js/components/tool-group-message.js';
 import '../../js/components/conversation-footer.js';
 
 /**
@@ -160,6 +160,10 @@ export async function runTests() {
     for (const invisible of [
       { type: 'assistant', content: '   ' },
       { type: 'tool-action', toolName: 'memory', state: 'completed', result: { resultType: 'context' } },
+      // Provider continuation state is durable but has no transcript row. It can
+      // occur between tools, so treating it as a barrier leaves visibly adjacent
+      // tools stranded outside the group.
+      { type: 'provider-state', provider: 'test', state: {} },
       // A Continue's marker is a run record, not a message: it paints nothing,
       // so unlike the user message above it must not wedge a run in half.
       { type: 'user', continuation: true },
@@ -170,6 +174,18 @@ export async function runTests() {
       assert(groups.length === 1 && groups[0].members.length === 3,
         `an invisible '${invisible.type}' row must not split the run`);
     }
+
+    // Hidden provider state on both sides of an existing fold must not strand
+    // tools as apparently adjacent individual rows around the group.
+    const { items: providerSplit } = build([
+      tool('read'), item({ type: 'provider-state', provider: 'test', state: {} }),
+      tool('replace'), tool('bash'),
+      item({ type: 'provider-state', provider: 'test', state: {} }), tool('read'),
+    ]);
+    const providerSplitEntries = fold(providerSplit);
+    const providerSplitGroups = providerSplitEntries.filter(isGroupEntry);
+    assert(providerSplitGroups.length === 1 && providerSplitGroups[0].members.length === 4,
+      'provider state around a fold leaves all four visible tool rows in one group');
     passed++;
   } catch (e) { failed++; errors.push(`run boundaries: ${msg(e)}`); }
 
@@ -246,6 +262,42 @@ export async function runTests() {
     passed++;
   } catch (e) { failed++; errors.push(`summary: ${msg(e)}`); }
 
+  // --- 4b: badge colours describe consequences, and groups summarise them ---
+  try {
+    const ResearchClass = /** @type {any} */ (contextItemRegistry.getByToolName('Research'));
+    const TodoClass = /** @type {any} */ (contextItemRegistry.getByToolName('todo'));
+    const SystemClass = /** @type {any} */ (contextItemRegistry.get('system-prompt'));
+    assert(ResearchClass.getBadgeOptions().color === 'thread',
+      'Research shares the delegation family with other subthreads');
+    assert(TodoClass.getBadgeOptions().color === 'plan',
+      'Todo shares the organisational family with Plan');
+    assert(SystemClass.getBadgeOptions().color === 'meta',
+      'the system prompt uses the neutral metadata family');
+
+    const solid = groupBadgeBackground(build([tool('read'), tool('read')]).items);
+    assert(solid.includes('--ci-family-badge-read') && !solid.startsWith('linear-gradient'),
+      `a homogeneous group keeps its family colour, got "${solid}"`);
+
+    const mixed = build([tool('read'), tool('bash'), tool('read')]);
+    const striped = groupBadgeBackground(mixed.items);
+    assert(striped.startsWith('linear-gradient(90deg, '),
+      `a mixed group gets hard-edged colour bands, got "${striped}"`);
+    assert((striped.match(/--ci-family-badge-read/g) || []).length === 2,
+      'interleaved reads combine into one contiguous segment');
+    assert(striped.includes('66.66666666666666%') && striped.includes('100%'),
+      `band widths are proportional to the 2:1 composition, got "${striped}"`);
+
+    mixed.doc.transact(() => { mixed.doc.getArray('items').delete(0, 1); });
+    const withoutStale = groupBadgeBackground(mixed.items);
+    assert(withoutStale.includes('50%'),
+      `deleted rows are excluded from proportions, got "${withoutStale}"`);
+
+    const fallback = groupBadgeBackground(build([tool('unclaimed-tool'), tool('unclaimed-tool')]).items);
+    assert(fallback.includes('--ci-preset-badge-slate'),
+      `an unsupported badge colour falls back to slate, got "${fallback}"`);
+    passed++;
+  } catch (e) { failed++; errors.push(`badge composition: ${msg(e)}`); }
+
   // --- 5: aggregate status — approval wins, then live work, then settled ---
   try {
     const paused = build([tool('read'), tool('bash', { state: 'pending' })]).items;
@@ -319,6 +371,10 @@ export async function runTests() {
         'a group holding an approval is marked paused, so it gets the same highlight as a thread');
       assert(tile.querySelector('.context-item-type-badge')?.textContent === '2 tools',
         'the lozenge counts what is inside');
+      const iconBackground = /** @type {HTMLElement} */ (tile.querySelector('.message-icon-box')).style.background;
+      const badgeBackground = /** @type {HTMLElement} */ (tile.querySelector('.context-item-type-badge')).style.background;
+      assert(iconBackground.startsWith('linear-gradient') && badgeBackground === iconBackground,
+        'the icon and lozenge share the group composition stripes');
 
       // The composition summary is the tile's TITLE, in the same slot and at
       // the same depth as every other item's title — a bare `.message-text`

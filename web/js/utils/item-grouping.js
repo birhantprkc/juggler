@@ -251,7 +251,7 @@ export function buildDisplayItems(items, opts = {}) {
     if (!item || !item.get) continue;
     if (isGroupable(item)) {
       run.push(item);
-    } else if (rendersNothing(item)) {
+    } else if (paintsNoRow(item)) {
       // Transparent: keeps the run open across it.
       (run.length ? passengers : entries).push(item);
     } else {

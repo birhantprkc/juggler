@@ -5,6 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Tool badges now use meaningful families, with striped summaries for folded runs
 - Programs launched from Juggler can now request microphone access on macOS
 - Added a step-by-step tutorial for writing an extension, ending in working code
 - Copyable example extensions covering every capability type, in `examples/`

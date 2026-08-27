@@ -79,7 +79,7 @@ class TodoContextItem extends ContextItem {
 
   /** @returns {{color: string, icon?: string}} Badge options */
   static getBadgeOptions() {
-    return { color: 'todo', icon: 'icon-checklist' };
+    return { color: 'plan', icon: 'icon-checklist' };
   }
 
   /**

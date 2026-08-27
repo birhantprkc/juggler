@@ -43,7 +43,7 @@ class ResearchAgentContextItem extends SubagentContextItem {
   static SUBAGENT = {
     tool: 'Research',
     strategy: ResearchSubagentStrategyType,
-    badge: { color: 'web', icon: 'icon-search' },
+    badge: { color: 'thread', icon: 'icon-search' },
     description:
       'Answer a question from the web in a sub-agent context and get back only the answer. ' +
       'The sub-agent searches, reads as many pages as it needs, and checks what they say against the version actually installed in this project; none of those pages enter this conversation.\n' +
