@@ -57,11 +57,17 @@ type streamingState struct {
 	lastThinkingWriteMs int64
 }
 
-// queueStreamChunk sends a streaming chunk to a dedicated channel.
+// queueStreamChunk sends a streaming chunk to this run's dedicated channel.
 // Thread-safe: can be called from any goroutine (e.g., the LLM provider goroutine).
 // Uses a large dedicated channel (not the shared inbound) so chunks are never dropped.
-func (w *ConversationWorker) queueStreamChunk(chunk StreamChunk) {
-	w.streamChunkChan <- chunk
+//
+// Falls through on worker shutdown so a provider still emitting after its reader
+// has gone is released rather than parked on a channel nobody will drain again.
+func (r *run) queueStreamChunk(chunk StreamChunk) {
+	select {
+	case r.t.chunks <- chunk:
+	case <-r.done:
+	}
 }
 
 // deliverLLMResponse hands one provider attempt's correlated result to the
@@ -85,7 +91,7 @@ func (r *run) processCoalescedStreamChunks(turnID string, first StreamChunk) {
 	}
 	for {
 		select {
-		case chunk := <-r.streamChunkChan:
+		case chunk := <-r.t.chunks:
 			if chunk.TurnID == turnID {
 				chunks = append(chunks, chunk)
 			}
@@ -122,6 +128,26 @@ process:
 
 	for _, chunk := range coalesced {
 		r.processStreamChunk(chunk)
+	}
+}
+
+// drainStreamChunks folds any chunk still buffered for the current provider
+// attempt into the document, then levels the write throttle up.
+//
+// It stands in for the run loop's old chunk case: a chunk that lands after its
+// wait loop has already returned has no later write to be folded into, so
+// nothing else would ever pick it up and the throttle must not hold it back.
+// Chunks carrying another attempt's generation are discarded, exactly as that
+// case discarded them.
+func (r *run) drainStreamChunks() {
+	for {
+		select {
+		case chunk := <-r.t.chunks:
+			r.processCoalescedStreamChunks(r.t.llmTurnID, chunk)
+		default:
+			r.flushPendingStreamWrites()
+			return
+		}
 	}
 }
 
@@ -635,7 +661,7 @@ func (r *run) waitForLLMResponse(turnID string, timeout time.Duration) (*LLMResp
 			// carrying another generation are stale and are discarded.
 			for {
 				select {
-				case chunk := <-r.streamChunkChan:
+				case chunk := <-r.t.chunks:
 					if chunk.TurnID == turnID {
 						r.processStreamChunk(chunk)
 					}
@@ -646,7 +672,7 @@ func (r *run) waitForLLMResponse(turnID string, timeout time.Duration) (*LLMResp
 					return result.Response, nil
 				}
 			}
-		case chunk := <-r.streamChunkChan:
+		case chunk := <-r.t.chunks:
 			r.processCoalescedStreamChunks(turnID, chunk)
 		case msg := <-r.inbound:
 			r.handleMessageInWait(msg)
@@ -655,8 +681,6 @@ func (r *run) waitForLLMResponse(turnID string, timeout time.Duration) (*LLMResp
 			}
 		case <-r.doc.UpdateSignal():
 			r.batcher.Schedule()
-		case <-r.batcher.TimerChan():
-			r.batcher.Flush()
 		case <-r.livenessC():
 			// A machine freeze (sleep, hibernate, host suspend) during the LLM
 			// call would otherwise inflate the elapsed digit by the frozen span;
@@ -702,8 +726,6 @@ func (r *run) waitForContextAndTools(timeout time.Duration, contextReply, toolsR
 			}
 		case <-r.doc.UpdateSignal():
 			r.batcher.Schedule()
-		case <-r.batcher.TimerChan():
-			r.batcher.Flush()
 		case <-r.livenessC():
 			r.detectFrozenGap()
 		case <-timer.C:
@@ -828,12 +850,10 @@ func (r *run) waitForRetryDelay(d time.Duration) RetryWaitResult {
 				}
 			}
 
-		case chunk := <-r.streamChunkChan:
+		case chunk := <-r.t.chunks:
 			r.processCoalescedStreamChunks(r.t.llmTurnID, chunk)
 		case <-r.doc.UpdateSignal():
 			r.batcher.Schedule()
-		case <-r.batcher.TimerChan():
-			r.batcher.Flush()
 		case <-r.done:
 			return RetryWaitResult{Cancelled: true}
 		}

@@ -50,8 +50,6 @@ func waitForEngineReply[T any](
 			}
 		case <-r.doc.UpdateSignal():
 			r.batcher.Schedule()
-		case <-r.batcher.TimerChan():
-			r.batcher.Flush()
 		case <-timer.C:
 			if onTimeout != nil {
 				onTimeout()

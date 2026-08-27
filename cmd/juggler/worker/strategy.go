@@ -505,6 +505,11 @@ func (r *run) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVe
 // ending: rest, error or cancellation. Deferred by runStrategyLoop so no exit
 // path can skip it and strand a stamped tool_use unpaired.
 func (r *run) finishStrategyRun() {
+	// Anything the provider emitted after the last wait loop returned is still
+	// sitting in this run's chunk buffer, and this run is the only reader it will
+	// ever have. Fold it in before the run settles.
+	r.drainStreamChunks()
+
 	// Non-blocking: if the loop returned after dispatching tools or
 	// creating a child thread, THIS thread is left awaiting_llm — let the reducer
 	// dispatch the child. In production the run() event loop calls

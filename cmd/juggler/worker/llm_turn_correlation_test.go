@@ -34,7 +34,7 @@ func TestCoalescedStreamRejectsStaleAttemptChunks(t *testing.T) {
 	w := NewConversationWorker("conv-chunk-generation", "user:test")
 	t.Cleanup(func() { w.doc.Destroy() })
 
-	w.streamChunkChan <- StreamChunk{TurnID: "current", Type: provider.ContentBlockTypeText, Content: "current"}
+	w.turn.chunks <- StreamChunk{TurnID: "current", Type: provider.ContentBlockTypeText, Content: "current"}
 	w.currentRun().processCoalescedStreamChunks("current", StreamChunk{
 		TurnID:  "stale",
 		Type:    provider.ContentBlockTypeText,

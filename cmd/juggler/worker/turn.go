@@ -89,6 +89,17 @@ type turnState struct {
 	// responseChan carries completed provider calls back to the wait loop.
 	responseChan chan llmCallResult
 
+	// chunks carries streamed content from the provider goroutine to THIS run's
+	// wait loop. Per-run rather than per-worker because the chunk stream and the
+	// streaming accumulators it feeds (see streaming, above) belong to one run:
+	// a single shared channel has a single consumer, so once the worker's run()
+	// loop and a turn are both live they race to take each chunk, and whichever
+	// wins folds it into ITS turn's accumulators. Generously buffered — the
+	// provider produces far faster than the document absorbs — and the producer
+	// falls through on worker shutdown so a stream outliving its reader cannot
+	// wedge the provider goroutine.
+	chunks chan StreamChunk
+
 	// cancelLLM is the cancel func for the in-flight LLM context, or nil when
 	// idle. Stored via atomic.Pointer so Stop() (running on a different
 	// goroutine) can safely cancel the call to unblock waitForLLMResponse.
@@ -134,7 +145,10 @@ func (w *ConversationWorker) interruptInFlightLLMForWake() {
 // its provider-attempt generation, so a later waiter consumes and rejects a late
 // result instead of mistaking it for its own answer.
 func newTurnState() *turnState {
-	t := &turnState{responseChan: make(chan llmCallResult, 1)}
+	t := &turnState{
+		responseChan: make(chan llmCallResult, 1),
+		chunks:       make(chan StreamChunk, 4096),
+	}
 	t.state.Store(StateIdle)
 	return t
 }

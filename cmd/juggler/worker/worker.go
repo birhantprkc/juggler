@@ -163,9 +163,21 @@ type undoCoalescer struct {
 // txnStore and assetStore are nil until handleInit knows projectPath.
 type persistence struct {
 	// Persistence
+	//
+	// saveTimer is the debounce timer, touched ONLY on the run() goroutine (see
+	// armSaveDebounce). It used to be re-armed by scheduleSave itself, which the
+	// Yjs sync callback invokes on whichever goroutine did the Transact() — safe
+	// only while that was always run(). A turn goroutine writing the document
+	// makes that genuinely concurrent, so scheduleSave now signals saveRequest
+	// and the run loop owns the timer.
 	saveTimer *time.Timer
-	saveChan  chan struct{} // Timer goroutine signals here; run loop does the actual save
-	dirty     atomic.Bool   // true when doc has unsaved changes since last successful save
+	// saveRequest carries "the document changed, re-arm the debounce" from any
+	// goroutine to the run loop. Buffered by one and sent to non-blockingly: a
+	// burst coalesces into a single re-arm, which is what a debounce wants
+	// anyway.
+	saveRequest chan struct{}
+	saveChan    chan struct{} // Timer goroutine signals here; run loop does the actual save
+	dirty       atomic.Bool   // true when doc has unsaved changes since last successful save
 	// flushReq lets tests (or shutdown) force-save synchronously without
 	// waiting on the SaveDebounceTime timer. Each request carries a reply
 	// chan that the run loop signals after the save completes.
@@ -354,10 +366,6 @@ type ConversationWorker struct {
 	// dispatches the action at the top level.
 	needsReconcile bool
 
-	// Dedicated channel for stream chunks from the provider goroutine.
-	// Separate from inbound so streaming can't be starved or dropped.
-	streamChunkChan chan StreamChunk
-
 	// Outbound Yjs update debouncer; coalesces a burst into one broadcast
 	// per SyncThrottleMs. See sync_batcher.go.
 	batcher *syncBatcher
@@ -410,17 +418,16 @@ func NewConversationWorker(conversationID, authorID string) *ConversationWorker 
 	tracker := NewOperationTracker(doc)
 
 	w := &ConversationWorker{
-		conversationID:  conversationID,
-		authorID:        authorID,
-		doc:             doc,
-		tracker:         tracker,
-		tape:            NewEventTape(),
-		callbacks:       newCallbackRegistry(),
-		streamChunkChan: make(chan StreamChunk, 4096),
-		done:            make(chan struct{}),
-		stopped:         make(chan struct{}),
-		turn:            newTurnState(),
-		docChangeChan:   make(chan struct{}, 1),
+		conversationID: conversationID,
+		authorID:       authorID,
+		doc:            doc,
+		tracker:        tracker,
+		tape:           NewEventTape(),
+		callbacks:      newCallbackRegistry(),
+		done:           make(chan struct{}),
+		stopped:        make(chan struct{}),
+		turn:           newTurnState(),
+		docChangeChan:  make(chan struct{}, 1),
 		toolDrive: toolDrive{
 			tools:                     newToolCommandTracker(),
 			redriveInterval:           defaultRedriveInterval,
@@ -428,8 +435,9 @@ func NewConversationWorker(conversationID, authorID string) *ConversationWorker 
 			lastReconciledStrategyIDs: make(map[string]string),
 		},
 		persistence: persistence{
-			saveChan: make(chan struct{}, 1),
-			flushReq: make(chan chan error, 4),
+			saveChan:    make(chan struct{}, 1),
+			saveRequest: make(chan struct{}, 1),
+			flushReq:    make(chan chan error, 4),
 		},
 		// Both marks mean "nothing in flight" at -1, so the zero value would
 		// read as "collapse everything from entry 0".
@@ -873,16 +881,10 @@ func (r *run) run(ctx context.Context) {
 			return
 		case msg := <-r.inbound:
 			r.handleMessage(msg)
-		case chunk := <-r.streamChunkChan:
-			r.processCoalescedStreamChunks(r.t.llmTurnID, chunk)
-			// A chunk reaching the run loop arrives after its turn's wait loop
-			// has returned, so nothing else will come back for it: there is no
-			// later write to fold it into and the throttle must not hold it.
-			r.flushPendingStreamWrites()
 		case <-r.doc.UpdateSignal():
 			r.batcher.Schedule()
-		case <-r.batcher.TimerChan():
-			r.batcher.Flush()
+		case <-r.saveRequest:
+			r.armSaveDebounce()
 		case <-r.saveChan:
 			// Skip if marked for deletion — the folder is about to be
 			// removed, and saving would recreate it as "Untitled--<id>",

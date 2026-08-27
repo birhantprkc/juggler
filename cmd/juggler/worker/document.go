@@ -180,6 +180,30 @@ func (cd *ConversationDocument) DrainUpdates() [][]byte {
 	return out
 }
 
+// takeBatchForBroadcast folds any updates the document has buffered into batch,
+// then merges them and resolves the sync sink under ONE ycrdtMu hold. Both
+// halves need that hold: MergeUpdates is a y-crdt call, and reading
+// onSyncBroadcast separately lets a concurrent Destroy clear it mid-flush — a
+// real race once the batcher drains on its own goroutine rather than the
+// worker's.
+//
+// Returns (remaining, merged, sink). The sink is returned rather than invoked so
+// the caller runs it outside the lock: it broadcasts to clients and must never
+// execute under the process-wide y-crdt mutex. A nil sink means there is nobody
+// to broadcast to — no callback registered yet, or the document is destroyed —
+// and the batch comes back untouched for a later flush.
+func (cd *ConversationDocument) takeBatchForBroadcast(batch [][]byte) (remaining [][]byte, merged []byte, sink func([]byte)) {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+
+	batch = append(batch, cd.pendingUpdates...)
+	cd.pendingUpdates = nil
+	if len(batch) == 0 || cd.onSyncBroadcast == nil {
+		return batch, nil, nil
+	}
+	return nil, ycrdt.MergeUpdates(batch, ycrdt.NewUpdateDecoderV1, ycrdt.NewUpdateEncoderV1, false), cd.onSyncBroadcast
+}
+
 // RegisterItemsObserver registers an observer for items changes.
 // Uses a doc-level "update" observer so it survives items pointer changes
 // (e.g., when state is loaded and root.items is replaced by the loaded Y.Array).

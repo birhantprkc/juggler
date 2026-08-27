@@ -158,8 +158,22 @@ func (r *run) saveStateToDisk() error {
 	return nil
 }
 
+// scheduleSave marks the document dirty and asks the run loop to re-arm the
+// save debounce. Callable from ANY goroutine: it is invoked from the Yjs sync
+// callback, which fires on whichever goroutine did the Transact() — the run
+// loop, the batcher actor's broadcast, or a turn. It therefore touches nothing
+// but an atomic and a buffered channel; armSaveDebounce owns the timer.
 func (w *ConversationWorker) scheduleSave() {
 	w.dirty.Store(true)
+	select {
+	case w.saveRequest <- struct{}{}:
+	default: // a re-arm is already queued — the debounce is about to be reset anyway
+	}
+}
+
+// armSaveDebounce (re)starts the debounce timer. Run goroutine only — it is the
+// sole writer of saveTimer.
+func (w *ConversationWorker) armSaveDebounce() {
 	if w.saveTimer != nil {
 		w.saveTimer.Stop()
 	}
@@ -175,6 +189,10 @@ func (w *ConversationWorker) scheduleSave() {
 
 func (r *run) onShutdown() {
 	defer r.callbacks.stop()
+	// Retires the batcher goroutine, flushing once more on the way out. Ordered
+	// after the callbacks defer so it runs BEFORE it (defers unwind LIFO): the
+	// final flush broadcasts, and a stopped callback registry would drop it.
+	defer r.batcher.stop()
 	// Deferred LIFO: r.log.Close() (registered last) runs first to release the
 	// file, THEN maybePurgeLogs() removes it — an open file can't be deleted on
 	// Windows, so the ordering matters.
