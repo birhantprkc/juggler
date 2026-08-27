@@ -247,8 +247,8 @@ func (s *Server) leaveViewerGroup(clientID string) {
 	}
 }
 
-// registerClient adds a client to the process-scoped client hub.
-func (s *Server) registerClient(client RealtimeClient) { s.hub.register(client) }
+// registerClient atomically admits a client to the process-scoped client hub.
+func (s *Server) registerClient(client RealtimeClient) bool { return s.hub.register(client) }
 
 // unregisterClient removes a client from the process-scoped client hub.
 func (s *Server) unregisterClient(client RealtimeClient) { s.hub.unregister(client) }

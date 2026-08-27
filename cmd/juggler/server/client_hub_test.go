@@ -5,6 +5,7 @@
 package server
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -105,5 +106,35 @@ func TestClientHub_ViewerCountExcludesEngine(t *testing.T) {
 	}
 	if got := h.viewerCount(); got != 1 {
 		t.Fatalf("viewerCount() = %d after v2 left, want 1", got)
+	}
+}
+
+func TestClientHub_ViewerLimit(t *testing.T) {
+	h := newClientHub()
+	viewers := make([]*WSClient, 0, maxViewerClients)
+	for i := 0; i < maxViewerClients; i++ {
+		viewer := testRoleClient(fmt.Sprintf("viewer-%d", i), ClientRoleViewer, "local")
+		if !h.register(viewer) {
+			t.Fatalf("viewer %d was rejected below the limit", i+1)
+		}
+		viewers = append(viewers, viewer)
+	}
+
+	excess := testRoleClient("excess", ClientRoleViewer, "local")
+	if h.register(excess) {
+		t.Fatal("viewer above the limit was admitted")
+	}
+	if got := h.viewerCount(); got != maxViewerClients {
+		t.Fatalf("viewerCount() = %d, want %d", got, maxViewerClients)
+	}
+
+	engine := testRoleClient("engine", ClientRoleEngine, "local")
+	if !h.register(engine) {
+		t.Fatal("engine was rejected by the viewer limit")
+	}
+
+	h.unregister(viewers[0])
+	if !h.register(excess) {
+		t.Fatal("viewer was rejected after a slot was released")
 	}
 }

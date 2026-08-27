@@ -76,8 +76,17 @@ func (s *Server) runRealtimeClientLoop(ctx context.Context, client RealtimeClien
 
 	// Register with server state for broadcasts. Done AFTER the session send so
 	// the client already knows its own id before the first clients-changed
-	// broadcast (which registering triggers) can reach it.
-	s.registerClient(client)
+	// broadcast (which registering triggers) can reach it. Admission and
+	// registration are one hub operation, so simultaneous arrivals cannot exceed
+	// the process-wide viewer limit.
+	if !s.registerClient(client) {
+		client.Send(map[string]any{
+			"type":    "server-full",
+			"message": "Too many clients are connected",
+		})
+		client.Close()
+		return
+	}
 	defer s.unregisterClient(client)
 
 	// Seed providers snapshot. `ready` is false until the first refresh has

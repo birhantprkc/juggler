@@ -26,6 +26,10 @@ const (
 	hubViewerCount
 	hubViewerList
 	hubShutdown
+
+	// maxViewerClients is a deliberately generous guardrail for a desktop server.
+	// The hidden engine is not a viewer and does not consume one of these slots.
+	maxViewerClients = 32
 )
 
 type hubOp struct {
@@ -33,6 +37,7 @@ type hubOp struct {
 	client     RealtimeClient
 	msg        any
 	doneCh     chan struct{}
+	boolResult chan bool
 	intResult  chan int
 	listResult chan []clientDescriptor
 }
@@ -118,6 +123,11 @@ func (h *clientHub) run() {
 		switch op.kind {
 		case hubRegister:
 			id := op.client.ClientID()
+			_, replacing := clients[id]
+			if op.client.ClientRole() == ClientRoleViewer && !replacing && len(viewerDescriptors()) >= maxViewerClients {
+				op.boolResult <- false
+				continue
+			}
 			// A re-register under a live id replaces the entry, so the old
 			// pipeline is stopped rather than orphaned with its goroutines.
 			remove(id)
@@ -125,6 +135,7 @@ func (h *clientHub) run() {
 			if op.client.ClientRole() == ClientRoleViewer {
 				broadcastViewers()
 			}
+			op.boolResult <- true
 		case hubUnregister:
 			id := op.client.ClientID()
 			if _, ok := clients[id]; ok {
@@ -165,7 +176,14 @@ func (h *clientHub) run() {
 	}
 }
 
-func (h *clientHub) register(c RealtimeClient)   { h.ch <- hubOp{kind: hubRegister, client: c} }
+// register atomically admits and records a client. Viewer admission fails once
+// the process-wide viewer limit is reached; engine clients are always admitted.
+func (h *clientHub) register(c RealtimeClient) bool {
+	r := make(chan bool, 1)
+	h.ch <- hubOp{kind: hubRegister, client: c, boolResult: r}
+	return <-r
+}
+
 func (h *clientHub) unregister(c RealtimeClient) { h.ch <- hubOp{kind: hubUnregister, client: c} }
 func (h *clientHub) broadcast(msg any)           { h.ch <- hubOp{kind: hubBroadcast, msg: msg} }
 
