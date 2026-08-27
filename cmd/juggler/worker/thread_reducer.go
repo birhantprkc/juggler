@@ -354,12 +354,35 @@ func (r *run) updateApprovalWaitAnchor() {
 const maxReconcilePasses = 10
 
 // drainReconcile runs tryReconcile until the reducer is quiet, bounded by
-// maxReconcilePasses. Used wherever an event or strategy-loop step may leave
-// needsReconcile set and no run() event loop is guaranteed to pick it up.
+// maxReconcilePasses. The run() loop drains after every event; requestReconcile
+// drains here directly when there is no loop to hand the pass to.
 func (r *run) drainReconcile() {
 	for i := 0; i < maxReconcilePasses && r.needsReconcile; i++ {
 		r.tryReconcile()
 	}
+}
+
+// requestReconcile asks for a reducer pass without running one here. Under a
+// live run() loop it posts to reconcileRequest, so the pass — and any dispatch
+// it decides on — happens as a fresh iteration of the event loop instead of as
+// recursion on the caller's stack. That is what lets a turn hand the reducer
+// back at its end rather than driving the next turn from inside the one that
+// just finished.
+//
+// Tests drive runStrategyLoop directly with no run() loop behind it (only three
+// files call Start), and nothing would ever consume the post. For those, fall
+// back to draining inline — the behaviour every one of those call sites has
+// always had.
+func (r *run) requestReconcile() {
+	if r.actorStarted.Load() {
+		select {
+		case r.reconcileRequest <- struct{}{}:
+		default: // a pass is already queued, and one pass is all this asks for
+		}
+		return
+	}
+	r.needsReconcile = true
+	r.drainReconcile()
 }
 
 func (r *run) tryReconcile() {
@@ -393,8 +416,8 @@ func (r *run) tryReconcile() {
 	// the thread waits forever, unrun, while the conversation reports idle. This
 	// tick is the retry. It self-guards on idle, so it is inert mid-turn.
 	if r.checkForNewThreads() {
-		// The run mutated the doc and settled; re-evaluate from scratch rather
-		// than walking down with items read before it.
+		// The pickup claimed a thread and marked the conversation busy; re-evaluate
+		// from scratch rather than walking down with items read before it.
 		r.needsReconcile = true
 		return
 	}

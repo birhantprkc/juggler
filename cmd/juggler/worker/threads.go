@@ -290,8 +290,7 @@ func (r *run) createThread(opts CreateThreadOptions) (string, error) {
 
 	if opts.ExternalDispatch {
 		r.requestLLM(threadItemID)
-		r.needsReconcile = true
-		r.drainReconcile()
+		r.requestReconcile()
 	}
 
 	return threadItemID, nil

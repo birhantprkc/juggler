@@ -512,14 +512,14 @@ func (r *run) finishStrategyRun() {
 
 	// Non-blocking: if the loop returned after dispatching tools or
 	// creating a child thread, THIS thread is left awaiting_llm — let the reducer
-	// dispatch the child. In production the run() event loop calls
-	// tryReconcile(); drain it inline here so tests (no run()) also work.
+	// dispatch the child. requestReconcile hands that pass to the run() loop, so
+	// the child's turn starts on a fresh iteration rather than underneath this
+	// one; with no loop behind it (tests) it drains inline.
 	// Asked of the turn's own thread: a sibling parked awaiting dispatch is not
 	// evidence that this run has work outstanding.
 	if r.threadActivity(r.t.thread.itemID) == ActivityAwaitingLLM {
 		r.storeState(StateIdle)
-		r.needsReconcile = true
-		r.drainReconcile()
+		r.requestReconcile()
 		return
 	}
 
@@ -578,8 +578,7 @@ func (r *run) finishStrategyRun() {
 				// status written at all — a doc left mid-turn with nothing driving
 				// it never rests, and never fires the send this guard protects.
 				if r.requestLLM(openID) {
-					r.needsReconcile = true
-					r.drainReconcile()
+					r.requestReconcile()
 					return
 				}
 			}
@@ -605,8 +604,7 @@ func (r *run) finishStrategyRun() {
 
 		if requeue {
 			r.requestLLM(queuedID)
-			r.needsReconcile = true
-			r.drainReconcile()
+			r.requestReconcile()
 			return
 		}
 
@@ -630,8 +628,7 @@ func (r *run) finishStrategyRun() {
 		// end-of-run turnContinue), never here.
 		if completedThreadID != "" && r.hasPendingItems("") {
 			r.requestLLM("")
-			r.needsReconcile = true
-			r.drainReconcile()
+			r.requestReconcile()
 			return
 		}
 
@@ -653,7 +650,7 @@ func (r *run) finishStrategyRun() {
 		// hook's effects are external side-effects, not doc writes.
 		r.dispatchContextTurnHook()
 	} else {
-		r.drainReconcile()
+		r.requestReconcile()
 	}
 }
 

@@ -363,8 +363,35 @@ type ConversationWorker struct {
 	// document observer (handleItemsChange) which fires synchronously —
 	// it cannot run the LLM inline. Instead it sets needsReconcile=true;
 	// the main event loop calls tryReconcile() after every event and
-	// dispatches the action at the top level.
+	// dispatches the action at the top level. Run goroutine only — anywhere
+	// else asks for a pass through requestReconcile.
 	needsReconcile bool
+
+	// reconcileRequest carries "the reducer needs another pass" to the run loop,
+	// which owns needsReconcile. Buffered by one and sent to non-blockingly: the
+	// flag is a single bit, so a burst coalesces into one pass, which is all a
+	// re-tickle ever asked for.
+	//
+	// It is also what keeps a finished turn from dispatching the next one on its
+	// own stack: finishStrategyRun posts here and returns, so the reducer's
+	// walk-down runs as a fresh iteration of the event loop rather than as
+	// recursion underneath the run that just ended.
+	reconcileRequest chan struct{}
+
+	// threadDispatch carries a thread id whose claim checkForNewThreads has
+	// already taken, so the run loop starts its strategy run — again as its own
+	// loop iteration rather than inline underneath whatever noticed the thread.
+	// Buffered by one and never contended: the claim checkForNewThreads holds is
+	// what bounds this to a single outstanding dispatch.
+	threadDispatch chan string
+
+	// actorStarted reports that run() is live and owns the reducer, so
+	// requestReconcile and dispatchThreadRun hand work to it instead of doing it
+	// on the calling goroutine. Set once by Start and never cleared: a post to a
+	// loop that has since stopped is dropped, which is what shutdown wants, while
+	// running the reducer inline on a turn's goroutine is not. Tests that drive
+	// the strategy loop directly never call Start, and take the inline path.
+	actorStarted atomic.Bool
 
 	// Outbound Yjs update debouncer; coalesces a burst into one broadcast
 	// per SyncThrottleMs. See sync_batcher.go.
@@ -418,16 +445,18 @@ func NewConversationWorker(conversationID, authorID string) *ConversationWorker 
 	tracker := NewOperationTracker(doc)
 
 	w := &ConversationWorker{
-		conversationID: conversationID,
-		authorID:       authorID,
-		doc:            doc,
-		tracker:        tracker,
-		tape:           NewEventTape(),
-		callbacks:      newCallbackRegistry(),
-		done:           make(chan struct{}),
-		stopped:        make(chan struct{}),
-		turn:           newTurnState(),
-		docChangeChan:  make(chan struct{}, 1),
+		conversationID:   conversationID,
+		authorID:         authorID,
+		doc:              doc,
+		tracker:          tracker,
+		tape:             NewEventTape(),
+		callbacks:        newCallbackRegistry(),
+		done:             make(chan struct{}),
+		stopped:          make(chan struct{}),
+		turn:             newTurnState(),
+		docChangeChan:    make(chan struct{}, 1),
+		reconcileRequest: make(chan struct{}, 1),
+		threadDispatch:   make(chan string, 1),
 		toolDrive: toolDrive{
 			tools:                     newToolCommandTracker(),
 			redriveInterval:           defaultRedriveInterval,
@@ -510,6 +539,7 @@ func (w *ConversationWorker) SetSyncThrottle(d time.Duration) {
 
 // Start begins the worker's message processing loop.
 func (r *run) Start(ctx context.Context) {
+	r.actorStarted.Store(true)
 	go r.run(ctx)
 }
 
@@ -906,6 +936,10 @@ func (r *run) run(ctx context.Context) {
 			ack <- err
 		case <-r.docChangeChan:
 			r.handleItemsChange()
+		case <-r.reconcileRequest:
+			r.needsReconcile = true
+		case threadItemID := <-r.threadDispatch:
+			r.startThreadRun(threadItemID)
 		case <-r.livenessC():
 			r.detectFrozenGap()
 			r.finalizeToolsAbsentFromExecReport()
@@ -1634,12 +1668,13 @@ func (r *run) handleItemsChange() {
 // (via /thread command) and LLM-created threads (via create_thread tool) are
 // NOT auto-processed — they go through handleSendMessage or the strategy loop.
 //
-// Returns true when it dispatched a thread's run, so the reducer can re-evaluate
-// from a clean state rather than continuing a walk-down built on pre-run data.
+// Returns true when it picked a thread up — claimed it, marked the conversation
+// busy and handed the run to the run() loop — so the reducer can re-evaluate
+// from a clean state rather than continuing a walk-down built on stale data.
 func (r *run) checkForNewThreads() bool {
 	// Conversation-wide, like the isLLMClaimed gate below and for the same
-	// reason: the run this dispatches executes INLINE on the run() goroutine, so
-	// a second dispatch would re-enter the strategy loop underneath the first.
+	// reason: only one run executes at a time, so a second pickup would start a
+	// strategy loop while another still holds the conversation.
 	// Phase G narrows both together.
 	if r.anyRunState() != StateIdle {
 		return false
@@ -1670,9 +1705,9 @@ func (r *run) checkForNewThreads() bool {
 			continue
 		}
 
-		// Get the thread's items array
-		threadItems := r.doc.GetThreadItemsArray(item.ItemID)
-		if threadItems == nil {
+		// A thread with no items array has nothing to run. startThreadRun
+		// re-resolves the array it actually runs against.
+		if r.doc.GetThreadItemsArray(item.ItemID) == nil {
 			continue
 		}
 
@@ -1683,9 +1718,8 @@ func (r *run) checkForNewThreads() bool {
 
 		// Claim before setting context — fail fast if a turn is already in flight
 		// anywhere in the conversation (isLLMClaimed is the same serial-execution
-		// gate dispatchCallLLMOnThread takes, for the same reason: the run below
-		// executes inline on the run() goroutine) or if this thread already holds
-		// its own claim.
+		// gate dispatchCallLLMOnThread takes, for the same reason: only one run
+		// executes at a time) or if this thread already holds its own claim.
 		// Re-tickle on failure, exactly as dispatchCallLLMOnThread does: this
 		// thread still needs its run, and needsStrategyRun is consumed only after
 		// a successful claim. Without the re-arm the thread is orphaned — the
@@ -1714,24 +1748,87 @@ func (r *run) checkForNewThreads() bool {
 		// the thread result; cancellation must not leave a persistent trigger that
 		// restarts the thread immediately on the next observer tick.
 		r.clearThreadNeedsStrategyRun(item.ItemID)
-		r.t.thread.itemID = item.ItemID
-		r.t.thread.itemsArray = threadItems
+
+		// Publish the busy frame HERE, not in startThreadRun — the pickup, not the
+		// start, is the moment this conversation became busy, and the two are no
+		// longer the same moment. Every dispatch gate reads this state, so leaving
+		// it idle across the hand-off would let the reducer keep evaluating a
+		// conversation whose next run is already decided. It is also what the UI
+		// renders: the claim is doc-native state it does not show, so without this
+		// the conversation reads as idle — no spinner, no status — for the whole
+		// window before the run writes a status of its own.
+		//
 		// Turn-scoped anchor (see dispatchCallLLMOnThread): set once at turn start,
 		// preserved across re-dispatches so the elapsed digit spans the whole turn.
 		if r.t.processingStartedAt == 0 {
 			r.t.processingStartedAt = time.Now().UnixMilli()
 		}
 		r.storeState(StateProcessing)
-		// Publish the busy frame at dispatch, exactly as dispatchCallLLMOnThread
-		// does. The claim above is doc-native state the UI does not render, so
-		// without this the conversation reads as idle — no spinner, no status —
-		// for the whole window before the run writes a status of its own.
 		r.sendStatus("preparing", "")
 		r.batcher.Flush()
-		r.runStrategyLoop("", true)
+
+		r.dispatchThreadRun(item.ItemID)
 		return true // Process one thread at a time
 	}
 	return false
+}
+
+// dispatchThreadRun hands a thread checkForNewThreads has claimed and marked
+// busy to the run() loop, which starts its run as its own loop iteration. The
+// pickup is reachable from inside a turn (promotePendingItems →
+// handleItemsChange), and a run started there would execute underneath the turn
+// that noticed it; posting makes the loop the only place a doc-driven run
+// begins.
+//
+// The claim and the busy state are what make the gap between post and start
+// safe: every dispatch gate refuses while they hold, so nothing else can start a
+// run in the window, and the buffered slot cannot be contended.
+//
+// With no run() loop behind it — the tests that call checkForNewThreads directly
+// — start it here, which is where it has always run.
+func (r *run) dispatchThreadRun(threadItemID string) {
+	if !r.actorStarted.Load() {
+		r.startThreadRun(threadItemID)
+		return
+	}
+	select {
+	case r.threadDispatch <- threadItemID:
+	default:
+		// Unreachable while the claim bounds this to one outstanding dispatch.
+		// If it ever is reached, re-arm the trigger and hand back both the claim
+		// and the busy frame rather than leaving a thread claimed and unrun.
+		r.log.Error("Thread dispatch queue full, re-arming pickup for %s", threadItemID)
+		r.setThreadNeedsStrategyRun(threadItemID)
+		r.abandonThreadRun(threadItemID)
+	}
+}
+
+// startThreadRun runs a claimed thread's strategy loop. Run goroutine only.
+//
+// The thread's items array is resolved here rather than carried from the pickup:
+// a pointer resolved under an earlier ycrdtMu hold can be tombstoned by a sync
+// update applied since. A thread deleted in that window has no run to start.
+func (r *run) startThreadRun(threadItemID string) {
+	threadItems := r.doc.GetThreadItemsArray(threadItemID)
+	if threadItems == nil {
+		r.abandonThreadRun(threadItemID)
+		return
+	}
+	r.t.thread.itemID = threadItemID
+	r.t.thread.itemsArray = threadItems
+	r.runStrategyLoop("", true)
+}
+
+// abandonThreadRun undoes the pickup for a thread whose run never started: it
+// hands back the claim and the busy frame checkForNewThreads published, so the
+// conversation rests rather than reporting a turn that will never write to it,
+// and asks the reducer for the pass that settles what is left.
+func (r *run) abandonThreadRun(threadItemID string) {
+	r.releaseLLM(threadItemID)
+	r.storeState(StateIdle)
+	r.t.processingStartedAt = 0
+	r.sendStatus("idle", "")
+	r.requestReconcile()
 }
 
 // setThreadNeedsStrategyRun re-arms the one-shot doc-driven run trigger on a
