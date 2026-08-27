@@ -599,6 +599,104 @@ func TestAnsweredCallGetsAReceiptNotARewrite(t *testing.T) {
 
 }
 
+// TestReadButUnansweredCallTakesTheRetry is the limit on the receipt rule, and
+// the shape a failing child leaves. The parent's turn takes the child's error in
+// — stamping runResultFed as it builds the wire — and then dies on an error of
+// its own, so it commits nothing: no reply stands on that result, nothing sits
+// below it on the wire, and the error item it left says nothing to the provider.
+//
+// Retrying the child must therefore report to the item still standing for the
+// call, not appear beside it. A second tile for one call is the parent reading
+// its own failure twice.
+//
+// The second half is the guard against over-reading that rule: once the parent
+// has actually answered, the freeze is real again and the next run gets its own
+// item.
+func TestReadButUnansweredCallTakesTheRetry(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.doc.ensureItems()
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.currentRun().storeState(StateProcessing)
+
+	threadID, err := w.currentRun().createThread(CreateThreadOptions{
+		Goal: "map auth", Prompt: "find the auth flow", ToolUseID: "tu-1",
+		ToolName: "Explore", ToolInput: json.RawMessage(`{"prompt":"find the auth flow"}`), Delegated: true,
+	})
+	if err != nil {
+		t.Fatalf("createThread: %v", err)
+	}
+	inChild := func(item ConversationItem) {
+		w.turn.thread.itemID = threadID
+		w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+		w.currentRun().appendTargetMessage(item)
+		w.currentRun().resetThreadContext()
+	}
+	inParent := func(item ConversationItem) {
+		w.currentRun().resetThreadContext()
+		w.currentRun().appendTargetMessage(item)
+	}
+	sessionItems := func() int {
+		n := 0
+		for _, it := range w.doc.GetItems() {
+			if it.Type == ItemTypeThread && (it.ItemID == threadID || it.AliasOf == threadID) {
+				n++
+			}
+		}
+		return n
+	}
+
+	// The child stops on an error and the parent reads it — from here the item is
+	// stamped as fed — and then the parent's own turn dies on one too.
+	inChild(ConversationItem{Type: ItemTypeError, ItemID: "e-1", Content: "invalid request: bad model"})
+	w.settleThreadRun(threadID, false)
+	before := w.currentRun().buildMessages(nil)
+	inParent(ConversationItem{Type: ItemTypeError, ItemID: "pe-1", Content: "invalid request: bad model"})
+
+	// Retrying the child answers the call that is still waiting on it.
+	inChild(ConversationItem{Type: ItemTypeUser, ItemID: "human-1", Content: "try again"})
+	inChild(ConversationItem{Type: ItemTypeAssistant, ItemID: "a-1", Content: "Auth lives in auth.go."})
+	w.settleThreadRun(threadID, false)
+
+	if n := sessionItems(); n != 1 {
+		t.Fatalf("a retry of a call nothing answered must report to the item already standing for it, got %d items", n)
+	}
+	items := w.doc.GetItems()
+	var call ConversationItem
+	for _, it := range items {
+		if it.ItemID == threadID {
+			call = it
+		}
+	}
+	if call.RunItemID != "human-1" {
+		t.Errorf("the call must report the run it absorbed, selects %q", call.RunItemID)
+	}
+
+	after := w.currentRun().buildMessages(nil)
+	if len(after) != len(before) {
+		t.Fatalf("a retry the parent never answered must cost it no extra message, got %d against %d:\n%v",
+			len(after), len(before), after)
+	}
+	if c, _ := after[len(after)-1]["content"].(string); !strings.Contains(c, "Auth lives in auth.go.") {
+		t.Errorf("the call must now answer with the retry's reply, got %q", c)
+	}
+
+	// The parent answers this time, so its next read is committed history and the
+	// freeze is real: another run gets an item of its own.
+	inParent(ConversationItem{Type: ItemTypeAssistant, ItemID: "pa-1", Content: "Right — auth.go it is."})
+	inChild(ConversationItem{Type: ItemTypeUser, ItemID: "human-2", Content: "and the tests?"})
+	inChild(ConversationItem{Type: ItemTypeAssistant, ItemID: "a-2", Content: "Tests in auth_test.go."})
+	w.settleThreadRun(threadID, false)
+
+	if n := sessionItems(); n != 2 {
+		t.Fatalf("a run arriving after the parent has answered must get its own item, got %d items", n)
+	}
+	final := w.doc.GetItems()
+	if receipt := final[len(final)-1]; receipt.AliasOf != threadID || receipt.RunItemID != "human-2" {
+		t.Errorf("expected a receipt selecting the run the parent has not read, got %+v", receipt)
+	}
+}
+
 // TestUnreadReceiptCoalescesTheNextRun is the same rule read from the other end.
 // A receipt the parent has not read yet is not history, so the next run follows
 // it forward instead of stacking a second item — which is what keeps a user who

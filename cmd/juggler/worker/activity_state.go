@@ -455,6 +455,13 @@ func (r *run) advanceElapsedAnchor(waitMs int64) {
 func (w *ConversationWorker) readProcessingState() map[string]any {
 	ycrdtMu.Lock()
 	defer ycrdtMu.Unlock()
+	return w.readProcessingStateLocked()
+}
+
+// readProcessingStateLocked is readProcessingState without the lock; callers
+// MUST already hold ycrdtMu. The lock is not reentrant, so a routine that is
+// already inside a transaction has to read the frame this way (ycrdt_watchdog).
+func (w *ConversationWorker) readProcessingStateLocked() map[string]any {
 	raw := w.doc.metadata.Get("processingState")
 	existing, _ := fromYcrdt(raw).(map[string]any)
 	return existing
@@ -500,6 +507,12 @@ func (w *ConversationWorker) getActivity() string {
 // behind an unrelated run.
 func (w *ConversationWorker) threadActivity(threadItemID string) string {
 	return entryActivity(runEntryOf(w.readProcessingState(), threadItemID))
+}
+
+// threadActivityLocked is threadActivity without the lock; callers MUST already
+// hold ycrdtMu.
+func (w *ConversationWorker) threadActivityLocked(threadItemID string) string {
+	return entryActivity(runEntryOf(w.readProcessingStateLocked(), threadItemID))
 }
 
 // hasActiveRun reports whether ANY thread holds a claim. The conversation-wide

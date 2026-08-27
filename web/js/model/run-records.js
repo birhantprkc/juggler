@@ -191,6 +191,45 @@ function shownRunOutcome(threadYMap, runItemId, toolUseId) {
 }
 
 /**
+ * Item types the worker's `itemWireMessages` emits nothing for, so a turn that
+ * left only these produced nothing the model will ever read. Deliberately the
+ * conservative subset of that projection: a type missing here is read as loud,
+ * which costs a receipt rather than a rewrite.
+ * @type {ReadonlySet<string>}
+ */
+const WIRE_SILENT_ITEM_TYPES = new Set(['error', 'notice']);
+
+/**
+ * Whether the parent took the trailing item's result in and produced nothing
+ * from it: the turn that read it died, leaving an error item and no reply.
+ *
+ * `runResultFed` is stamped as the wire is BUILT, so it is stamped by a turn
+ * that may then fail — and a turn that failed committed nothing. What the freeze
+ * protects is a result the parent has ANSWERED; where no answer stands on it,
+ * nothing slides and nothing is contradicted. The evidence is items, not their
+ * absence: something must stand after the item, and all of it must be silent on
+ * the wire. An item with nothing after it is the ordinary shape of a reply that
+ * has not arrived yet.
+ *
+ * Mirrors fedResultUnansweredLocked in worker/run_records.go, less its
+ * mid-request check: that one reads processingState, and this path settles a
+ * thread nothing is driving.
+ * @param {any[]} arr - The parent's items, in order.
+ * @param {number} trailingIndex - Index of the item to report to.
+ * @returns {boolean} True when the read produced no answer.
+ */
+function fedResultUnanswered(arr, trailingIndex) {
+  let silent = false;
+  for (let i = trailingIndex + 1; i < arr.length; i++) {
+    const item = arr[i];
+    if (typeof item?.get !== 'function') continue;
+    if (!WIRE_SILENT_ITEM_TYPES.has(item.get('type'))) return false;
+    silent = true;
+  }
+  return silent;
+}
+
+/**
  * Give a settling run somewhere in the parent to report to, when the item that
  * would otherwise report it has already answered the model.
  *
@@ -200,7 +239,11 @@ function shownRunOutcome(threadYMap, runItemId, toolUseId) {
  * (`runResultFed`) it is committed history: rewriting it would slide every
  * message after it and cold-start a stateful provider. So a further run is
  * appended as a RECEIPT of its own instead, selecting the run by the message
- * that started it. An unread receipt is re-pointed rather than joined by
+ * that started it. A result the parent read but never ANSWERED is the exception,
+ * and it is the shape a failing child leaves — the turn that read the child's
+ * error died on its own (fedResultUnanswered), committing nothing, so the item
+ * still standing for the child reports the retry rather than a second one
+ * appearing beside it. An unread receipt is re-pointed rather than joined by
  * another, so a child prompted six times leaves the parent one item to read. A
  * run that came out exactly as the one the trailing item already shows is
  * dropped for the same reason read the other way: it is not news, so there is
@@ -225,12 +268,14 @@ export function reportRunToParent(threadYMap, starterItemId, starterCall, mintIt
 
   const arr = typeof siblings.toArray === 'function' ? siblings.toArray() : [];
   let trailing = null;
+  let trailingIndex = -1;
   for (let i = arr.length - 1; i >= 0; i--) {
     const item = arr[i];
     if (typeof item?.get !== 'function' || item.get('type') !== 'thread') continue;
     const id = item.get('itemId');
     if (id !== canonicalId && item.get('aliasOf') !== canonicalId) continue;
     trailing = item;
+    trailingIndex = i;
     break;
   }
   if (!trailing) return;
@@ -242,10 +287,10 @@ export function reportRunToParent(threadYMap, starterItemId, starterCall, mintIt
   if (!selector && !runItemId) return;
   if (runItemId === starterItemId) return;
 
-  if (!trailing.get('runResultFed')) {
-    // Still unread, so this item absorbs the run — and now says which one, so
-    // the absorption survives being read (see itemRunRecord). A call whose OWN
-    // run this is needs no such note.
+  if (!trailing.get('runResultFed') || fedResultUnanswered(arr, trailingIndex)) {
+    // Unread, or read by a turn that produced nothing, so this item absorbs the
+    // run — and now says which one, so the absorption survives being read (see
+    // itemRunRecord). A call whose OWN run this is needs no such note.
     if (runItemId || starterCall !== selector) trailing.set('runItemId', starterItemId);
     return;
   }

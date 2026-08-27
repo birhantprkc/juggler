@@ -238,6 +238,56 @@ export async function runTests() {
     passed++;
   } catch (e) { failed++; errors.push(`identical run appends no receipt: ${msg(e)}`); }
 
+  // --- 3d: a read the parent never answered takes the next run itself ---
+  // `runResultFed` is stamped as the wire is built, so a turn that read the
+  // child's failure and then died on its own stamped it and committed nothing.
+  // Nothing stands on that result — an error item says nothing to the provider —
+  // so the retry reports to the item already waiting, rather than standing a
+  // second tile beside it for the same call. Mirrors fedResultUnansweredLocked in
+  // worker/run_records.go.
+  try {
+    const doc = new Y.Doc();
+    const root = doc.getArray('items');
+    const t = new Y.Map();
+    doc.transact(() => {
+      root.insert(0, [t]);
+      t.set('type', 'thread');
+      t.set('itemId', 'T1');
+      t.set('goal', 'map auth');
+      t.set('runToolUseId', 'tu-1');
+      t.set('runResultFed', true); // read as the wire was built…
+      const arr = new Y.Array();
+      t.set('items', arr);
+      arr.insert(0, [
+        item({
+          type: 'user', itemId: 'inv-1', content: 'where is auth?',
+          runToolUseId: 'tu-1', runToolName: 'Explore',
+          runStatus: 'error', runResult: 'invalid request: bad model'
+        }),
+        item({ type: 'user', itemId: 'human-1', content: 'try again' })
+      ]);
+      // …by a turn that then died on an error of its own.
+      root.push([item({ type: 'error', itemId: 'pe-1', content: 'invalid request: bad model' })]);
+    });
+
+    doc.transact(() => { settleRunCancelled(t, () => 'msg-new-1'); });
+    assert(root.length === 2 && t.get('runItemId') === 'human-1',
+      `a retry of a call nothing answered must report to the item standing for it; got ${root.length} items`);
+
+    // Once the parent has actually answered, the freeze is real again.
+    doc.transact(() => {
+      root.push([item({ type: 'assistant', itemId: 'pa-1', content: 'Right — auth.go it is.' })]);
+      t.get('items').push([
+        item({ type: 'user', itemId: 'human-2', content: 'and the tests?' }),
+        item({ type: 'assistant', itemId: 'a-2', content: 'Tests in auth_test.go.' })
+      ]);
+      settleRunCancelled(t, () => 'msg-new-2');
+    });
+    assert(root.length === 4 && root.get(3).get('runItemId') === 'human-2',
+      `a run arriving after the parent answered must get its own item; got ${root.length} items`);
+    passed++;
+  } catch (e) { failed++; errors.push(`unanswered read takes the retry: ${msg(e)}`); }
+
   // --- 4: the terminal Result block is a compaction fold's alone ---
   // A fold's transcript is folded away, so its summary stands nowhere else and
   // the block IS the column. Every other thread ends on the reply its last run

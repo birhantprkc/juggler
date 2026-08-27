@@ -322,8 +322,9 @@ func itemRunCall(item ConversationItem) ConversationItem {
 // An item whose result has already gone to the provider (RunResultFed) is
 // frozen too, wherever it stands. It is committed history: the live view is a
 // licence to absorb news the parent has not heard yet, not a licence to correct
-// something it has. A run that arrives after it has been read gets a receipt
-// item of its own instead (settleThreadRun).
+// something it has. A run that arrives after the parent has answered it gets a
+// receipt item of its own instead (settleThreadRun) — and one that arrives after
+// a turn read it and died still reports here, through the selector below.
 //
 // What it freezes ONTO is the run it actually reported, which need not be the
 // one its call started: an item that absorbed a human's resume before anybody
@@ -690,6 +691,66 @@ func trailingSessionItemLocked(arr *ycrdt.YArray, canonicalID string) *ycrdt.YMa
 	return nil
 }
 
+// fedResultUnansweredLocked reports whether the parent took the trailing item's
+// result in and produced nothing from it: the turn that read it died, leaving an
+// error item and no reply.
+//
+// runResultFed says the result went to the provider, which is what normally
+// freezes an item. It is stamped as the wire is BUILT, so it is stamped by a turn
+// that may then fail — and a turn that failed committed nothing. What the freeze
+// actually protects is a result the parent has ANSWERED, and the three costs of
+// rewriting one are all costs of an answer standing after it: messages sliding
+// below it, a stateful provider cold-starting on the change, and the parent's own
+// reasoning contradicting the result it now reads. Where the turn produced no
+// answer, none of them are owed.
+//
+// The evidence for that is items, not their absence. Something must stand after
+// the item — an error, a notice, whatever the dead turn left — and everything
+// standing after it must emit nothing to the provider (itemWireMessages returns
+// no messages, the same projection the wire is built from, so the two cannot
+// drift). An item with NOTHING after it is not evidence of a turn that produced
+// nothing; it is the ordinary shape of a turn whose reply has not arrived yet,
+// and that reply must not land on a result that changed underneath it.
+//
+// A thread item is loud without asking, because a thread item after this one is
+// another child the parent called, and because itemWireMessages needs the whole
+// sibling slice to resolve an alias. Its answer would be "loud" either way.
+//
+// The parent must also not be mid-request. Conversation-wide serial dispatch
+// makes that nearly impossible today — a child cannot settle while its parent
+// holds the claim — but "nearly" is not a thing to build on: a pending request
+// cancelled from elsewhere settles a run through cancelPendingEntry without
+// touching an unrelated in-flight turn, and a turn writes a notice while it runs,
+// which would otherwise read as a turn that ended saying nothing.
+//
+// Caller MUST hold ycrdtMu.
+func (w *ConversationWorker) fedResultUnansweredLocked(threadItemID string, parentArr *ycrdt.YArray, trailingID string) bool {
+	if parentArr == nil || trailingID == "" {
+		return false
+	}
+	if w.threadActivityLocked(w.doc.findParentThreadID(threadItemID)) == ActivityCallingLLM {
+		return false
+	}
+	silent := false
+	for i := int(parentArr.GetLength()) - 1; i >= 0; i-- {
+		m, ok := parentArr.Get(ycrdt.Number(i)).(*ycrdt.YMap)
+		if !ok {
+			continue
+		}
+		if id, _ := m.Get("itemId").(string); id == trailingID {
+			return silent
+		}
+		if t, _ := m.Get("type").(string); t == ItemTypeThread {
+			return false
+		}
+		if len(itemWireMessages(yMapToConversationItem(m), nil)) > 0 {
+			return false
+		}
+		silent = true
+	}
+	return false
+}
+
 // reportRunToParentLocked gives a settling run somewhere in the parent to report
 // to, when the item that would otherwise report it has already answered the
 // model.
@@ -702,6 +763,12 @@ func trailingSessionItemLocked(arr *ycrdt.YArray, canonicalID string) *ycrdt.YMa
 // the parent's own reasoning standing after a result that now contradicts it. So
 // a further run is appended as a RECEIPT of its own instead, at the end of the
 // parent's array where the model reads it as news.
+//
+// A result that was read but never ANSWERED is the exception, and it is the
+// shape a failing child leaves: the parent's turn takes the child's error in,
+// dies on its own error, and commits nothing. Retrying the child then reports to
+// the item still standing for it rather than to a second one
+// (fedResultUnansweredLocked).
 //
 // Appending on SETTLE rather than on resume is what keeps that promise cheap:
 // there is never an unsettled receipt, so the parent never parks on work it did
@@ -735,12 +802,15 @@ func (w *ConversationWorker) reportRunToParentLocked(threadItemID string, thread
 	if runItemID == starterID {
 		return // already the item this run reports to
 	}
-	if fed, _ := trailing.Get("runResultFed").(bool); !fed {
-		// Still unread, so this item absorbs the run — and now says which one it
-		// absorbed. Naming it is what makes the absorption survive being read: the
-		// item is frozen the moment its result reaches the model, and an item
-		// frozen back onto the call it was made by would report something other
-		// than what it sent. A call whose OWN run this is needs no such note.
+	trailingID, _ := trailing.Get("itemId").(string)
+	fed, _ := trailing.Get("runResultFed").(bool)
+	if !fed || w.fedResultUnansweredLocked(threadItemID, parentArr, trailingID) {
+		// Unread, or read by a turn that produced nothing, so this item absorbs the
+		// run — and now says which one it absorbed. Naming it is what makes the
+		// absorption survive being read: the item is frozen the moment an answer
+		// stands on its result, and an item frozen back onto the call it was made by
+		// would report something other than what it sent. A call whose OWN run this
+		// is needs no such note.
 		if runItemID != "" || starterCall != selector {
 			trailing.Set("runItemId", starterID)
 		}
