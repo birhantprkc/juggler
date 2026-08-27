@@ -41,7 +41,7 @@ func feedCompactionContextAndTools(w *ConversationWorker, tools ...ToolDefinitio
 func TestFoldConversationForCompactionBuildsUnsummarizedThread(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 
 	ruleID := generateItemID()
 	uID := generateItemID()
@@ -157,7 +157,7 @@ func captureAck(t *testing.T, w *ConversationWorker, clientID, ackID string) fun
 func TestHandleCompactFoldsSummarizesAndAcks(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	feedCompactionContextAndTools(w)
 	w.llmCallFunc = func(_ context.Context, _ json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
@@ -194,7 +194,7 @@ func TestHandleCompactFoldsSummarizesAndAcks(t *testing.T) {
 func TestHandleCompactBusyDeclines(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
 		arr := w.doc.ensureItems()
 		arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: ItemTypeUser, ItemID: generateItemID(), Content: "hello"})})
@@ -224,7 +224,7 @@ func TestHandleCompactBusyDeclines(t *testing.T) {
 func TestFoldConversationForCompactionSweepsMidConversationContext(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 
 	leadingFileID := generateItemID()
 	uID := generateItemID()
@@ -272,7 +272,7 @@ func TestFoldConversationForCompactionSweepsMidConversationContext(t *testing.T)
 func TestFoldConversationForCompactionNothingFoldable(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
 		arr := w.doc.ensureItems()
 		arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: "rule", ItemID: generateItemID(), Content: "only a rule"})})
@@ -297,7 +297,7 @@ func TestFoldConversationForCompactionNothingFoldable(t *testing.T) {
 func TestFoldConversationForCompactionSwallowsPriorSummary(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 
 	priorSummaryID := generateItemID()
 	freshUID := generateItemID()
@@ -350,7 +350,7 @@ func TestFoldConversationForCompactionSwallowsPriorSummary(t *testing.T) {
 func TestFoldConversationForCompactionPinsPendingFold(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 
 	pendingID := generateItemID()
 	freshUID := generateItemID()
@@ -379,7 +379,7 @@ func TestFoldConversationForCompactionPinsPendingFold(t *testing.T) {
 func TestFoldConversationForCompactionDeclinesSummaryOnly(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 
 	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
 		arr := w.doc.ensureItems()
@@ -406,7 +406,7 @@ func TestFoldConversationForCompactionDeclinesSummaryOnly(t *testing.T) {
 func TestHandleCompactConvergesToSingleSummary(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	feedCompactionContextAndTools(w)
 	summaries := []string{"first summary", "second summary"}

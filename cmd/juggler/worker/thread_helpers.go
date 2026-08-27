@@ -112,41 +112,57 @@ func (w *ConversationWorker) findThreadWithIncompleteTool() (string, bool) {
 	return threadID, found
 }
 
-// CancelStaleToolActions marks in-flight tool-action items as interrupted.
-// Called on strategy loop exit to clean up tools that were running when
-// the operation was interrupted (e.g., page reload, cancellation).
+// Each of the three cancel entry points takes the SUBTREE it applies to:
+// threadItemID names the thread whose items (and nested threads) are swept, and
+// "" is the root — which is the whole conversation, since every thread hangs off
+// it. Naming it is what keeps one thread's cancellation from stamping
+// "Interrupted" on a sibling's live tools; a thread that no longer exists sweeps
+// nothing.
+
+// CancelStaleToolActions marks in-flight tool-action items under threadItemID as
+// interrupted. Called on strategy loop exit to clean up tools that were running
+// when the operation was interrupted (e.g., page reload, cancellation).
 // Recursively traverses thread nested items.
 //
 // Single-writer rule: the worker is the sole writer of cancellation results.
 // The frontend kills the process (resource cleanup) but does not write to
 // the Y.doc result field on abort — this eliminates the race between
 // two Yjs clients writing the same key.
-func (w *ConversationWorker) CancelStaleToolActions() {
-	ycrdtMu.Lock()
-	executingIDs := w.cancelToolsInArray(w.doc.getItems(), false, false)
-	ycrdtMu.Unlock()
-	w.dispatchCancelTools(executingIDs)
+func (w *ConversationWorker) CancelStaleToolActions(threadItemID string) {
+	w.cancelToolsUnder(threadItemID, false, false)
 }
 
-// CancelInFlightToolActions cancels all non-terminal tool-actions including
-// ones in StateApproved, but leaves StatePending (awaiting-approval) tools
-// alone. Called on cancellation paths where the browser is the canceller of
-// pending approvals (the StateProcessing/finalizeCancellation path).
-func (w *ConversationWorker) CancelInFlightToolActions() {
-	ycrdtMu.Lock()
-	executingIDs := w.cancelToolsInArray(w.doc.getItems(), true, false)
-	ycrdtMu.Unlock()
-	w.dispatchCancelTools(executingIDs)
+// CancelInFlightToolActions cancels all non-terminal tool-actions under
+// threadItemID including ones in StateApproved, but leaves StatePending
+// (awaiting-approval) tools alone. Called on cancellation paths where the
+// browser is the canceller of pending approvals (the
+// StateProcessing/finalizeCancellation path).
+func (w *ConversationWorker) CancelInFlightToolActions(threadItemID string) {
+	w.cancelToolsUnder(threadItemID, true, false)
 }
 
-// CancelAllToolActions cancels every non-terminal tool-action, including those
-// still awaiting manual approval (StatePending). Called on handleCancel's
-// awaiting_llm branch where the user's Escape/deny means "stop everything in
-// this parked turn" — the worker is the sole canceller there (no live LLM call,
-// and the test path has no browser-side approval cancel).
-func (w *ConversationWorker) CancelAllToolActions() {
+// CancelAllToolActions cancels every non-terminal tool-action under
+// threadItemID, including those still awaiting manual approval (StatePending).
+// Called on handleCancel's awaiting_llm branch where the user's Escape/deny
+// means "stop everything in this parked turn" — the worker is the sole canceller
+// there (no live LLM call, and the test path has no browser-side approval
+// cancel).
+func (w *ConversationWorker) CancelAllToolActions(threadItemID string) {
+	w.cancelToolsUnder(threadItemID, true, true)
+}
+
+// cancelToolsUnder resolves the subtree and cancels within it under ONE ycrdtMu
+// hold, then dispatches the engine aborts with the lock released (see
+// dispatchCancelTools). Resolving the array inside the hold is deliberate: the
+// lock promises only that no two y-crdt calls overlap, so finding the thread and
+// walking it are one question and take one hold.
+func (w *ConversationWorker) cancelToolsUnder(threadItemID string, includeApproved, includePending bool) {
 	ycrdtMu.Lock()
-	executingIDs := w.cancelToolsInArray(w.doc.getItems(), true, true)
+	arr := w.doc.getItems()
+	if threadItemID != "" {
+		arr = findThreadItemsArray(arr, threadItemID)
+	}
+	executingIDs := w.cancelToolsInArray(arr, includeApproved, includePending)
 	ycrdtMu.Unlock()
 	w.dispatchCancelTools(executingIDs)
 }
@@ -174,29 +190,34 @@ func (w *ConversationWorker) dispatchCancelTools(refs []toolCancelRef) {
 	}
 }
 
-// blockedOnlyByApprovals reports whether the turn is parked solely on tool
-// approvals: at least one tool-action is awaiting manual approval (StatePending)
-// and nothing is actually executing anywhere in the conversation tree (no
+// blockedOnlyByApprovals reports whether the turn on threadItemID is parked
+// solely on tool approvals: at least one tool-action in that subtree is awaiting
+// manual approval (StatePending) and nothing in it is actually executing (no
 // approved/running tool, no open sub-thread). This is the signal that a cancel
 // should hand off to the reducer — which continues a queued turn or rests —
 // rather than parking. When real work is in flight, cancel must park so the
-// interrupted work isn't silently re-driven.
-func (w *ConversationWorker) blockedOnlyByApprovals() bool {
-	hasPending, hasExecuting := w.approvalBlockState()
+// interrupted work isn't silently re-driven. "" is the root, i.e. the whole
+// conversation.
+func (w *ConversationWorker) blockedOnlyByApprovals(threadItemID string) bool {
+	hasPending, hasExecuting := w.approvalBlockState(threadItemID)
 	return hasPending && !hasExecuting
 }
 
-// approvalBlockState scans the whole conversation tree once and reports whether
-// any tool-action is awaiting manual approval (hasPending) and whether anything
-// is genuinely executing (hasExecuting): an approved/running tool-action or an
-// open sub-thread. The two booleans together distinguish the approval-block
-// shapes — parked-on-approval (pending && !executing), resumed/working
-// (executing), and idle (neither) — that the elapsed-timer anchor and the
-// cancel-handoff logic both key off.
-func (w *ConversationWorker) approvalBlockState() (hasPending, hasExecuting bool) {
+// approvalBlockState scans one subtree once ("" being the root, so the whole
+// conversation tree) and reports whether any tool-action there is awaiting
+// manual approval (hasPending) and whether anything in it is genuinely executing
+// (hasExecuting): an approved/running tool-action or an open sub-thread. The two
+// booleans together distinguish the approval-block shapes — parked-on-approval
+// (pending && !executing), resumed/working (executing), and idle (neither) —
+// that the elapsed-timer anchor and the cancel-handoff logic both key off.
+func (w *ConversationWorker) approvalBlockState(threadItemID string) (hasPending, hasExecuting bool) {
 	ycrdtMu.Lock()
 	defer ycrdtMu.Unlock()
-	return scanApprovalBlock(w.doc.getItems())
+	arr := w.doc.getItems()
+	if threadItemID != "" {
+		arr = findThreadItemsArray(arr, threadItemID)
+	}
+	return scanApprovalBlock(arr)
 }
 
 // scanApprovalBlock walks an items array (recursing into sub-threads) and

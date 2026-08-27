@@ -554,7 +554,9 @@ func (w *ConversationWorker) isActivelyRunning() bool {
 	if !w.hasActiveRun() {
 		return false
 	}
-	return !w.blockedOnlyByApprovals()
+	// Conversation-wide ("" is the root, so the whole tree): the caller is asking
+	// whether it is safe to quit, which no thread can answer on its own.
+	return !w.blockedOnlyByApprovals("")
 }
 
 // markExplicitContinuation records a one-shot continuation intent on the given
@@ -603,6 +605,36 @@ func (w *ConversationWorker) requestLLM(threadItemID string) bool {
 		func(entry map[string]any) bool { return entryActivity(entry) != ActivityCallingLLM },
 		func(entry, _ map[string]any) { entry["activity"] = ActivityAwaitingLLM },
 	)
+}
+
+// queuedThreadIDExcept returns the id of a thread OTHER than exclude that is
+// queued for dispatch (awaiting_llm), with ok=false when there is none. Ordered
+// like the projection — earliest claim first, ties on key — so the answer never
+// depends on Go's map iteration order.
+//
+// It exists because a resting status empties the entire registry: a thread
+// queued while another held the loop needs its dispatch carried across that
+// sweep, or it sits unanswered with the conversation reporting idle.
+func (w *ConversationWorker) queuedThreadIDExcept(exclude string) (string, bool) {
+	var best map[string]any
+	bestKey := ""
+	for key, raw := range runsView(w.readProcessingState()) {
+		entry, ok := raw.(map[string]any)
+		if !ok || entryActivity(entry) != ActivityAwaitingLLM {
+			continue
+		}
+		if id, _ := entry["threadItemId"].(string); id == exclude {
+			continue
+		}
+		if best == nil || preferRun(entry, key, best, bestKey) {
+			best, bestKey = entry, key
+		}
+	}
+	if best == nil {
+		return "", false
+	}
+	id, _ := best["threadItemId"].(string)
+	return id, true
 }
 
 // getProcessingThreadItemID reads the threadItemId from processingState.

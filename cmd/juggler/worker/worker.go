@@ -13,6 +13,7 @@ import (
 
 	"juggler/cmd/juggler/mailbox"
 	"juggler/cmd/juggler/osactivity"
+	"juggler/cmd/juggler/providers/provider"
 	"juggler/internal/jlog"
 
 	ycrdt "github.com/skyterra/y-crdt"
@@ -250,7 +251,6 @@ type ConversationWorker struct {
 	// duplicates) and writes atomically. Set at construction by the Manager.
 	saveBinary SaveBinaryFunc
 
-	state   atomic.Value // stores WorkerState
 	doc     *ConversationDocument
 	tracker *OperationTracker
 
@@ -451,7 +451,6 @@ func NewConversationWorker(conversationID, authorID string) *ConversationWorker 
 	w.inboundQ = mailbox.NewQueue[workerMessage](w.done)
 	w.inbound = w.inboundQ.Out()
 	w.batcher = newSyncBatcher(doc, time.Duration(SyncThrottleMs)*time.Millisecond)
-	w.storeState(StateIdle)
 
 	// Set up sync broadcast callback
 	doc.RegisterSyncCallbacks(
@@ -532,7 +531,9 @@ func (r *run) Stop() {
 // when no provider session exists.
 func (r *run) StopForRemoval() {
 	if r.cancelLLMSession != nil {
-		r.cancelLLMSession(r.conversationID)
+		// Every thread: the conversation itself is going, so there is no thread
+		// left whose session should survive.
+		r.cancelLLMSession(r.conversationID, provider.CancelAllThreads)
 	}
 	r.Stop()
 }
@@ -804,26 +805,47 @@ func (w *ConversationWorker) SweepTransactionsForTest() error {
 	return w.sweepTransactions()
 }
 
-// loadState reads the current worker state atomically.
-func (w *ConversationWorker) loadState() WorkerState {
-	return w.state.Load().(WorkerState)
+// loadState reads this run's state atomically.
+func (r *run) loadState() WorkerState {
+	return r.t.state.Load().(WorkerState)
 }
 
-// storeState writes the worker state atomically.
-func (w *ConversationWorker) storeState(s WorkerState) {
-	prev := w.state.Load()
-	w.state.Store(s)
+// storeState writes this run's state atomically.
+func (r *run) storeState(s WorkerState) {
+	prev := r.t.state.Load()
+	r.t.state.Store(s)
 	if prev != nil {
-		w.tape.Record("state", map[string]any{
+		r.tape.Record("state", map[string]any{
 			"from": string(prev.(WorkerState)),
 			"to":   string(s),
 		})
 	}
 }
 
+// anyRunState reports the state of the busiest run this worker owns — today the
+// single run it always has, so it is that run's state. It is the question every
+// conversation-wide gate asks ("is anything in flight in this conversation?"),
+// spelled apart from threadRunState so the two are never confused again and so
+// Phase F has one place to widen when a worker owns several runs at once.
+func (w *ConversationWorker) anyRunState() WorkerState {
+	return w.currentRun().loadState()
+}
+
+// threadRunState reports the state of the run writing to threadItemID, and
+// StateIdle when no run is on that thread. This is the per-thread half of the
+// intake gates: a send, an injected message or a fold each concern ONE thread,
+// and a run streaming on a sibling is not a reason to refuse them.
+func (w *ConversationWorker) threadRunState(threadItemID string) WorkerState {
+	r := w.currentRun()
+	if r.t.thread.itemID != threadItemID {
+		return StateIdle
+	}
+	return r.loadState()
+}
+
 // State returns the current worker state (for testing and monitoring).
 func (w *ConversationWorker) State() WorkerState {
-	return w.loadState()
+	return w.anyRunState()
 }
 
 // Tracker returns the operation tracker (for testing).
@@ -930,7 +952,7 @@ func (r *run) recoverWorkerPanic(msgType string) {
 // suppress the next user-initiated turn (verification item V3). A pause that
 // arrives mid-turn is handled in the wait loop (handleMessageInWait), not here.
 func (w *ConversationWorker) handlePause() {
-	if !w.hasActiveRun() && w.loadState() == StateIdle {
+	if !w.hasActiveRun() && w.anyRunState() == StateIdle {
 		return // nothing running — a pause is meaningless, don't strand the latch
 	}
 	w.setPolitePending()
@@ -986,8 +1008,10 @@ func (r *run) handleMessageInWait(msg workerMessage) {
 		// Same rationale as handleCancel's StateProcessing branch: release any
 		// parked provider subprocess that the ctx-cancel above doesn't reach,
 		// while preserving the resume token so the next turn stays cache-warm.
+		// Scoped to the thread this run is streaming on, so a cancel arriving
+		// mid-stream leaves a sibling thread's provider session alone.
 		if r.cancelLLMSession != nil {
-			r.cancelLLMSession(r.conversationID)
+			r.cancelLLMSession(r.conversationID, r.t.thread.itemID)
 		}
 		r.storeState(StateCancelling)
 		return
@@ -1611,7 +1635,11 @@ func (r *run) handleItemsChange() {
 // Returns true when it dispatched a thread's run, so the reducer can re-evaluate
 // from a clean state rather than continuing a walk-down built on pre-run data.
 func (r *run) checkForNewThreads() bool {
-	if r.loadState() != StateIdle {
+	// Conversation-wide, like the isLLMClaimed gate below and for the same
+	// reason: the run this dispatches executes INLINE on the run() goroutine, so
+	// a second dispatch would re-enter the strategy loop underneath the first.
+	// Phase G narrows both together.
+	if r.anyRunState() != StateIdle {
 		return false
 	}
 

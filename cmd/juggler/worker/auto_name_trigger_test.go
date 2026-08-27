@@ -32,7 +32,7 @@ func newAutoNameWorker(t *testing.T, id string, calls *[]autoNameCall) *Conversa
 	t.Helper()
 	w := NewConversationWorker(id, "user:test")
 	t.Cleanup(func() { w.doc.Destroy() })
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "prov-A", "model": "model-A", "thinking": "high"})
 	w.SetAutoNamer(func(convID, firstMessage, provider, model, thinking string, force bool) {
 		*calls = append(*calls, autoNameCall{convID, firstMessage, provider, model, thinking, force})

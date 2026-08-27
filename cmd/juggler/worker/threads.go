@@ -126,8 +126,10 @@ func (r *run) createThread(opts CreateThreadOptions) (string, error) {
 	}
 
 	if opts.ExternalDispatch {
-		if r.loadState() != StateIdle {
-			return "", fmt.Errorf("worker not idle (state=%s)", r.loadState())
+		// Conversation-wide: an external dispatch runs its strategy loop inline on
+		// the run() goroutine, so any run in flight anywhere refuses it.
+		if state := r.anyRunState(); state != StateIdle {
+			return "", fmt.Errorf("worker not idle (state=%s)", state)
 		}
 	}
 

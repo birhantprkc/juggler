@@ -46,7 +46,7 @@ func assertRecoveryFoldUndoableAtDepth(t *testing.T, depth int) {
 	t.Helper()
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	innerID, arr := nestThreads(t, w, depth)

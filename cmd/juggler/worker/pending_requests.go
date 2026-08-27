@@ -221,7 +221,7 @@ func (w *ConversationWorker) pendingEntryByIDLocked(ownerThreadID, id string) (i
 // subsequent scans).
 func (r *run) claimAndDispatchPendingEntry(e pendingEntrySnapshot) {
 	if e.kind == "createThread" || e.kind == "continue" {
-		if r.loadState() != StateIdle {
+		if r.anyRunState() != StateIdle {
 			// Worker is busy with something else; leave entry in 'requested'
 			// for a later scan to re-attempt. Don't claim — claiming locks
 			// the entry to this worker boot, and we don't yet know we can

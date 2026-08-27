@@ -214,14 +214,19 @@ func (r *run) handleInjectThreadMessage(payload json.RawMessage) {
 		input.TaskSource = &TaskSourceRef{TaskID: msg.TaskID, Label: msg.Label}
 	}
 
-	// Busy: queue it; the strategy loop drains at its next boundary. Asked of the
-	// target thread, so delivery into an idle thread isn't held up by a sibling.
-	if r.threadActivity(msg.ThreadItemID) != ActivityNone || r.loadState() != StateIdle {
+	// Busy: queue it; the strategy loop drains at its next boundary. Both halves
+	// are asked of the target thread, so delivery into an idle thread isn't held
+	// up by a sibling.
+	if r.threadActivity(msg.ThreadItemID) != ActivityNone || r.threadRunState(msg.ThreadItemID) != StateIdle {
 		r.enqueuePendingMessage(msg.ThreadItemID, input)
 		return
 	}
 
-	// Idle: target the thread and add the message, then drive a fresh turn.
+	// Idle: target the thread and add the message, then drive a fresh turn. The
+	// scope is restored on return so an injection admitted while another thread
+	// streams cannot re-point that run (see handleSendMessage).
+	prevThread := r.t.thread
+	defer func() { r.t.thread = prevThread }()
 	r.t.thread.itemID = msg.ThreadItemID
 	if msg.ThreadItemID != "" {
 		itemsArray := r.doc.GetThreadItemsArray(msg.ThreadItemID)

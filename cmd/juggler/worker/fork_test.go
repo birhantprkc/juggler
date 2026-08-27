@@ -77,7 +77,7 @@ func TestSnapshotParkedState_OnlyWhenRunLoopBusy(t *testing.T) {
 	}
 
 	// A turn owns the run loop: snapshot + mark instead of a would-block flush.
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	snap, ok := m.SnapshotParkedState("conv-gate")
 	if !ok {
 		t.Fatal("running source: expected a parked snapshot")

@@ -83,7 +83,7 @@ func newRecoveryStub(t *testing.T, pinned *ModelConfig) (*int, func(context.Cont
 func TestHandleContextOverflowGateOffProviderRejectionTerminal(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.doc.InsertMessage(0, recoveryTestItems()...)
 	w.autoCompactGate = func() bool { return false }
@@ -122,7 +122,7 @@ func TestHandleContextOverflowGateOffProviderRejectionTerminal(t *testing.T) {
 func TestHandleContextOverflowGateOffAdvisoryBypasses(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.doc.InsertMessage(0, recoveryTestItems()...)
 	w.autoCompactGate = func() bool { return false }
@@ -146,7 +146,7 @@ func TestHandleContextOverflowGateOffAdvisoryBypasses(t *testing.T) {
 func TestContextRecoveryFoldsRootPrefixPreservesSuffix(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.doc.InsertMessage(0, recoveryTestItems()...)
 	pinned := &ModelConfig{Provider: "original", Model: "rejected"}
@@ -185,7 +185,7 @@ func TestContextRecoveryFoldsRootPrefixPreservesSuffix(t *testing.T) {
 func TestContextRecoveryFoldsSubthreadPrefix(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	threadID := generateItemID()
@@ -237,7 +237,7 @@ func TestContextRecoveryFoldsSubthreadPrefix(t *testing.T) {
 func TestContextRecoveryKeepsDelegatedRunRecords(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	threadID := generateItemID()
@@ -367,7 +367,7 @@ func boundedSummaryItem(t *testing.T, id, summary string) ConversationItem {
 func TestContextRecoveryPinsPriorSummaryFoldingOnlyFreshHistory(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	prior := boundedSummaryItem(t, "prior-summary", "prior summary")
@@ -418,7 +418,7 @@ func TestContextRecoveryPinsPriorSummaryFoldingOnlyFreshHistory(t *testing.T) {
 func TestContextRecoveryReportsNoProgressWhenOnlyPriorSummaryFoldable(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	// Large enough that the suffix walk cannot keep it verbatim — before the fix
@@ -463,7 +463,7 @@ func TestContextRecoveryReportsNoProgressWhenOnlyPriorSummaryFoldable(t *testing
 func TestContextRecoveryPreservesFoldedThreadItemOrder(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.doc.InsertMessage(0, recoveryTestItems()...)
 	pinned := &ModelConfig{Provider: "original", Model: "rejected"}
@@ -508,7 +508,7 @@ func TestContextRecoveryPreservesFoldedThreadItemOrder(t *testing.T) {
 func TestContextRecoveryFoldIsAtomicallyUndoable(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.tracker.EnsureInitialized()
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	// Insert the pre-fold history as separate tracked undo groups (one per turn,
@@ -584,7 +584,7 @@ func TestContextRecoveryKeepsToolBatchAtomic(t *testing.T) {
 	t.Run("batch too large for suffix folds whole", func(t *testing.T) {
 		w := NewConversationWorker("test-conv", "user:test")
 		defer w.doc.Destroy()
-		w.storeState(StateProcessing)
+		w.currentRun().storeState(StateProcessing)
 		w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 		items := recoveryTestItems()[:4] // four big old items
@@ -609,7 +609,7 @@ func TestContextRecoveryKeepsToolBatchAtomic(t *testing.T) {
 	t.Run("batch fitting suffix stays whole and verbatim", func(t *testing.T) {
 		w := NewConversationWorker("test-conv", "user:test")
 		defer w.doc.Destroy()
-		w.storeState(StateProcessing)
+		w.currentRun().storeState(StateProcessing)
 		w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 		items := recoveryTestItems()[:4]
@@ -641,7 +641,7 @@ func TestContextRecoveryKeepsToolBatchAtomic(t *testing.T) {
 func TestContextRecoveryAbortsWhenSourceChanges(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.doc.InsertMessage(0, recoveryTestItems()...)
 	pinned := &ModelConfig{Provider: "test", Model: "test"}
@@ -682,7 +682,7 @@ func TestContextRecoveryAbortsWhenSourceChanges(t *testing.T) {
 func TestContextRecoveryTerminalWhenNewestItemAloneExceeds(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.doc.InsertMessage(0,
 		ConversationItem{Type: ItemTypeUser, ItemID: "old-0", Content: "small old question"},
@@ -710,7 +710,7 @@ func TestContextRecoveryTerminalWhenNewestItemAloneExceeds(t *testing.T) {
 func TestContextRecoveryCancelledMidReduce(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.doc.InsertMessage(0, recoveryTestItems()...)
 	pinned := &ModelConfig{Provider: "test", Model: "test"}
@@ -718,7 +718,7 @@ func TestContextRecoveryCancelledMidReduce(t *testing.T) {
 	calls := 0
 	w.llmCallFunc = func(_ context.Context, raw json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
 		calls++
-		w.storeState(StateCancelling)
+		w.currentRun().storeState(StateCancelling)
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "condensed fragment"}}}, nil
 	}
 
@@ -738,7 +738,7 @@ func TestContextRecoveryCancelledMidReduce(t *testing.T) {
 func TestContextRecoveryPinsLeadingContextItems(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	items := []ConversationItem{{Type: "rule", ItemID: "rule-0", Content: "always answer tersely"}}
@@ -825,7 +825,7 @@ func TestContextRecoveryStateBoundPreservesLatestProviderCause(t *testing.T) {
 func TestContextRecoveryTrailingToolShrinkCountsAsProgress(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	giantResult, _ := json.Marshal(map[string]any{"content": strings.Repeat("r", 15_000), "isError": false})
 	w.doc.InsertMessage(0, ConversationItem{
@@ -853,7 +853,7 @@ func TestContextRecoveryTrailingToolShrinkCountsAsProgress(t *testing.T) {
 func TestContextRecoveryRetriesRejectedTurnAboveAdvisoryLimit(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	// Four oversized old items; the turn's own user message lands after them.
@@ -955,7 +955,7 @@ func TestContextRecoveryRetriesRejectedTurnAboveAdvisoryLimit(t *testing.T) {
 func TestContextRecoveryShrinksOversizedTrailingToolResult(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	giantResult, _ := json.Marshal(map[string]any{"content": strings.Repeat("r", 15_000), "isError": false})
@@ -1019,7 +1019,7 @@ func TestContextRecoveryShrinksOversizedTrailingToolResult(t *testing.T) {
 func TestContextRecoveryTrailingToolBatchGiantInputStaysTerminal(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	giantInput, _ := json.Marshal(map[string]any{"command": strings.Repeat("c", 20_000)})
@@ -1074,7 +1074,7 @@ func TestToolResultPushingNextCallOverContextRecovers(t *testing.T) {
 	})
 	w.SetEngineClientID("engine")
 
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.InsertMessage(0, recoveryTestItems()[:3]...)
 
 	go func() {
@@ -1216,7 +1216,7 @@ func drainExecuteIDs(ch chan string) []string {
 func TestContextRecoveryTerminalWhenNewestImageAloneExceeds(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.doc.InsertMessage(0,
 		ConversationItem{Type: ItemTypeUser, ItemID: "old-0", Content: "small old question"},
@@ -1305,7 +1305,7 @@ func TestFoldPrefixIntoSummaryIfUnchangedAbortsOnConcurrentEdit(t *testing.T) {
 func TestContextRecoveryShrinkOnlySucceedsWithoutFold(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	// Small older history that fits verbatim on its own, plus one giant tool
@@ -1403,7 +1403,7 @@ func newLargeOverheadRecoveryStub(t *testing.T, window, overhead, reserve int64,
 func TestContextRecoveryShrinkPathToleratesLargeProviderOverhead(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	giantResult, _ := json.Marshal(map[string]any{"content": strings.Repeat("r", 15_000), "isError": false})
@@ -1469,7 +1469,7 @@ func TestContextRecoveryShrinkPathToleratesLargeProviderOverhead(t *testing.T) {
 func TestContextRecoveryFoldPathToleratesLargeProviderOverhead(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	items := make([]ConversationItem, 0, 5)
@@ -1523,7 +1523,7 @@ func TestContextRecoveryFoldPathToleratesLargeProviderOverhead(t *testing.T) {
 func TestContextRecoveryShrinkChargesMapOutputCap(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	// ~118k-token trailing result: above (window - reserve) = 111,616 but below

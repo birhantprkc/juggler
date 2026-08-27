@@ -32,7 +32,7 @@ import (
 func TestQueuedMessageJoinsToolResultContinuation(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	// Seed a completed tool batch awaiting the model's reaction: user asked,

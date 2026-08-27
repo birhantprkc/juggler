@@ -78,6 +78,7 @@ type convOpKind int
 
 const (
 	convGetSession convOpKind = iota
+	convCancelThread
 	convCancelAll
 	convCloseAll
 )
@@ -115,6 +116,13 @@ func (cv *conversation) run() {
 					sessions[op.threadID] = s
 				}
 				op.resp <- s
+			case convCancelThread:
+				// Only a session that exists: creating one to cancel it would spawn
+				// a thread session for a thread that never ran.
+				if s := sessions[op.threadID]; s != nil {
+					s.cancelSession()
+				}
+				op.done <- struct{}{}
 			case convCancelAll:
 				for _, s := range sessions {
 					s.cancelSession()
@@ -167,13 +175,22 @@ func (cv *conversation) CacheTTL() time.Duration {
 	return upstreamCacheTTL
 }
 
-// Cancel releases in-flight/parked work across ALL of the conversation's thread
-// sessions: it tears down each live/parked CLI but preserves the resume anchors
-// (sessionUUID/sentCount/sentHash and the on-disk sidecar) so the next turn
-// resumes cache-warm. A cancel is an interrupt, not a session invalidation.
-func (cv *conversation) Cancel() {
+// Cancel releases in-flight/parked work for ONE of the conversation's thread
+// sessions — or all of them, for provider.CancelAllThreads: it tears down the
+// live/parked CLI but preserves the resume anchor (sessionUUID/sentCount/
+// sentHash and the on-disk sidecar) so the next turn resumes cache-warm. A
+// cancel is an interrupt, not a session invalidation.
+//
+// Per-thread matters here: each thread owns its own CLI subprocess, so a cancel
+// aimed at one thread must not kill the subprocess another thread is streaming
+// through. cancelSession is written to run alongside another thread's turn.
+func (cv *conversation) Cancel(threadItemID string) {
 	done := make(chan struct{}, 1)
-	cv.ops <- convOp{kind: convCancelAll, done: done}
+	kind := convCancelThread
+	if threadItemID == provider.CancelAllThreads {
+		kind = convCancelAll
+	}
+	cv.ops <- convOp{kind: kind, threadID: threadItemID, done: done}
 	<-done
 }
 

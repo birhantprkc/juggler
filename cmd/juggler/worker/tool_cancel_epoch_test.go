@@ -117,7 +117,7 @@ func TestCancelToolDispatchCarriesRunningEpoch(t *testing.T) {
 	// and narrows float64, matching how a synced JS number lands — but NOT int64.
 	w.doc.UpdateToolActionFieldsRecursive("tu-1", map[string]any{"runningEpoch": 7})
 
-	w.CancelInFlightToolActions()
+	w.CancelInFlightToolActions("")
 	h.flush(t)
 
 	cancels := h.drainCancels()
@@ -149,7 +149,7 @@ func TestCancelApprovedTool_UnscopedEpoch(t *testing.T) {
 		ToolName: "bash", State: StateApproved,
 	})
 
-	w.CancelInFlightToolActions() // includeApproved=true
+	w.CancelInFlightToolActions("") // includeApproved=true
 	h.flush(t)
 
 	cancels := h.drainCancels()

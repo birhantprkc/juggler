@@ -31,6 +31,15 @@ type run struct {
 }
 
 type turnState struct {
+	// state is this run's position in the worker state machine: Idle until it is
+	// dispatched, Processing while it drives the LLM, Cancelling once a cancel
+	// aimed at it has been accepted. It belongs to the run and not to the worker
+	// because "cancelling" is a property of ONE run: every wait loop unwinds on
+	// reading it, so a conversation-wide flag makes a cancel aimed at one thread
+	// tear down the turn streaming on another. Stored via atomic.Value because
+	// State() is read from off the run goroutine.
+	state atomic.Value // stores WorkerState
+
 	// processingStartedAt is the single anchor every client renders the spinner's
 	// elapsed digit against. Approval waits advance it so they are excluded.
 	processingStartedAt int64
@@ -125,5 +134,7 @@ func (w *ConversationWorker) interruptInFlightLLMForWake() {
 // its provider-attempt generation, so a later waiter consumes and rejects a late
 // result instead of mistaking it for its own answer.
 func newTurnState() *turnState {
-	return &turnState{responseChan: make(chan llmCallResult, 1)}
+	t := &turnState{responseChan: make(chan llmCallResult, 1)}
+	t.state.Store(StateIdle)
+	return t
 }

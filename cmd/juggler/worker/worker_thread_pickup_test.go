@@ -17,7 +17,7 @@ import (
 
 func TestCheckForNewThreads_ProcessesNeedsStrategyRun(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 
 	// Set up mock mode BEFORE creating thread (observer fires during creation)
 	w.setMockResponses([]MockResponse{
@@ -66,8 +66,8 @@ func TestCheckForNewThreads_ProcessesNeedsStrategyRun(t *testing.T) {
 	}
 
 	// Worker should be back to idle
-	if w.loadState() != StateIdle {
-		t.Errorf("worker state = %v, want StateIdle", w.loadState())
+	if w.currentRun().loadState() != StateIdle {
+		t.Errorf("worker state = %v, want StateIdle", w.currentRun().loadState())
 	}
 
 	w.doc.Destroy()
@@ -85,7 +85,7 @@ func TestCheckForNewThreads_ProcessesNeedsStrategyRun(t *testing.T) {
 func TestCompactionSubthread_DrainsRootQueueOnCompletion(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	// Two calls through the shared transport (callLLMWithSink pops the mock queue
@@ -173,14 +173,14 @@ func TestCompactionSubthread_DrainsRootQueueOnCompletion(t *testing.T) {
 		t.Fatalf("expected both scripted turns consumed, %d left", n)
 	}
 
-	if w.loadState() != StateIdle {
-		t.Errorf("worker state = %v, want StateIdle", w.loadState())
+	if w.currentRun().loadState() != StateIdle {
+		t.Errorf("worker state = %v, want StateIdle", w.currentRun().loadState())
 	}
 }
 
 func TestCheckForNewThreads_IgnoresThreadWithoutFlag(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 
 	// Create a thread WITHOUT needsStrategyRun (simulates /thread command)
 	threadID := insertThreadWithOpts(w, threadOpts{goal: "User thread", userMessage: "Hello world"})
@@ -194,8 +194,8 @@ func TestCheckForNewThreads_IgnoresThreadWithoutFlag(t *testing.T) {
 	w.currentRun().checkForNewThreads()
 
 	// Worker should still be idle (didn't start processing)
-	if w.loadState() != StateIdle {
-		t.Errorf("worker state = %v, want StateIdle (should not process thread without flag)", w.loadState())
+	if w.currentRun().loadState() != StateIdle {
+		t.Errorf("worker state = %v, want StateIdle (should not process thread without flag)", w.currentRun().loadState())
 	}
 
 	// Thread should have no result
@@ -210,7 +210,7 @@ func TestCheckForNewThreads_IgnoresThreadWithoutFlag(t *testing.T) {
 
 func TestCheckForNewThreads_IgnoresCompletedThread(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 
 	// Create a thread with needsStrategyRun AND a result (already completed, single transaction)
 	threadID := insertThreadWithOpts(w, threadOpts{
@@ -237,7 +237,7 @@ func TestCheckForNewThreads_IgnoresCompletedThread(t *testing.T) {
 
 func TestCheckForNewThreads_IgnoresWhenBusy(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
-	w.storeState(StateProcessing) // Worker is busy
+	w.currentRun().storeState(StateProcessing) // Worker is busy
 
 	threadID := insertThreadWithOpts(w, threadOpts{goal: "Queued thread", needsStrategyRun: true, userMessage: "Summarize"})
 	if threadID == "" {
@@ -261,7 +261,7 @@ func TestCheckForNewThreads_IgnoresWhenBusy(t *testing.T) {
 
 func TestCheckForNewThreads_SkipsCompletedThreads(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 
 	// Set up mock mode BEFORE creating thread (observer fires during creation)
 	w.setMockResponses([]MockResponse{
@@ -315,7 +315,7 @@ func TestCheckForNewThreads_SkipsCompletedThreads(t *testing.T) {
 
 func TestCheckForNewThreads_CancelDoesNotRetriggerNeedsStrategyRunThread(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	ctxResponse, _ := json.Marshal(map[string]any{
@@ -333,7 +333,7 @@ func TestCheckForNewThreads_CancelDoesNotRetriggerNeedsStrategyRunThread(t *test
 	calls := 0
 	w.llmCallFunc = func(ctx context.Context, request json.RawMessage, chunkHandler func(StreamChunk)) (*LLMResponse, error) {
 		calls++
-		w.storeState(StateCancelling)
+		w.currentRun().storeState(StateCancelling)
 		return nil, ErrCancelled
 	}
 
@@ -345,8 +345,8 @@ func TestCheckForNewThreads_CancelDoesNotRetriggerNeedsStrategyRunThread(t *test
 	if calls != 1 {
 		t.Fatalf("LLM calls after initial cancellation = %d, want 1", calls)
 	}
-	if w.loadState() != StateIdle {
-		t.Fatalf("worker state = %v, want StateIdle", w.loadState())
+	if w.currentRun().loadState() != StateIdle {
+		t.Fatalf("worker state = %v, want StateIdle", w.currentRun().loadState())
 	}
 
 	threadYMap := w.doc.GetThreadYMap(threadID)
@@ -373,7 +373,7 @@ func TestCheckForNewThreads_CancelDoesNotRetriggerNeedsStrategyRunThread(t *test
 
 func TestHandleItemsChange_CancelsWhenCurrentThreadDeleted(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 
 	threadID := insertThreadWithOpts(w, threadOpts{goal: "Continuation"})
 	if threadID == "" {
@@ -381,7 +381,7 @@ func TestHandleItemsChange_CancelsWhenCurrentThreadDeleted(t *testing.T) {
 	}
 
 	// Simulate worker mid-processing on this thread
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.turn.thread.itemID = threadID
 
 	// Delete the thread from the doc (simulates browser deletion via Yjs sync)
@@ -391,8 +391,8 @@ func TestHandleItemsChange_CancelsWhenCurrentThreadDeleted(t *testing.T) {
 
 	w.currentRun().handleItemsChange()
 
-	if w.loadState() != StateCancelling {
-		t.Errorf("worker state = %v, want StateCancelling after current thread deleted", w.loadState())
+	if w.currentRun().loadState() != StateCancelling {
+		t.Errorf("worker state = %v, want StateCancelling after current thread deleted", w.currentRun().loadState())
 	}
 
 	w.doc.Destroy()

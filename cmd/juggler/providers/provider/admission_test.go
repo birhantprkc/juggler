@@ -47,7 +47,7 @@ func (cv *admissionTestConversation) Submit(_ context.Context, req MessageReques
 }
 func (cv *admissionTestConversation) Subscribe(TurnSink)      {}
 func (cv *admissionTestConversation) CacheTTL() time.Duration { return 0 }
-func (cv *admissionTestConversation) Cancel()                 {}
+func (cv *admissionTestConversation) Cancel(string)           {}
 func (cv *admissionTestConversation) Close() error            { return nil }
 
 func openAdmissionTestConversation(t *testing.T, cfg Config) (*admissionTestConversation, Conversation) {

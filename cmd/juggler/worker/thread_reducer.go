@@ -313,7 +313,9 @@ func (w *ConversationWorker) reconcileThread() {
 // running. The deduction is computed from in-memory state alone (processingStartedAt
 // + approvalWaitStartedAt); only the single derived startedAt field touches the doc.
 func (r *run) updateApprovalWaitAnchor() {
-	hasPending, hasExecuting := r.approvalBlockState()
+	// Asked of this turn's own subtree: the anchor it adjusts is this turn's, so
+	// a sibling parked at its own approval prompt must not move it.
+	hasPending, hasExecuting := r.approvalBlockState(r.t.thread.itemID)
 	parked := hasPending && !hasExecuting
 	if parked == r.t.wasBlockedOnApprovals {
 		return // no edge this tick
@@ -521,7 +523,10 @@ func (r *run) dispatchCallLLMOnThread(threadItemID string) {
 	// the request is orphaned until some other event re-wakes the loop, which
 	// presents to the user as "user message appended but LLM loop never starts;
 	// hitting Continue kicks it off".
-	if r.loadState() != StateIdle {
+	//
+	// Conversation-wide, and paired with the isLLMClaimed gate below: the turn
+	// this dispatches runs inline on the run() goroutine. Phase G narrows both.
+	if r.anyRunState() != StateIdle {
 		r.needsReconcile = true
 		return
 	}

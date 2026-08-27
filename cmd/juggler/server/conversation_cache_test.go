@@ -42,7 +42,7 @@ func (c *capabilityCacheConversation) Submit(_ context.Context, req provider.Mes
 }
 func (c *capabilityCacheConversation) Subscribe(provider.TurnSink) {}
 func (c *capabilityCacheConversation) CacheTTL() time.Duration     { return 0 }
-func (c *capabilityCacheConversation) Cancel() {
+func (c *capabilityCacheConversation) Cancel(string) {
 	if c.cancel != nil {
 		c.cancel()
 	}
@@ -118,7 +118,7 @@ func TestConversationCacheCancelDoesNotBlockOtherConversations(t *testing.T) {
 	}
 	cancelDone := make(chan struct{})
 	go func() {
-		cache.CancelConversation("stuck")
+		cache.CancelConversation("stuck", "")
 		close(cancelDone)
 	}()
 	<-cancelStarted

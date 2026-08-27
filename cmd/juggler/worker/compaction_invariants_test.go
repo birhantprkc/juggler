@@ -71,7 +71,7 @@ func newCompactionWorld(t *testing.T, window, reserve int64, respond func(turn i
 	})
 	w.SetCallback("engine", func([]byte) {})
 	w.SetEngineClientID("engine")
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	feedCompactionContextAndTools(w, ToolDefinition{Name: "bash"})
 	world.w = w
 
@@ -236,7 +236,7 @@ func TestCompactionDoesNotChangeConversationIdentity(t *testing.T) {
 		return endTurn("acknowledged")
 	})
 	// Messages arrive at an idle conversation; a busy one queues them instead.
-	world.w.storeState(StateIdle)
+	world.w.currentRun().storeState(StateIdle)
 
 	sendMsg(t, world.w, SendMessageMessage{Text: "the original task"})
 	world.w.currentRun().runStrategyLoop("", true)
@@ -244,7 +244,7 @@ func TestCompactionDoesNotChangeConversationIdentity(t *testing.T) {
 		t.Fatalf("auto-name calls = %v, want exactly one from the opening message", world.autoNames)
 	}
 
-	world.w.storeState(StateIdle)
+	world.w.currentRun().storeState(StateIdle)
 	if _, folded, err := world.w.currentRun().foldConversationForCompaction(false); err != nil || !folded {
 		t.Fatalf("foldConversationForCompaction = (%v, %v), want a fold", folded, err)
 	}

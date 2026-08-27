@@ -117,7 +117,7 @@ func requireHexFingerprint(t *testing.T, fp string) {
 func TestCompactionAccountingPersistedOnSummaryItem(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.doc.InsertMessage(0, recoveryTestItems()...)
 	pinned := &ModelConfig{Provider: "original", Model: "rejected"}
@@ -183,7 +183,7 @@ func TestCompactionTapeRecords(t *testing.T) {
 	enableEventTape(t)
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.doc.InsertMessage(0, recoveryTestItems()...)
 	pinned := &ModelConfig{Provider: "original", Model: "rejected"}
@@ -283,7 +283,7 @@ func TestCompactionCancellationTapeAndAccounting(t *testing.T) {
 	enableEventTape(t)
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.doc.InsertMessage(0, recoveryTestItems()...)
 	pinned := &ModelConfig{Provider: "test", Model: "test"}
@@ -295,7 +295,7 @@ func TestCompactionCancellationTapeAndAccounting(t *testing.T) {
 		if err := json.Unmarshal(raw, &req); err != nil {
 			t.Fatal(err)
 		}
-		w.storeState(StateCancelling)
+		w.currentRun().storeState(StateCancelling)
 		return &LLMResponse{
 			Blocks:      []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "condensed fragment"}},
 			InputTokens: 150, OutputTokens: 40,
@@ -335,7 +335,7 @@ func TestCompactionCancellationTapeAndAccounting(t *testing.T) {
 func TestCompactionFoldedThreadAccountingPersisted(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	threadID := insertBoundedCompactionThread(t, w, strings.Repeat("large history λ🙂 ", 500))
 
@@ -450,7 +450,7 @@ func feedStrategyContextAndTools(w *ConversationWorker) {
 func TestContextGuardRecoveryProgressReevaluatesWithoutBypass(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.doc.InsertMessage(0, recoveryTestItems()...)
 	go feedStrategyContextAndTools(w)
@@ -499,7 +499,7 @@ func TestContextGuardRecoveryProgressReevaluatesWithoutBypass(t *testing.T) {
 func TestContextGuardIrreducibleFallbackIsSingleDispatchAndResets(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	go feedStrategyContextAndTools(w)
 
@@ -556,7 +556,7 @@ func TestContextGuardIrreducibleFallbackIsSingleDispatchAndResets(t *testing.T) 
 func TestContextGuardRepeatedAdvisoryAfterBypassStopsWithoutErrorItem(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	go feedStrategyContextAndTools(w)
 
@@ -583,7 +583,7 @@ func TestContextGuardRepeatedAdvisoryAfterBypassStopsWithoutErrorItem(t *testing
 func TestContextGuardFallbackRealOverflowPreservesProviderCause(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	go feedStrategyContextAndTools(w)
 
@@ -631,7 +631,7 @@ func TestContextGuardFallbackRealOverflowPreservesProviderCause(t *testing.T) {
 func TestContextGuardRecoveryFailureSurfacesErrorItem(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.doc.InsertMessage(0, recoveryTestItems()...)
 	go feedStrategyContextAndTools(w)
@@ -674,7 +674,7 @@ func TestContextGuardRecoveryFailureSurfacesErrorItem(t *testing.T) {
 func TestContextRecoveryBudgetResetsAfterSuccessfulDispatch(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	go feedStrategyContextAndTools(w)
 
@@ -744,7 +744,7 @@ func TestContextRecoveryBudgetResetsAfterSuccessfulDispatch(t *testing.T) {
 func TestContextRecoveryNoProgressErrorItemPreservesProviderCause(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.doc.InsertMessage(0, ConversationItem{Type: ItemTypeUser, ItemID: "old-0", Content: "small old question"})
 

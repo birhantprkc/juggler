@@ -171,7 +171,7 @@ func TestGetContextItemIDsForThreadOwnItemsOnly(t *testing.T) {
 func TestCreateThreadSeedsChildEagerly(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	seedableRoot(w.doc, "identity")
 
 	threadID, err := w.currentRun().createThread(CreateThreadOptions{Goal: "child", Prompt: "do the thing"})
@@ -197,7 +197,7 @@ func TestCreateThreadSeedsChildEagerly(t *testing.T) {
 func TestCreateThreadContinuationDoesNotSeed(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	seedableRoot(w.doc, "identity")
 
 	threadID, err := w.currentRun().createThread(CreateThreadOptions{Goal: "cont", IsContinuation: true})
@@ -324,7 +324,7 @@ func TestSeedThreadIfUnseededSkipsRunningThread(t *testing.T) {
 func TestCreateThreadEagerSeedSurvivesBackstop(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	seedableRoot(w.doc, "identity")
 
 	threadID, err := w.currentRun().createThread(CreateThreadOptions{Goal: "child", Prompt: "do the thing"})
@@ -378,7 +378,7 @@ func TestSeedThreadIfUnseededSkipsNoContextSeed(t *testing.T) {
 func TestSeedChainPropagatesCustomization(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	seedableRoot(w.doc, "root-identity")
 
 	// Child seeded from root carries root's identity.

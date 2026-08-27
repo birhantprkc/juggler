@@ -159,7 +159,7 @@ func newDelegationHarnessTools(t *testing.T, specs []*SubthreadSpec, mocks []Moc
 		Config:       WorkerConfig{ProjectPath: t.TempDir()},
 	})
 	w.currentRun().handleInit(initPayload)
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 
 	w.SetCallback("engine", func(b []byte) {
 		var head struct {

@@ -36,7 +36,7 @@ func TestCancelStaleToolActions(t *testing.T) {
 	}
 
 	// Call CancelStaleToolActions
-	w.CancelStaleToolActions()
+	w.CancelStaleToolActions("")
 
 	// Verify results
 	updatedItems := w.doc.GetItems()
@@ -79,6 +79,66 @@ func TestCancelStaleToolActions(t *testing.T) {
 	}
 
 	w.doc.Destroy()
+}
+
+// TestCancelToolActionsIsScopedToItsSubtree pins the per-thread half of
+// cancellation: a cancel names the thread it applies to, and everything outside
+// that subtree is somebody else's live work. Before the three entry points took
+// a subtree root, one thread coming to rest stamped "Interrupted" on every
+// running tool in the conversation, including a sibling's.
+func TestCancelToolActionsIsScopedToItsSubtree(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+
+	runningTool := func(id string) ConversationItem {
+		return ConversationItem{
+			Type: ItemTypeToolAction, ItemID: "ta-" + id, ToolUseID: "tu-" + id,
+			ToolName: "bash", State: StateRunning,
+		}
+	}
+	nestedA, err := json.Marshal([]ConversationItem{runningTool("a")})
+	if err != nil {
+		t.Fatalf("marshal thread A items: %v", err)
+	}
+	nestedB, err := json.Marshal([]ConversationItem{runningTool("b")})
+	if err != nil {
+		t.Fatalf("marshal thread B items: %v", err)
+	}
+	w.doc.InsertMessage(0, ConversationItem{Type: ItemTypeThread, ItemID: "t-a", Items: nestedA})
+	w.doc.InsertMessage(1, ConversationItem{Type: ItemTypeThread, ItemID: "t-b", Items: nestedB})
+	w.doc.InsertMessage(2, runningTool("root"))
+
+	interrupted := func(threadItemID string) bool {
+		arr := w.doc.GetThreadItemsArray(threadItemID)
+		if arr == nil {
+			t.Fatalf("thread %s has no items array", threadItemID)
+		}
+		items := w.doc.GetItemsFromArray(arr)
+		if len(items) != 1 {
+			t.Fatalf("thread %s: expected 1 item, got %d", threadItemID, len(items))
+		}
+		return items[0].State == StateCancelled
+	}
+
+	w.CancelStaleToolActions("t-a")
+	if !interrupted("t-a") {
+		t.Error("the named thread's running tool must be interrupted")
+	}
+	if interrupted("t-b") {
+		t.Error("a sibling thread's running tool must survive another thread's cancel")
+	}
+	if root := w.doc.GetItems(); root[2].State == StateCancelled {
+		t.Error("a root tool must survive a sub-thread's cancel")
+	}
+
+	// "" is the root, and every thread hangs off it — so the whole conversation.
+	w.CancelStaleToolActions("")
+	if !interrupted("t-b") {
+		t.Error("a root-scoped cancel must reach every thread")
+	}
+	if root := w.doc.GetItems(); root[2].State != StateCancelled {
+		t.Error("a root-scoped cancel must reach the root's own tools")
+	}
 }
 
 // TestFinalizeStuckRunningTool verifies the shared finalizer the
@@ -228,7 +288,7 @@ func TestCancelParksWhenToolExecuting(t *testing.T) {
 
 	// Record that the worker released the provider session (warm-preserving).
 	var released bool
-	w.SetCancelLLMSession(func(_ string) { released = true })
+	w.SetCancelLLMSession(func(_, _ string) { released = true })
 
 	// The post-tool branch: worker idle, activity=awaiting_llm, the minute-old
 	// anchor visible in the doc.
@@ -238,10 +298,10 @@ func TestCancelParksWhenToolExecuting(t *testing.T) {
 		"status":       "processing_tools",
 		"startedAt":    oldAnchor,
 	})
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 
 	// Precondition: a running tool means this is NOT a pure-approval block.
-	if w.blockedOnlyByApprovals() {
+	if w.blockedOnlyByApprovals("") {
 		t.Fatal("precondition: a running tool must make blockedOnlyByApprovals=false")
 	}
 
@@ -312,7 +372,7 @@ func TestPureApprovalCancelPreservesWarmSession(t *testing.T) {
 
 	// Record that the worker released the provider session.
 	var called bool
-	w.SetCancelLLMSession(func(_ string) {
+	w.SetCancelLLMSession(func(_, _ string) {
 		called = true
 	})
 
@@ -336,10 +396,10 @@ func TestPureApprovalCancelPreservesWarmSession(t *testing.T) {
 		"threadItemId": "",
 		"status":       "processing_tools",
 	})
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 
 	// Precondition: a lone pending tool is a pure-approval block.
-	if !w.blockedOnlyByApprovals() {
+	if !w.blockedOnlyByApprovals("") {
 		t.Fatal("precondition: a lone pending tool must make blockedOnlyByApprovals=true")
 	}
 
@@ -387,7 +447,7 @@ func TestStrategyLoopExitCleansUpToolActions(t *testing.T) {
 	})
 
 	// Call CancelStaleToolActions directly (as the strategy loop defer would)
-	w.CancelStaleToolActions()
+	w.CancelStaleToolActions("")
 
 	// Verify the stale tool-action was marked as interrupted
 	items := w.doc.GetItems()

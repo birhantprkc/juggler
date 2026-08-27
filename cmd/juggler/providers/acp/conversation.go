@@ -27,6 +27,14 @@ import (
 // interrupt one). The live session is therefore held in an atomic pointer, and
 // the current turn in another, so the racing callers never touch a mutex on the
 // hot path.
+//
+// "Serially" is load-bearing and NOT yet true of two turns on two threads: this
+// conversation holds ONE session and ONE turn pointer and ignores
+// MessageRequest.ThreadID entirely, so a second concurrent Submit would replace
+// the first's turn pointer and every session/update would then be routed to the
+// wrong callback. Cancel is whole-conversation for the same reason — there is a
+// single sessionID to cancel. Before per-thread turns can overlap on an ACP
+// conversation it needs a per-thread session map, the way claudecode has one.
 type conversation struct {
 	client   *Client
 	convID   string
@@ -144,7 +152,10 @@ func (c *conversation) CacheTTL() time.Duration { return 0 }
 // session/cancel (a cooperative interrupt) and leaves the subprocess alive so
 // the next turn continues the same session. The agent ends the current turn
 // with stopReason "cancelled", which unblocks the parked session/prompt call.
-func (c *conversation) Cancel() {
+//
+// threadItemID is ignored: the conversation has one ACP session shared by every
+// thread, so there is nothing narrower to cancel. See the type comment.
+func (c *conversation) Cancel(threadItemID string) {
 	sess := c.sess.Load()
 	if sess == nil || sess.sessionID == "" {
 		return

@@ -603,7 +603,7 @@ func driveToolScenario(t *testing.T, c *Client, convID string, sc toolScenario) 
 			if err != nil {
 				t.Fatalf("%s sub %d: OpenConversation: %v", sc.name, si, err)
 			}
-			conv.Cancel()
+			conv.Cancel("")
 			continue
 		}
 

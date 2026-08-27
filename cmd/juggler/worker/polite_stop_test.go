@@ -19,7 +19,7 @@ import (
 func TestPoliteStop_ReducerRestsBeforeNextTurn(t *testing.T) {
 	w := NewConversationWorker("test-polite-rest", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	// Seed a completed tool batch awaiting the model's reaction: user asked,
@@ -120,7 +120,7 @@ func TestPoliteStop_ReducerRestsBeforeNextTurn(t *testing.T) {
 func TestPoliteStop_IdlePauseIsNoOp(t *testing.T) {
 	w := NewConversationWorker("test-polite-idle", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 
 	w.handlePause()
 
@@ -134,7 +134,7 @@ func TestPoliteStop_IdlePauseIsNoOp(t *testing.T) {
 func TestPoliteStop_HandlePauseLatchesWhenBusy(t *testing.T) {
 	w := NewConversationWorker("test-polite-busy", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	w.doc.SetMetadata("processingState", map[string]any{
 		"activity": ActivityAwaitingLLM, "threadItemId": "", "status": "processing_tools",
 	})
@@ -152,7 +152,7 @@ func TestPoliteStop_HandlePauseLatchesWhenBusy(t *testing.T) {
 func TestPoliteStop_SupersededByHardCancel(t *testing.T) {
 	w := NewConversationWorker("test-polite-escalate", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 
 	w.politeStop.Store(true)
 	w.currentRun().handleCancel(cancelReasonUnspecified)
@@ -170,7 +170,7 @@ func TestPoliteStop_SupersededByHardCancel(t *testing.T) {
 func TestPoliteStop_ClearedByExplicitSend(t *testing.T) {
 	w := NewConversationWorker("test-polite-resume", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 
 	w.politeStop.Store(true)
 
@@ -189,7 +189,7 @@ func TestPoliteStop_ClearedByExplicitSend(t *testing.T) {
 func TestPoliteStop_UnpauseClearsPendingLatch(t *testing.T) {
 	w := NewConversationWorker("test-polite-unpause", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 
 	w.politeStop.Store(true)
 	w.handleUnpause()
@@ -205,7 +205,7 @@ func TestPoliteStop_UnpauseClearsPendingLatch(t *testing.T) {
 func TestPoliteStop_UnpauseIsIdempotent(t *testing.T) {
 	w := NewConversationWorker("test-polite-unpause-noop", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 
 	w.handleUnpause() // latch already false
 
@@ -223,7 +223,7 @@ func TestPoliteStop_UnpauseIsIdempotent(t *testing.T) {
 func TestPoliteStop_PublishesPendingToProcessingState(t *testing.T) {
 	w := NewConversationWorker("test-polite-publish", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	w.doc.SetMetadata("processingState", map[string]any{
 		"activity": ActivityAwaitingLLM, "threadItemId": "", "status": "processing_tools",
 	})
@@ -255,7 +255,7 @@ func TestPoliteStop_PublishesPendingToProcessingState(t *testing.T) {
 func TestPoliteStop_ConsumeAndIdleDropPublishedPending(t *testing.T) {
 	w := NewConversationWorker("test-polite-consume-publish", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	w.doc.SetMetadata("processingState", map[string]any{
 		"activity": ActivityCallingLLM, "threadItemId": "", "status": "streaming",
 	})

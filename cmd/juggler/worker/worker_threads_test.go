@@ -24,7 +24,7 @@ import (
 // loop ends → settle → parent resumes.
 func TestThreadRunSettlesOnTrailingText(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 
 	// Mock responses:
 	// 1. Parent LLM calls create_thread tool
@@ -116,7 +116,7 @@ func TestThreadRunSettlesOnTrailingText(t *testing.T) {
 // spawned a thread and will re-do the work on continuation.
 func TestCreateThreadInjectsToolUseInParentMessages(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 
 	w.setMockResponses([]MockResponse{
 		// Parent turn 1: calls create_thread
@@ -222,7 +222,7 @@ func TestCreateThreadInjectsToolUseInParentMessages(t *testing.T) {
 func TestReducer_EmptyUserThreadDoesNotAutoRunUnderAwaitingLLM(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	// A single text response: if the empty thread wrongly runs, it consumes this
@@ -285,7 +285,7 @@ func TestReducer_EmptyUserThreadDoesNotAutoRunUnderAwaitingLLM(t *testing.T) {
 func TestThreadDepthCap(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 
 	// Build a thread chain root -> L1 -> ... -> L{maxThreadDepth}, each level
 	// holding the next as its only nested item. Record each level's id+array.
@@ -390,7 +390,7 @@ func TestThreadDepthCap(t *testing.T) {
 func TestThreadBreadthCap(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 
 	// Fill the document with maxLiveThreads in-flight llmCreated siblings at
 	// root (no result). These count toward liveThreadCount.
@@ -484,7 +484,7 @@ func containsID(ids []string, id string) bool {
 
 func TestBrowserCreateThreadUsesRequestedParentThread(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "anthropic", "model": "claude-test"})
 
 	// Some root history (threads are isolated, so this is not inherited).
@@ -591,7 +591,7 @@ func TestBrowserCreateThreadUsesRequestedParentThread(t *testing.T) {
 // stays exactly as resumable as any other stopped thread.
 func TestThreadErrorReturnsToParent(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	// Add a user message so the conversation isn't empty
@@ -694,8 +694,8 @@ func TestThreadErrorReturnsToParent(t *testing.T) {
 	}
 
 	// 4. Worker should be idle
-	if w.loadState() != StateIdle {
-		t.Errorf("worker state should be idle after error recovery, got %v", w.loadState())
+	if w.currentRun().loadState() != StateIdle {
+		t.Errorf("worker state should be idle after error recovery, got %v", w.currentRun().loadState())
 	}
 
 	// 5. The conversation must be fully at rest — no LLM claim left dangling.

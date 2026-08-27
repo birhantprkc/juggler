@@ -212,7 +212,7 @@ func TestConversationCancelPreservesSession(t *testing.T) {
 
 	prompt := fa.readMsg(t)
 
-	conv.Cancel()
+	conv.Cancel("")
 
 	cancelMsg := fa.readMsg(t)
 	if cancelMsg.Method != "session/cancel" {

@@ -239,25 +239,25 @@ func (w *ConversationWorker) dispatchBuildSubthreadSpec(requestID, toolUseID, to
 // — spec may be nil, meaning "run the tool normally" — and (nil, false) on
 // error/timeout/cancellation. Keeps servicing inbound + doc/batcher signals so
 // the single run goroutine never deadlocks (mirrors waitForStrategyHook).
-func (w *ConversationWorker) waitForSubthreadSpec(requestID string, reply <-chan json.RawMessage, timeout time.Duration) (*SubthreadSpec, bool) {
+func (r *run) waitForSubthreadSpec(requestID string, reply <-chan json.RawMessage, timeout time.Duration) (*SubthreadSpec, bool) {
 	match := func(raw json.RawMessage) (*SubthreadSpec, bool) {
 		var resp BuildSubthreadSpecResponse
 		if err := json.Unmarshal(raw, &resp); err != nil {
 			return nil, false
 		}
 		if resp.Error != "" {
-			w.log.Info("[worker] build-subthread-spec (%s): engine reported %q — running inline", requestID, resp.Error)
+			r.log.Info("[worker] build-subthread-spec (%s): engine reported %q — running inline", requestID, resp.Error)
 			// Degrade to inline: a nil spec is the caller's "run the tool
 			// normally" signal (tryDelegateTool treats spec == nil identically to
 			// !ok), so stopping here with a nil spec is the same outcome.
 			return nil, true
 		}
-		w.tape.Record("build-subthread-spec-response", map[string]any{"req": requestID, "delegated": resp.Spec != nil})
+		r.tape.Record("build-subthread-spec-response", map[string]any{"req": requestID, "delegated": resp.Spec != nil})
 		return resp.Spec, true
 	}
 	onTimeout := func() {
-		w.log.Info("[worker] build-subthread-spec timed out (req %s) — running tool inline", requestID)
-		w.tape.Record("build-subthread-spec-timeout", map[string]any{"req": requestID})
+		r.log.Info("[worker] build-subthread-spec timed out (req %s) — running tool inline", requestID)
+		r.tape.Record("build-subthread-spec-timeout", map[string]any{"req": requestID})
 	}
-	return waitForEngineReply(w, reply, timeout, match, onTimeout)
+	return waitForEngineReply(r, reply, timeout, match, onTimeout)
 }

@@ -46,14 +46,20 @@ const (
 )
 
 // CancelLLMSessionFunc tears down provider-side state for an in-flight LLM
-// session keyed by conversation ID, while preserving the resume anchor so the
-// next turn stays cache-warm. Currently only the claudecode provider implements
-// this with non-trivial behaviour: its persistent CLI subprocess can be parked
-// inside MCP tools/call awaiting a result that the user has just cancelled, so
-// the cancel must kill that subprocess without discarding the warm session.
-// Other providers run one-shot LLM calls, so their cancellation is fully covered
-// by ctx cancellation on the in-flight call. Safe no-op for unknown convIDs.
-type CancelLLMSessionFunc func(conversationID string)
+// session on ONE thread of a conversation, while preserving the resume anchor so
+// the next turn stays cache-warm. Currently only the claudecode provider
+// implements this with non-trivial behaviour: its persistent CLI subprocess can
+// be parked inside MCP tools/call awaiting a result that the user has just
+// cancelled, so the cancel must kill that subprocess without discarding the warm
+// session. Other providers run one-shot LLM calls, so their cancellation is
+// fully covered by ctx cancellation on the in-flight call. Safe no-op for
+// unknown convIDs.
+//
+// threadItemID names the thread whose session to release — "" is the root
+// thread, provider.CancelAllThreads every thread of the conversation. Naming it
+// is what keeps one thread's Stop from killing the subprocess a sibling is
+// streaming through: claudecode gives each thread its own CLI.
+type CancelLLMSessionFunc func(conversationID, threadItemID string)
 
 // PathProviderFunc resolves a conversation id to its on-disk folder path.
 // Returns ok=false if the conversation is unknown to the session store.

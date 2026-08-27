@@ -440,7 +440,7 @@ func TestTrailingItemShowsTheResumedRun(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
 	w.doc.ensureItems()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 
 	threadID, err := w.currentRun().createThread(CreateThreadOptions{
 		Goal:      "map auth",
@@ -535,7 +535,7 @@ func TestAnsweredCallGetsAReceiptNotARewrite(t *testing.T) {
 	defer w.doc.Destroy()
 	w.doc.ensureItems()
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 
 	threadID, err := w.currentRun().createThread(CreateThreadOptions{
 		Goal: "map auth", Prompt: "find the auth flow", ToolUseID: "tu-1",
@@ -608,7 +608,7 @@ func TestUnreadReceiptCoalescesTheNextRun(t *testing.T) {
 	defer w.doc.Destroy()
 	w.doc.ensureItems()
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 
 	threadID, err := w.currentRun().createThread(CreateThreadOptions{
 		Goal: "map auth", Prompt: "find the auth flow", ToolUseID: "tu-1",
@@ -673,7 +673,7 @@ func TestIdenticalRunGetsNoSecondReceipt(t *testing.T) {
 	defer w.doc.Destroy()
 	w.doc.ensureItems()
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 
 	threadID, err := w.currentRun().createThread(CreateThreadOptions{
 		Goal: "map auth", Prompt: "find the auth flow", ToolUseID: "tu-1",
@@ -730,7 +730,7 @@ func TestContinueMovesOnlyTheTrailingSessionItem(t *testing.T) {
 	defer w.doc.Destroy()
 	w.doc.ensureItems()
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 
 	threadID, err := w.currentRun().createThread(CreateThreadOptions{
 		Goal: "map auth", Prompt: "find the auth flow", ToolUseID: "tu-1",
@@ -764,7 +764,7 @@ func TestContinueMovesOnlyTheTrailingSessionItem(t *testing.T) {
 	}
 	firstBefore := appendThreadMessages(nil, canonical, items)
 
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	sendMsg(t, w, SendMessageMessage{ThreadItemID: threadID, IsContinuation: true})
 
 	items = w.doc.GetItems()
@@ -811,7 +811,7 @@ func TestContinueAfterTheCallWasAnsweredLeavesItAlone(t *testing.T) {
 	defer w.doc.Destroy()
 	w.doc.ensureItems()
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 
 	threadID, err := w.currentRun().createThread(CreateThreadOptions{
 		Goal: "map auth", Prompt: "find the auth flow", ToolUseID: "tu-1",
@@ -834,7 +834,7 @@ func TestContinueAfterTheCallWasAnsweredLeavesItAlone(t *testing.T) {
 	wireBefore := mustJSON(t, answered)
 
 	// Continue, with nothing typed.
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	sendMsg(t, w, SendMessageMessage{ThreadItemID: threadID, IsContinuation: true})
 	w.currentRun().resetThreadContext()
 

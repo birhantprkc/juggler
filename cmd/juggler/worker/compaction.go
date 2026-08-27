@@ -443,8 +443,11 @@ func (r *run) handleCompact(payload json.RawMessage) {
 	// The fold's target is the root thread, so that is the claim it asks about. A
 	// fold does rewrite the array every live descendant hangs off, so once
 	// siblings can genuinely run in parallel this gate has to widen back out to
-	// them; it is narrow here because root is what /compact folds.
-	if r.threadActivity("") != ActivityNone || r.loadState() != StateIdle {
+	// them; it is narrow here because root is what /compact folds. The run-state
+	// half is the conversation's for that same reason — this is the one intake
+	// Phase E does NOT narrow to its target thread, because folding under a
+	// descendant's running turn rewrites the array that turn is writing into.
+	if r.threadActivity("") != ActivityNone || r.anyRunState() != StateIdle {
 		ack.Result = map[string]any{"folded": false, "error": "conversation is busy"}
 		r.reply(ack)
 		return
@@ -689,12 +692,12 @@ func (w *ConversationWorker) foldPrefixIntoSummaryTracked(arr *ycrdt.YArray, sta
 	return true
 }
 
-func (w *ConversationWorker) compactionCancelled() bool {
-	if w.loadState() == StateCancelling {
+func (r *run) compactionCancelled() bool {
+	if r.loadState() == StateCancelling {
 		return true
 	}
 	select {
-	case <-w.done:
+	case <-r.done:
 		return true
 	default:
 		return false

@@ -580,8 +580,30 @@ func (r *run) finishStrategyRun() {
 			}
 		}
 
+		// Resting empties the WHOLE run registry, which is right for this run and
+		// wrong for anyone else's: a thread queued while this one held the loop —
+		// a message typed into the root while a compaction thread summarized — would
+		// lose its dispatch and sit unanswered under an idle conversation. Read it
+		// before the sweep and re-raise it after, the same shape the pending-queue
+		// drain below uses. Only for a thread that still exists: a marker left by a
+		// deleted thread is stale, and clearing those is what the sweep is for.
+		queuedID, requeue := r.queuedThreadIDExcept(completedThreadID)
+		if requeue && queuedID != "" && r.doc.GetThreadYMap(queuedID) == nil {
+			requeue = false
+		}
+
 		r.sendStatus("idle", "")
-		r.CancelStaleToolActions()
+		// Scoped to the run that just ended: its own leftovers are stale, a
+		// sibling's are not — and before this was scoped, a sub-thread coming to
+		// rest stamped "Interrupted" on every live tool in the conversation.
+		r.CancelStaleToolActions(completedThreadID)
+
+		if requeue {
+			r.requestLLM(queuedID)
+			r.needsReconcile = true
+			r.drainReconcile()
+			return
+		}
 
 		// A completed sub-thread folds back into the root conversation. If
 		// the user queued a message at the ROOT while the sub-thread ran —
@@ -763,7 +785,9 @@ func (r *run) clearRetryingStatus() {
 
 // finalizeCancellation handles cleanup when runStrategyLoop exits due to cancellation.
 func (r *run) finalizeCancellation(completedThreadID string) {
-	r.CancelInFlightToolActions()
+	// Scoped to the cancelled run's own subtree ("" is root, i.e. everything —
+	// which is right, since cancelling the root turn stops the conversation).
+	r.CancelInFlightToolActions(completedThreadID)
 	// Stop is a promote-and-idle boundary: keep any queued messages by moving
 	// them into the thread as user items (the user reviews/edits, then sends to
 	// run) rather than dropping them.

@@ -187,18 +187,18 @@ func (w *ConversationWorker) dispatchCancelStrategyExecution() {
 // true) on success, (nil, false) on timeout/cancellation. Mirrors the
 // context/tools wait loop: it keeps servicing inbound messages and doc/batcher
 // signals while it waits, so the single run goroutine never deadlocks.
-func (w *ConversationWorker) waitForStrategyHook(requestID string, reply <-chan json.RawMessage, timeout time.Duration) ([]GuidanceItem, bool) {
+func (r *run) waitForStrategyHook(requestID string, reply <-chan json.RawMessage, timeout time.Duration) ([]GuidanceItem, bool) {
 	match := func(raw json.RawMessage) ([]GuidanceItem, bool) {
 		var resp StrategyHookResponse
 		if err := json.Unmarshal(raw, &resp); err != nil {
 			return nil, false
 		}
-		w.tape.Record("strategy-hook-response", map[string]any{"req": requestID, "guidance": len(resp.Guidance)})
+		r.tape.Record("strategy-hook-response", map[string]any{"req": requestID, "guidance": len(resp.Guidance)})
 		return resp.Guidance, true
 	}
 	onTimeout := func() {
-		w.log.Error("[worker] onActivate hook timed out (req %s) — activation deferred to next turn", requestID)
-		w.tape.Record("strategy-hook-timeout", map[string]any{"req": requestID})
+		r.log.Error("[worker] onActivate hook timed out (req %s) — activation deferred to next turn", requestID)
+		r.tape.Record("strategy-hook-timeout", map[string]any{"req": requestID})
 	}
-	return waitForEngineReply(w, reply, timeout, match, onTimeout)
+	return waitForEngineReply(r, reply, timeout, match, onTimeout)
 }

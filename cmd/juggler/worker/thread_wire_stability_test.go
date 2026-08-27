@@ -211,7 +211,7 @@ func TestCreateThreadStampsRunRecordOnInvocationMessage(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
 	w.doc.ensureItems()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 
 	input := json.RawMessage(`{"prompt":"find the auth flow"}`)
 	threadID, err := w.currentRun().createThread(CreateThreadOptions{
@@ -532,7 +532,7 @@ func TestResultFedStampMarksTheAnswerNotTheTurn(t *testing.T) {
 	defer w.doc.Destroy()
 	w.doc.ensureItems()
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 
 	threadID, err := w.currentRun().createThread(CreateThreadOptions{
 		Goal: "map auth", Prompt: "find the auth flow", ToolUseID: "tu-1",

@@ -571,6 +571,12 @@ type Provider interface {
 // outside the worker manager is a bug at the call site, not in the
 // implementation; the manager is the sole sanctioned caller and the
 // guarantee is enforced there.
+// CancelAllThreads is the Cancel threadItemID that means "every thread of this
+// conversation" rather than one of them. It cannot be the empty string: "" is
+// the ROOT thread, a real and separately cancellable thread, and conflating the
+// two is what makes one thread's Stop tear down its siblings.
+const CancelAllThreads = "*"
+
 type Conversation interface {
 	// Submit drives one LLM turn from req. req.Messages carries the
 	// conversation prefix the provider may already know about; if the prefix
@@ -602,15 +608,19 @@ type Conversation interface {
 	// time-bounded prefix cache.
 	CacheTTL() time.Duration
 
-	// Cancel aborts in-flight work for this conversation and releases live
-	// subprocess state (e.g. a CLI parked inside MCP awaiting a result),
-	// while PRESERVING any resume token / prompt-cache anchor so the next
-	// user message picks up cache-warm. A cancel is an interrupt, not an
-	// invalidation: it never discards the resumable session. (Providers that
+	// Cancel aborts in-flight work on ONE thread of this conversation and
+	// releases that thread's live subprocess state (e.g. a CLI parked inside MCP
+	// awaiting a result), while PRESERVING any resume token / prompt-cache anchor
+	// so the next user message picks up cache-warm. A cancel is an interrupt, not
+	// an invalidation: it never discards the resumable session. (Providers that
 	// genuinely need to drop a poisoned session do so internally, where the
-	// corruption is detected — not via this hook.) Safe to call even when
-	// nothing is in-flight; no-op for providers without per-conversation state.
-	Cancel()
+	// corruption is detected — not via this hook.) Safe to call even when nothing
+	// is in-flight; no-op for providers without per-conversation state.
+	//
+	// threadItemID names the thread, "" being the root thread and CancelAllThreads
+	// every thread at once (conversation teardown). A provider that keeps no
+	// per-thread state may ignore it and cancel what it has.
+	Cancel(threadItemID string)
 
 	// Close releases all resources owned by this conversation handle.
 	// Called when the conversation is permanently deleted; the handle is

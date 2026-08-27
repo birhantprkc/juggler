@@ -27,7 +27,7 @@ import (
 // It deliberately does NOT service livenessC/detectFrozenGap — these short
 // engine round-trips never did, unlike the LLM-call wait.
 func waitForEngineReply[T any](
-	w *ConversationWorker,
+	r *run,
 	reply <-chan json.RawMessage,
 	timeout time.Duration,
 	match func(json.RawMessage) (T, bool),
@@ -43,21 +43,21 @@ func waitForEngineReply[T any](
 			if v, ok := match(raw); ok {
 				return v, true
 			}
-		case msg := <-w.inbound:
-			w.currentRun().handleMessageInWait(msg)
-			if w.loadState() == StateCancelling {
+		case msg := <-r.inbound:
+			r.handleMessageInWait(msg)
+			if r.loadState() == StateCancelling {
 				return zero, false
 			}
-		case <-w.doc.UpdateSignal():
-			w.batcher.Schedule()
-		case <-w.batcher.TimerChan():
-			w.batcher.Flush()
+		case <-r.doc.UpdateSignal():
+			r.batcher.Schedule()
+		case <-r.batcher.TimerChan():
+			r.batcher.Flush()
 		case <-timer.C:
 			if onTimeout != nil {
 				onTimeout()
 			}
 			return zero, false
-		case <-w.done:
+		case <-r.done:
 			return zero, false
 		}
 	}

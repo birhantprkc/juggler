@@ -47,9 +47,10 @@ func (cv *StatelessConversation) CacheTTL() time.Duration { return cv.TTL }
 // preceding Submit, so there are no autonomous turns to route to a sink.
 func (cv *StatelessConversation) Subscribe(sink TurnSink) {}
 
-// Cancel is a no-op: in-flight requests are cancelled via the parent context,
-// and there is no provider-side state to preserve between turns.
-func (cv *StatelessConversation) Cancel() {}
+// Cancel is a no-op whatever thread it names: in-flight requests are cancelled
+// via the parent context, and there is no provider-side state to preserve
+// between turns — per-thread or otherwise.
+func (cv *StatelessConversation) Cancel(threadItemID string) {}
 
 // Close is a no-op: nothing to release per-conversation.
 func (cv *StatelessConversation) Close() error { return nil }

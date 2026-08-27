@@ -15,7 +15,7 @@ func newSkillWorker(t *testing.T, id string) *ConversationWorker {
 	t.Helper()
 	w := NewConversationWorker(id, "user:test")
 	t.Cleanup(func() { w.doc.Destroy() })
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "prov-A", "model": "model-A"})
 	return w
 }

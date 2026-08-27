@@ -71,6 +71,7 @@ type cacheOp struct {
 	key         conversationCacheKey
 	credential  core.ProviderCredential
 	convID      string // for close / cancel ops (matches every cached entry for that conv)
+	threadID    string // for cancel ops: the thread to cancel, or provider.CancelAllThreads
 	sinkFactory turnSinkFactory
 	respCh      chan cacheResult
 	doneCh      chan struct{}
@@ -147,16 +148,19 @@ func (cc *conversationCache) CloseAllConversations() {
 	}
 }
 
-// CancelConversation invokes Cancel on every cached Conversation for the
-// given convID. The cache already holds the handle, so no registry-wide
-// fanout is needed. Cancel is warm-preserving (it never drops the resume
-// anchor), so the handle stays usable for the next turn. Idempotent.
-func (cc *conversationCache) CancelConversation(convID string) {
+// CancelConversation invokes Cancel on every cached Conversation for the given
+// convID, naming the thread to cancel ("" is the root thread;
+// provider.CancelAllThreads is every thread, for conversation teardown). The
+// cache already holds the handle, so no registry-wide fanout is needed. Cancel
+// is warm-preserving (it never drops the resume anchor), so the handle stays
+// usable for the next turn. Idempotent.
+func (cc *conversationCache) CancelConversation(convID, threadID string) {
 	done := make(chan struct{}, 1)
 	cc.ops <- cacheOp{
-		kind:   cacheOpCancelConversation,
-		convID: convID,
-		doneCh: done,
+		kind:     cacheOpCancelConversation,
+		convID:   convID,
+		threadID: threadID,
+		doneCh:   done,
 	}
 	<-done
 }
@@ -318,9 +322,10 @@ func (cc *conversationCache) runActor() {
 			}
 			cancelDone := make(chan struct{})
 			cancelling[op.convID] = cancelDone
+			threadID := op.threadID
 			go func() {
 				for _, conv := range conversations {
-					conv.Cancel()
+					conv.Cancel(threadID)
 				}
 				close(cancelDone)
 			}()

@@ -49,7 +49,7 @@ func insertBoundedCompactionThread(t *testing.T, w *ConversationWorker, content 
 func TestCompactionFoldKeepsDelegatedRunRecords(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	_, arr := sessionThreadForTest(t, w, "explore-1", "tu-1", "tu-2")
@@ -166,7 +166,7 @@ func boundedFoldsIn(items []ConversationItem) int {
 func TestSessionFoldsConvergeToOneSummary(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	_, arr := sessionThreadForTest(t, w, "explore-1", "tu-1", "tu-2", "tu-3")
@@ -233,7 +233,7 @@ func TestSessionFoldsConvergeToOneSummary(t *testing.T) {
 func TestCompactRefusesWhileLLMClaimHeld(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	w.doc.InsertMessage(0,
 		ConversationItem{Type: ItemTypeUser, ItemID: "u1", Content: "do some work"},
@@ -241,14 +241,14 @@ func TestCompactRefusesWhileLLMClaimHeld(t *testing.T) {
 	)
 	// State Idle, claim still held — the exact divergence that stranded the fold.
 	w.claimLLM("")
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 
 	payload, _ := json.Marshal(CompactMessage{Type: "compact", AckID: "ack-1"})
 	w.currentRun().handleCompact(payload)
 
 	for _, it := range w.doc.GetItems() {
 		if it.Type == ItemTypeThread {
-			t.Fatalf("compaction folded while the LLM claim was held; the fold can never be summarized and the conversation reports %v", w.loadState())
+			t.Fatalf("compaction folded while the LLM claim was held; the fold can never be summarized and the conversation reports %v", w.currentRun().loadState())
 		}
 	}
 }
@@ -261,7 +261,7 @@ func TestCompactRefusesWhileLLMClaimHeld(t *testing.T) {
 func TestStrategyRunThreadRecoveredByReconcileTick(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	feedCompactionContextAndTools(w)
 	w.setMockResponses([]MockResponse{
@@ -270,7 +270,7 @@ func TestStrategyRunThreadRecoveredByReconcileTick(t *testing.T) {
 
 	// The claim is held when the fold lands, so the observer's pickup fails.
 	w.claimLLM("")
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	threadID := insertThreadWithOpts(w, threadOpts{
 		goal: "Compacted conversation history", needsStrategyRun: true,
 		noAutoSelect: true, boundedCompaction: true, userMessage: "history to summarize",
@@ -284,7 +284,7 @@ func TestStrategyRunThreadRecoveredByReconcileTick(t *testing.T) {
 
 	// The in-flight operation ends, freeing the claim; the reducer ticks.
 	w.releaseLLM("")
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	for i := 0; i < maxReconcilePasses && w.needsReconcile; i++ {
 		w.currentRun().tryReconcile()
 	}
@@ -303,7 +303,7 @@ func TestStrategyRunThreadRecoveredByReconcileTick(t *testing.T) {
 func TestResummarizeCompactionThreadRerunsSummarizer(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	threadID := insertBoundedCompactionThread(t, w, "history to summarize")
 	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
@@ -356,7 +356,7 @@ func TestResummarizeCompactionThreadRerunsSummarizer(t *testing.T) {
 func TestRunFoldedThreadCompactionOnePassAppendsPrompt(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	threadID := insertBoundedCompactionThread(t, w, "a short conversation history to summarize")
 
@@ -403,7 +403,7 @@ func TestRunFoldedThreadCompactionOnePassAppendsPrompt(t *testing.T) {
 func TestRunFoldedThreadCompactionProbeOverflowChunks(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	threadID := insertBoundedCompactionThread(t, w, strings.Repeat("large history λ🙂 ", 500))
 
@@ -452,7 +452,7 @@ func TestRunFoldedThreadCompactionProbeOverflowChunks(t *testing.T) {
 func TestFoldedCompactionPublishesBusyStatus(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	// The resting frame every real /compact starts from: the preceding turn ended
 	// at idle, and the pickup's claim deliberately leaves status untouched.
@@ -487,7 +487,7 @@ func TestFoldedCompactionPublishesBusyStatus(t *testing.T) {
 func TestBoundedCompactionMapsReducesAndPublishesOnlyFinalResult(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 	threadID := insertBoundedCompactionThread(t, w, strings.Repeat("large history λ🙂 ", 500))
 
@@ -544,7 +544,7 @@ func TestBoundedCompactionEighthPassFinalizationBoundary(t *testing.T) {
 func TestBoundedCompactionPinsRejectedRequestModel(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "changed", "model": "later"})
 	insertBoundedCompactionThread(t, w, strings.Repeat("history ", 1000))
 	pinned := &ModelConfig{Provider: "original", Model: "rejected"}
@@ -691,7 +691,7 @@ func TestBoundedCompactionMissingPromptDistinctFromLegacy(t *testing.T) {
 func TestBoundedCompactionRejectsNonConvergence(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	insertBoundedCompactionThread(t, w, strings.Repeat("source ", 2000))
 	w.llmCallFunc = func(_ context.Context, raw json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
 		var req hiddenLLMRequest
@@ -707,10 +707,10 @@ func TestBoundedCompactionRejectsNonConvergence(t *testing.T) {
 func TestBoundedCompactionCancellationPublishesNothing(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	threadID := insertBoundedCompactionThread(t, w, strings.Repeat("source ", 2000))
 	w.llmCallFunc = func(_ context.Context, _ json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
-		w.storeState(StateCancelling)
+		w.currentRun().storeState(StateCancelling)
 		return nil, context.Canceled
 	}
 	_, err := w.currentRun().tryBoundedCompaction(&provider.ContextLimitExceededError{OutputReserveTokens: 200, ContextWindowTokens: 1800}, &ModelConfig{Provider: "test", Model: "test"})
@@ -726,10 +726,10 @@ func TestBoundedCompactionCancellationPublishesNothing(t *testing.T) {
 func TestBoundedCompactionCancellationCarriesPartialAccounting(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	insertBoundedCompactionThread(t, w, strings.Repeat("source ", 2000))
 	w.llmCallFunc = func(_ context.Context, _ json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
-		w.storeState(StateCancelling)
+		w.currentRun().storeState(StateCancelling)
 		return nil, context.Canceled
 	}
 	_, err := w.currentRun().tryBoundedCompaction(&provider.ContextLimitExceededError{OutputReserveTokens: 200, ContextWindowTokens: 1800}, &ModelConfig{Provider: "test", Model: "test"})
@@ -832,7 +832,7 @@ func (cv *compactionAdmissionConversation) Submit(_ context.Context, req provide
 }
 func (cv *compactionAdmissionConversation) Subscribe(provider.TurnSink) {}
 func (cv *compactionAdmissionConversation) CacheTTL() time.Duration     { return 0 }
-func (cv *compactionAdmissionConversation) Cancel()                     {}
+func (cv *compactionAdmissionConversation) Cancel(string)               {}
 func (cv *compactionAdmissionConversation) Close() error                { return nil }
 
 func openCompactionAdmissionConversation(t *testing.T, window, reserve int64) (*compactionAdmissionConversation, provider.Conversation) {
@@ -862,7 +862,7 @@ func TestHiddenCompactionUsesRegistryAdmissionAndDiscardsAllStreamChunks(t *test
 	underlying, conversation := openCompactionAdmissionConversation(t, window, reserve)
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	threadID := insertBoundedCompactionThread(t, w, strings.Repeat("large history λ🙂 ", 500))
 	originalItems := w.doc.GetItemsFromArray(w.doc.GetThreadItemsArray(threadID))
 	w.llmCallFunc = func(ctx context.Context, raw json.RawMessage, callback func(StreamChunk)) (*LLMResponse, error) {

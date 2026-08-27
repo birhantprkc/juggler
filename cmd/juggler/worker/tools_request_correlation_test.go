@@ -32,7 +32,7 @@ func newToolsRequestHarness(t *testing.T, respond func(w *ConversationWorker, tu
 		Config:       WorkerConfig{ProjectPath: t.TempDir()},
 	})
 	w.currentRun().handleInit(initPayload)
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 
 	requestIDs := make(chan string, 8)
 	turn := 0

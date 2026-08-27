@@ -768,7 +768,7 @@ func TestCancel_KillsLiveSubprocess(t *testing.T) {
 		t.Fatalf("OpenConversation: %v", err)
 	}
 	cancelStart := time.Now()
-	conv.Cancel()
+	conv.Cancel("")
 	elapsed := time.Since(cancelStart)
 	if elapsed > 2*time.Second {
 		t.Errorf("Cancel took %v, want < 2s", elapsed)
@@ -865,7 +865,7 @@ func TestCancelParkedTool_ThenContinue_ResumesWarm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenConversation: %v", err)
 	}
-	conv.Cancel()
+	conv.Cancel("")
 
 	// User abandons the tool and types a new message; the committed prefix
 	// ([do a tool]) is unchanged, so this must resume-delta the tail.
@@ -893,7 +893,7 @@ func TestCancelParkedTool_ThenRollback_StartsFresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenConversation: %v", err)
 	}
-	conv.Cancel()
+	conv.Cancel("")
 
 	// User deletes back past the committed message and starts differently.
 	rolledBack := []provider.Message{userMsg("a completely different question"), userMsg("go")}

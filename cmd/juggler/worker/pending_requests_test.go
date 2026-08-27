@@ -196,7 +196,7 @@ func TestPendingRequests_ScanClaimsWhenIdle(t *testing.T) {
 func TestPendingRequests_ScanSkipsWhenBusy(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	pushRequestedEntry(t, w, "createThread", "r-busy", nil)
 	w.currentRun().scanPendingRequests()
 	if s := findEntryStatus(w, "r-busy"); s != "requested" {
@@ -297,13 +297,13 @@ func TestPendingRequests_CancelClaimedAwaitingLLMCleansUpBeforeSettlement(t *tes
 	pushCancelledClaimedCreateThread(t, w, "r-cancel-claimed", threadItemID)
 
 	var released bool
-	w.SetCancelLLMSession(func(_ string) { released = true })
+	w.SetCancelLLMSession(func(_, _ string) { released = true })
 	w.doc.SetMetadata("processingState", map[string]any{
 		"activity":     ActivityAwaitingLLM,
 		"threadItemId": descendant.ItemID,
 		"status":       "processing_tools",
 	})
-	w.storeState(StateIdle)
+	w.currentRun().storeState(StateIdle)
 
 	w.currentRun().scanPendingRequests()
 
@@ -352,13 +352,13 @@ func TestPendingRequests_CancelClaimedDoesNotCancelUnrelatedProcessing(t *testin
 	var cancel context.CancelFunc = func() { llmCancelled = true }
 	w.turn.cancelLLM.Store(&cancel)
 	providerReleased := false
-	w.SetCancelLLMSession(func(_ string) { providerReleased = true })
+	w.SetCancelLLMSession(func(_, _ string) { providerReleased = true })
 	w.doc.SetMetadata("processingState", map[string]any{
 		"activity":     ActivityCallingLLM,
 		"threadItemId": activeThreadID,
 		"status":       "calling_llm",
 	})
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 
 	w.currentRun().scanPendingRequests()
 
@@ -368,7 +368,7 @@ func TestPendingRequests_CancelClaimedDoesNotCancelUnrelatedProcessing(t *testin
 	if providerReleased {
 		t.Error("unrelated provider session was released")
 	}
-	if got := w.loadState(); got != StateProcessing {
+	if got := w.currentRun().loadState(); got != StateProcessing {
 		t.Errorf("worker state = %v, want StateProcessing", got)
 	}
 	if got := w.getProcessingThreadItemID(); got != activeThreadID {

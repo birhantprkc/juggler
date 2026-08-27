@@ -47,7 +47,7 @@ func (r *run) handleInit(payload json.RawMessage) {
 		// Only an attach to a busy worker is worth a line. A page load inits
 		// every conversation in the project, from every client, so logging the
 		// idle case buries the log in one identical line per open tab per load.
-		if state := r.loadState(); state != StateIdle {
+		if state := r.anyRunState(); state != StateIdle {
 			r.log.Debug("Client attached mid-turn (conv=%s, state=%s)", r.conversationID, state)
 		}
 		r.tape.Record("init", map[string]any{
@@ -164,8 +164,10 @@ func (r *run) handleInit(payload json.RawMessage) {
 		// do here. (A non-terminal tool-action left mid-flight is handled by
 		// CancelStaleToolActions below + the requestLLM re-drive.)
 
-		// Cancel tool-actions left running when the app was killed
-		r.CancelStaleToolActions()
+		// Cancel tool-actions left running when the app was killed. Conversation-
+		// wide ("") deliberately: nothing is running anywhere yet, so every thread's
+		// leftovers are stale.
+		r.CancelStaleToolActions("")
 	}
 
 	// Initialize the conversation-level DEFAULT model config in doc metadata for
@@ -279,10 +281,11 @@ func (r *run) handleSendMessage(payload json.RawMessage) {
 	// messages and continuations have nothing to queue.
 	input := msg.UserInput()
 	skillsToLoad := dedupSkills(msg.Skills)
-	// Asked of the TARGET thread: a message for an idle thread must not queue
-	// behind an unrelated sibling's run. (The run-state half of the gate is still
-	// conversation-wide — that is Phase E's move.)
-	if r.threadActivity(msg.ThreadItemID) != ActivityNone || r.loadState() != StateIdle {
+	// Both halves are asked of the TARGET thread: a message for an idle thread
+	// must not queue behind an unrelated sibling's run. threadRunState answers for
+	// the run writing to that thread and StateIdle for every other thread, so a
+	// run streaming on a sibling is no longer a reason to refuse this one.
+	if r.threadActivity(msg.ThreadItemID) != ActivityNone || r.threadRunState(msg.ThreadItemID) != StateIdle {
 		if !msg.IsContinuation {
 			// Skills chosen while a turn is in flight ride the pending queue ahead
 			// of the message, so they promote and execute before its turn.
@@ -334,11 +337,18 @@ func (r *run) handleSendMessage(payload json.RawMessage) {
 	// mutating r.t.thread, so an early return (missing items array) can't leave
 	// r.t.thread pointing at a half-set thread from this request.
 	//
+	// Scoped to this intake and restored on return, the same discipline
+	// createThread uses for its parent switch: the gate above admits a message for
+	// an idle thread while a run streams on another one, and that run's own
+	// destination must survive an intake arriving mid-stream.
+	//
 	// A thread carrying a result is NOT refused. A result is the thread's current
 	// summary, not a terminal state: a thread is running or it is stopped, and a
 	// stopped thread accepts a message and runs again. This is the same property
 	// a parent LLM relies on to invoke a subthread more than once, so the human
 	// path and the delegation path are one mechanism.
+	prevThread := r.t.thread
+	defer func() { r.t.thread = prevThread }()
 	if msg.ThreadItemID != "" {
 		itemsArray := r.doc.GetThreadItemsArray(msg.ThreadItemID)
 		if itemsArray == nil {
@@ -628,6 +638,18 @@ func (r *run) logCancel(reason cancelReason) {
 func (r *run) handleCancel(reason cancelReason) {
 	r.logCancel(reason)
 
+	// The thread this cancel applies to. A cancel frame carries no thread of its
+	// own — the browser decides whose Stop it is and only sends one when that
+	// thread owns the active work — so the worker resolves it from the run it is
+	// about to stop: this run's own thread while it is processing, otherwise the
+	// thread the document names as the current operation's target. Everything
+	// below is scoped to it, so stopping one thread leaves a sibling's tools,
+	// provider session and turn alone.
+	threadID := r.t.thread.itemID
+	if r.loadState() != StateProcessing {
+		threadID = r.getProcessingThreadItemID()
+	}
+
 	// A hard cancel supersedes any pending polite stop (Pause): the user escalated
 	// from "finish then pause" to "stop now", so drop the latch before the
 	// destructive teardown below runs (D6, D7). Clearing it here also means the
@@ -656,7 +678,7 @@ func (r *run) handleCancel(reason cancelReason) {
 		// the abandoned turn, never seeing the new user input. The release is
 		// warm-preserving: sessionUUID survives so the next turn --resumes warm.
 		if r.cancelLLMSession != nil {
-			r.cancelLLMSession(r.conversationID)
+			r.cancelLLMSession(r.conversationID, threadID)
 		}
 		return
 	}
@@ -664,14 +686,15 @@ func (r *run) handleCancel(reason cancelReason) {
 	// Non-blocking tool wait: the worker is idle but a turn is parked in
 	// activity="awaiting_llm" (a tool batch awaiting approval, or in-flight
 	// tools/threads). How we cancel depends on what is actually blocking.
-	threadID := r.getProcessingThreadItemID()
 	if r.threadActivity(threadID) == ActivityAwaitingLLM {
-		// Decide BEFORE cancelling — cancelling flips pending → cancelled.
-		pureApproval := r.blockedOnlyByApprovals()
+		// Decide BEFORE cancelling — cancelling flips pending → cancelled. Asked
+		// of this thread's subtree: a sibling parked on its own approval is not
+		// evidence about what is blocking here.
+		pureApproval := r.blockedOnlyByApprovals(threadID)
 
 		// Stop everything in this parked turn, including approvals the browser
 		// hasn't resolved (the test path has no browser-side approval cancel).
-		r.CancelAllToolActions()
+		r.CancelAllToolActions(threadID)
 		// The provider may have a live subprocess parked inside an MCP
 		// tools/call awaiting a result that will now never come — release it so
 		// handlers don't block until their 5-minute timeout. The release is
@@ -688,7 +711,7 @@ func (r *run) handleCancel(reason cancelReason) {
 		// multi-tool batches where one tool executes while a sibling still awaits
 		// approval, so "real work in flight" is the norm at an approval prompt.
 		if r.cancelLLMSession != nil {
-			r.cancelLLMSession(r.conversationID)
+			r.cancelLLMSession(r.conversationID, threadID)
 		}
 
 		if pureApproval {
@@ -1120,7 +1143,9 @@ func (w *ConversationWorker) handleEndUndoCoalesce(payload json.RawMessage) {
 // until the worker reaches StateIdle. Called before undo/redo so the document
 // rollback can't be raced by the strategy's deferred writes.
 func (r *run) cancelAndWaitForIdle() {
-	if r.loadState() == StateIdle {
+	// Conversation-wide on both halves: undo rolls the whole document back, so it
+	// waits for every run to be quiet, not just the one on the current thread.
+	if r.anyRunState() == StateIdle {
 		return
 	}
 	r.handleCancel(cancelReasonUndoRedo)
@@ -1128,7 +1153,7 @@ func (r *run) cancelAndWaitForIdle() {
 	// transition to Idle. Polling is acceptable here: undo is rare and the
 	// strategy loop checks its state every iteration / on LLM cancel.
 	for i := 0; i < 100; i++ {
-		if r.loadState() == StateIdle {
+		if r.anyRunState() == StateIdle {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

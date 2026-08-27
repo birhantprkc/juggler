@@ -123,7 +123,7 @@ func TestSessionPreamble(t *testing.T) {
 func TestCreateThreadSessionResumesSameThread(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 
 	w.setMockResponses([]MockResponse{
 		// Parent: starts the session.
@@ -278,7 +278,7 @@ func TestCreateThreadSessionResumesSameThread(t *testing.T) {
 func TestSessionBusyIsRefused(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.ensureItems()
 
 	if err := w.currentRun().executeCreateThread("tu-1", "create_thread",
@@ -317,7 +317,7 @@ func TestSessionBusyIsRefused(t *testing.T) {
 func TestSessionIsNotHijackedByAnotherTool(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
-	w.storeState(StateProcessing)
+	w.currentRun().storeState(StateProcessing)
 	w.doc.ensureItems()
 
 	if err := w.currentRun().executeCreateThread("tu-1", "create_thread",

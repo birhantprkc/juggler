@@ -22,7 +22,7 @@ const metaForkParked = "forkParked"
 // being wrongly parked.
 func (m *Manager) SnapshotParkedState(conversationID string) ([]byte, bool) {
 	w := m.Get(conversationID)
-	if w == nil || w.loadState() == StateIdle {
+	if w == nil || w.anyRunState() == StateIdle {
 		return nil, false
 	}
 	return w.snapshotParked(), true

@@ -24,7 +24,7 @@ func TestRemoveReleasesProviderSession(t *testing.T) {
 	defer m.Shutdown()
 
 	released := make(chan string, 1)
-	m.SetCancelLLMSession(func(convID string) { released <- convID })
+	m.SetCancelLLMSession(func(convID, _ string) { released <- convID })
 
 	m.GetOrCreate("conv-bin", "user:test")
 	m.Remove("conv-bin")
