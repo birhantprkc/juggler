@@ -539,12 +539,18 @@ func (r *run) dispatchCallLLMOnThread(threadItemID string) {
 		return
 	}
 
-	// Transition activity from "awaiting_llm" → "calling_llm".
+	// Transition this thread from "awaiting_llm" → "calling_llm".
 	// Consume the one-shot continuation marker only once we are actually going
-	// to dispatch; if claimLLM fails, leave it for the next reconcile tick.
-	if !r.claimLLM(threadItemID) {
-		// Already claimed for an LLM call — re-tickle so the next reconcile
-		// tick picks it up after the in-flight call completes.
+	// to dispatch; if the dispatch is refused, leave it for the next reconcile tick.
+	//
+	// isLLMClaimed is the serial-execution gate, and it is deliberately
+	// conversation-wide: the claim is per-thread, but a turn still RUNS inline on
+	// the run() goroutine, so dispatching a second one would re-enter the strategy
+	// loop underneath the first. This is the line Phase G narrows — to "in
+	// parallel, but only for read-only children".
+	if r.isLLMClaimed() || !r.claimLLM(threadItemID) {
+		// A turn is already in flight — re-tickle so the next reconcile
+		// tick picks this up after that call completes.
 		r.needsReconcile = true
 		return
 	}

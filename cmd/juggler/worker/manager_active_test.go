@@ -63,7 +63,7 @@ func TestManagerAnyActive(t *testing.T) {
 		t.Fatal("after claimLLM: expected AnyActive=true")
 	}
 
-	w.releaseLLM()
+	w.releaseLLM("")
 	if m.AnyActive() {
 		t.Fatal("after releaseLLM: expected AnyActive=false")
 	}
@@ -79,8 +79,8 @@ func TestManagerActiveConversationIDs(t *testing.T) {
 	if !activeB.claimLLM("") || !activeA.claimLLM("") {
 		t.Fatal("precondition: claimLLM should succeed")
 	}
-	defer activeB.releaseLLM()
-	defer activeA.releaseLLM()
+	defer activeB.releaseLLM("")
+	defer activeA.releaseLLM("")
 	_ = idle
 
 	got := m.ActiveConversationIDs()
@@ -144,7 +144,7 @@ func TestManagerActive_ApprovalParkedExcluded(t *testing.T) {
 		t.Fatalf("executing tool present: expected [conv-parked], got %v", ids)
 	}
 
-	w.releaseLLM()
+	w.releaseLLM("")
 }
 
 // TestManagerActive_SubThreadApprovalParkedExcluded pins the desktop
@@ -216,7 +216,7 @@ func TestManagerActive_SubThreadApprovalParkedExcluded(t *testing.T) {
 		t.Fatalf("executing tool inside sub-thread: expected [conv-sub-parked], got %v", ids)
 	}
 
-	w.releaseLLM()
+	w.releaseLLM("")
 }
 
 // TestManagerAnyActive_AwaitingCounts: a worker in "awaiting_llm" (tools
@@ -252,7 +252,7 @@ func TestManagerAnyActive_AwaitingCounts(t *testing.T) {
 	// Clear the claim via releaseLLM (a pure ycrdtMu-guarded doc transaction,
 	// safe from this goroutine) rather than sendStatus, which drives the
 	// syncBatcher and is private to the worker's run-loop goroutine.
-	w.releaseLLM()
+	w.releaseLLM("")
 	if m.AnyActive() {
 		t.Fatal("after releaseLLM: expected AnyActive=false")
 	}

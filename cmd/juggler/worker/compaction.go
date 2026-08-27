@@ -439,7 +439,12 @@ func (r *run) handleCompact(payload json.RawMessage) {
 	// a turn can leave state Idle while still holding the claim, and folding then
 	// commits a thread the pickup cannot claim — leaving a fold that never
 	// summarizes while the conversation reports idle. Refusing here says so.
-	if r.getActivity() != ActivityNone || r.loadState() != StateIdle {
+	//
+	// The fold's target is the root thread, so that is the claim it asks about. A
+	// fold does rewrite the array every live descendant hangs off, so once
+	// siblings can genuinely run in parallel this gate has to widen back out to
+	// them; it is narrow here because root is what /compact folds.
+	if r.threadActivity("") != ActivityNone || r.loadState() != StateIdle {
 		ack.Result = map[string]any{"folded": false, "error": "conversation is busy"}
 		r.reply(ack)
 		return

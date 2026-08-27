@@ -46,12 +46,32 @@ the on-disk folder name and is mutated via the rename API (see comment in
 | `modelConfig` | object | `Conversation.setModelConfig` | `{providerId, modelId, options?}`. Triggers `_fetchContextWindow` on change. |
 | `currentStrategyId` | string | `Conversation.setStrategy` / strategy plugins | One of the registered strategy IDs (`default`, `plan`, `research`). Change reinstantiates the root thread's `strategy`. |
 | `permissions` | object | `MessageThreadPermissions` | Persisted tool-approval grants keyed by tool name/path. |
-| `processingState` | `Y.Map` | Worker | `{status: 'idle'|'busy', ...}`. On the root idle transition the worker dispatches `onWorkerIdle` to the engine (run-strategy-hook), never to a viewer. |
+| `processingState` | `Y.Map` | Worker | `{status: 'idle'|'busy', ..., runs}`. On the root idle transition the worker dispatches `onWorkerIdle` to the engine (run-strategy-hook), never to a viewer. See below. |
 | `activatedStrategyId` | string | Worker | Last strategy whose `onActivate` hook the worker has run. Drives once-per-switch activation; survives reload/re-exec. |
 | `undoState` | object | Worker | `{canUndo, canRedo, seq}`. Pushed FROM worker; main thread only reads. `seq` changes on every emit, so a client can tell "the stack moved" from "the same state re-emitted" (`canUndo` stays true across a new operation). |
 | `nextSteps` | string \| null | Strategy plugins | Hint text rendered in the column header until a new turn starts. |
 | `draft` | `Y.Map` \| object | Composer | Root conversation's unsent draft: `{text, attachments}`. Per-thread drafts live on the thread container instead. |
 | `isProvisionalName` | boolean | Worker (seed) / `Session.setNameIsProvisional` | Whether the name is still provisional (machine-derived) and so may be replaced by the auto-namer. Seeded on first init from the `Untitled N` shape; cleared by a rename, set by the "Auto-name" button and `/handoff`. |
+
+#### `processingState.runs` — the per-thread run registry
+
+`runs` holds one entry per thread that currently holds an LLM claim, keyed by
+thread item id (`"root"` for the root thread):
+
+```js
+runs: { "<threadItemId>": { activity, threadItemId, claimedAt, explicitContinuation } }
+```
+
+It is the **source of truth**: the worker takes, releases and queues claims as a
+compare-and-set against one thread's entry, so an idle thread is never refused
+because an unrelated sibling is busy.
+
+The sibling top-level fields — `activity`, `threadItemId`, `claimedAt` — are a
+**projection** of whichever run is live: the thread just touched if it still
+holds a claim, else a run actually calling the LLM, else one awaiting dispatch.
+Read the projection for "what is this conversation doing"; read `runs` for what
+one named thread is doing. Every field is worker-written and rebuilt from
+scratch on load, so nothing here is durable state.
 
 `undoLog` and `metadata.undoState` are split deliberately: the log is a CRDT
 that survives sync; the state is the worker's view of "what can be

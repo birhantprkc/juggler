@@ -47,7 +47,7 @@ func TestReleaseLLM_ClearsClaim(t *testing.T) {
 	if !w.isLLMClaimed() {
 		t.Fatal("after claim: expected isLLMClaimed=true")
 	}
-	w.releaseLLM()
+	w.releaseLLM("")
 	if w.isLLMClaimed() {
 		t.Fatal("after release: expected isLLMClaimed=false")
 	}
@@ -147,9 +147,11 @@ func TestRequestLLM_SetsAwaitingActivity(t *testing.T) {
 	}
 }
 
-// TestRequestLLM_FailsWhenBusy: requestLLM returns false if activity
-// is already non-null.
-func TestRequestLLM_FailsWhenBusy(t *testing.T) {
+// TestRequestLLM_FailsWhenThreadIsCallingLLM: a thread mid-turn is the one state
+// a queued dispatch cannot be added to. A REPEAT request on a thread already
+// awaiting dispatch is an idempotent success instead — the return value reports
+// the postcondition ("this thread is queued"), which already holds.
+func TestRequestLLM_FailsWhenThreadIsCallingLLM(t *testing.T) {
 	w := NewConversationWorker("test-request-busy", "user:test")
 
 	w.claimLLM("")
@@ -159,8 +161,102 @@ func TestRequestLLM_FailsWhenBusy(t *testing.T) {
 
 	w2 := NewConversationWorker("test-request-double", "user:test")
 	w2.requestLLM("")
-	if w2.requestLLM("") {
-		t.Fatal("double requestLLM: expected failure")
+	if !w2.requestLLM("") {
+		t.Fatal("repeat requestLLM on an awaiting thread: expected idempotent success")
+	}
+}
+
+// TestRunRegistry_ThreadsClaimIndependently: the claim is per-thread, so a busy
+// thread never refuses an idle sibling. This is the property the read-only
+// sub-agent fan-out is built on; before the run registry, processingState held
+// one conversation-wide claim and the second thread was refused.
+func TestRunRegistry_ThreadsClaimIndependently(t *testing.T) {
+	w := NewConversationWorker("test-run-registry", "user:test")
+
+	if !w.claimLLM("thread-a") {
+		t.Fatal("precondition: first claim should succeed")
+	}
+	if !w.claimLLM("thread-b") {
+		t.Fatal("claiming an idle sibling should succeed while thread-a is calling")
+	}
+	if w.claimLLM("thread-a") {
+		t.Fatal("re-claiming a thread already calling the LLM should fail")
+	}
+
+	if got := w.threadActivity("thread-a"); got != ActivityCallingLLM {
+		t.Fatalf("thread-a activity = %q, want %q", got, ActivityCallingLLM)
+	}
+	if got := w.threadActivity("thread-b"); got != ActivityCallingLLM {
+		t.Fatalf("thread-b activity = %q, want %q", got, ActivityCallingLLM)
+	}
+	if got := w.threadActivity("thread-c"); got != ActivityNone {
+		t.Fatalf("untouched thread activity = %q, want idle", got)
+	}
+
+	// Releasing one leaves the other running, and the projection follows the
+	// survivor rather than reporting the conversation idle.
+	w.releaseLLM("thread-a")
+	if got := w.threadActivity("thread-a"); got != ActivityNone {
+		t.Fatalf("after release, thread-a activity = %q, want idle", got)
+	}
+	if !w.hasActiveRun() {
+		t.Fatal("thread-b still holds a claim: expected hasActiveRun=true")
+	}
+	if got := w.getActivity(); got != ActivityCallingLLM {
+		t.Fatalf("projection activity = %q, want %q", got, ActivityCallingLLM)
+	}
+	if got := w.getProcessingThreadItemID(); got != "thread-b" {
+		t.Fatalf("projection threadItemId = %q, want thread-b", got)
+	}
+
+	w.releaseLLM("thread-b")
+	if w.hasActiveRun() {
+		t.Fatal("after releasing both: expected hasActiveRun=false")
+	}
+	if got := w.getActivity(); got != ActivityNone {
+		t.Fatalf("projection activity = %q, want idle", got)
+	}
+}
+
+// TestRunRegistry_ExplicitContinuationIsPerThread: a Continue on one thread must
+// not be consumed by another thread's dispatch.
+func TestRunRegistry_ExplicitContinuationIsPerThread(t *testing.T) {
+	w := NewConversationWorker("test-run-continuation", "user:test")
+
+	w.markExplicitContinuation("thread-a")
+	if !w.isExplicitContinuation("thread-a") {
+		t.Fatal("thread-a: expected the continuation marker to be set")
+	}
+	if w.isExplicitContinuation("thread-b") {
+		t.Fatal("thread-b: continuation marker must not leak across threads")
+	}
+
+	if w.consumeExplicitContinuation("thread-b") {
+		t.Fatal("consuming an unmarked thread should report false")
+	}
+	if !w.consumeExplicitContinuation("thread-a") {
+		t.Fatal("consuming the marked thread should report true")
+	}
+	if w.isExplicitContinuation("thread-a") {
+		t.Fatal("the marker is one-shot: expected it cleared after consumption")
+	}
+}
+
+// TestRunRegistry_RestSweepsEveryClaim: a resting status ends the conversation,
+// not just the thread that rested — today's single-turn semantics, preserved
+// while the registry underneath learns to hold several runs.
+func TestRunRegistry_RestSweepsEveryClaim(t *testing.T) {
+	w := NewConversationWorker("test-run-rest", "user:test")
+
+	w.claimLLM("thread-a")
+	w.requestLLM("thread-b")
+	w.currentRun().sendStatus("idle", "")
+
+	if w.hasActiveRun() {
+		t.Fatal("after sendStatus(idle): expected every claim swept")
+	}
+	if got := w.threadActivity("thread-b"); got != ActivityNone {
+		t.Fatalf("thread-b activity = %q, want idle", got)
 	}
 }
 

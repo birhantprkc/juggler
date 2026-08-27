@@ -506,10 +506,12 @@ func (r *run) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVe
 // path can skip it and strand a stamped tool_use unpaired.
 func (r *run) finishStrategyRun() {
 	// Non-blocking: if the loop returned after dispatching tools or
-	// creating a child thread (activity="awaiting_llm"), let the reducer
+	// creating a child thread, THIS thread is left awaiting_llm — let the reducer
 	// dispatch the child. In production the run() event loop calls
 	// tryReconcile(); drain it inline here so tests (no run()) also work.
-	if r.getActivity() == ActivityAwaitingLLM {
+	// Asked of the turn's own thread: a sibling parked awaiting dispatch is not
+	// evidence that this run has work outstanding.
+	if r.threadActivity(r.t.thread.itemID) == ActivityAwaitingLLM {
 		r.storeState(StateIdle)
 		r.needsReconcile = true
 		r.drainReconcile()
@@ -565,7 +567,7 @@ func (r *run) finishStrategyRun() {
 		// the top of this function.
 		if completedThreadID != "" {
 			if openID := r.doc.firstLiveThreadID(completedThreadID); openID != "" {
-				r.releaseLLM()
+				r.releaseLLM(completedThreadID)
 				// If the claim can't be taken (another request already pending),
 				// fall through and publish idle rather than returning with no
 				// status written at all — a doc left mid-turn with nothing driving
@@ -797,9 +799,11 @@ func (w *ConversationWorker) signalParentThread(completedThreadID string) bool {
 		return false
 	}
 	parentThreadID := w.doc.findParentThreadID(completedThreadID)
-	// Release the calling_llm claim before requesting the parent.
-	// Without this, requestLLM sees activity="calling_llm" and refuses to set awaiting_llm.
-	w.releaseLLM()
+	// Release the finished CHILD's claim before requesting the parent — only the
+	// run that just ended is over. The parent may already be awaiting_llm (its
+	// own turn parked when it spawned this child), which requestLLM below reports
+	// as the idempotent success it is.
+	w.releaseLLM(completedThreadID)
 	if !w.requestLLM(parentThreadID) {
 		return false
 	}

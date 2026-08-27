@@ -10,60 +10,281 @@ import (
 	ycrdt "github.com/skyterra/y-crdt"
 )
 
-// claimLLM atomically transitions the conversation into a claimed-for-LLM
-// state against the given thread. The compare-and-set is done inside a
-// single Yjs transaction: it reads processingState.activity and, if it
-// is null/ActivityNone, writes the new claim. Returns true on success;
-// false if another operation was already in flight.
+// The per-thread run registry.
 //
-// The claim is the doc-native source of truth for "is this conversation
-// busy". The reducer calls it before dispatching an LLM turn
-// (dispatchCallLLMOnThread): a failed claim means another turn is already
-// running, so the reducer leaves the work for the next reconcile tick.
-func (w *ConversationWorker) claimLLM(threadItemID string) bool {
-	return w.patchProcessingStateIf(
-		func(existing map[string]any) bool {
-			if existing != nil {
-				activity, _ := existing["activity"].(string)
-				// Succeed from null or "awaiting_llm"; fail if already "calling_llm".
-				if activity != ActivityNone && activity != ActivityAwaitingLLM {
-					return false // already claimed for an LLM call
-				}
+// processingState carries one entry per thread that holds a claim, under the
+// `runs` key:
+//
+//	runs: { "<key>": {activity, threadItemId, claimedAt, explicitContinuation} }
+//
+// `runs` is the source of truth. Every claim, dispatch request and continuation
+// marker is a compare-and-set against ONE thread's entry, so an idle thread is
+// never refused because an unrelated sibling is busy — the property the
+// read-only sub-agent fan-out is built on.
+//
+// The top-level activity / threadItemId / claimedAt fields are a PROJECTION of
+// whichever run is live (projectLiveRun). They exist because every browser
+// reader of processingState — and the reducer's own walk-down — still describes
+// one conversation-wide turn; the projection keeps those readers correct while
+// the registry underneath them learns to hold several.
+const rootRunKey = "root"
+
+// runKey maps a thread item id to its key in the runs map. Thread items are
+// always minted as "msg_…" (generateItemID) or "msg-…" (the browser's
+// Conversation._nextItemId), so the root sentinel cannot collide with a real
+// thread's id.
+func runKey(threadItemID string) string {
+	if threadItemID == "" {
+		return rootRunKey
+	}
+	return threadItemID
+}
+
+// runsView returns the registry a processingState frame describes. A frame
+// carrying only the top-level projection — one written before the registry
+// existed, restored from disk, or seeded directly by a test — still describes
+// exactly one run, on the thread its threadItemId names, so synthesize that
+// entry rather than reading the frame as idle. The first compare-and-set against
+// such a frame writes a real registry and the synthesis stops applying.
+func runsView(state map[string]any) map[string]any {
+	if runs, ok := state["runs"].(map[string]any); ok {
+		return runs
+	}
+	activity, _ := state["activity"].(string)
+	if activity == ActivityNone {
+		return nil
+	}
+	threadItemID, _ := state["threadItemId"].(string)
+	entry := map[string]any{"activity": activity, "threadItemId": threadItemID}
+	if claimedAt, ok := state["claimedAt"]; ok {
+		entry["claimedAt"] = claimedAt
+	}
+	if explicit, _ := state["explicitContinuation"].(bool); explicit {
+		entry["explicitContinuation"] = true
+	}
+	return map[string]any{runKey(threadItemID): entry}
+}
+
+// runEntryOf returns one thread's run entry, or nil when that thread holds no
+// claim. Read-only — the returned map belongs to state.
+func runEntryOf(state map[string]any, threadItemID string) map[string]any {
+	entry, _ := runsView(state)[runKey(threadItemID)].(map[string]any)
+	return entry
+}
+
+// entryActivity reads a run entry's activity, reporting an absent entry as idle.
+func entryActivity(entry map[string]any) string {
+	activity, _ := entry["activity"].(string)
+	return activity
+}
+
+// entryClaimedAt reads a run entry's claim timestamp. The value survives a JSON
+// round-trip through toYcrdt, so it can come back as any numeric kind.
+func entryClaimedAt(entry map[string]any) int64 {
+	switch v := entry["claimedAt"].(type) {
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	case int:
+		return int64(v)
+	default:
+		return 0
+	}
+}
+
+// runEntryIsSpent reports whether an entry has nothing left worth storing: no
+// activity and no pending continuation marker. Such entries are dropped so an
+// idle conversation's runs map is absent entirely, exactly as an idle
+// conversation's activity field is.
+func runEntryIsSpent(entry map[string]any) bool {
+	if entryActivity(entry) != ActivityNone {
+		return false
+	}
+	explicit, _ := entry["explicitContinuation"].(bool)
+	return !explicit
+}
+
+// copyRuns returns a deep-enough copy of processingState's runs sub-map (the
+// map and each entry), always non-nil so callers can write into it. Copying
+// matters because the map read back through fromYcrdt is also reachable from
+// the frame clone patchProcessingStateIf builds: mutating it in place would
+// edit state a rejected compare-and-set is supposed to leave untouched.
+func copyRuns(state map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, raw := range runsView(state) {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		clone := make(map[string]any, len(entry))
+		for k, v := range entry {
+			clone[k] = v
+		}
+		out[key] = clone
+	}
+	return out
+}
+
+// storeRuns writes the registry back into a frame, omitting the key entirely
+// when no thread holds a claim.
+func storeRuns(state map[string]any, runs map[string]any) {
+	if len(runs) == 0 {
+		delete(state, "runs")
+		return
+	}
+	state["runs"] = runs
+}
+
+// pickLiveRun chooses which run the top-level projection describes: the thread
+// just touched if it still holds a claim, else the run actually calling the LLM,
+// else one awaiting dispatch. Ties break on the most recent claim and then on
+// key, so the projection is a stable function of the registry rather than of Go
+// map iteration order.
+func pickLiveRun(runs map[string]any, touchedKey string) map[string]any {
+	if entry, ok := runs[touchedKey].(map[string]any); ok && entryActivity(entry) != ActivityNone {
+		return entry
+	}
+	for _, want := range []string{ActivityCallingLLM, ActivityAwaitingLLM} {
+		var best map[string]any
+		bestKey := ""
+		for key, raw := range runs {
+			entry, ok := raw.(map[string]any)
+			if !ok || entryActivity(entry) != want {
+				continue
 			}
-			return true
-		},
+			if best == nil || preferRun(entry, key, best, bestKey) {
+				best, bestKey = entry, key
+			}
+		}
+		if best != nil {
+			return best
+		}
+	}
+	return nil
+}
+
+// preferRun orders two candidate runs for the projection: most recently claimed
+// first, then by key so the choice is deterministic.
+func preferRun(a map[string]any, aKey string, b map[string]any, bKey string) bool {
+	if aAt, bAt := entryClaimedAt(a), entryClaimedAt(b); aAt != bAt {
+		return aAt > bAt
+	}
+	return aKey < bKey
+}
+
+// projectLiveRun refreshes the top-level activity/threadItemId/claimedAt fields
+// from the registry. threadItemId is deliberately left in place when no run is
+// live: a released claim keeps naming the thread it was released from, which is
+// what handleCancel and the reducer read on the way to rest.
+func projectLiveRun(state map[string]any, touchedThreadID string) {
+	runs, _ := state["runs"].(map[string]any)
+	entry := pickLiveRun(runs, runKey(touchedThreadID))
+	if entry == nil {
+		delete(state, "activity")
+		delete(state, "claimedAt")
+		return
+	}
+	state["activity"] = entryActivity(entry)
+	if id, ok := entry["threadItemId"].(string); ok {
+		state["threadItemId"] = id
+	}
+	if claimedAt, ok := entry["claimedAt"]; ok {
+		state["claimedAt"] = claimedAt
+	} else {
+		delete(state, "claimedAt")
+	}
+}
+
+// patchRunIf is the per-thread compare-and-set every activity transition is
+// built from. Inside one Yjs transaction it offers the target thread's run entry
+// to cond and, if accepted, applies mutate to that entry (and, where a
+// transition also touches UI-facing frame fields, to the frame), stores the
+// result and refreshes the projection. Returns false — changing nothing — when
+// cond rejects.
+func (w *ConversationWorker) patchRunIf(
+	threadItemID string,
+	cond func(entry map[string]any) bool,
+	mutate func(entry, state map[string]any),
+) bool {
+	key := runKey(threadItemID)
+	return w.patchProcessingStateIf(
+		func(existing map[string]any) bool { return cond(runEntryOf(existing, threadItemID)) },
 		func(updated map[string]any) {
+			runs := copyRuns(updated)
+			entry, ok := runs[key].(map[string]any)
+			if !ok {
+				entry = map[string]any{}
+			}
+			entry["threadItemId"] = threadItemID
+			mutate(entry, updated)
+			if runEntryIsSpent(entry) {
+				delete(runs, key)
+			} else {
+				runs[key] = entry
+			}
+			storeRuns(updated, runs)
+			projectLiveRun(updated, threadItemID)
+		},
+	)
+}
+
+// claimLLM atomically claims the given thread for an LLM turn. The
+// compare-and-set reads that thread's run entry and, if it is not already
+// calling the LLM, writes the claim. Returns true on success; false if this
+// thread's own turn is already in flight.
+//
+// The claim is the doc-native source of truth for "is this thread busy". The
+// reducer calls it before dispatching an LLM turn (dispatchCallLLMOnThread): a
+// failed claim means that thread already has a turn running, so the reducer
+// leaves the work for the next reconcile tick.
+func (w *ConversationWorker) claimLLM(threadItemID string) bool {
+	return w.patchRunIf(threadItemID,
+		func(entry map[string]any) bool {
+			// Succeed from idle or "awaiting_llm"; fail if already "calling_llm".
+			return entryActivity(entry) != ActivityCallingLLM
+		},
+		func(entry, state map[string]any) {
 			now := time.Now().UnixMilli()
-			updated["activity"] = ActivityCallingLLM
-			updated["claimedAt"] = now
-			updated["threadItemId"] = threadItemID
+			entry["activity"] = ActivityCallingLLM
+			entry["claimedAt"] = now
 			// Keep status/message/startedAt fields as-is so the UI doesn't
 			// briefly flicker through an intermediate state; sendStatus will
 			// shortly overwrite them with the first loop phase.
-			if _, hasStatus := updated["status"]; !hasStatus {
-				updated["status"] = "preparing"
+			if _, hasStatus := state["status"]; !hasStatus {
+				state["status"] = "preparing"
 			}
-			if _, hasStarted := updated["startedAt"]; !hasStarted {
-				updated["startedAt"] = now
+			if _, hasStarted := state["startedAt"]; !hasStarted {
+				state["startedAt"] = now
 			}
 		},
 	)
 }
 
-// releaseLLM clears the doc-native claim without touching any other
-// processingState field. Symmetric with claimLLM. The normal end-of-loop
-// path goes through sendStatus("idle", "") which ALSO clears the claim;
-// releaseLLM is used by error paths and the init-time reconciliation.
-func (w *ConversationWorker) releaseLLM() {
-	w.patchProcessingStateIf(
-		func(existing map[string]any) bool {
-			if existing == nil {
-				return false
-			}
-			_, has := existing["activity"]
-			return has
+// releaseLLM clears one thread's claim without touching any other
+// processingState field. Symmetric with claimLLM. The normal end-of-loop path
+// goes through sendStatus("idle", "") which ALSO clears claims; releaseLLM is
+// used by error paths and the child→parent handoff, where only the thread that
+// just finished may be released.
+func (w *ConversationWorker) releaseLLM(threadItemID string) {
+	w.patchRunIf(threadItemID,
+		func(entry map[string]any) bool { return entryActivity(entry) != ActivityNone },
+		func(entry, _ map[string]any) {
+			delete(entry, "activity")
+			delete(entry, "claimedAt")
 		},
+	)
+}
+
+// releaseAllLLM drops every thread's claim at once. Used where the user has
+// revoked the whole conversation's LLM intent rather than one thread's — undo,
+// redo, and the history-navigation suppression window — after which no thread's
+// pending dispatch still stands.
+func (w *ConversationWorker) releaseAllLLM() {
+	w.patchProcessingStateIf(
+		func(existing map[string]any) bool { return existing != nil },
 		func(updated map[string]any) {
+			delete(updated, "runs")
 			delete(updated, "activity")
 			delete(updated, "claimedAt")
 		},
@@ -101,6 +322,28 @@ func (w *ConversationWorker) patchProcessingStateIf(
 	return applied
 }
 
+// replaceProcessingState publishes a processingState frame built from scratch,
+// carrying the per-thread run registry across the replacement: updateRuns is
+// handed the live registry (a copy) and the frame is written with the result and
+// its refreshed projection. Read and write happen under ONE hold, so a rebuild
+// can never drop a claim taken between reading the old frame and writing the
+// new one — the hazard a from-scratch SetMetadata would otherwise carry now that
+// the frame holds state the writer did not author.
+func (w *ConversationWorker) replaceProcessingState(
+	stateMap map[string]any,
+	touchedThreadID string,
+	updateRuns func(runs map[string]any),
+) {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	existing, _ := fromYcrdt(w.doc.metadata.Get("processingState")).(map[string]any)
+	runs := copyRuns(existing)
+	updateRuns(runs)
+	storeRuns(stateMap, runs)
+	projectLiveRun(stateMap, touchedThreadID)
+	w.doc.setMetadata("processingState", stateMap)
+}
+
 // patchProcessingState applies mutate to a shallow copy of the doc's
 // processingState map inside a single transaction and writes it back. No-op when
 // processingState is absent — the plain field-level updates below never create
@@ -121,6 +364,8 @@ func (w *ConversationWorker) patchProcessingState(mutate func(map[string]any)) {
 // re-drive for exactly this first load, then is consumed so a later reload of the
 // clone behaves like any normal conversation.
 func (r *run) reconcileProcessingStateOnLoad() {
+	// Rests the conversation AND empties the run registry: a freshly loaded doc
+	// may carry claims persisted mid-turn, and nothing is running yet.
 	r.sendStatus("idle", "")
 	if b, _ := r.doc.GetMetadata(metaForkParked).(bool); b {
 		r.doc.SetMetadata(metaForkParked, false) // one-shot: consume the marker
@@ -235,7 +480,10 @@ func statusHoldsClaim(status string) bool {
 	}
 }
 
-// getActivity reads the current processingState.activity from the doc.
+// getActivity reads the top-level processingState.activity projection — the
+// activity of whichever run is live (see projectLiveRun). Readers asking about
+// one particular thread must use threadActivity instead; this one answers "what
+// is this conversation showing".
 func (w *ConversationWorker) getActivity() string {
 	existing := w.readProcessingState()
 	if existing == nil {
@@ -243,6 +491,26 @@ func (w *ConversationWorker) getActivity() string {
 	}
 	activity, _ := existing["activity"].(string)
 	return activity
+}
+
+// threadActivity reads one thread's own activity from the run registry,
+// unaffected by what any sibling is doing. This is what a busy gate for a
+// specific target thread must ask, so an idle thread is never made to queue
+// behind an unrelated run.
+func (w *ConversationWorker) threadActivity(threadItemID string) string {
+	return entryActivity(runEntryOf(w.readProcessingState(), threadItemID))
+}
+
+// hasActiveRun reports whether ANY thread holds a claim. The conversation-wide
+// question — "is something running here at all" — as distinct from getActivity,
+// which describes only the run the projection currently names.
+func (w *ConversationWorker) hasActiveRun() bool {
+	for _, raw := range runsView(w.readProcessingState()) {
+		if entry, ok := raw.(map[string]any); ok && entryActivity(entry) != ActivityNone {
+			return true
+		}
+	}
+	return false
 }
 
 // docTurnCounter reads the completed-turn counter currently stored in the doc's
@@ -265,15 +533,17 @@ func (w *ConversationWorker) docTurnCounter() int64 {
 	}
 }
 
-// isLLMClaimed reports whether an LLM call is currently in progress
-// (activity == "calling_llm"). "awaiting_llm" is NOT claimed — it
-// means "dispatch needed" and the reducer should act on it.
+// isLLMClaimed reports whether an LLM call is currently in progress on any
+// thread. "awaiting_llm" is NOT claimed — it means "dispatch needed" and the
+// reducer should act on it. Reading the projection answers this for the whole
+// conversation: pickLiveRun prefers a calling_llm run over an awaiting one, so
+// the top-level activity is "calling_llm" exactly when some thread is calling.
 func (w *ConversationWorker) isLLMClaimed() bool {
 	return w.getActivity() == ActivityCallingLLM
 }
 
 // isActivelyRunning reports whether a turn is genuinely doing work on this
-// worker: the doc-native LLM claim is held (activity != none) AND the turn is
+// worker: some thread holds the doc-native LLM claim AND the turn is
 // not merely parked waiting for the user to approve a tool. A turn blocked
 // solely on pending approvals is doing nothing — quitting and restarting leaves
 // the approval intact — so it does not count as running. This is the "is it
@@ -281,80 +551,57 @@ func (w *ConversationWorker) isLLMClaimed() bool {
 // ActiveConversationIDs); it is deliberately narrower than activity != none,
 // which stays true for the whole turn including the approval-parked pause.
 func (w *ConversationWorker) isActivelyRunning() bool {
-	if w.getActivity() == ActivityNone {
+	if !w.hasActiveRun() {
 		return false
 	}
 	return !w.blockedOnlyByApprovals()
 }
 
-// markExplicitContinuation records a one-shot continuation intent in
-// processingState. The reducer consumes it when dispatching the requested LLM
-// turn. This distinguishes a fresh Continue click after an assistant message
-// from stale awaiting_llm activity left after deleted tools/threads.
+// markExplicitContinuation records a one-shot continuation intent on the given
+// thread's run entry. The reducer consumes it when dispatching that thread's
+// LLM turn. This distinguishes a fresh Continue click after an assistant message
+// from stale awaiting_llm activity left after deleted tools/threads. Held
+// per-thread, so a Continue on one thread is never consumed by another's
+// dispatch.
 func (w *ConversationWorker) markExplicitContinuation(threadItemID string) {
-	w.patchProcessingStateIf(
+	w.patchRunIf(threadItemID,
 		func(map[string]any) bool { return true },
-		func(updated map[string]any) {
-			updated["explicitContinuation"] = true
-			updated["threadItemId"] = threadItemID
-		},
+		func(entry, _ map[string]any) { entry["explicitContinuation"] = true },
 	)
 }
 
-// isExplicitContinuation reports whether the one-shot continuation marker
-// targets the given thread.
+// isExplicitContinuation reports whether the one-shot continuation marker is set
+// on the given thread.
 func (w *ConversationWorker) isExplicitContinuation(threadItemID string) bool {
-	ycrdtMu.Lock()
-	defer ycrdtMu.Unlock()
-	raw := w.doc.metadata.Get("processingState")
-	existing, _ := fromYcrdt(raw).(map[string]any)
-	if existing == nil {
-		return false
-	}
-	flag, _ := existing["explicitContinuation"].(bool)
-	target, _ := existing["threadItemId"].(string)
-	return flag && target == threadItemID
+	flag, _ := runEntryOf(w.readProcessingState(), threadItemID)["explicitContinuation"].(bool)
+	return flag
 }
 
 // consumeExplicitContinuation returns and clears the one-shot continuation
-// marker if it targets the thread currently being dispatched.
+// marker on the thread currently being dispatched.
 func (w *ConversationWorker) consumeExplicitContinuation(threadItemID string) bool {
-	return w.patchProcessingStateIf(
-		func(existing map[string]any) bool {
-			if existing == nil {
-				return false
-			}
-			flag, _ := existing["explicitContinuation"].(bool)
-			target, _ := existing["threadItemId"].(string)
-			return flag && target == threadItemID
+	return w.patchRunIf(threadItemID,
+		func(entry map[string]any) bool {
+			flag, _ := entry["explicitContinuation"].(bool)
+			return flag
 		},
-		func(updated map[string]any) {
-			delete(updated, "explicitContinuation")
-		},
+		func(entry, _ map[string]any) { delete(entry, "explicitContinuation") },
 	)
 }
 
-// requestLLM atomically transitions activity to "awaiting_llm",
-// signaling that an LLM call should be dispatched once all tools are
-// terminal. The threadItemID identifies which thread needs dispatch
-// ("" = root). Accepts transitions from null (new request) and
-// calling_llm (child→parent handoff). Returns false if activity is
-// already awaiting_llm (another request is pending).
+// requestLLM marks the given thread "awaiting_llm", signaling that an LLM call
+// should be dispatched on it once all its work is terminal. The threadItemID
+// identifies which thread needs dispatch ("" = root).
+//
+// The postcondition is what the return value reports: true means this thread is
+// queued for dispatch, so a thread already awaiting is an idempotent success —
+// the caller's request stands either way. It fails only when that same thread is
+// mid-turn (calling_llm), which is the one state a queued dispatch cannot be
+// added to. A busy SIBLING is irrelevant: each thread queues on its own.
 func (w *ConversationWorker) requestLLM(threadItemID string) bool {
-	return w.patchProcessingStateIf(
-		func(existing map[string]any) bool {
-			if existing != nil {
-				activity, _ := existing["activity"].(string)
-				if activity == ActivityAwaitingLLM || activity == ActivityCallingLLM {
-					return false // another request already pending or LLM already in progress
-				}
-			}
-			return true
-		},
-		func(updated map[string]any) {
-			updated["activity"] = ActivityAwaitingLLM
-			updated["threadItemId"] = threadItemID
-		},
+	return w.patchRunIf(threadItemID,
+		func(entry map[string]any) bool { return entryActivity(entry) != ActivityCallingLLM },
+		func(entry, _ map[string]any) { entry["activity"] = ActivityAwaitingLLM },
 	)
 }
 
@@ -373,16 +620,17 @@ func (w *ConversationWorker) getProcessingThreadItemID() string {
 	return threadItemID
 }
 
-// transitionToAwaitingLLM transitions activity from "calling_llm" to
-// "awaiting_llm" and sets the UI status to "processing_tools". Used
-// when the strategy loop dispatches async tools and returns without
-// blocking — the reducer will re-dispatch when tools complete.
-func (w *ConversationWorker) transitionToAwaitingLLM() {
-	w.patchProcessingStateIf(
+// transitionToAwaitingLLM moves THIS turn's thread from "calling_llm" to
+// "awaiting_llm" and sets the UI status to "processing_tools". Used when the
+// strategy loop dispatches async tools and returns without blocking — the
+// reducer will re-dispatch when the tools complete. Scoped to the turn's own
+// thread, so handing the loop back never disturbs a sibling's claim.
+func (r *run) transitionToAwaitingLLM() {
+	r.patchRunIf(r.t.thread.itemID,
 		func(map[string]any) bool { return true },
-		func(updated map[string]any) {
-			updated["activity"] = ActivityAwaitingLLM
-			updated["status"] = "processing_tools"
+		func(entry, state map[string]any) {
+			entry["activity"] = ActivityAwaitingLLM
+			state["status"] = "processing_tools"
 		},
 	)
 }

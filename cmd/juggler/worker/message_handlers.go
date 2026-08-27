@@ -279,7 +279,10 @@ func (r *run) handleSendMessage(payload json.RawMessage) {
 	// messages and continuations have nothing to queue.
 	input := msg.UserInput()
 	skillsToLoad := dedupSkills(msg.Skills)
-	if r.getActivity() != ActivityNone || r.loadState() != StateIdle {
+	// Asked of the TARGET thread: a message for an idle thread must not queue
+	// behind an unrelated sibling's run. (The run-state half of the gate is still
+	// conversation-wide — that is Phase E's move.)
+	if r.threadActivity(msg.ThreadItemID) != ActivityNone || r.loadState() != StateIdle {
 		if !msg.IsContinuation {
 			// Skills chosen while a turn is in flight ride the pending queue ahead
 			// of the message, so they promote and execute before its turn.
@@ -661,8 +664,8 @@ func (r *run) handleCancel(reason cancelReason) {
 	// Non-blocking tool wait: the worker is idle but a turn is parked in
 	// activity="awaiting_llm" (a tool batch awaiting approval, or in-flight
 	// tools/threads). How we cancel depends on what is actually blocking.
-	if r.getActivity() == ActivityAwaitingLLM {
-		threadID := r.getProcessingThreadItemID()
+	threadID := r.getProcessingThreadItemID()
+	if r.threadActivity(threadID) == ActivityAwaitingLLM {
 		// Decide BEFORE cancelling — cancelling flips pending → cancelled.
 		pureApproval := r.blockedOnlyByApprovals()
 
@@ -1064,8 +1067,8 @@ func (r *run) handleUndoOrRedo(fn func() bool, payload json.RawMessage) {
 	// turn the moment the next docChangeChan signal arrives — because the
 	// post-undo doc ([..., user]) plus activity="awaiting_llm" matches
 	// decideNextAction's ItemTypeUser-AwaitingLLM = CallLLM branch.
-	// Note: this is a no-op if activity was already None.
-	r.releaseLLM()
+	// Note: this is a no-op if no thread held a claim.
+	r.releaseAllLLM()
 	// Keep suppressing reducer advancement for immediate post-undo/redo Yjs sync
 	// echoes. This is time-bounded so later Yjs-originated user actions (approval
 	// clicks) still drive the reducer normally.

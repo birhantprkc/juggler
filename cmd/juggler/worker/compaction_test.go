@@ -283,7 +283,7 @@ func TestStrategyRunThreadRecoveredByReconcileTick(t *testing.T) {
 	}
 
 	// The in-flight operation ends, freeing the claim; the reducer ticks.
-	w.releaseLLM()
+	w.releaseLLM("")
 	w.storeState(StateIdle)
 	for i := 0; i < maxReconcilePasses && w.needsReconcile; i++ {
 		w.currentRun().tryReconcile()

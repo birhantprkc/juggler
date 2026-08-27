@@ -930,7 +930,7 @@ func (r *run) recoverWorkerPanic(msgType string) {
 // suppress the next user-initiated turn (verification item V3). A pause that
 // arrives mid-turn is handled in the wait loop (handleMessageInWait), not here.
 func (w *ConversationWorker) handlePause() {
-	if w.getActivity() == ActivityNone && w.loadState() == StateIdle {
+	if !w.hasActiveRun() && w.loadState() == StateIdle {
 		return // nothing running — a pause is meaningless, don't strand the latch
 	}
 	w.setPolitePending()
@@ -1356,7 +1356,8 @@ func (r *run) writeProcessingState(status, message, code string) {
 	if code != "" {
 		stateMap["code"] = code
 	}
-	if statusHoldsClaim(status) {
+	holdsClaim := statusHoldsClaim(status)
+	if holdsClaim {
 		stateMap["startedAt"] = r.t.processingStartedAt
 		// Mirror the polite-stop (Pause) latch into the synced state so a client
 		// reloading mid-pause restores the "Pausing…" cue. Only ever on a busy
@@ -1367,19 +1368,33 @@ func (r *run) writeProcessingState(status, message, code string) {
 		if r.politeStop.Load() {
 			stateMap["politePending"] = true
 		}
-	}
-	// Mirror the imperative-loop status into the doc-native `activity`
-	// claim field. Only active statuses hold the claim; idle AND the
-	// terminal-error statuses (error, validation-error) omit it, which
-	// reads back as ActivityNone — the operation has ended, so the
-	// conversation rests and a new send/continue may start.
-	if statusHoldsClaim(status) {
-		stateMap["activity"] = ActivityCallingLLM
-		stateMap["claimedAt"] = time.Now().UnixMilli()
 	} else if status == "idle" {
+		// Takes ycrdtMu itself, so it must run before the hold below.
 		r.bumpTurnCounterAtIdle()
 	}
-	r.doc.SetMetadata("processingState", stateMap)
+	// Mirror the imperative-loop status into this turn's run entry. Only active
+	// statuses hold the claim; idle AND the terminal-error statuses (error,
+	// validation-error) are resting, and rest the WHOLE conversation: they empty
+	// the registry, so the frame's activity projection reads back as ActivityNone
+	// and a new send/continue may start. That conversation-wide sweep is today's
+	// single-turn semantics preserved exactly; it is the line Phase G narrows to
+	// the resting thread alone, once siblings can be running to be swept away.
+	r.replaceProcessingState(stateMap, r.t.thread.itemID, func(runs map[string]any) {
+		if !holdsClaim {
+			for key := range runs {
+				delete(runs, key)
+			}
+			return
+		}
+		key := runKey(r.t.thread.itemID)
+		entry, ok := runs[key].(map[string]any)
+		if !ok {
+			entry = map[string]any{"threadItemId": r.t.thread.itemID}
+		}
+		entry["activity"] = ActivityCallingLLM
+		entry["claimedAt"] = time.Now().UnixMilli()
+		runs[key] = entry
+	})
 }
 
 // bumpTurnCounterAtIdle advances the monotonic turn fence observers use to detect
@@ -1548,7 +1563,7 @@ func (r *run) handleItemsChange() {
 	// user action (send/continue/approve/retry/rerun) starts a new LLM intent.
 	if r.suppressReconcileAfterHistoryNavUntilMs > 0 {
 		if time.Now().UnixMilli() < r.suppressReconcileAfterHistoryNavUntilMs {
-			r.releaseLLM()
+			r.releaseAllLLM()
 			r.needsReconcile = false
 			return
 		}
@@ -1636,14 +1651,17 @@ func (r *run) checkForNewThreads() bool {
 			continue
 		}
 
-		// Claim before setting context — fail fast if activity is non-null
-		// (another operation is in flight or tools are awaiting completion).
+		// Claim before setting context — fail fast if a turn is already in flight
+		// anywhere in the conversation (isLLMClaimed is the same serial-execution
+		// gate dispatchCallLLMOnThread takes, for the same reason: the run below
+		// executes inline on the run() goroutine) or if this thread already holds
+		// its own claim.
 		// Re-tickle on failure, exactly as dispatchCallLLMOnThread does: this
 		// thread still needs its run, and needsStrategyRun is consumed only after
 		// a successful claim. Without the re-arm the thread is orphaned — the
 		// release that frees the claim writes processingState, not items, so the
 		// items observer never fires again and nothing revisits the pickup.
-		if !r.claimLLM(item.ItemID) {
+		if r.isLLMClaimed() || !r.claimLLM(item.ItemID) {
 			r.needsReconcile = true
 			return false
 		}
