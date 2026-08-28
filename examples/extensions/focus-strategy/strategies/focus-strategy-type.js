@@ -29,6 +29,18 @@ class FocusStrategyType extends StrategyType {
   };
 
   /**
+   * Tell the model what mode it is in, once, when the user switches to this
+   * strategy. The base class injects this as a durable system-reminder —
+   * authoring system-prompt text instead would bust the prompt cache on every
+   * switch — and Settings → Extensions shows it verbatim, so the user reads the
+   * same string the model does.
+   * @type {string}
+   */
+  static GUIDANCE =
+    'Focus mode: investigation only. Writing tools are withheld this turn — '
+    + 'read, search and reason, and report what you find rather than changing it.';
+
+  /**
    * Withhold every write tool. The model is never offered one, so it cannot
    * plan around a refusal — a cleaner outcome than denying the call later.
    * @param {import('juggler/strategy-type').ToolDefinition[]} tools - Every available tool
@@ -53,21 +65,6 @@ class FocusStrategyType extends StrategyType {
     if (interactionKind === 'elicitation' || !autoApprovable) return APPROVAL_POLICY.DEFAULT;
     if (ALLOWED_CATEGORIES.has(category ?? '')) return APPROVAL_POLICY.APPROVE;
     return APPROVAL_POLICY.DEFAULT;
-  }
-
-  /**
-   * Tell the model what mode it is in, once, when the user switches to this
-   * strategy. injectGuidance() writes a durable system-reminder into the
-   * conversation — the sanctioned way to steer a turn. Authoring system-prompt
-   * text instead would bust the prompt cache on every switch.
-   * @param {string|null} [_previousStrategyId] - The strategy that was active before
-   * @returns {void}
-   */
-  onActivate(_previousStrategyId) {
-    this.injectGuidance(
-      'Focus mode: investigation only. Writing tools are withheld this turn — '
-      + 'read, search and reason, and report what you find rather than changing it.'
-    );
   }
 }
 

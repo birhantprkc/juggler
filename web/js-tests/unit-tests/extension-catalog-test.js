@@ -305,6 +305,26 @@ export async function runTests(_ctx) {
       'capability detail shows the module file path');
   });
 
+  // 3a4 — a strategy's detail pane publishes the guidance it injects. This is
+  // the answer to "does switching mode change what the model is told?", so it is
+  // shown verbatim, and a strategy that injects nothing must say so out loud
+  // rather than leaving an absent section to be read as either answer.
+  await run('strategy detail shows the guidance it injects, verbatim', async () => {
+    if (!strategyRegistry.isInitialized()) await strategyRegistry.init();
+    const el = /** @type {PluginCatalog} */ (document.createElement('plugin-catalog'));
+
+    const readOnly = /** @type {any} */ (strategyRegistry.get('read-only'));
+    const section = el._renderStrategyGuidance(readOnly);
+    const shown = section.querySelector('.strategy-guidance-text');
+    assert(shown && shown.textContent === readOnly.GUIDANCE.trim(),
+      `read-only's declared guidance is shown byte for byte; got ${JSON.stringify(shown?.textContent)}`);
+
+    const none = el._renderStrategyGuidance(/** @type {any} */ (strategyRegistry.get('default')));
+    assert(!none.querySelector('.strategy-guidance-text'), 'default has no guidance text to show');
+    assert(/^Nothing\./.test(none.querySelector('.strategy-guidance-none')?.textContent || ''),
+      'a strategy that says nothing to the model states that, rather than rendering an empty section');
+  });
+
   // 4 — live component render: the sidebar is an extension tree (extensions as
   // top-level nodes, capabilities nested under per-type sub-headings) and the
   // detail pane shows the selection. Read-only against real registries + catalog.

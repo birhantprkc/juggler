@@ -16,6 +16,7 @@ of changes; this project follows semantic versioning.
 - A message or Continue on an idle thread no longer waits behind a busy sibling
 - Lots of work on making remote connections over slow networks more efficient and robust
 - Lots of work on handling stuck tools, and improving logging when things do go wrong
+- Settings now shows what a strategy tells the model, verbatim, or that it says nothing
 
 ## [0.5.8] - 2026-08-24
 

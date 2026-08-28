@@ -22,6 +22,10 @@ import { INTERACTION_KIND } from 'juggler/context-item';
  * survives `filterTools` is either auto-approved by {@link getApprovalPolicy}
  * or refused outright by {@link onToolPending}. Nothing is ever left parked.
  *
+ * A sub-agent's brief is its `static GUIDANCE`: the base class injects it as a
+ * durable system-reminder when the strategy activates, which in a freshly-born
+ * delegated thread puts it first in the transcript after the seed.
+ *
  * These strategies are `hidden`, so they never appear in the strategy selector,
  * the Shift+Tab ring, the default picker or the command editor. The user picks a
  * sub-agent by calling its tool; the strategy id is an implementation detail.
@@ -29,15 +33,6 @@ import { INTERACTION_KIND } from 'juggler/context-item';
  * @abstract
  */
 export default class SubagentStrategyType extends StrategyType {
-  /**
-   * Situational guidance injected when this strategy activates — the sub-agent's
-   * prompt. Subclasses set it; it is delivered as a durable system-reminder in a
-   * freshly-born thread, so it leads the transcript without touching the cached
-   * system prefix.
-   * @type {string}
-   */
-  static GUIDANCE = '';
-
   /**
    * Tools no sub-agent may ever be handed, whatever its category filter says.
    *
@@ -134,18 +129,5 @@ export default class SubagentStrategyType extends StrategyType {
     this.messageThread.refuseApproval(toolUseId,
       `Refused: ${toolName} needed approval, and a sub-agent has nobody to ask. `
       + 'Find another way, or report what you could not check.');
-  }
-
-  /**
-   * Deliver the sub-agent's prompt as durable guidance the moment its thread
-   * starts. In a freshly-born delegated thread this is the first thing in the
-   * transcript after the seed, so it functions as the sub-agent's brief without
-   * authoring any system-prompt text.
-   * @override
-   * @returns {void}
-   */
-  onActivate() {
-    const guidance = /** @type {typeof SubagentStrategyType} */ (this.constructor).GUIDANCE;
-    if (guidance) this.injectGuidance(guidance);
   }
 }

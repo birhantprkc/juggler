@@ -1074,6 +1074,7 @@ class PluginCatalog extends JugglerElement {
       const tools = this._renderToolDefinitions(ItemClass);
       if (tools) content.appendChild(tools);
       if (cap.itemType === 'strategy') {
+        content.appendChild(this._renderStrategyGuidance(ItemClass));
         const recs = this._renderStrategyRecommendations(ItemClass);
         if (recs) content.appendChild(recs);
       }
@@ -1170,6 +1171,36 @@ class PluginCatalog extends JugglerElement {
   _renderPermissions(ItemClass) {
     if (!ItemClass || !ItemClass.MANIFEST) return null;
     return this._permissionsSection(ItemClass.MANIFEST.permissions);
+  }
+
+  /**
+   * Render what a strategy says to the model: its declared `GUIDANCE`, verbatim.
+   *
+   * Always rendered, because "nothing" is the answer most people come here for.
+   * A strategy's description tells you which tools it withholds and which calls
+   * it approves; only this tells you whether it also steers the model, and the
+   * text is shown rather than described so the two cannot drift apart.
+   * @param {any} ItemClass - Strategy class
+   * @returns {HTMLElement} The section
+   * @private
+   */
+  _renderStrategyGuidance(ItemClass) {
+    const declared = typeof ItemClass?.GUIDANCE === 'string' ? ItemClass.GUIDANCE.trim() : '';
+
+    const section = this._createElement('section', 'plugin-section');
+    const header = this._createElement('header', 'plugin-section-header');
+    header.appendChild(this._createElement('h5', 'plugin-section-title', 'What it tells the model'));
+    header.appendChild(this._createElement('div', 'plugin-section-explanation',
+      'Text this strategy adds to the conversation when you switch to it. It is an ordinary message, '
+      + 'not a change to the system prompt, and it is everything the model is told about the strategy.'));
+    section.appendChild(header);
+
+    section.appendChild(declared
+      ? this._createElement('pre', 'strategy-guidance-text', declared)
+      : this._createElement('div', 'strategy-guidance-none',
+        'Nothing. This strategy says nothing to the model — it only decides which tools the model is '
+        + 'offered and which of its calls need your approval.'));
+    return section;
   }
 
   /**

@@ -67,22 +67,19 @@ export default class ReadOnlyStrategyType extends StrategyType {
   };
 
   /**
-   * Inject the read-only mode notice when this strategy becomes active.
+   * The read-only notice, injected by the base `onActivate` as a durable
+   * system-reminder (not system-prompt text, so a mid-session switch leaves the
+   * cached prefix untouched).
    *
-   * Situational guidance is delivered as a durable system-reminder message
-   * (not a system-prompt API), so it reaches the LLM on the worker path and
-   * leaves the cached system prefix untouched across the strategy switch. The
-   * read-only constraint itself is enforced by tool filtering / getApprovalPolicy;
-   * this message just makes the constraint explicit to the model.
-   * @override
-   * @returns {void}
+   * The constraint itself is enforced by filterTools / getApprovalPolicy; this
+   * states it, rather than leaving the model to work out why the write tools
+   * went missing. Being declared here is also what puts it in front of the user
+   * in Settings → Extensions: this is the whole of what read-only mode says.
+   * @type {string}
    */
-  onActivate() {
-    this.injectGuidance(
-      'READ-ONLY MODE: Only read-only tools are available this session — you cannot modify ' +
-      'any files or run commands. Explore the code and answer thoroughly within that constraint.'
-    );
-  }
+  static GUIDANCE =
+    'READ-ONLY MODE: Only read-only tools are available this session — you cannot modify ' +
+    'any files or run commands. Explore the code and answer thoroughly within that constraint.';
 
   /**
    * Auto-approve read and meta tools (read-only mode exposes nothing else).

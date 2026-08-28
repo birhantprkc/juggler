@@ -1023,6 +1023,30 @@ plugin-catalog {
   color: var(--text-secondary);
 }
 
+/* A strategy's declared guidance, shown exactly as the model receives it —
+   monospaced and wrapped rather than reflowed, so what is on screen is the
+   string that was sent. */
+.strategy-guidance-text {
+  margin: 1rem 0 0;
+  padding: 0.75rem;
+  border-radius: 0.375rem;
+  background: var(--bg-tertiary);
+  border: 0.0625rem solid var(--border-color);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.strategy-guidance-none {
+  margin-top: 1rem;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
 .tradeoffs-group {
   margin-top: 0.5rem;
 }

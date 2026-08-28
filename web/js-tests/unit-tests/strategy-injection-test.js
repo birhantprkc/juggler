@@ -12,6 +12,9 @@
  *  1. StrategyType.injectGuidance writes a system-reminder item (sourced from
  *     the strategy id) that lands in the thread's messages.
  *  2. Read-only's onActivate injects the read-only notice.
+ *  3. What onActivate injects is the class's declared `static GUIDANCE`, byte
+ *     for byte — the property the Extensions pane relies on when it shows a
+ *     strategy's guidance to the user as what the model was sent.
  *
  * The worker-path delivery of these items to the LLM is pinned separately by
  * the Go tests TestInjectedSystemReminderReachesMessages / ...Guidance.
@@ -107,11 +110,24 @@ export async function runTests(_ctx) {
     assert(notice.source === 'read-only', `notice source should be 'read-only', got '${notice.source}'`);
   });
 
-  await test('base onActivate is a no-op (injects nothing)', async () => {
+  await test('onActivate injects the declared GUIDANCE verbatim', async () => {
     const conversation = await createTestConversation(session);
     const mt = conversation.rootMessageThread;
-    const strategy = strategyRegistry.createStrategy('default', mt);
-    strategy.onActivate('read-only');
+    const declared = /** @type {any} */ (strategyRegistry.get('read-only')).GUIDANCE;
+    strategyRegistry.createStrategy('read-only', mt).onActivate('default');
+
+    const contents = systemReminders(mt).map(r => r.content);
+    assert(contents.includes(declared),
+      `injected text must be the declared GUIDANCE byte for byte (the Extensions pane shows that `
+      + `string as what the model was sent); declared=${JSON.stringify(declared)} injected=${JSON.stringify(contents)}`);
+  });
+
+  await test('a strategy declaring no guidance injects nothing', async () => {
+    const conversation = await createTestConversation(session);
+    const mt = conversation.rootMessageThread;
+    assert(!(/** @type {any} */ (strategyRegistry.get('default')).GUIDANCE),
+      'default must declare no guidance — the pane says so, so it has to be true');
+    strategyRegistry.createStrategy('default', mt).onActivate('read-only');
     assert(systemReminders(mt).length === 0, 'default strategy onActivate must inject nothing');
   });
 

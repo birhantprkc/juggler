@@ -20,15 +20,17 @@ manifest and a handful of hooks the worker calls:
 |------|---------------|
 | `filterTools(tools)` | Drop every `write` tool, so the model is never even offered one |
 | `getApprovalPolicy(info)` | Auto-approve what's left, so nothing parks for a human |
-| `onActivate(previousId)` | Announce the mode with `injectGuidance()` |
+| `static GUIDANCE` | Announce the mode — the base `onActivate` injects it |
 
 ## The two things worth stealing
 
-**Steer with `injectGuidance()`, never by writing system-prompt text.** It
-appends a durable system-reminder to the conversation, which reaches the model on
-the production worker path *and* leaves the cached system prefix untouched. A
-strategy that rewrote the system prompt would bust the prompt cache on every
-switch.
+**Steer with `static GUIDANCE`, never by writing system-prompt text.** The base
+`onActivate` appends it to the conversation as a durable system-reminder, which
+reaches the model on the production worker path *and* leaves the cached system
+prefix untouched. A strategy that rewrote the system prompt would bust the prompt
+cache on every switch. Declaring the text also puts it in front of the user:
+Settings → Extensions prints a strategy's guidance verbatim, so nobody has to
+read the source to find out what a mode says to the model.
 
 **`getApprovalPolicy` must return `DEFAULT` in two cases**, or it silently
 answers for the user:

@@ -211,6 +211,8 @@ export class AbortError extends Error {
  *   - **MANIFEST fields** configure defaults: `defaultRules`,
  *     `defaultAllowedPaths`, `toolExecution`, `showsApprovalControls`,
  *     `recommendations`, `color`, `icon`.
+ *   - **static GUIDANCE** is what the strategy tells the model on activation —
+ *     declared, so the user can read it in Settings → Extensions.
  *   - `filterTools(tools)` — restrict which tools the model may call (per phase).
  *   - `getApprovalPolicy(info)` — auto-approve or force-approve a tool call.
  *   - `onToolPending(info)` — react (async) once a tool has parked for approval;
@@ -233,7 +235,8 @@ export class AbortError extends Error {
  * 1. Add a file named `*-strategy-type.js` under the extension's `strategies/`
  *    directory — the manifest's `provides` glob registers it automatically.
  * 2. `import StrategyType, { APPROVAL_POLICY } from 'juggler/strategy-type';`
- * 3. Define a static MANIFEST (id, name, version, description, author).
+ * 3. Define a static MANIFEST (id, name, version, description, author), and a
+ *    static GUIDANCE if the model should be told anything.
  * 4. Override the hooks you need (`filterTools`, `getApprovalPolicy`,
  *    `onActivate`, …).
  * 5. Save — a linked extension hot-reloads in connected viewers; no restart.
@@ -256,6 +259,8 @@ export class AbortError extends Error {
  *     showsApprovalControls: false
  *   };
  *
+ *   static GUIDANCE = 'PLANNING MODE: investigate and propose a plan; do not modify anything.';
+ *
  *   filterTools(tools) {
  *     return tools.filter(t => t.category === 'read' || t.category === 'meta');
  *   }
@@ -264,10 +269,6 @@ export class AbortError extends Error {
  *     return (category === 'read' || category === 'meta')
  *       ? APPROVAL_POLICY.APPROVE
  *       : APPROVAL_POLICY.DEFAULT;
- *   }
- *
- *   onActivate() {
- *     this.injectGuidance('PLANNING MODE: investigate and propose a plan; do not modify anything.');
  *   }
  * }
  *
@@ -281,7 +282,7 @@ export class AbortError extends Error {
  * | filterTools(tools)         | Restrict the tools the model may call (each loop iteration) |
  * | getApprovalPolicy(info)    | Auto-approve / force-approve a tool call |
  * | onToolPending(info)        | React (async) after a tool parks for approval — classify + resolveApproval |
- * | onActivate(prevId)         | Inject guidance when this strategy becomes active |
+ * | onActivate(prevId)         | Injects static GUIDANCE when this strategy becomes active |
  * | onWorkerIdle()             | Drive follow-on work when the worker goes idle |
  * | injectGuidance(text)       | Write a durable system-reminder (the way to steer the model) |
  * | createThread(options)      | Spawn a sub-thread on the worker |
@@ -295,6 +296,23 @@ class StrategyType {
    * @type {StrategyManifest}
    */
   static MANIFEST;
+
+  /**
+   * What this strategy tells the model when it becomes active — or `''` for one
+   * that tells it nothing. {@link onActivate} injects it as a durable
+   * system-reminder.
+   *
+   * It is declared rather than written inline in the hook so there is exactly
+   * one copy of the text, and the user can be shown that copy: the strategy's
+   * page in Settings → Extensions prints it verbatim. A description can only
+   * claim a strategy merely gates tools; this is the claim the user can check.
+   * A strategy that says nothing therefore visibly says nothing.
+   *
+   * A subclass that overrides `onActivate` must call `super.onActivate()`, or
+   * the declared text and the injected text drift apart.
+   * @type {string}
+   */
+  static GUIDANCE = '';
 
   /**
    * Create a new strategy instance
@@ -372,18 +390,23 @@ class StrategyType {
    * Called when this strategy becomes the active strategy via a live switch
    * (not on initial load of an already-set strategy).
    *
-   * This is the sanctioned place to inject situational guidance — a mode notice,
-   * a phase change — via {@link injectGuidance}, which writes a durable
-   * system-reminder to the conversation. Strategies steer the model through
-   * injected messages, tool gating, and loop control, never by authoring
-   * system-prompt text. The worker drives this hook in the engine exactly once
-   * per switch (at the first turn under the new strategy), so the guidance is
-   * written once — no per-viewer election.
+   * Injects {@link GUIDANCE} as a durable system-reminder, which is all most
+   * strategies need from this hook — declare the text, and both the model and
+   * the user see the same string. Strategies steer the model through injected
+   * messages, tool gating, and loop control, never by authoring system-prompt
+   * text. The worker drives this hook in the engine exactly once per switch (at
+   * the first turn under the new strategy), so the guidance is written once —
+   * no per-viewer election.
+   *
+   * Override it to inject something the declaration cannot cover (text built
+   * from the previous strategy, say), and call `super.onActivate()` so the
+   * declared guidance is still delivered.
    * @param {string|null} [_previousStrategyId] - The strategy that was active before
    * @returns {void|Promise<void>} Nothing
    */
   onActivate(_previousStrategyId) {
-    // Default: no-op
+    const guidance = /** @type {typeof StrategyType} */ (this.constructor).GUIDANCE;
+    if (guidance) this.injectGuidance(guidance);
   }
 
   // ============================================================================

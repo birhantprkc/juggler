@@ -513,6 +513,14 @@ export default class SampleStrategyType extends StrategyType {
   };
 
   /**
+   * What this strategy tells the model when it becomes active. The base
+   * onActivate injects it as a durable system-reminder, and Settings →
+   * Extensions shows it to the user verbatim.
+   * @type {string}
+   */
+  static GUIDANCE = 'SAMPLE MODE: read-only exploration — do not modify files or run commands.';
+
+  /**
    * Restrict the tools the model may call to read-only + meta.
    * @param {import('juggler/strategy-type').ToolDefinition[]} tools
    * @returns {import('juggler/strategy-type').ToolDefinition[]}
@@ -530,14 +538,6 @@ export default class SampleStrategyType extends StrategyType {
     return (category === 'read' || category === 'meta')
       ? APPROVAL_POLICY.APPROVE
       : APPROVAL_POLICY.DEFAULT;
-  }
-
-  /**
-   * Inject a durable mode notice when this strategy becomes active.
-   * @returns {void}
-   */
-  onActivate() {
-    this.injectGuidance('SAMPLE MODE: read-only exploration — do not modify files or run commands.');
   }
 }
 `

@@ -386,12 +386,17 @@ The production surface is:
 
 - **MANIFEST fields**: `defaultRules`, `defaultAllowedPaths`, `toolExecution`,
   `showsApprovalControls`, `recommendations`, `color`, `icon`.
+- **`static GUIDANCE`** — what the strategy tells the model when it becomes
+  active, or `''` for one that tells it nothing. The base `onActivate` injects
+  it as a durable system-reminder; never author system-prompt text. Declaring
+  it also publishes it: Settings → Extensions prints a strategy's guidance
+  verbatim, so the user can see exactly what a mode says to the model.
 - **`filterTools(tools)`** — restrict the tools the model may call (per phase).
 - **`getApprovalPolicy(info)`** — auto-approve or force-approve a tool call
   (with the exported `APPROVAL_POLICY` constants).
-- **`onActivate(prevId)` / `onWorkerIdle()`** — inject guidance / drive
-  follow-on work. Steer the model with **`injectGuidance()`** (a durable
-  system-reminder), never by authoring system-prompt text.
+- **`onActivate(prevId)` / `onWorkerIdle()`** — inject further guidance / drive
+  follow-on work. An `onActivate` override must call `super.onActivate()`, or
+  the declared `GUIDANCE` stops being what the model is sent.
 - **`createThread()` / `continueConversation()`** — worker-request primitives
   for multi-phase strategies.
 
@@ -410,6 +415,8 @@ class PlanningStrategyType extends StrategyType {
     showsApprovalControls: false
   };
 
+  static GUIDANCE = 'PLANNING MODE: investigate and propose a plan; do not modify anything.';
+
   filterTools(tools) {
     return tools.filter(t => t.category === 'read' || t.category === 'meta');
   }
@@ -418,10 +425,6 @@ class PlanningStrategyType extends StrategyType {
     return (category === 'read' || category === 'meta')
       ? APPROVAL_POLICY.APPROVE
       : APPROVAL_POLICY.DEFAULT;
-  }
-
-  onActivate() {
-    this.injectGuidance('PLANNING MODE: investigate and propose a plan; do not modify anything.');
   }
 }
 
@@ -516,10 +519,9 @@ that list: `SubagentStrategyType.withoutWithheld` drops anything flagged
 `requiresDelegation`, matching what the worker does server-side, so a new
 sub-agent excludes itself and its siblings by declaring the flag.
 
-Deliver the sub-agent's brief through the strategy's `onActivate()` →
-`injectGuidance()`, from its own prompt module. In a freshly-born thread that
-reminder leads the transcript, so it acts as the brief without touching the
-cached system prefix.
+Deliver the sub-agent's brief as the strategy's `static GUIDANCE`, from its own
+prompt module. In a freshly-born thread that reminder leads the transcript, so it
+acts as the brief without touching the cached system prefix.
 
 ### Command — a slash command
 
