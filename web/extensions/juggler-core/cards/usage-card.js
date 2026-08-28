@@ -7,7 +7,8 @@
  * The Usage info card — a quiet, live summary of quota windows for the provider
  * configured on the active conversation. It renders cache data immediately, keeps
  * the countdowns ticking whether or not the window is focused, and fetches fresh
- * data silently while it is, preserving the existing meter nodes whenever their
+ * data silently — on every tick while focused, on a slow beat and at the end of
+ * each turn while not — preserving the existing meter nodes whenever their
  * generated HTML has not changed.
  *
  * One info-card plugin of the `@juggler/core` extension; the host rail owns the
@@ -28,6 +29,16 @@ import { formatPlan, renderUsageRow } from '../../../js/utils/usage-renderer.js'
 // to the minute it happens — every tick before then is a cheap debounced no-op
 // that renders identical HTML and so writes no DOM.
 const REFRESH_MS = 10_000;
+
+// Minimum gap between live fetches while the window is unfocused. Focused, the
+// card asks on every tick and the usage cache's debounce decides what actually
+// leaves the machine. Unfocused, it asks far less often — but it does keep
+// asking: a run left working in the background is exactly when the numbers move,
+// and a card frozen at the moment you looked away reads as broken rather than as
+// restraint. The busy gap applies while any conversation is mid-turn; a turn
+// ending asks immediately, so this only governs how a long run is sampled.
+const BACKGROUND_BUSY_MS = 2 * 60 * 1000;
+const BACKGROUND_IDLE_MS = 10 * 60 * 1000;
 
 /**
  * Return the configured provider name for the session's active conversation.
@@ -79,7 +90,8 @@ export default class UsageCard extends InfoCardType {
 
   /**
    * Paint cached usage immediately, keep it repainting on a timer, and silently
-   * fetch fresh data while the window is active.
+   * fetch fresh data — every tick while the window is active, on a slow beat and
+   * at the end of each turn while it is not.
    * @param {HTMLElement} contentEl
    * @param {import('../../../js/model/session.js').default} [session]
    * @returns {() => void} Teardown that stops polling and listeners.
@@ -89,8 +101,13 @@ export default class UsageCard extends InfoCardType {
     /** @type {string|null} */
     let lastHTML = null;
     let lastProvider = '';
+    let lastFetchAt = 0;
+    let wasBusy = false;
 
     const focused = () => typeof document === 'undefined' || document.hasFocus();
+    // Session-wide on purpose: quota is an account-level number, so a turn
+    // running in a tab the user isn't looking at burns it just the same.
+    const busy = () => !!session?.getServices?.()?.llmState?.isActive;
     const render = () => {
       if (disposed) return;
       const providerName = activeProvider(session);
@@ -117,11 +134,19 @@ export default class UsageCard extends InfoCardType {
       if (disposed) return;
       // The paint is unconditional and the network call is not: a quota window
       // drains whether or not anyone is watching, so the countdown keeps moving
-      // in an unfocused window, but an unfocused window never asks upstream.
+      // in an unfocused window, and the numbers behind it are still refreshed —
+      // just on a much slower beat, slower again when nothing is running.
       // Only the active conversation's provider is ever shown, so fetch just that
       // one — never poll providers the user isn't looking at.
       const providerName = activeProvider(session);
-      if (providerName && focused()) await usageStatsCache.refresh(providerName);
+      if (providerName) {
+        const now = Date.now();
+        const gap = focused() ? 0 : (busy() ? BACKGROUND_BUSY_MS : BACKGROUND_IDLE_MS);
+        if (now - lastFetchAt >= gap) {
+          lastFetchAt = now;
+          await usageStatsCache.refresh(providerName);
+        }
+      }
       render();
     };
     const onFocus = () => { refresh(); };
@@ -129,12 +154,28 @@ export default class UsageCard extends InfoCardType {
       const providerName = activeProvider(session);
       if (providerName !== lastProvider) {
         lastProvider = providerName;
+        // A different provider means different numbers, so this one fetch is not
+        // held behind the unfocused beat — otherwise the card sits on "No usage
+        // data" for the rest of the gap.
+        lastFetchAt = 0;
         render();
+        refresh();
+      }
+    };
+    const onStatusChange = () => {
+      const nowBusy = busy();
+      if (nowBusy === wasBusy) return;
+      wasBusy = nowBusy;
+      // The end of a turn is the one moment the numbers are known to have moved,
+      // so ask then rather than waiting out the rest of the beat.
+      if (!nowBusy) {
+        lastFetchAt = 0;
         refresh();
       }
     };
 
     lastProvider = activeProvider(session);
+    wasBusy = busy();
     render();
     refresh();
     const timer = setInterval(refresh, REFRESH_MS);
@@ -143,6 +184,7 @@ export default class UsageCard extends InfoCardType {
     // moment it comes back rather than waiting out the next tick.
     if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onFocus);
     const unsubscribe = session?.subscribe?.(onSessionEvent);
+    const unsubscribeStatus = session?.onLLMStatusChange?.(onStatusChange);
 
     return () => {
       disposed = true;
@@ -150,6 +192,7 @@ export default class UsageCard extends InfoCardType {
       if (typeof window !== 'undefined') window.removeEventListener('focus', onFocus);
       if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onFocus);
       if (typeof unsubscribe === 'function') unsubscribe();
+      if (typeof unsubscribeStatus === 'function') unsubscribeStatus();
     };
   }
 }
