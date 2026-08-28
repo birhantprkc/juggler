@@ -12,13 +12,16 @@
  * actively watching never alerts, and an alert that does fire stands until the
  * conversation is viewed.
  *
- * Both edges are deterministic. For awaiting-approval,
- * `response-handler._handleApprovalFlow` sets the tool-action to pending in the
- * doc and THEN calls `_llmState.pause()` synchronously, so the manager's status
- * observer fires with awaiting=true before `waitForApproval` resolves. For
- * turn-end, the worker bumps the durable `completedTurns` counter and publishes
- * idle in the same settle, so the edge has landed by the time
- * `waitForTurnComplete` resolves.
+ * Both edges are deterministic, and each for its own reason. Awaiting-approval
+ * is a tool-action `state` in the doc: the manager detects it from the
+ * `conversation:changed` the writing transaction emits, which is delivered
+ * synchronously inside that transaction — so the alert is already raised when
+ * `waitForApproval`, which resolves from a continuation of the same change,
+ * next runs. Nothing else would do it: no status change is guaranteed to follow
+ * the write that parks a turn on an approval. For turn-end, the worker bumps
+ * the durable `completedTurns` counter and publishes idle, and the manager
+ * holds that edge until the conversation is observed at rest, so it survives
+ * whichever of the two lands first.
  *
  * Driving the seam from `customAssertions`:
  *  - The headless harness doesn't load app.js, so `initAttention(session)` is
@@ -76,8 +79,9 @@ async function runAwaitingTurn(conversation, { harness }, looking) {
     harness.consumeResponse();
     await harness.awaitPendingSend();
 
-    // Awaiting-approval is now reached in the doc; the pause()-driven edge has
-    // already run (synchronous, before this resolves).
+    // Awaiting-approval is now reached in the doc, and the manager's edge ran
+    // synchronously inside the transaction that put it there — before this
+    // resolves.
     await harness.waitForApproval(ATTENTION_TOOL_ID, 3000);
 
     const result = {

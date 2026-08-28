@@ -447,12 +447,15 @@ function raiseAttention(convId) {
 }
 
 /**
- * React to a status change for one conversation: detect the awaiting / turn-done
- * edges and either alert or (if the user is looking) clear any standing flash.
+ * React to activity in one conversation — a status tick or a doc change: detect
+ * the awaiting / turn-done edges and either alert or (if the user is looking)
+ * clear any standing flash. Idempotent, so it is safe to run from both feeds
+ * (see {@link initAttention}): the first observation of an edge moves the
+ * baseline, and every later one sees no edge.
  * @param {string} convId
  * @private
  */
-function onStatus(convId) {
+function onActivity(convId) {
   const conv = session?.conversations.get(convId);
   if (!conv) return;
 
@@ -468,7 +471,11 @@ function onStatus(convId) {
   // Seed baselines on first sight without alerting (avoids a beep on load).
   const seeded = hadTurns !== undefined;
   prevAwaiting.set(convId, awaiting);
-  prevTurns.set(convId, turns);
+  // The turn baseline only moves once the conversation is at rest. The counter
+  // bump and the idle status reach us as separate observations, in either
+  // order, so consuming the edge on the first of them would swallow the alert
+  // the second one is for.
+  if (!seeded || !processing) prevTurns.set(convId, turns);
 
   // If the user is looking at this conversation, it's not "needing attention" —
   // keep baselines current and clear any leftover flash.
@@ -512,8 +519,18 @@ function rearmAudioOnReturn() {
 
 /**
  * Wire the attention manager to a session. Idempotent per session: subscribes to
- * LLM status changes (the one event that fires on every edge we care about) and
- * to focus/visibility so viewing a flagged conversation dismisses it.
+ * the two feeds the alert edges live on, and to focus/visibility so viewing a
+ * flagged conversation dismisses it.
+ *
+ * Two feeds, because the two edges are published in different places. "Came to
+ * rest" is the worker's processing state, which arrives as an LLM status
+ * change. Awaiting-approval is a tool-action's `state` in the doc, and nothing
+ * makes a status change follow the write that parks it — a conversation can sit
+ * on an approval with no further status to observe — so doc changes are watched
+ * as well, and the same edge detection runs on both.
+ *
+ * Both feeds belong to the session rather than to any one conversation, so this
+ * is wired once and covers conversations that arrive later.
  * @param {import('../model/session.js').default} sess
  * @returns {void}
  */
@@ -523,11 +540,14 @@ export function initAttention(sess) {
   prevTurns.clear();
   clearAllFlash();
 
-  // The status feed belongs to the session, not to any one conversation, so
-  // this is wired once and covers conversations that arrive later.
-  sess.onLLMStatusChange((id) => onStatus(id));
+  sess.onLLMStatusChange((id) => onActivity(id));
 
   sess.subscribe(/** @param {{type: string, data?: any}} e */ (e) => {
+    // Emitted per applied Yjs transaction, so this is the streaming firehose
+    // during a turn; the edge check is a read-only walk of the thread tree and
+    // has to stay synchronous, because the alert must have been raised by the
+    // time anything waiting on that same transaction resumes.
+    if (e.type === 'conversation:changed' && e.data?.conversationId) onActivity(e.data.conversationId);
     if (e.type === 'conversation:switched') reconcileVisible();
     // An alert outlives everything but a view, so a binned or deleted
     // conversation has to take its own with it — otherwise the title badge

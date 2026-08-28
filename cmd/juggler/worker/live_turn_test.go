@@ -391,22 +391,26 @@ func TestReadOnlyChildrenRunSideBySide(t *testing.T) {
 		}
 	})
 
-	// Waited on together, because the two are written a mailbox hop apart: a
-	// thread's claim lands in the document at pickup, and the registry entry only
-	// when the run it was handed to begins its turn. Sampling the registry once
-	// the claims are up reads that gap as a missing run, which under load is
-	// exactly what it did.
+	// Waited on together, because the three are written a mailbox hop apart: a
+	// thread's claim lands in the document at pickup, the registry entry only
+	// when the run it was handed to begins its turn, and the top-level projection
+	// only once a child publishes a status of its own — the pickup publishes a
+	// root-level busy frame in the gap. Sampling any one of them early reads a
+	// half-written frame as a missing run, which under load is exactly what it did.
 	deadline := time.After(10 * time.Second)
 	var state map[string]any
+	projected := ""
 	for {
 		state = w.readProcessingState()
-		if runEntryOf(state, readA) != nil && runEntryOf(state, readB) != nil && len(w.liveRuns()) == 2 {
+		projected, _ = state["threadItemId"].(string)
+		if runEntryOf(state, readA) != nil && runEntryOf(state, readB) != nil &&
+			len(w.liveRuns()) == 2 && (projected == readA || projected == readB) {
 			break
 		}
 		select {
 		case <-deadline:
-			t.Fatalf("the two read-only children never held runs at the same time; runs=%v registry=%d",
-				state["runs"], len(w.liveRuns()))
+			t.Fatalf("the two read-only children never held runs at the same time; runs=%v registry=%d projection=%q",
+				state["runs"], len(w.liveRuns()), projected)
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
@@ -425,11 +429,8 @@ func TestReadOnlyChildrenRunSideBySide(t *testing.T) {
 			t.Fatalf("run entry names thread %q, want %q", got, id)
 		}
 	}
-	// The top-level projection still describes exactly one of them, so the
-	// conversation-wide readers see a single coherent frame.
-	if projected, _ := state["threadItemId"].(string); projected != readA && projected != readB {
-		t.Fatalf("projection names %q, want one of the two running children", projected)
-	}
+	// The top-level projection names exactly one of them, so the conversation-wide
+	// readers see a single coherent frame; the wait above only exits once it does.
 }
 
 // delegatedChildIDs returns the ids of the delegated child threads sitting in
