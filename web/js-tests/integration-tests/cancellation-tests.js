@@ -111,17 +111,34 @@ export const cancelPreservesPartialOutputTest = {
     }
   ],
 
+  // The two writes this test spans come from different writers and arrive here
+  // by different routes: the worker stamps state='cancelled' straight into the
+  // doc, while the partial output is flushed by the bash item in the engine as
+  // it unwinds, and only then syncs through to this viewer. The expectedItems
+  // fence is satisfied by the first, so a one-shot read of displayData races
+  // the second — fence on the output itself.
+  settleUntil: (conversation) => cancelledPartialOutput(conversation).includes('before'),
+
   customAssertions: (conversation) => {
-    const action = conversation.rootMessageThread.items.find(
-      (item) => item.get?.('type') === 'tool-action' && item.get('toolUseId') === 'call_1'
-    );
-    const displayData = action?.get('displayData');
-    const output = (displayData?.toJSON ? displayData.toJSON() : displayData)?.output || '';
+    const output = cancelledPartialOutput(conversation);
     if (!output.includes('before')) {
       throw new Error(`Cancelled bash lost its partial output; displayData.output was ${JSON.stringify(output)}`);
     }
   }
 };
+
+/**
+ * The partial output the cancelled `call_1` bash action left in the document.
+ * @param {import('../../js/model/conversation.js').default} conversation
+ * @returns {string} The action's displayData.output, or '' when there is none yet.
+ */
+function cancelledPartialOutput(conversation) {
+  const action = conversation.rootMessageThread.items.find(
+    (item) => item.get?.('type') === 'tool-action' && item.get('toolUseId') === 'call_1'
+  );
+  const displayData = action?.get('displayData');
+  return (displayData?.toJSON ? displayData.toJSON() : displayData)?.output || '';
+}
 
 // ============================================================================
 // TEST 3: Cancel stops LLM loop

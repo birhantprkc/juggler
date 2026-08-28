@@ -2,6 +2,8 @@
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
+import { guarded } from '../utils/fault-report.js';
+
 /**
  * Base class for Juggler custom elements with auto-cleanup of DOM listeners,
  * Yjs observers, timers, and arbitrary disposers.
@@ -58,26 +60,35 @@ class JugglerElement extends HTMLElement {
 
   /**
    * Register a Yjs `.observe` with auto-detach on disconnect.
+   *
+   * The handler is guarded: Yjs runs it part way through applying an update, so
+   * anything it throws goes into Yjs rather than to a caller, abandoning the
+   * rest of that transaction's observers. One component failing to render is a
+   * display problem; taking every other component's update with it, silently,
+   * is not.
    * @param {{ observe: (h: any) => void, unobserve: (h: any) => void }} yType
    * @param {(...args: any[]) => void} handler
    * @returns {() => void} Disposer that unobserves immediately.
    */
   observe(yType, handler) {
-    yType.observe(handler);
-    const dispose = () => yType.unobserve(handler);
+    const guard = guarded(`observe:${this.localName || 'juggler-element'}`, handler);
+    yType.observe(guard);
+    const dispose = () => yType.unobserve(guard);
     this._cleanups.push(dispose);
     return dispose;
   }
 
   /**
-   * Register a Yjs `.observeDeep` with auto-detach on disconnect.
+   * Register a Yjs `.observeDeep` with auto-detach on disconnect. Guarded for
+   * the same reason as observe.
    * @param {{ observeDeep: (h: any) => void, unobserveDeep: (h: any) => void }} yType
    * @param {(...args: any[]) => void} handler
    * @returns {() => void} Disposer that unobserves immediately.
    */
   observeDeep(yType, handler) {
-    yType.observeDeep(handler);
-    const dispose = () => yType.unobserveDeep(handler);
+    const guard = guarded(`observeDeep:${this.localName || 'juggler-element'}`, handler);
+    yType.observeDeep(guard);
+    const dispose = () => yType.unobserveDeep(guard);
     this._cleanups.push(dispose);
     return dispose;
   }

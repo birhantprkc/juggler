@@ -119,6 +119,7 @@ import { runTests as runBase64Tests } from '../unit-tests/base64-test.js';
 import { runTests as runWSChunkTests } from '../unit-tests/ws-chunk-test.js';
 import { runTests as runRenderPerformanceTests } from '../unit-tests/render-performance-tests.js';
 import { runTests as runSyncBatchBackoffTests } from '../unit-tests/sync-batch-backoff-test.js';
+import { runTests as runSyncFaultIsolationTests } from '../unit-tests/sync-fault-isolation-test.js';
 import { runTests as runThinkingStreamTests } from '../unit-tests/thinking-stream-test.js';
 import { runTests as runStreamingRowScopeTests } from '../unit-tests/streaming-row-scope-test.js';
 import { runTests as runStreamingMarkdownTests } from '../unit-tests/streaming-markdown-test.js';
@@ -399,6 +400,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:ws-chunk', run: runWSChunkTests },
   { name: 'unit:render-performance', run: runRenderPerformanceTests },
   { name: 'unit:sync-batch-backoff', run: runSyncBatchBackoffTests },
+  { name: 'unit:sync-fault-isolation', run: runSyncFaultIsolationTests },
   { name: 'unit:thinking-stream', run: runThinkingStreamTests },
   { name: 'unit:streaming-row-scope', run: runStreamingRowScopeTests },
   { name: 'unit:streaming-markdown', run: runStreamingMarkdownTests },

@@ -36,6 +36,7 @@ export default [
         navigator: 'readonly',
         CSS: 'readonly',
         location: 'readonly',
+        Element: 'readonly',
         Node: 'readonly',
         NodeFilter: 'readonly',
         Range: 'readonly',

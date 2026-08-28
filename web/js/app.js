@@ -39,6 +39,35 @@ import './services/tooltip-manager.js'; // styled hover/focus tooltips (self-ins
 import { MAX_CONVERSATIONS, CONVERSATION_LIMIT_MESSAGE } from './model/session.js';
 import { normalizeAttachments } from './utils/attachments.js';
 import { showAlert, showConfirm, showNotice } from './components/modal-dialog.js';
+import { setFaultSink, reportFault } from './utils/fault-report.js';
+
+/**
+ * Route this page's faults to the app log, and catch the ones nothing else
+ * does.
+ *
+ * At module scope, and before anything else runs, because a fault during
+ * startup is exactly the one with no other way to be seen: this window's
+ * console cannot be opened in a release build, so a throw that reaches only
+ * console.error reaches nobody, and the reader is left with a log showing a
+ * server that behaved perfectly.
+ */
+setFaultSink(({ source, message, stack, detail }) => {
+  const info = /** @type {any} */ (detail);
+  wsService.sendViewerFault({
+    source,
+    message,
+    stack,
+    convId: typeof info?.convId === 'string' ? info.convId : undefined,
+    detail: detail ? JSON.stringify(detail) : undefined
+  });
+});
+
+window.addEventListener('error', (event) => {
+  reportFault('window-error', event.error ?? event.message);
+});
+window.addEventListener('unhandledrejection', (event) => {
+  reportFault('unhandledrejection', /** @type {any} */ (event).reason);
+});
 
 
 

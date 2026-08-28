@@ -49,6 +49,16 @@ const COST_SMOOTHING = 0.4;
 const COST_IDLE_RESET_MS = 1000;
 
 /**
+ * Consecutive batch failures tolerated before the manager stops trying to carry
+ * on and reports the fault as unrecoverable. A single failure is usually one bad
+ * render that the next update renders straight past, so tearing the conversation
+ * down for it would be worse than the glitch. A run of them means the document
+ * has reached a state this client cannot display incrementally, and nothing but
+ * fresh state will clear it.
+ */
+const MAX_CONSECUTIVE_SYNC_FAILURES = 3;
+
+/**
  * Origin sentinel for Yjs transactions whose writes are pure derivations of
  * already-undoable state (e.g. the engine's tool-action reducer writing
  * PENDING / approvalOptions / displayData in response to observing an
@@ -80,6 +90,23 @@ const EMPTY_UPDATE_LENGTH = Y.encodeStateAsUpdate(new Y.Doc()).length;
  * @typedef {(bytes: Uint8Array, opts?: {engineDerived?: boolean}) => void} SyncBroadcastCallback
  */
 
+/**
+ * @typedef {object} SyncFault
+ * @property {'merge'|'apply'} phase - Which half of the batch failed. `merge` is
+ *   pure and the document has not seen the bytes; `apply` means Yjs integrated
+ *   the update and the UI fan-out threw afterwards.
+ * @property {any} error - What was thrown.
+ * @property {number} bytes - Size of the payload involved.
+ * @property {number} consecutive - How many batches have now failed in a row.
+ * @property {boolean} unrecoverable - Set once the run passes
+ *   MAX_CONSECUTIVE_SYNC_FAILURES: this client can no longer display the
+ *   document by applying deltas to it, and needs fresh state.
+ */
+
+/**
+ * @typedef {(fault: SyncFault) => void} SyncFaultCallback
+ */
+
 class DocumentSyncManager {
   /**
    * Create a new document sync manager
@@ -98,6 +125,22 @@ class DocumentSyncManager {
     // Callbacks
     /** @type {SyncBroadcastCallback|null} */
     this.onSyncBroadcast = null;
+
+    /**
+     * Where a failed batch is reported. Applying a batch runs the whole UI
+     * fan-out synchronously, so this is the only place a render fault in a
+     * conversation's inbound path can be observed at all — nothing downstream
+     * of Y.applyUpdate knows the update was meant to arrive.
+     * @type {SyncFaultCallback|null}
+     */
+    this.onSyncFault = null;
+
+    /**
+     * Batches that have failed back-to-back. Reset by the first one that
+     * applies cleanly, so an isolated bad render costs nothing.
+     * @type {number}
+     */
+    this._consecutiveFailures = 0;
 
     // Batching state for incoming updates
     /** @type {Uint8Array[]} */
@@ -267,7 +310,28 @@ class DocumentSyncManager {
   }
 
   /**
-   * Apply all pending updates as a single merged update
+   * Apply all pending updates as a single merged update.
+   *
+   * Every observer, and so every component re-render they reach, runs
+   * synchronously inside Y.applyUpdate, so a throw from anywhere in the UI
+   * fan-out arrives here. It must not be allowed to leave: an exception
+   * escaping into the batch timeout takes this conversation's inbound stream
+   * with it while its outbound half — a separate path, through
+   * doc.on('update') — carries on working. That pair reads as a conversation
+   * frozen mid-turn which still accepts messages and never answers them, and
+   * because the fan-out is per-document it strands exactly one conversation
+   * while every other one in the same client stays healthy.
+   *
+   * The two failures are not the same thing and are not treated the same. A
+   * merge is pure and the document has not seen the bytes, so they go back on
+   * the queue and the next batch retries them. An apply that throws has already
+   * integrated the structs — Yjs runs observers after integration — so the
+   * document DOES hold the update and only the fan-out failed; re-applying it
+   * would change nothing, so it is dropped.
+   *
+   * Either way the fault is reported rather than swallowed, and a run of them
+   * is reported as unrecoverable instead of discarding renders in silence for
+   * the life of the page.
    * @private
    */
   _applyBatchedUpdates() {
@@ -281,7 +345,25 @@ class DocumentSyncManager {
     this._pendingUpdates = [];
 
     // Merge all pending updates into one to reduce deserialization overhead
-    const merged = Y.mergeUpdates(updates);
+    let merged;
+    try {
+      merged = Y.mergeUpdates(updates);
+    } catch (err) {
+      this._noteSyncFault('merge', err, updates.reduce((n, u) => n + u.length, 0));
+      // Nothing consumed them, so they are still owed to the document: put them
+      // back ahead of anything that arrived while this ran, and schedule the
+      // retry rather than waiting for traffic that may never come — a stalled
+      // conversation produces no next update to ride in on. Only while the run
+      // is short. A merge is deterministic, so past the threshold retrying is
+      // just a timer burning the main thread on bytes that will never decode.
+      if (this._consecutiveFailures < MAX_CONSECUTIVE_SYNC_FAILURES) {
+        this._pendingUpdates = updates.concat(this._pendingUpdates);
+        this._batchTimer = setTimeout(() => {
+          this._applyBatchedUpdates();
+        }, this._nextBatchDelay());
+      }
+      return;
+    }
 
     // Apply once with 'this' as origin to prevent echo. The observers, and so
     // every re-render they trigger, run synchronously inside this call, which is
@@ -289,13 +371,49 @@ class DocumentSyncManager {
     // Yjs. Layout and paint land after it, so this reads slightly low — it
     // tracks the term that actually grows with message length.
     const startedAt = performance.now();
-    Y.applyUpdate(this.doc, merged, this);
-    const cost = performance.now() - startedAt;
+    try {
+      Y.applyUpdate(this.doc, merged, this);
+      this._consecutiveFailures = 0;
+    } catch (err) {
+      this._noteSyncFault('apply', err, merged.length);
+    } finally {
+      // Timed in a finally because a fan-out that threw part way through still
+      // spent the time, and sizing the next window off a stale estimate would
+      // describe a batch this document no longer resembles.
+      const cost = performance.now() - startedAt;
+      this._batchCostMs = this._batchCostMs
+        ? this._batchCostMs * (1 - COST_SMOOTHING) + cost * COST_SMOOTHING
+        : cost;
+      this._lastBatchAt = performance.now();
+    }
+  }
 
-    this._batchCostMs = this._batchCostMs
-      ? this._batchCostMs * (1 - COST_SMOOTHING) + cost * COST_SMOOTHING
-      : cost;
-    this._lastBatchAt = performance.now();
+  /**
+   * Count a failed batch and report it.
+   *
+   * The reporter is wired to the fault channel that reaches the server log,
+   * because this runs in a viewer whose console cannot be opened: a fault
+   * nobody records here is a conversation that stops updating for no stated
+   * reason.
+   * @param {'merge'|'apply'} phase - Which half of the batch failed.
+   * @param {any} error - What was thrown.
+   * @param {number} bytes - Size of the payload involved.
+   * @private
+   */
+  _noteSyncFault(phase, error, bytes) {
+    this._consecutiveFailures++;
+    if (!this.onSyncFault) return;
+    try {
+      this.onSyncFault({
+        phase,
+        error,
+        bytes,
+        consecutive: this._consecutiveFailures,
+        unrecoverable: this._consecutiveFailures >= MAX_CONSECUTIVE_SYNC_FAILURES
+      });
+    } catch {
+      // A reporter that throws must not become the thing that kills sync.
+    }
   }
 
   // ========================================================================

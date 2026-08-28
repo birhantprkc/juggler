@@ -1125,6 +1125,24 @@ class WebSocketService {
   }
 
   /**
+   * Report an uncaught fault in this page to the app log.
+   *
+   * This window's console cannot be opened in a release build, so a fault that
+   * reaches nothing but console.error reaches nobody: the UI misrenders or stops
+   * updating, and the only log anyone can read shows a server behaving
+   * perfectly. Sending it is what makes a viewer-side failure investigable at
+   * all.
+   *
+   * Silent: a report that cannot be sent is not worth a second failure on top of
+   * the one being reported, and it is already on the console.
+   * @param {{source: string, message: string, stack?: string, convId?: string, detail?: string}} fault - The fault.
+   * @returns {boolean} True if sent
+   */
+  sendViewerFault(fault) {
+    return this._sendJson({ type: 'viewer-fault', ...fault }, 'viewer-fault', { silent: true });
+  }
+
+  /**
    * Report the outcome of the run the server asked this engine to make.
    *
    * Not silent: the process that asked is blocked on this message, so a send

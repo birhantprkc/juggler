@@ -166,6 +166,21 @@ func (s *Server) runRealtimeClientLoop(ctx context.Context, client RealtimeClien
 			case "viewer-heartbeat":
 				// Liveness only, same as above: a viewer saying it is still there on a
 				// link that has carried nothing else (see link_liveness.go).
+
+			case "viewer-fault":
+				fault, ok := unmarshalWS[ViewerFault](msgBytes, "viewer-fault")
+				if !ok {
+					continue
+				}
+				// Logged at Error because it is one: a viewer that threw rendered
+				// something wrong or stopped rendering, and the page has no other way
+				// to say so — its console cannot be opened in a release build.
+				jlog.Error("[viewer-fault] %s: %s%s%s\n%s",
+					fault.Source, fault.Message,
+					labelled(" conv=", fault.ConvID),
+					labelled(" detail=", fault.Detail),
+					fault.Stack)
+
 			case "shell-start":
 				shellReq, ok := unmarshalWS[ShellStartRequest](msgBytes, "shell-start")
 				if !ok {
@@ -266,4 +281,14 @@ func (s *Server) runRealtimeClientLoop(ctx context.Context, client RealtimeClien
 			go s.processShellRequest(ctx, shellReq, client, shellCompleteChan)
 		}
 	}
+}
+
+// labelled prefixes a value with its label, or yields nothing at all when the
+// value is empty. Keeps an optional field out of a log line entirely rather
+// than leaving a bare "conv=" for a reader to wonder about.
+func labelled(label, value string) string {
+	if value == "" {
+		return ""
+	}
+	return label + value
 }

@@ -25,6 +25,22 @@ type ModelConfig struct {
 	ServiceTier string `json:"serviceTier,omitempty"`
 }
 
+// ViewerFault is an uncaught fault reported by a viewer page.
+//
+// A viewer runs in a window whose console cannot be opened in a release build,
+// so without this a fault in the UI leaves no trace anywhere: the page renders
+// something wrong, or stops rendering, and the log it would be diagnosed from
+// records a server that did its job. The engine reports its own faults the same
+// way (see engine-worker-runtime.js); this is the viewer's half.
+type ViewerFault struct {
+	Type    string `json:"type"`             // "viewer-fault"
+	Source  string `json:"source"`           // What was running, e.g. "observe:tool-action-message"
+	Message string `json:"message"`          // The error's message
+	Stack   string `json:"stack,omitempty"`  // Stack trace, when the throw carried one
+	ConvID  string `json:"convId,omitempty"` // Conversation it happened under, when known
+	Detail  string `json:"detail,omitempty"` // Anything else that narrows it down
+}
+
 // ShellStartRequest represents a request to start a streaming shell command
 type ShellStartRequest struct {
 	Type    string `json:"type"`              // "shell-start"

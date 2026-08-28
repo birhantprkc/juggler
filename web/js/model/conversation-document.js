@@ -16,6 +16,7 @@
 
 import * as Y from '../vendor/yjs.mjs';
 import DocumentSyncManager from '../utils/document-sync-manager.js';
+import { reportFault } from '../utils/fault-report.js';
 
 /**
  * @typedef {import('../../sdk/lib/message.js').Message} Message
@@ -58,6 +59,19 @@ export class ConversationDocument {
     /** @type {DocumentSyncManager} */
     // @ts-ignore - Yjs type mismatch between vendor version and imports
     this._syncManager = new DocumentSyncManager(this.doc);
+
+    // A batch that fails is this conversation's inbound stream missing an
+    // update, so the report has to name which conversation it was: the symptom
+    // is one conversation frozen among healthy ones, and without the id the log
+    // says only that something somewhere failed to render.
+    this._syncManager.onSyncFault = (fault) => {
+      reportFault(`yjs-${fault.phase}`, fault.error, {
+        convId: this.conversationId,
+        bytes: fault.bytes,
+        consecutive: fault.consecutive,
+        unrecoverable: fault.unrecoverable
+      });
+    };
   }
 
   // ========================================================================

@@ -912,8 +912,14 @@ class ConversationTab extends JugglerElement {
       // central command dispatcher (see KeyShortcutManager.suppressedByOverlay).
       if (keyShortcutManager.suppressedByOverlay()) return;
 
+      // A keydown reaching document doesn't have to come from an element: with
+      // nothing focused, or when the key is dispatched at the document itself,
+      // the target is the Document — no tagName, and no closest() to call. Narrow
+      // to an Element up front, so a stray target can't throw out of this
+      // listener and take the rest of the handler (Escape included) with it.
+      const target = e.target instanceof Element ? e.target : null;
+
       // Don't handle if user is typing in an input
-      const target = /** @type {Element|null} */ (e.target);
       if (target && (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT')) return;
 
       // If focus is inside an action-confirmation widget, let it handle arrow/Enter/Escape keys

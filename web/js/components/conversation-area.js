@@ -47,6 +47,7 @@ import {
 import * as scroll from './conversation-area-scroll.js';
 import * as selection from './conversation-area-selection.js';
 import { StatusMessageBuilder } from '../services/status-message-builder.js';
+import { guarded } from '../utils/fault-report.js';
 
 /**
  * Duration of the insert/relayout FLIP glide — the eased motion that replaces
@@ -310,6 +311,11 @@ class ConversationArea extends HTMLElement {
         this._refreshThreadFooter(threadYMap);
         this._refreshNextStepsIndicator();
       };
+      // Guarded before registering, and stored guarded so unobserve still
+      // matches: Yjs calls this mid-transaction, so a throw here would abandon
+      // the observers queued behind it rather than reaching a caller.
+      this._threadStatusObserver = guarded(
+        'conversation-area:thread-status', this._threadStatusObserver);
       threadYMap.observe(this._threadStatusObserver);
     }
 
@@ -374,6 +380,8 @@ class ConversationArea extends HTMLElement {
     };
     const container = /** @type {import('../model/message-thread.js').MessageThread} */ (this._messageThread).container;
     this._observedContainer = container;
+    this._streamingScrollObserver = guarded(
+      'conversation-area:streaming-scroll', this._streamingScrollObserver);
     container.observeDeep(this._streamingScrollObserver);
   }
 

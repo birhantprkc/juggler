@@ -11,6 +11,7 @@ import {
 import { wrapWithIcon, createErrorArticle } from '../utils/icon-message-renderer.js';
 import { iconOptionsForItem } from '../utils/item-badge.js';
 import { plain, yGet } from '../model/item-accessor.js';
+import { guarded } from '../utils/fault-report.js';
 
 /**
  * @typedef {import('../../sdk/lib/message.js').Message} Message
@@ -60,7 +61,7 @@ import { plain, yGet } from '../model/item-accessor.js';
  * Observes Yjs for changes to its own item and re-renders automatically.
  */
 class ToolActionMessage extends HTMLElement {
-  /** @type {Function|null} @private */
+  /** @type {((...args: any[]) => void)|null} @private */
   _yjsObserver = null;
 
   /** @type {{state: string|undefined, hasResult: boolean, resultIsError: boolean, hasApprovalOptions: boolean, displayDataJson: string, reviewStatusJson: string}|null} @private */
@@ -131,6 +132,7 @@ class ToolActionMessage extends HTMLElement {
       }
     };
 
+    this._yjsObserver = guarded('tool-action-message', this._yjsObserver);
     messageThread.yarray.observeDeep(this._yjsObserver);
   }
 
