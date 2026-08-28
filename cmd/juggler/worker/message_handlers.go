@@ -71,7 +71,7 @@ func (r *run) handleInit(payload json.RawMessage) {
 		// picks up a conversation it has never seen.
 		if len(msg.StateVector) > 0 {
 			if delta := r.doc.GetStateUpdate(msg.StateVector); len(delta) > 0 {
-				r.reply(YjsSyncMessage{Type: "yjs-sync", Bytes: delta})
+				r.replyWS(marshalYjsSync(delta, false))
 			}
 		} else {
 			r.broadcastFullState()
@@ -850,14 +850,26 @@ func (w *ConversationWorker) handleResyncRequest(payload json.RawMessage) {
 	})
 }
 
-// handleResyncToOrigin pushes the worker's full Yjs state to ONLY the client
-// that asked (w.replyTo), not every viewer. It seeds a freshly (re)connected
-// engine with the conversations that were already loaded before it attached:
-// an on-demand engine that was torn down and recreated starts empty and would
-// otherwise never re-load them (it only auto-loads on an incidental yjs-sync),
-// so their approved tool-actions would never execute. Skips uninitialized
-// workers (their doc isn't loaded yet — handleInit's broadcastFullState will
-// cover the engine once init runs).
+// handleResyncToOrigin tells ONLY the client that asked (w.replyTo), not every
+// viewer, that this conversation is loaded here. It seeds a freshly
+// (re)connected engine with the conversations that were already loaded before
+// it attached: an on-demand engine that was torn down and recreated starts
+// empty and would otherwise never re-load them, so their approved tool-actions
+// would never execute. Skips uninitialized workers (their doc isn't loaded yet
+// — handleInit's broadcastFullState will cover the engine once init runs).
+//
+// The offer carries no state. What the engine needs depends on what it already
+// has, and only the engine knows that: after a link drop its realm has survived
+// and it holds the document, so it answers with a resync-request naming what it
+// lacks and gets a delta; after a genuine restart it holds nothing, ignores the
+// offer, and loads the conversation the ordinary way. Sending full state here
+// instead served neither case — see ResyncOfferMessage.
+//
+// The tool re-attach below does NOT wait for that exchange, and must not: it is
+// the wedge this handler exists to prevent, and every worker-driven engine
+// command loads its conversation before acting anyway (loadAndFlush in
+// web/js/services/worker-manager-protocols.js), so a command may safely arrive
+// before the document does.
 //
 // INTERIM (Phase 0.3): superseded by the worker-driven stateless tool executor,
 // after which the engine holds no conversation state and needs no seeding.
@@ -865,10 +877,7 @@ func (w *ConversationWorker) handleResyncToOrigin() {
 	if !w.initialized {
 		return
 	}
-	state := w.doc.ToState()
-	if len(state) > 0 {
-		w.reply(YjsSyncMessage{Type: "yjs-sync", Bytes: state})
-	}
+	w.reply(ResyncOfferMessage{Type: "resync-offer"})
 	// A freshly (re)attached engine has commanded none of this conversation's
 	// tools yet. Drop all command bookkeeping so every non-terminal tool-action is
 	// dispatched afresh against the new engine instance (the previous engine's

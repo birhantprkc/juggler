@@ -531,6 +531,25 @@ type ResyncRequestMessage struct {
 	StateVector []byte `json:"stateVector"`
 }
 
+// ResyncOfferMessage tells a freshly attached engine that this conversation is
+// loaded on the server, without sending any of it.
+//
+// It carries no state deliberately. The engine's realm outlives its socket, so
+// after a link drop it usually still holds the document and needs only the ops
+// it missed — which it asks for with a resync-request carrying its own vector,
+// the same delta handshake a reconnecting viewer uses. Pushing full state
+// instead, as this seed once did, sent the entire CRDT of every loaded
+// conversation on every reconnect: wasted almost always, and above what the
+// client would accept as one message, fatal — the connection died, the engine
+// reconnected, and the same state went out again.
+//
+// An engine that does not know the conversation ignores the offer and loads it
+// the ordinary way (see _autoLoadConversation in web/js/services/worker-manager.js),
+// which arrives at full state through init.
+type ResyncOfferMessage struct {
+	Type string `json:"type"` // "resync-offer"
+}
+
 // ResyncResponseMessage answers a resync-request in BOTH directions. Bytes is
 // the delta the client is missing (as ResyncRequestMessage describes);
 // StateVector is the worker's own state vector, from which the client computes

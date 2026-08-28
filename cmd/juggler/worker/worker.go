@@ -684,12 +684,7 @@ func (w *ConversationWorker) pushStateToEngine() {
 	if len(state) == 0 {
 		return
 	}
-	data, err := json.Marshal(YjsSyncMessage{Type: "yjs-sync", Bytes: state})
-	if err != nil {
-		w.log.Error("pushStateToEngine: marshal failed: %v", err)
-		return
-	}
-	w.callbacks.sendToEngine(data)
+	w.callbacks.sendToEngine(marshalYjsSync(state, false))
 }
 
 // SetLLMCaller sets the function used to call the LLM provider directly.
@@ -1337,6 +1332,14 @@ func (w *ConversationWorker) reply(msg any) {
 		w.log.Error("Failed to marshal reply: %v", err)
 		return
 	}
+	w.replyWS(data)
+}
+
+// replyWS is reply for a payload that is already encoded — the Yjs deltas,
+// whose size makes it worth building them without the reflective encoder (see
+// marshalYjsSync). Same addressing rule: the originating client, or a broadcast
+// when there is no origin to answer.
+func (w *ConversationWorker) replyWS(data []byte) {
 	if w.replyTo != "" {
 		w.callbacks.sendTo(w.replyTo, data)
 		return
@@ -1595,11 +1598,12 @@ func (r *run) sendErrorWithData(message, stack string, data map[string]any) {
 	})
 }
 
+// sendYjsSync broadcasts one Yjs update — the single funnel for both the
+// streaming path (the batcher, many frames per second) and full-state
+// broadcasts, which is why its payload is built by marshalYjsSync rather than
+// by the reflective encoder in send.
 func (w *ConversationWorker) sendYjsSync(update []byte) {
-	w.send(YjsSyncMessage{
-		Type:  "yjs-sync",
-		Bytes: update,
-	})
+	w.sendWS(marshalYjsSync(update, false))
 }
 
 func (w *ConversationWorker) sendUndoState(canUndo, canRedo bool) {

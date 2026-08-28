@@ -1008,6 +1008,38 @@ class WorkerManager {
         break;
       }
 
+      case 'resync-offer': {
+        // The worker telling a freshly attached engine that this conversation
+        // is loaded on the server. It carries no state, because what is needed
+        // depends on what this engine already has — and only this engine knows
+        // that.
+        //
+        // The realm outlives the socket, so after a link drop the document is
+        // usually still here and the answer is the ordinary delta handshake.
+        // After a real restart there is nothing here, and the conversation is
+        // loaded the ordinary way instead, which arrives at full state through
+        // init. A worker that exists but is not ready yet needs neither: its
+        // init is already in flight and carries whatever state it lacks.
+        if (!isEngine()) break;
+        const entry = this._workers.get(conversationId);
+        if (!entry) {
+          this._autoLoadConversation(conversationId);
+          break;
+        }
+        if (!entry.ready) break;
+        const conversation = this._session?.conversations.get(conversationId);
+        if (!conversation) break;
+        try {
+          this.sendToWorker(conversationId, {
+            type: 'resync-request',
+            stateVector: bytesToBase64(conversation.getYjsStateVector())
+          });
+        } catch (err) {
+          console.warn(`[WorkerManager] Couldn't answer the resync offer for ${conversationId}:`, err);
+        }
+        break;
+      }
+
       case 'resync-response': {
         // The worker's answer to our reconnect resync-request: the ops we are
         // missing, plus the worker's state vector. Apply its ops, then send back
@@ -1816,8 +1848,12 @@ class WorkerManager {
    * Auto-load a conversation that the engine doesn't know about yet.
    * Queues yjs-sync bytes and applies them after load completes.
    * Deduplicates concurrent loads for the same conversation.
+   *
+   * The bytes are optional: an incidental yjs-sync arrives with the ops that
+   * prompted the load and must not lose them, but a resync-offer is only a
+   * pointer to a conversation, and the load itself brings the state.
    * @param {string} conversationId - Conversation to load
-   * @param {string} base64Bytes - Base64-encoded yjs-sync bytes to queue
+   * @param {string} [base64Bytes] - Base64-encoded yjs-sync bytes to apply once loaded
    * @private
    */
   _autoLoadConversation(conversationId, base64Bytes) {
@@ -1827,12 +1863,12 @@ class WorkerManager {
     const existing = this._pendingAutoLoads.get(conversationId);
     if (existing) {
       // Load already in flight — just queue the bytes
-      existing.queuedBytes.push(base64Bytes);
+      if (base64Bytes !== undefined) existing.queuedBytes.push(base64Bytes);
       return;
     }
 
     /** @type {string[]} */
-    const queuedBytes = [base64Bytes];
+    const queuedBytes = base64Bytes === undefined ? [] : [base64Bytes];
 
     const promise = (async () => {
       try {

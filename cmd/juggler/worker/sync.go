@@ -5,6 +5,7 @@
 package worker
 
 import (
+	"encoding/base64"
 	"encoding/json"
 
 	"github.com/buger/jsonparser"
@@ -26,6 +27,70 @@ const (
 	envelopeMsgType = `,"workerMsgType":`
 	envelopePayload = `,"payload":`
 )
+
+// The literal segments of a marshalled YjsSyncMessage. Concatenated with the
+// base64 of its bytes they spell exactly what json.Marshal produces for one —
+// same fields, same order, same encoding — so the wire format is unchanged.
+// Type is a constant here because "yjs-sync" is the only value any producer
+// sets; EngineDerived is `omitempty`, so false contributes nothing.
+const (
+	yjsSyncHead      = `{"type":"yjs-sync","bytes":`
+	yjsSyncNilBytes  = `null`
+	yjsSyncDerived   = `,"engineDerived":true`
+	yjsSyncQuoteByte = '"'
+)
+
+// marshalYjsSync builds a yjs-sync payload in one exactly-sized allocation,
+// with the update base64-encoded straight into it.
+//
+// This is the same trade FormatWorkerMessage makes one layer out, for the same
+// reason and on the same payloads. encoding/json cannot be told how large its
+// output will be, so it grows an internal buffer as it goes; the length of a
+// base64 encoding, by contrast, is known exactly before a byte is written. On
+// a streaming delta the difference is nothing. On a full-state sync it is the
+// whole cost: marshalling a 96 MiB update allocates ~224 MB to produce a
+// 134 MB result, where sizing it exactly allocates the 134 MB and no more —
+// 89 MB less garbage per send, on the path where the result is already the
+// largest thing the process is holding. (BenchmarkMarshalYjsSync covers the
+// sizes an ordinary session sees, where the two are within a few percent; the
+// gap opens well above them.)
+//
+// The output is byte-identical to json.Marshal of the equivalent
+// YjsSyncMessage, which sync_format_test.go pins against the real encoder
+// rather than against a hand-written expectation. Base64's alphabet needs no
+// JSON escaping and contains none of the characters encoding/json escapes for
+// HTML, so "identical" needs no qualification.
+func marshalYjsSync(update []byte, engineDerived bool) []byte {
+	tail := ""
+	if engineDerived {
+		tail = yjsSyncDerived
+	}
+
+	size := len(yjsSyncHead) + len(tail) + 1 // + the closing brace
+	if update == nil {
+		size += len(yjsSyncNilBytes)
+	} else {
+		size += 2 + base64.StdEncoding.EncodedLen(len(update)) // + the quotes
+	}
+
+	buf := make([]byte, 0, size)
+	buf = append(buf, yjsSyncHead...)
+	if update == nil {
+		// A nil slice is `null` to encoding/json, an empty one is `""`. The
+		// distinction never reaches the wire from a live worker, but matching it
+		// is what lets the equivalence test compare the two encoders on every
+		// input rather than on the ones we thought of.
+		buf = append(buf, yjsSyncNilBytes...)
+	} else {
+		buf = append(buf, yjsSyncQuoteByte)
+		at := len(buf)
+		buf = buf[:at+base64.StdEncoding.EncodedLen(len(update))]
+		base64.StdEncoding.Encode(buf[at:], update)
+		buf = append(buf, yjsSyncQuoteByte)
+	}
+	buf = append(buf, tail...)
+	return append(buf, '}')
+}
 
 // FormatWorkerMessage creates a worker message for sending to browser.
 //

@@ -176,6 +176,16 @@ type wsFleet struct {
 	// engineRecoveries counts recovery-hook calls since the last healthy engine,
 	// capped by maxEngineRecoveries.
 	engineRecoveries atomic.Int32
+	// engineFlapWindowStart is when the current run of engine connections began,
+	// as unix nanoseconds, and engineAttachCount is how many have landed since.
+	// An engine that dies and comes straight back leaves no other trace — it is
+	// neither silent nor evicted — so this pair is the only place a reconnect
+	// loop is visible. See noteEngineAttached.
+	engineFlapWindowStart atomic.Int64
+	engineAttachCount     atomic.Int32
+	// engineFlapReported latches the reconnect-loop line, so a loop costs one
+	// line rather than adding its own noise to the flood it is reporting.
+	engineFlapReported atomic.Bool
 	// engineRecovery reloads the engine host when eviction alone did not bring it
 	// back. Installed by the app layer, which owns the window; nil elsewhere.
 	engineRecovery atomic.Pointer[EngineRecovery]

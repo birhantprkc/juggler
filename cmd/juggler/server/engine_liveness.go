@@ -113,6 +113,73 @@ func (s *Server) engineLive() bool {
 	return s.engineSilence() <= s.livenessWindow()
 }
 
+const (
+	// engineFlapWindow is how far back the reconnect count looks. Long enough
+	// that a genuine restart — evict, grace, reload — cannot fill it, short
+	// enough that a loop trips it in seconds.
+	engineFlapWindow = 60 * time.Second
+
+	// maxEngineAttachesPerWindow is how many connections in that window still
+	// count as recovery rather than a loop. A healthy session connects once and
+	// stays; a link that blips a few times over a minute is ordinary. Five is
+	// past both and short of the dozens per minute a real loop produces, since
+	// the client's own backoff settles at one attempt a second.
+	maxEngineAttachesPerWindow = 5
+)
+
+// noteEngineAttached records an engine connection and reports whether this one
+// is the moment the pattern becomes a loop.
+//
+// The gap this fills: the supervisor's escalation ladder only ever advances
+// through evictSilentEngine, which fires for an engine whose socket stayed open
+// while its realm went quiet. An engine that dies loudly and reconnects cleanly
+// never touches it, so a die/reconnect/die loop could previously run forever
+// with nothing in the log but the raw transport errors it produced — which is
+// exactly the failure a message too large for the client to accept causes.
+//
+// It deliberately does NOT escalate to the recovery hook. Reloading the engine
+// cannot fix a message it will refuse again on the next attempt, and the node
+// host's hook takes the whole server down with it: the useful act is to name
+// what is happening, once, beside the errors that say why.
+func (s *Server) noteEngineAttached() {
+	s.noteEngineAttachedAt(time.Now())
+}
+
+// noteEngineAttachedAt is noteEngineAttached with the clock supplied, so a test
+// can lay out a flap without sleeping through one. Returns true on the single
+// attach that trips the report.
+//
+// A fixed window — when the run began, and how many have landed since — rather
+// than a rolling history of timestamps. One engine connects at a time, so that
+// pair is the whole shape of what is being measured, and it holds in two
+// atomics where a list would need a lock. The cost is coarseness at the edge: a
+// loop that straddles a boundary is reported in the following window instead of
+// this one, which for a condition that persists until someone intervenes is no
+// cost at all.
+func (s *Server) noteEngineAttachedAt(now time.Time) bool {
+	start := s.engineFlapWindowStart.Load()
+	if start == 0 || now.Sub(time.Unix(0, start)) > engineFlapWindow {
+		// A fresh window. Re-arm the report with it, so a loop later in the
+		// session is named too rather than being silenced by an earlier one.
+		s.engineFlapWindowStart.Store(now.UnixNano())
+		s.engineAttachCount.Store(1)
+		s.engineFlapReported.Store(false)
+		return false
+	}
+
+	count := s.engineAttachCount.Add(1)
+	if count <= maxEngineAttachesPerWindow {
+		return false
+	}
+	if s.engineFlapReported.Swap(true) {
+		return false
+	}
+	jlog.Error("[engine] the engine has connected %d times in the last %v — it is looping, not recovering. "+
+		"Tools cannot run while this lasts; the write errors above say what each connection died on",
+		count, engineFlapWindow)
+	return true
+}
+
 // engineWentQuiet is the one-shot log line for an engine crossing from live to
 // silent. Rate-limited to the transition so a wedged engine costs one line, not
 // one per poll.

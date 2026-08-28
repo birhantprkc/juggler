@@ -359,3 +359,84 @@ func TestEngineSocket_LiveEngineStaysConnected(t *testing.T) {
 			"but running realm, not by user traffic")
 	}
 }
+
+// A reconnect loop is the failure the escalation ladder above cannot see. The
+// ladder advances only through evictSilentEngine — an engine whose socket
+// stayed open while its realm went quiet — so an engine that dies loudly and
+// comes straight back never touches it. That is precisely the shape a message
+// the client refuses produces: the connection dies, the client reconnects, the
+// server sends the same message again, and the log fills with transport errors
+// while nothing says the pattern is a loop.
+
+// TestAReconnectLoopIsReportedOnce covers the counting itself: the loop is
+// named the moment it stops being plausible recovery, and then stays quiet, so
+// the report does not become part of the flood it exists to explain.
+func TestAReconnectLoopIsReportedOnce(t *testing.T) {
+	s := newTestServerState(t)
+	at := time.Now()
+
+	// Reconnects a second apart, as the client's settled backoff produces.
+	for i := 0; i < maxEngineAttachesPerWindow; i++ {
+		if s.noteEngineAttachedAt(at.Add(time.Duration(i) * time.Second)) {
+			t.Fatalf("connection %d was called a loop; that many is still ordinary recovery", i+1)
+		}
+	}
+
+	tripped := at.Add(time.Duration(maxEngineAttachesPerWindow) * time.Second)
+	if !s.noteEngineAttachedAt(tripped) {
+		t.Fatalf("connection %d was not reported; %d in %v is a loop",
+			maxEngineAttachesPerWindow+1, maxEngineAttachesPerWindow+1, engineFlapWindow)
+	}
+	for i := 1; i <= 5; i++ {
+		if s.noteEngineAttachedAt(tripped.Add(time.Duration(i) * time.Second)) {
+			t.Fatalf("the loop was reported again %ds later; one line per episode, or the report joins the noise", i)
+		}
+	}
+}
+
+// TestAnEngineThatKeepsItsConnectionIsNotALoop is the other half: a session
+// that reconnects occasionally over a long run — a suspended laptop, a link
+// blip, a deliberate eviction and recovery — must never be called a loop, or
+// the line means nothing when a real one arrives.
+func TestAnEngineThatKeepsItsConnectionIsNotALoop(t *testing.T) {
+	s := newTestServerState(t)
+	at := time.Now()
+
+	for i := 0; i < 20; i++ {
+		when := at.Add(time.Duration(i) * (engineFlapWindow / 2))
+		if s.noteEngineAttachedAt(when) {
+			t.Fatalf("a reconnect every %v was reported as a loop at connection %d",
+				engineFlapWindow/2, i+1)
+		}
+	}
+}
+
+// TestTheLoopReportRearmsOnceItSettles keeps the latch from silencing the rest
+// of the session: an engine that loops, recovers, and loops again later is two
+// episodes and deserves two lines.
+func TestTheLoopReportRearmsOnceItSettles(t *testing.T) {
+	s := newTestServerState(t)
+	at := time.Now()
+
+	trip := func(from time.Time) bool {
+		reported := false
+		for i := 0; i <= maxEngineAttachesPerWindow; i++ {
+			if s.noteEngineAttachedAt(from.Add(time.Duration(i) * time.Second)) {
+				reported = true
+			}
+		}
+		return reported
+	}
+
+	if !trip(at) {
+		t.Fatal("the first loop was not reported")
+	}
+	// Nothing for a full window: the history ages out and the latch re-arms.
+	settled := at.Add(engineFlapWindow * 2)
+	if s.noteEngineAttachedAt(settled) {
+		t.Fatal("a lone reconnect after a quiet window was reported as a loop")
+	}
+	if !trip(settled.Add(time.Second)) {
+		t.Fatal("a second loop later in the session went unreported; the latch never re-armed")
+	}
+}

@@ -5,6 +5,7 @@
 import { recordTape } from '../utils/event-tape.js';
 import { isEngine } from '../../sdk/lib/client-role.js';
 import { fetchJson } from './http.js';
+import { WSChunkReassembler, WS_CHUNK_KIND_TEXT } from '../utils/ws-chunk.js';
 
 const WEBRTC_CHUNK_TYPE = '__juggler_dc_chunk';
 const WEBRTC_CHUNK_SIZE = 16 * 1024;
@@ -211,6 +212,15 @@ class WebSocketService {
     this._dcChunkSeq = 0;
     /** @type {Map<string, {total: number, parts: string[], received: number}>} @private */
     this._dcIncomingChunks = new Map();
+    /**
+     * Reassembly for messages the server split because they were too large to
+     * send whole (utils/ws-chunk.js). Unrelated to _dcIncomingChunks above,
+     * which is the DataChannel's own 16 KiB chunker: the two never share a
+     * connection, since one is what a WebSocket needs and the other is what
+     * WebRTC needs.
+     * @type {WSChunkReassembler} @private
+     */
+    this._wsChunks = new WSChunkReassembler();
     /** @type {Record<WSEventType, WSEventCallback[]>} @private */
     this._listeners = {
       open: [],
@@ -486,6 +496,10 @@ class WebSocketService {
    */
   _configureTransport(transport, label) {
     this._transportLabel = label;
+    // Chunk frames arrive as binary, and a Blob would make reading them
+    // asynchronous — which would reorder them against the text messages either
+    // side. Both transports default to 'arraybuffer' or accept it.
+    transport.binaryType = 'arraybuffer';
     transport.onopen = (event) => {
       // A viewer's reconnect is not settled here. Which server answered decides
       // whether this page can carry on — the same instance means the outage was
@@ -518,6 +532,29 @@ class WebSocketService {
   }
 
   /**
+   * Feed one received binary message to the chunk reassembler, and hand on
+   * whatever it completes.
+   *
+   * Binary is not otherwise part of this protocol, so anything arriving that is
+   * not a chunk frame is dropped rather than guessed at — and said out loud,
+   * because a binary message nobody sent means the two ends disagree about the
+   * wire format.
+   * @param {ArrayBuffer} raw - The received binary message
+   * @private
+   */
+  _handleBinaryMessage(raw) {
+    const message = this._wsChunks.accept(raw);
+    if (!message) return;
+    if (message.kind === WS_CHUNK_KIND_TEXT) {
+      this._handleMessageData(new TextDecoder().decode(message.bytes));
+      return;
+    }
+    console.error(
+      `[ESSENTIAL] [WebSocket] Dropped a reassembled message of kind ${message.kind}, which this client cannot read`
+    );
+  }
+
+  /**
    * Single transport-death handler for EVERY transport (WebSocket, WebRTC-LAN,
    * juggler.studio). Marks the link down, notifies listeners, and — unless this
    * was an intentional teardown or an expected failed-probe close — enters the
@@ -545,6 +582,10 @@ class WebSocketService {
     }
     this.connected = false;
     this._connecting = false;
+    // Frames of a message the dead socket never finished sending. The next
+    // connection numbers its runs from one again, so keeping them would let a
+    // fragment of the old link be spliced onto the new one.
+    this._wsChunks.reset();
     // A reconnect whose socket opened and then died at the other end's hand
     // before the server ever said who it is. That is what a restarted server
     // looks like from here: it completes the upgrade and then closes the socket
@@ -697,7 +738,17 @@ class WebSocketService {
   _handleMessageData(rawData) {
     // Any inbound byte proves the link still carries traffic, whatever it turns
     // out to say — so stamp before parsing, ahead of every early return below.
+    // A chunk frame counts too, even though the message it belongs to may not
+    // be complete for several more frames.
     this._lastInboundAt = Date.now();
+
+    // The only binary this protocol carries is a message the server had to
+    // split. It is held here until its last frame arrives, then re-enters as
+    // the text it always was.
+    if (rawData instanceof ArrayBuffer || ArrayBuffer.isView(rawData)) {
+      this._handleBinaryMessage(/** @type {ArrayBuffer} */ (rawData));
+      return;
+    }
 
     // Ignore empty or whitespace-only messages (newlines from streaming)
     if (!rawData || String(rawData).trim().length === 0) {

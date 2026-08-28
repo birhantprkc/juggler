@@ -17,6 +17,7 @@ import (
 
 	"juggler/internal/jlog"
 
+	"github.com/buger/jsonparser"
 	"github.com/gorilla/websocket"
 )
 
@@ -136,6 +137,11 @@ type WSClient struct {
 	// nanoseconds. Written by the writer goroutine and read by the client's
 	// message loop, which is why it is atomic. See IdleOutbound.
 	lastSendAt atomic.Int64
+	// chunkSeq names the runs of chunk frames an oversized message is split
+	// into, so the client can tell one run from the next. Plain rather than
+	// atomic because only writePump ever touches it — unlike lastSendAt, which
+	// crosses goroutines. See writeChunked.
+	chunkSeq uint64
 }
 
 // generateClientID creates a unique client ID using crypto/rand
@@ -243,24 +249,75 @@ func (c *WSClient) writeOne(msg wsMessage) bool {
 		}
 	}
 	c.stats.record(statsOut, payload, c.Role)
-	// Armed fresh per write. SetWriteDeadline only records the time; gorilla
-	// applies it to the socket inside its write lock, in the same critical
-	// section as the write itself, so this cannot be clobbered by the pong and
-	// close frames gorilla sends from the read goroutine via WriteControl.
-	_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
-	if err := c.conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+
+	// Accounting above covers the logical message, so a chunked send is one
+	// entry there however many frames it takes on the wire.
+	var err error
+	if len(payload) > wsChunkThreshold {
+		// Worth a line every time. Chunking is the exceptional path — nothing in
+		// an ordinary session comes close to the threshold — so its arrival says
+		// a conversation has grown to a size that used to break it outright, and
+		// it names which one while the evidence is still to hand.
+		jlog.Info("Splitting a %d byte %s message into %d frames for %s client %p; "+
+			"no client accepts one this large whole",
+			len(payload), describeWSMessage(payload), wsChunkCount(len(payload)), c.Role, c)
+		err = c.writeChunked(payload, wsChunkKindText)
+	} else {
+		// Armed fresh per write. SetWriteDeadline only records the time; gorilla
+		// applies it to the socket inside its write lock, in the same critical
+		// section as the write itself, so this cannot be clobbered by the pong and
+		// close frames gorilla sends from the read goroutine via WriteControl.
+		_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
+		err = c.conn.WriteMessage(websocket.TextMessage, payload)
+	}
+	if err != nil {
+		// What failed matters as much as that it failed: a peer that hangs up
+		// part-way through one particular message is saying something about that
+		// message, and without its size and type the log leaves no trace of which
+		// one it was.
 		if writeDeadlineExceeded(err) {
-			jlog.Error("WebSocket write to client %p exceeded %s and was abandoned; "+
+			jlog.Error("WebSocket write of a %d byte %s message to client %p exceeded %s and was abandoned; "+
 				"the peer stopped reading (%d queued). Closing so it can reconnect: %v",
-				c, wsWriteTimeout, len(c.send), err)
+				len(payload), describeWSMessage(payload), c, wsWriteTimeout, len(c.send), err)
 		} else {
-			jlog.Error("Couldn't write to WebSocket client %p (%d queued); "+
-				"closing so it can reconnect: %v", c, len(c.send), err)
+			jlog.Error("Couldn't write a %d byte %s message to WebSocket client %p (%d queued); "+
+				"closing so it can reconnect: %v",
+				len(payload), describeWSMessage(payload), c, len(c.send), err)
 		}
 		return false
 	}
 	c.lastSendAt.Store(time.Now().UnixNano())
 	return true
+}
+
+// describeWSMessage names an outgoing payload for a log line: its type, and for
+// the worker envelope that carries nearly all of Juggler's traffic, the worker
+// message type and conversation inside it.
+//
+// Read with jsonparser rather than encoding/json because this runs on paths
+// where the payload may be tens of megabytes, and Unmarshal would validate the
+// whole document to read three short fields near its front. Every producer
+// emits Type first, so in practice this stops after a few bytes.
+//
+// It never fails: a payload too broken to describe still has a size worth
+// logging, and swallowing the line to report a parse error would lose it.
+func describeWSMessage(payload []byte) string {
+	msgType, err := jsonparser.GetString(payload, "type")
+	if err != nil {
+		return "unlabelled"
+	}
+	if msgType != "worker-message" {
+		return msgType
+	}
+	workerMsgType, err := jsonparser.GetString(payload, "workerMsgType")
+	if err != nil {
+		return msgType
+	}
+	convID, err := jsonparser.GetString(payload, "conversationId")
+	if err != nil {
+		return workerMsgType
+	}
+	return fmt.Sprintf("%s (%s)", workerMsgType, convID)
 }
 
 // trySend queues a message, blocking while the buffer is full but never past

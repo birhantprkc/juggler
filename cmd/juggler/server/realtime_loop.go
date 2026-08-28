@@ -51,6 +51,9 @@ func (s *Server) runRealtimeClientLoop(ctx context.Context, client RealtimeClien
 		// to arrive in, and re-arm the silence report for this incarnation.
 		s.noteEngineAlive()
 		s.engineSilenceReported.Store(false)
+		// Counted separately from the liveness stamp above: that one says the
+		// engine is here, this one notices how often it has had to say so.
+		s.noteEngineAttached()
 		s.workerManager.SetEngineClient(client.ClientID(), func(convID string, msg []byte) {
 			envelope := worker.FormatWorkerMessage(convID, msg)
 			if envelope != nil {
