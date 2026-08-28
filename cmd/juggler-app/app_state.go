@@ -94,6 +94,12 @@ type winEntry struct {
 	// registry goroutine like the rest of winEntry's shared fields.
 	forceClose bool
 
+	// closing is set once this window's teardown has been claimed, so only the
+	// first WindowClosing for it runs one. Owned by the registry goroutine, and
+	// kept on the entry rather than in the registry map because teardown removes
+	// the entry from that map partway through.
+	closing bool
+
 	// flushSeq counts close-requested announcements to this window; flushDone is
 	// the channel closed when the page answers the current one (nil between
 	// handshakes). The page quotes the sequence number back, which is what stops
@@ -980,10 +986,31 @@ func (a *appState) showWindow(e *winEntry) {
 	applyWindowChrome(e.win, themeColours[theme])
 }
 
+// claimClose gives exactly one caller the right to tear e down, reporting
+// whether this one won it. Claimed on the registry goroutine, which owns
+// winEntry's shared fields.
+func (a *appState) claimClose(e *winEntry) bool {
+	first := false
+	a.reg(func(*regState) {
+		first = !e.closing
+		e.closing = true
+	})
+	return first
+}
+
 // handleWindowClosed removes the closed window, stops its server when no other
 // window still views it, and quits the app when no windows remain. Runs on the
 // Wails WindowClosing goroutine.
 func (a *appState) handleWindowClosed(e *winEntry) {
+	// WindowClosing can arrive more than once for the same window: the teardown
+	// below blocks for up to closeFlushTimeout waiting on the page's draft flush,
+	// and the window stays clickable throughout, so a second click on its close
+	// button delivers a second event while the first is still waiting. Only the
+	// first tears the window down — a repeat would re-announce the flush and
+	// close stopSave twice, which panics.
+	if !a.claimClose(e) {
+		return
+	}
 	// Authoritative final geometry write, while the window is still readable
 	// (its native getters work until Wails' built-in listener destroys it) AND
 	// the server is still up (we may stop it just below). A pending debounced
