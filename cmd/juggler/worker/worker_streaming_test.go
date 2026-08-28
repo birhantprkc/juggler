@@ -366,26 +366,41 @@ func TestStreamingLongMessageIntact(t *testing.T) {
 }
 
 // TestStreamingNoBottleneck verifies that once the LLM provider has finished
-// sending all chunks, the worker processes them without unnecessary delay.
-// A slow pipeline would mean the worker is still trickling through chunks
-// long after the provider goroutine has returned.
+// sending all chunks, the worker folds what is still buffered into the document
+// without waiting on anything of its own — no per-chunk poll, no throttle
+// window the drain has to sit out. A bottlenecked pipeline trickles through
+// chunks long after the provider goroutine has returned.
+//
+// The budget is calibrated against the machine, not fixed in milliseconds. How
+// much of the stream is still queued when the provider returns is the
+// scheduler's business: given a busy machine the worker goroutine can get no
+// time at all while the provider runs, which leaves the whole stream to drain
+// afterwards — so the measurement includes the cost of the work itself, and on
+// a loaded CI runner that cost is orders of magnitude above a desktop's.
+// Pricing the identical chunks on the same machine at the same moment — pushed
+// straight through processStreamChunk, no channel and no wait loop — is what
+// separates a pipeline that waits from a machine that is merely slow.
 func TestStreamingNoBottleneck(t *testing.T) {
+	fullText := generateLongText(500)
+	chunks := textChunks(fullText)
+
+	baseline := timeDirectChunkProcessing(t, chunks)
+
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
 
-	fullText := generateLongText(500)
-	wordsInText := strings.Fields(fullText)
+	// The channel the provider's chunks queue on, captured before the turn so
+	// reading its depth costs no access to state the worker goroutine owns.
+	queued := w.currentRun().t.chunks
 
 	var providerDone time.Time
+	var bufferedAtDone int
 
 	w.llmCallFunc = func(ctx context.Context, request json.RawMessage, chunkHandler func(StreamChunk)) (*LLMResponse, error) {
-		for i, word := range wordsInText {
-			tok := word
-			if i > 0 {
-				tok = " " + word
-			}
-			chunkHandler(StreamChunk{Type: "text", Content: tok})
+		for _, chunk := range chunks {
+			chunkHandler(chunk)
 		}
+		bufferedAtDone = len(queued)
 		providerDone = time.Now()
 		return &LLMResponse{
 			Blocks:     []LLMResponseBlock{{Type: "text", Content: fullText}},
@@ -401,15 +416,56 @@ func TestStreamingNoBottleneck(t *testing.T) {
 
 	delay := callLLMDone.Sub(providerDone)
 
-	// After the provider goroutine returns, the worker should finish near-instantly.
-	// The only remaining work is draining any buffered chunks — this should take
-	// microseconds, not hundreds of milliseconds. 200ms is a generous upper bound.
-	const maxDelay = 200 * time.Millisecond
-	if delay > maxDelay {
-		t.Errorf("Worker took %v after provider finished (max allowed: %v) — streaming pipeline is bottlenecked", delay, maxDelay)
-	} else {
-		t.Logf("Worker finished %v after provider (within %v limit)", delay, maxDelay)
+	// The drain coalesces, so it never has more to do than the baseline did one
+	// chunk at a time; measured, it comes in under the baseline. The multiple
+	// leaves room for the channel handoffs the baseline does not pay for and for
+	// a slow machine's scheduling noise — a pipeline that waits per chunk is
+	// orders out, not a few times out. The floor keeps the bound tight on any
+	// machine fast enough for the baseline to be noise.
+	maxDelay := 8 * baseline
+	if maxDelay < 200*time.Millisecond {
+		maxDelay = 200 * time.Millisecond
 	}
+	if delay > maxDelay {
+		t.Errorf("Worker took %v to drain the %d of %d chunks still buffered when the provider finished (max allowed: %v; the same chunks cost %v with no pipeline at all) — streaming pipeline is bottlenecked",
+			delay, bufferedAtDone, len(chunks), maxDelay, baseline)
+	} else {
+		t.Logf("Worker finished %v after provider, %d of %d chunks left to drain (limit %v, baseline %v)",
+			delay, bufferedAtDone, len(chunks), maxDelay, baseline)
+	}
+}
+
+// textChunks splits text into one streaming chunk per word, the way a provider
+// emits tokens.
+func textChunks(text string) []StreamChunk {
+	words := strings.Fields(text)
+	chunks := make([]StreamChunk, 0, len(words))
+	for i, word := range words {
+		tok := word
+		if i > 0 {
+			tok = " " + word
+		}
+		chunks = append(chunks, StreamChunk{Type: "text", Content: tok})
+	}
+	return chunks
+}
+
+// timeDirectChunkProcessing prices what these chunks cost to absorb on this
+// machine right now, with no channel and no wait loop between them — the same
+// document writes, the same throttle, one chunk at a time.
+func timeDirectChunkProcessing(t *testing.T, chunks []StreamChunk) time.Duration {
+	t.Helper()
+
+	w := NewConversationWorker("test-conv-baseline", "user:test")
+	defer w.doc.Destroy()
+
+	r := w.currentRun()
+	start := time.Now()
+	for _, chunk := range chunks {
+		r.processStreamChunk(chunk)
+	}
+	r.finalizeStreaming()
+	return time.Since(start)
 }
 
 // TestStreamingThrottlesDocumentWrites pins the write throttle. A streamed
