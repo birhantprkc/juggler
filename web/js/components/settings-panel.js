@@ -164,9 +164,12 @@ class SettingsPanel extends HTMLElement {
                     </section>
 
                     <section class="settings-tab-content" id="tab-defaults">
-                        <div class="settings-section-heading">Default model</div>
-                        <div class="settings-form" id="default-model-form">
-                            <div id="default-model-field-container"></div>
+                        <div class="settings-section-heading">New conversation defaults</div>
+                        <div class="settings-form" id="new-conversation-defaults-form">
+                            <div class="settings-card">
+                                <div id="default-model-field-container"></div>
+                                <div id="new-conversation-defaults-fields"></div>
+                            </div>
                         </div>
 
                         <div class="settings-section-heading">Cheap model</div>
@@ -178,9 +181,6 @@ class SettingsPanel extends HTMLElement {
                         <div class="settings-form" id="auto-name-form"></div>
 
                         <div class="settings-form" id="global-settings"></div>
-
-                        <div class="settings-section-heading">New conversation defaults</div>
-                        <div class="settings-form" id="new-conversation-defaults-form"></div>
                     </section>
 
                      <section class="settings-tab-content" id="tab-extensions">

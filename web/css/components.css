@@ -6527,6 +6527,33 @@ settings-panel .provider-field:last-child {
     margin-bottom: 0;
 }
 
+/* Multi-row card: groups several related provider-field rows (e.g. "New
+   conversation defaults") inside one shared box instead of each row getting
+   its own separate box — the rows lose their individual card chrome and are
+   divided by a hairline instead. */
+settings-panel .settings-card {
+    background: var(--bg-tertiary);
+    border-radius: 0.5rem;
+    padding: 0 1.25rem;
+    margin-bottom: 0.625rem;
+}
+
+settings-panel .settings-card:last-child {
+    margin-bottom: 0;
+}
+
+settings-panel .settings-card .provider-field {
+    background: none;
+    border-radius: 0;
+    padding: 1rem 0;
+    margin-bottom: 0;
+    border-bottom: 0.0625rem solid var(--border-color);
+}
+
+settings-panel .settings-card .provider-field:last-child {
+    border-bottom: none;
+}
+
 /* Logs tab: file picker + live-tailing viewer. The tab and its form are flex
    columns so the viewer fills the panel's full width and remaining height, with
    its own internal scroll (the tab itself does not scroll). */

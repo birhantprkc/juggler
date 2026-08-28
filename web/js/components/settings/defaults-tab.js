@@ -89,14 +89,16 @@ export class DefaultsTab {
   }
 
   /**
-   * Render the "New conversation defaults" section: per-project defaults applied to each
-   * newly created conversation — the strategy a conversation starts on, and whether it starts
-   * with edits allowed instead of asking. Persisted to session metadata, so they
-   * survive restarts and are shared across windows on the same project.
+   * Render the "New conversation defaults" section's per-project fields: the strategy
+   * a conversation starts on, and whether it starts with edits allowed instead of
+   * asking. Persisted to session metadata, so they survive restarts and are shared
+   * across windows on the same project. The section's other field, the default model,
+   * is rendered separately by renderDefaultModelField() into a sibling container, since
+   * it's a global setting rather than a per-project one.
    * @private
    */
   renderNewConversationDefaults() {
-    const container = this.host.querySelector('#new-conversation-defaults-form');
+    const container = this.host.querySelector('#new-conversation-defaults-fields');
     if (!container) return;
     container.innerHTML = '';
 
@@ -188,9 +190,7 @@ export class DefaultsTab {
     description.className = 'provider-description';
     description.textContent =
       'A custom instruction for the naming model, replacing the built-in one ' +
-      'shown here. Leave blank for the default. Whatever you write, your first ' +
-      'message is always treated as data to summarise into a title, never a ' +
-      'request to answer.';
+      'shown here. Leave blank for the default.';
     wrap.appendChild(description);
 
     const textarea = document.createElement('textarea');
@@ -271,7 +271,7 @@ export class DefaultsTab {
     controlColumn.className = 'provider-control';
 
     const select = document.createElement('select');
-    select.className = 'default-model-select';
+    select.className = 'settings-select';
     select.id = 'default-strategy-select';
 
     const configured = getDefaultStrategyId(this._getSession());
