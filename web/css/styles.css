@@ -1449,22 +1449,29 @@ conversation-message-list-wrapper {
    own proximity heuristic — which WebKit re-evaluates continuously and mid-scroll,
    flipping a row between its intrinsic and real height (WebKit doesn't reconcile
    the two) and jiggling everything below it. Hence `hidden`, not `auto`: a row is
-   skipped iff our class says so. The observer renders (cv-off off) ~1.5 viewports
+   skipped iff our class says so. The observer renders (cv-off off) ~3 viewports
    out, before a scroll reaches a row, and defers the collapse (cv-off on) to
    scroll-idle, where _flushRowSkips freezes the row's live height into contain-
    intrinsic-size and corrects scrollTop for any residual shift, so the visible
-   content never moves. The 6rem fallback below only applies to a row not yet
+   content never moves. The frozen height is width-dependent, so a settled change
+   in the column's width re-renders and re-freezes the collapsed rows against it
+   (_refreshRowSkipSizes). The 6rem fallback below only applies to a row not yet
    measured.
 
    Trade-off of `hidden`: find-in-page and a11y can't traverse a skipped subtree
-   and scrollIntoView won't auto-render it — but cv-off is stripped ~1.5 viewports
-   out, so a row renders before a scroll reaches it regardless. */
+   and scrollIntoView won't auto-render it — but cv-off is stripped ~3 viewports
+   out, so a row renders before a scroll reaches it regardless.
+
+   The tag list must stay in step with conversation-area's CV_ROW_TAGS: a row the
+   observers class but no rule matches keeps its full rendering cost. */
 .conversation-message-list-inner > user-message.cv-off,
 .conversation-message-list-inner > assistant-message.cv-off,
 .conversation-message-list-inner > thinking-message.cv-off,
 .conversation-message-list-inner > tool-action-message.cv-off,
+.conversation-message-list-inner > tool-group-message.cv-off,
 .conversation-message-list-inner > thread-message.cv-off,
 .conversation-message-list-inner > context-item-message.cv-off,
+.conversation-message-list-inner > notice-message.cv-off,
 .conversation-message-list-inner > error-message.cv-off {
     content-visibility: hidden;
     contain-intrinsic-size: 6rem;

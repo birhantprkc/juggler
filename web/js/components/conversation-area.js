@@ -98,6 +98,13 @@ const CV_ROW_TAGS = new Set([
 const SKIP_FLUSH_IDLE_MS = 200;
 
 /**
+ * Idle gap (ms) after the column's width stops changing before the collapsed
+ * rows are re-measured against it; long enough to sit out a resize drag, which
+ * reports a new width every frame. See _refreshRowSkipSizes.
+ */
+const WIDTH_SETTLE_MS = 250;
+
+/**
  * The item ids whose own Y.Map fields changed in one observeDeep batch, or
  * null when the batch can't be attributed to specific rows.
  *
@@ -192,6 +199,10 @@ class ConversationArea extends HTMLElement {
     this._pendingSkip = new Set();
     /** @type {number|null} @private - Pending scroll-idle timer that flushes _pendingSkip */
     this._skipFlushTimer = null;
+    /** @type {number|null} @private - Last observed scroller width, to tell a width change from content growth (see _noteListWidth) */
+    this._lastListWidth = null;
+    /** @type {number|null} @private - Pending settle timer that re-freezes collapsed rows after a width change */
+    this._widthSettleTimer = null;
     /** @type {boolean} @private - True when this column IS a group's contents, so its rows are never re-folded */
     this._isGroupColumn = false;
     /** @type {any[]|null} @private - The folded rows this column shows, when it is a group column (null otherwise) */
@@ -633,6 +644,11 @@ class ConversationArea extends HTMLElement {
       clearTimeout(this._skipFlushTimer);
       this._skipFlushTimer = null;
     }
+    if (this._widthSettleTimer !== null) {
+      clearTimeout(this._widthSettleTimer);
+      this._widthSettleTimer = null;
+    }
+    this._lastListWidth = null;
     this._pendingSkip.clear();
   }
 
@@ -987,8 +1003,12 @@ class ConversationArea extends HTMLElement {
     }, { passive: true });
 
     // Recompute on content growth (streaming, inserts) and viewport resize, both
-    // of which change whether — and how far — the list can scroll.
-    this._scrollControlsResizeObserver = new ResizeObserver(() => this._updateScrollControls());
+    // of which change whether — and how far — the list can scroll. A width change
+    // also invalidates every frozen stand-in height, so it is noted here too.
+    this._scrollControlsResizeObserver = new ResizeObserver(() => {
+      this._updateScrollControls();
+      this._noteListWidth(messageList.clientWidth);
+    });
     this._scrollControlsResizeObserver.observe(messageList);
     const inner = this.querySelector('#message-list-inner');
     if (inner) this._scrollControlsResizeObserver.observe(inner);
@@ -1001,8 +1021,13 @@ class ConversationArea extends HTMLElement {
     // skips are only queued and flushed once scrolling goes idle (_flushRowSkips),
     // because collapsing a row below the viewport shifts content mid-gesture — the
     // clunk the user sees — in this bottom-anchored (column-reverse) scroller.
-    const RENDER_MARGIN = '150% 0px'; // render within ~1.5 viewports (near edge)
-    const SKIP_MARGIN = '300% 0px'; // queue skip beyond ~3 viewports (far edge)
+    // The render margin is lead time: a fling covers a viewport in a fraction of
+    // a second, and every row it crosses pays style, layout and paint the moment
+    // it is un-skipped. Three viewports of warning keeps that work ahead of the
+    // gesture instead of under it; the band's width (the gap to the skip margin)
+    // is what stops the toggling, so both edges move together.
+    const RENDER_MARGIN = '300% 0px'; // render within ~3 viewports (near edge)
+    const SKIP_MARGIN = '500% 0px'; // queue skip beyond ~5 viewports (far edge)
     if (typeof IntersectionObserver !== 'undefined') {
       // Near edge: render now and cancel any queued skip — the row is back in range.
       this._rowRenderObserver = new IntersectionObserver((entries) => {
@@ -1177,6 +1202,67 @@ class ConversationArea extends HTMLElement {
   }
 
   /**
+   * Note the scroller's width and, once it settles, re-freeze the collapsed rows
+   * against it. Debounced: a column-resize drag reports a new width every frame,
+   * and re-rendering the transcript on each one is the very work being avoided.
+   * @param {number} width - The scroller's current width.
+   * @private
+   */
+  _noteListWidth(width) {
+    if (!width) return; // not laid out yet; the next observation carries the real width
+    if (this._lastListWidth === null || width === this._lastListWidth) {
+      this._lastListWidth = width;
+      return;
+    }
+    this._lastListWidth = width;
+    if (this._widthSettleTimer !== null) clearTimeout(this._widthSettleTimer);
+    this._widthSettleTimer = window.setTimeout(() => {
+      this._widthSettleTimer = null;
+      this._refreshRowSkipSizes();
+    }, WIDTH_SETTLE_MS);
+  }
+
+  /**
+   * Re-measure the collapsed rows after the column's width has settled.
+   *
+   * A skipped row stands in at the height frozen into contain-intrinsic-size when
+   * it was last collapsed, and that height is a function of the column's width —
+   * every paragraph and code block rewraps when the column narrows. So a width
+   * change leaves the whole collapsed remainder of the transcript standing in at
+   * heights that are simply wrong, and nothing discovers that until the reader
+   * scrolls back: each row springs from its stale stand-in to its real height as
+   * it renders, and the scroll lurches by the difference, row after row.
+   *
+   * The only way to learn a skipped row's true height is to render it, so that is
+   * what this does — un-skip everything collapsed and re-queue it, letting the
+   * ordinary idle flush measure and collapse it again. That costs one full layout
+   * of the transcript, but only on a settled width change, which is a relayout the
+   * user has just asked for; in exchange every stand-in height is honest again.
+   * @private
+   */
+  _refreshRowSkipSizes() {
+    const content = this.querySelector('#message-list-inner');
+    if (!content) return;
+    const collapsed = /** @type {HTMLElement[]} */ (
+      Array.from(content.children).filter((row) => row.classList.contains('cv-off'))
+    );
+    if (!collapsed.length) return;
+
+    // Rendering them restores their real heights, which moves the content above
+    // the viewport; hold the reader's place across it.
+    this._holdReaderAnchorOver(() => {
+      for (const row of collapsed) {
+        row.classList.remove('cv-off');
+        row.style.removeProperty('contain-intrinsic-size');
+        // The skip observer reports crossings, not states: these rows were already
+        // outside its margin and stay there, so it will never re-queue them itself.
+        this._pendingSkip.add(row);
+      }
+    });
+    this._armSkipFlush();
+  }
+
+  /**
    * (Re)arm the scroll-idle timer that flushes queued row collapses. Each
    * skip-crossing and scroll event pushes it out, so it fires only once scrolling
    * has been quiet for SKIP_FLUSH_IDLE_MS.
@@ -1274,15 +1360,22 @@ class ConversationArea extends HTMLElement {
    * relative, viewport-rect-based nudge (like scrollElementIntoView) so it's
    * agnostic to the reversed scroller's scrollTop sign, and clamped so it lands
    * exactly at the top rather than overshooting.
+   *
+   * Measured from the content column itself, never its first child: the column
+   * leads with `thread-column-actions`, which is `display: none` in a root
+   * conversation (it only appears in a thread column), and a rect taken from a
+   * box-less element reads as all zeros — a delta of a few dozen pixels of
+   * chrome, whatever the length of the conversation. The column's own top is the
+   * top of the content by construction, whatever leads it.
    * @private
    */
   _scrollToConversationStart() {
     const messageList = /** @type {HTMLElement|null} */ (this.querySelector('#message-list'));
     const content = /** @type {HTMLElement|null} */ (this.querySelector('#message-list-inner'));
     if (!messageList || !content) return;
-    const first = content.firstElementChild;
-    if (!first) return;
-    const delta = first.getBoundingClientRect().top - messageList.getBoundingClientRect().top;
+    // The scroller's own padding-top means this slightly overshoots the start,
+    // which scrollTo clamps away — landing exactly at the top rather than a rem short.
+    const delta = content.getBoundingClientRect().top - messageList.getBoundingClientRect().top;
     messageList.scrollTo({ top: messageList.scrollTop + delta, behavior: 'smooth' });
   }
 

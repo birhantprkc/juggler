@@ -416,14 +416,14 @@ export default class FindController {
    *   - a collapsed `.collapsible` clamp (a long user message or thread summary
    *     showing its first 15rem behind a "Show more"), expanded via the shared
    *     helper so the toggle and its persisted state stay in step;
-   *   - a `cv-off` row, which conversation-area applies to rows more than ~3
+   *   - a `cv-off` row, which conversation-area applies to rows more than ~5
    *     viewports away to skip their rendering (`content-visibility: hidden`).
    *     A skipped subtree generates no boxes, so the highlight cannot paint and
    *     there is nothing to measure or scroll to.
    * Un-skipping here doesn't fight the row-visibility observers: the render
-   * observer independently clears `cv-off` within ~1.5 viewports (where the
-   * match is headed), and the skip observer only re-queues past ~3, so a row we
-   * scroll to stays rendered.
+   * observer independently clears `cv-off` within ~3 viewports (where the match
+   * is headed), and the skip observer only re-queues past ~5, so a row we scroll
+   * to stays rendered.
    * @param {Element} el - The element containing the match's start.
    * @returns {void}
    */

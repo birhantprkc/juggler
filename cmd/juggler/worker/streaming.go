@@ -476,7 +476,7 @@ const cacheMissNoticeLead = "Claude Code re-read the whole conversation instead 
 // cacheMissNoticeSummary is the same statement cut to a transcript row. The row
 // has one line to say what happened in, so it drops the cache the lead names and
 // keeps the cost, which is the part worth reading in passing.
-const cacheMissNoticeSummary = "Claude Code re-read the whole conversation, so this turn cost more than it needed to."
+const cacheMissNoticeSummary = "Claude Code re-read the whole conversation"
 
 // insertCacheMissNotice records a consequential provider cache miss in the
 // transcript, at the point in the conversation where it happened — after the

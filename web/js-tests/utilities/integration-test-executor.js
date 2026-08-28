@@ -149,6 +149,7 @@ import { runTests as runThreadColumnSelectionTests } from '../unit-tests/thread-
 import { runTests as runThreadSelectionPinTests } from '../unit-tests/thread-selection-pin-test.js';
 import { runTests as runParallelThreadSelectionTests } from '../unit-tests/parallel-thread-selection-test.js';
 import { runTests as runScrollAwayAutofollowTests } from '../unit-tests/scroll-away-autofollow-test.js';
+import { runTests as runScrollToTopTests } from '../unit-tests/scroll-to-top-test.js';
 import { runTests as runUserSendFollowTests } from '../unit-tests/user-send-follow-test.js';
 import { runTests as runColumnNavigationTests } from '../unit-tests/column-navigation-test.js';
 import { runTests as runDeleteSelectionNeighbourTests } from '../unit-tests/delete-selection-neighbour-test.js';
@@ -423,6 +424,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:thread-selection-pin', run: runThreadSelectionPinTests },
   { name: 'unit:parallel-thread-selection', run: runParallelThreadSelectionTests },
   { name: 'unit:scroll-away-autofollow', run: runScrollAwayAutofollowTests },
+  { name: 'unit:scroll-to-top', run: runScrollToTopTests },
   { name: 'unit:user-send-follow', run: runUserSendFollowTests },
   { name: 'unit:column-navigation', run: runColumnNavigationTests },
   // Exclusive for the shared origin: one case writes the tool-grouping

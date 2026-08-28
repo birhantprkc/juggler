@@ -126,7 +126,7 @@ export async function runTests() {
   test('a notice explains itself on the row, under a fixed Warning lozenge', () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
-    const explanation = 'Claude Code re-read the whole conversation, so this turn cost more than it needed to.';
+    const explanation = 'Claude Code re-read the whole conversation';
     try {
       const el = /** @type {any} */ (document.createElement('notice-message'));
       el.setAttribute('message-id', 'NOTICE_1');
