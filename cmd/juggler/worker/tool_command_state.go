@@ -29,13 +29,16 @@ type toolCommandState struct {
 	// staleness by shrinking the worker's redriveInterval, not by poking this.
 	lastDispatchedAt time.Time
 
-	// prevDispatchedAt stamps the dispatch BEFORE lastDispatchedAt, and is the
-	// reference point for "did the engine answer for this tool". It has to be the
-	// previous one: driveToolActions calls recordDispatch before deciding whether
-	// to escalate, so at the decision point lastDispatchedAt is the dispatch just
-	// sent, which nothing could have answered yet. The previous dispatch is the
-	// most recent one the engine has had a full redriveInterval to answer.
-	prevDispatchedAt time.Time
+	// dispatches counts every command sent for this id, across delivery phases. It
+	// is the ordering the "did the engine answer" tests are expressed in, and it
+	// is a count rather than a clock reading on purpose: time.Now() is only as
+	// fine as the platform tick — on Windows it comes from a counter updated every
+	// ~1-15ms — so a trace answering a dispatch at once carries the SAME instant
+	// as the dispatch it answers, and no comparison of stamps can separate an
+	// engine replying immediately from one that never replied at all. Counting
+	// dispatches asks the question directly: which commands had gone out by the
+	// time the trace arrived.
+	dispatches int
 
 	// lastTracedAt stamps when an engine-trace naming THIS toolUseId last arrived
 	// (recordTrace, from handleEngineTrace). Every engine-side handler traces with
@@ -43,21 +46,23 @@ type toolCommandState struct {
 	// the declining ones (evaluate-noact/execute-noact) alike — so a trace here is
 	// the only evidence that a command for this tool reached a handler at all.
 	// Zero until the first trace for the id. Diagnostic: the escalation verdict
-	// reads the two classified stamps below.
+	// reads the two classified counters below.
 	lastTracedAt time.Time
 
-	// lastEngagedAt stamps the last trace that proves the engine reached THIS tool
-	// — it claimed it, ran it, or declined for a reason about the tool itself.
-	// This, not lastTracedAt, is what answeredSincePrevDispatch weighs, because a
-	// decline about the engine's own readiness proves the opposite of engagement.
-	lastEngagedAt time.Time
+	// engagedAtDispatch records the dispatch count as of the last trace that
+	// proves the engine reached THIS tool — it claimed it, ran it, or declined for
+	// a reason about the tool itself. This, not lastTracedAt, is what
+	// answeredSincePrevDispatch weighs, because a decline about the engine's own
+	// readiness proves the opposite of engagement. Zero until such a trace lands.
+	engagedAtDispatch int
 
-	// lastUnreachableAt / lastUnreachableReason stamp the last trace declining the
-	// command because the engine could not reach the tool at all
-	// (engineUnreachableReasons). Kept apart from lastEngagedAt so a tool waiting
-	// on an engine that is still loading its conversation is held rather than
-	// blamed, and so the escalation message can name the reason it was given.
-	lastUnreachableAt     time.Time
+	// unreachableAtDispatch / lastUnreachableReason record the dispatch count as
+	// of the last trace declining the command because the engine could not reach
+	// the tool at all (engineUnreachableReasons), and the reason it gave. Kept
+	// apart from engagedAtDispatch so a tool waiting on an engine that is still
+	// loading its conversation is held rather than blamed, and so the escalation
+	// message can name the reason it was given.
+	unreachableAtDispatch int
 	lastUnreachableReason string
 
 	// firstDispatchedAt stamps when the CURRENT delivery phase began — the first
@@ -121,6 +126,8 @@ func (t *toolCommandTracker) shouldRedrive(id, state string, now time.Time, inte
 // recordDispatch records a just-sent command for id at state, stamped now, and
 // returns the resulting attempt count at that state. Attempts reset to 1 when the
 // state differs from the last dispatch (a new delivery phase), else increment.
+// The dispatch count spans phases, since it orders traces against commands rather
+// than measuring a phase.
 func (t *toolCommandTracker) recordDispatch(id, state string, now time.Time) int {
 	s := t.entry(id)
 	if !s.dispatchedStateSet || s.dispatchedState != state {
@@ -129,7 +136,8 @@ func (t *toolCommandTracker) recordDispatch(id, state string, now time.Time) int
 	} else {
 		s.attempts++
 	}
-	s.prevDispatchedAt, s.lastDispatchedAt = s.lastDispatchedAt, now
+	s.dispatches++
+	s.lastDispatchedAt = now
 	return s.attempts
 }
 
@@ -170,16 +178,23 @@ func (t *toolCommandTracker) recordTrace(id, reason string, now time.Time) {
 	}
 	s.lastTracedAt = now
 	if engineUnreachableReasons[reason] {
-		s.lastUnreachableAt, s.lastUnreachableReason = now, reason
+		s.unreachableAtDispatch, s.lastUnreachableReason = s.dispatches, reason
 		return
 	}
-	s.lastEngagedAt = now
+	s.engagedAtDispatch = s.dispatches
 }
 
 // answeredSincePrevDispatch reports whether the engine ENGAGED with THIS tool
 // since the dispatch before the most recent one — i.e. whether the engine is
 // still answering for this tool right now, rather than having answered once
 // early in the phase and gone silent since.
+//
+// "Since the dispatch before the most recent one" has to be the previous one:
+// driveToolActions calls recordDispatch before deciding whether to escalate, so
+// at the decision point the latest dispatch is the one just sent, which nothing
+// could have answered yet. The previous dispatch is the most recent one the
+// engine has had a full redriveInterval to answer, so a trace that arrived once
+// dispatches had reached at least that count is an answer to it.
 //
 // This is the difference between the escalation verdicts, so it is deliberately
 // per-tool, deliberately recent, and deliberately blind to the unreachable
@@ -191,10 +206,10 @@ func (t *toolCommandTracker) recordTrace(id, reason string, now time.Time) {
 // find the conversation, which is a statement about the engine, not the tool.
 func (t *toolCommandTracker) answeredSincePrevDispatch(id string) bool {
 	s := t.byID[id]
-	if s == nil || s.lastEngagedAt.IsZero() {
+	if s == nil || s.engagedAtDispatch == 0 {
 		return false
 	}
-	return s.lastEngagedAt.After(s.prevDispatchedAt)
+	return s.engagedAtDispatch >= s.dispatches-1
 }
 
 // unreachableSincePrevDispatch reports whether the engine's most recent word on
@@ -204,10 +219,10 @@ func (t *toolCommandTracker) answeredSincePrevDispatch(id string) bool {
 // it is mute, and the shorter mute hold applies.
 func (t *toolCommandTracker) unreachableSincePrevDispatch(id string) (bool, string) {
 	s := t.byID[id]
-	if s == nil || s.lastUnreachableAt.IsZero() {
+	if s == nil || s.unreachableAtDispatch == 0 {
 		return false, ""
 	}
-	if !s.lastUnreachableAt.After(s.prevDispatchedAt) {
+	if s.unreachableAtDispatch < s.dispatches-1 {
 		return false, ""
 	}
 	return true, s.lastUnreachableReason

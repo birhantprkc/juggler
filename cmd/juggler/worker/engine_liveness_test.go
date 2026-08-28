@@ -223,6 +223,45 @@ func TestEngineTrace_StampsThePerToolReceipt(t *testing.T) {
 	}
 }
 
+// TestEngineAnswered_IsNotDecidedByTheClock pins that the engine-answered tests
+// order traces against commands by counting dispatches, never by comparing
+// timestamps. Every event below carries the SAME instant, which is what a
+// platform whose clock ticks in milliseconds hands back for a whole drive
+// (Windows reads a ~1-15ms-granular counter): a trace answering a command at once
+// is stamped identically to the command it answers, and a comparison of stamps
+// reads an engine replying instantly as one that never replied — the verdict that
+// holds a genuinely stuck tool for a minute and then blames the engine link.
+func TestEngineAnswered_IsNotDecidedByTheClock(t *testing.T) {
+	tick := time.Now() // one clock tick, spanning every event below
+	tr := newToolCommandTracker()
+
+	tr.recordDispatch("tu-1", StateApproved, tick)
+	tr.recordTrace("tu-1", "", tick)
+	tr.recordDispatch("tu-1", StateApproved, tick)
+	if !tr.answeredSincePrevDispatch("tu-1") {
+		t.Fatal("an engine that engaged with the previous command reads as mute when " +
+			"the trace and that command share one clock tick")
+	}
+
+	tr.recordTrace("tu-1", "conv-not-loaded", tick)
+	tr.recordDispatch("tu-1", StateApproved, tick)
+	unreachable, reason := tr.unreachableSincePrevDispatch("tu-1")
+	if !unreachable || reason != "conv-not-loaded" {
+		t.Fatalf("an unreachable decline of the previous command was lost inside its own "+
+			"tick: unreachable=%v reason=%q", unreachable, reason)
+	}
+
+	// Silence is still silence: two more commands, nothing answering either.
+	tr.recordDispatch("tu-1", StateApproved, tick)
+	tr.recordDispatch("tu-1", StateApproved, tick)
+	if tr.answeredSincePrevDispatch("tu-1") {
+		t.Fatal("a trace from four commands ago still counts as the engine answering the last one")
+	}
+	if unreachable, _ := tr.unreachableSincePrevDispatch("tu-1"); unreachable {
+		t.Fatal("an engine that declined four commands ago and fell silent still reads as unreachable")
+	}
+}
+
 // TestEngineUnreachableDecline_ToolIsHeldNotBlamed is the tab-switch /
 // cold-engine reproduction. The engine is alive and answering every command,
 // but only to say it has no loaded copy of this conversation to run the tool
