@@ -1965,11 +1965,12 @@ class ConversationTab extends JugglerElement {
     this._renderLoadingOverlay(loadState);
     if (loadState !== 'loaded') return;
 
-    // Auto-select the thread chain when the projected run names a new thread.
-    // ONE thread, deliberately: revealing a column moves the viewport, and
-    // several threads may be running. The worker's projection is the same
-    // choice on every client, so two windows watching this conversation move
-    // together instead of each picking a different child.
+    // Auto-select the thread chain for a running thread. ONE thread,
+    // deliberately: revealing a column moves the viewport, and several threads
+    // may be running. The status path reveals any given thread at most once
+    // (see maybeAutoSelectThread), so parallel siblings streaming together
+    // rewrite nothing here; llmState also holds its named thread while it
+    // runs, which keeps the choice stable across the projection's churn.
     const llmState = conversation.llmState;
     let autoSelected = false;
     if (llmState) {

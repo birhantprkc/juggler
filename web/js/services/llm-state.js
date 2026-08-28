@@ -121,10 +121,11 @@ class LLMState {
     this._conversations = new Map();
 
     /**
-     * Which run the conversation-wide getters answer for: the thread the doc's
-     * top-level projection names. The worker picks it (most recently claimed,
-     * see projectLiveRun), so every client agrees on which of several live runs
-     * a single-answer reader is shown.
+     * Which run the conversation-wide getters answer for. Sticks to the thread
+     * it named while that thread still holds a live run, so the projection's
+     * churn between live siblings (the worker re-projects on every write) reads
+     * as no change; it re-targets only when the named thread rests. With
+     * several siblings live, two clients can hold different answers.
      * @type {Map<string, string|null>} @private conversationId -> threadItemId (null = root)
      */
     this._statusThreadIds = new Map();
@@ -276,9 +277,13 @@ class LLMState {
   }
 
   /**
-   * Get the thread item ID that the conversation's projected status targets.
+   * Get the thread item ID that the conversation's status is held on.
    * One answer for readers that can only act on one column — which column to
    * reveal, which run a bare Escape interrupts. Not "the only thread running".
+   * Sticks to the thread it named while that thread still runs (see
+   * _handleProcessingStateChange), so parallel siblings taking turns to write
+   * frames do not move it; two windows can hold different answers while
+   * several siblings run.
    * @param {string} conversationId - Conversation ID
    * @returns {string|null} The thread item ID, or null if status targets root
    */
@@ -774,11 +779,22 @@ class LLMState {
       return;
     }
 
-    // Track which thread the projection names, for the single-answer readers.
-    this._statusThreadIds.set(conversationId, state.threadItemId || null);
-
     const runs = runsView(state);
     const live = new Set(Object.keys(runs));
+
+    // Track which thread the projection names, for the single-answer readers.
+    // The projection is fickle: while several runs are live it names whichever
+    // one wrote the frame, so it alternates between siblings several times a
+    // second. To the single-answer readers that churn is not a change of
+    // answer — a thread they have named keeps being named until it rests, and
+    // only then does the frame's projection get to re-target. Two windows
+    // watching the same conversation can therefore settle on different
+    // siblings; each still names a live run, which is the guarantee these
+    // readers need.
+    if (!this._statusThreadIds.has(conversationId) ||
+        !live.has(threadKey(this._statusThreadIds.get(conversationId)))) {
+      this._statusThreadIds.set(conversationId, state.threadItemId || null);
+    }
 
     // Retire every thread that no longer holds a run. Scoped one thread at a
     // time: a child finishing under a still-streaming parent must take its own

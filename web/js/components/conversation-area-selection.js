@@ -39,6 +39,12 @@
  *      tile higher up.)
  *   4. Once the user manually selects, auto-follow is suppressed
  *      until the next user message resets it.
+ *   4c. Items arriving in a SUB-THREAD never move this column's selection.
+ *      Parallel runs make this stronger than rule 4 alone: a sub-thread's
+ *      items belong to its own column, and the status path may reveal a
+ *      thread's column only once (see maybeAutoSelectThread), so a thread's
+ *      ongoing life cannot re-target the parent — not even after a pin has
+ *      lifted (rule A, rule C).
  *   4b. While the reader is scrolled away from the end of the
  *      conversation, auto-follow is off entirely: no auto-selection
  *      (rules 2 and 2b) and no auto-scroll. Scrolling away is itself the

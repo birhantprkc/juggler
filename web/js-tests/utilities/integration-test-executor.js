@@ -146,6 +146,7 @@ import { runTests as runSkillCompletionTests } from '../unit-tests/skill-complet
 import { runTests as runUnclaimedConversationsTests } from '../unit-tests/unclaimed-conversations-test.js';
 import { runTests as runThreadColumnSelectionTests } from '../unit-tests/thread-column-selection-test.js';
 import { runTests as runThreadSelectionPinTests } from '../unit-tests/thread-selection-pin-test.js';
+import { runTests as runParallelThreadSelectionTests } from '../unit-tests/parallel-thread-selection-test.js';
 import { runTests as runScrollAwayAutofollowTests } from '../unit-tests/scroll-away-autofollow-test.js';
 import { runTests as runUserSendFollowTests } from '../unit-tests/user-send-follow-test.js';
 import { runTests as runColumnNavigationTests } from '../unit-tests/column-navigation-test.js';
@@ -418,6 +419,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:unclaimed-conversations', run: runUnclaimedConversationsTests },
   { name: 'unit:thread-column-selection', run: runThreadColumnSelectionTests },
   { name: 'unit:thread-selection-pin', run: runThreadSelectionPinTests },
+  { name: 'unit:parallel-thread-selection', run: runParallelThreadSelectionTests },
   { name: 'unit:scroll-away-autofollow', run: runScrollAwayAutofollowTests },
   { name: 'unit:user-send-follow', run: runUserSendFollowTests },
   { name: 'unit:column-navigation', run: runColumnNavigationTests },

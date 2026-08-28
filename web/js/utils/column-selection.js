@@ -49,6 +49,17 @@ class ColumnSelectionState {
     this._lastStatusThreadId = undefined;
 
     /**
+     * Threads the status path has already opened. A thread's ongoing life —
+     * streaming, tool events, token progress — rewrites nothing here once its
+     * column has been revealed from status; the only moves left to it are the
+     * user's. Without this, a turn running several threads sees its chain
+     * rewritten on every frame the projection sends (a reader whose pin has
+     * lifted loses the row they selected to whichever sibling wrote last).
+     * @type {Set<string>}
+     */
+    this._autoOpenedThreadIds = new Set();
+
+    /**
      * Whether the transaction-detail panel is open. It is a lens on the
      * properties column beside it rather than a pinned view of one round-trip:
      * it re-targets to whatever that column is showing, so browsing items
@@ -64,6 +75,7 @@ class ColumnSelectionState {
   resetSelections() {
     this.selections = [];
     this.txnOpen = false;
+    this._autoOpenedThreadIds = new Set();
   }
 
   /** Record that the user manually interacted (click, keyboard) */
@@ -363,18 +375,23 @@ class ColumnSelectionState {
   }
 
   /**
-   * Check if the LLM processing state targets a new thread and auto-select it.
-   * Respects a cooldown so manual user navigation isn't overridden.
+   * Reveal the column chain for a running thread — the one automatic path
+   * that rewrites the whole chain, and therefore the one that can pull a
+   * column out from under a reader. Two properties keep it in its place:
    *
-   * This is the one automatic path that rewrites the whole chain, so it is also
-   * the one that can pull a column out from under a reader — `userReading` is
-   * how the columns say "someone is looking at this", whether they said so by
-   * selecting an item or just by scrolling away from the end. Reading is not
-   * consumed: `_lastStatusThreadId` stays untouched so that when it ends (a new
-   * user message, the offscreen demotion, focusing a composer, scrolling back to
-   * the end) the next sync opens whatever is running by then, rather than the
-   * chain staying frozen because the one status change that mattered was spent
-   * while nobody could act on it.
+   * A thread is opened from status AT MOST ONCE. Its first frame that finds
+   * the chain free opens it; from then on every later frame is ignored, so a
+   * thread's ongoing life (streaming, tool events, sibling projections
+   * re-naming it) can never rewrite the chain again. The moves left to a
+   * thread that has been revealed are the user's.
+   *
+   * A reader defers even that first open. `userReading` is how the columns
+   * say "someone is looking at this", whether by selecting an item or just by
+   * scrolling away from the end. Reading is not consumed: neither
+   * `_lastStatusThreadId` nor `_autoOpenedThreadIds` records a deferred open,
+   * so when it ends (a new user message, the offscreen demotion, focusing a
+   * composer, scrolling back to the end) the thread that is running by then
+   * opens — the deferral postpones the reveal rather than cancelling it.
    * @param {string|null} statusThreadId - Current LLM status thread ID
    * @param {any[]} rootItems - Root-level items for chain resolution
    * @param {ThreadPredicate} isThread - Predicate to check if an item is a thread
@@ -389,6 +406,12 @@ class ColumnSelectionState {
     if (statusThreadId === this._lastStatusThreadId) return false;
 
     if (userReading) return false;
+
+    // An already-revealed thread never rewrites the chain from status again.
+    if (statusThreadId && this._autoOpenedThreadIds.has(statusThreadId)) {
+      this._lastStatusThreadId = statusThreadId;
+      return false;
+    }
 
     if (nowMs - this.lastManualInteractionTime < AUTO_SELECT_COOLDOWN_MS) {
       // Only apply cooldown for threads the user is already viewing.
@@ -410,6 +433,7 @@ class ColumnSelectionState {
     // Only mark as handled once the chain actually resolved — the thread item
     // may not be in rootItems yet on the first sync after creation.
     this._lastStatusThreadId = statusThreadId;
+    this._autoOpenedThreadIds.add(statusThreadId);
     this.selections = chain;
     this.activeColumnIndex = chain.length;
     return true;

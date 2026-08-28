@@ -1108,10 +1108,11 @@ class Conversation {
    * Interrupt the sub-thread the conversation's projected run names, if any.
    *
    * ONE thread, because the caller is a keypress: this is the fallback for a
-   * bare Escape, where nobody has said which column they meant. The projection
-   * (`llmState.getStatusThreadId`) is the worker's own choice of which run
-   * describes the conversation, so every client stops the same one — and the
-   * user can press again, or use a column's own Stop, to reach the others.
+   * bare Escape, where nobody has said which column they meant. The held
+   * status thread (`llmState.getStatusThreadId`) sticks to a thread while it
+   * runs, so parallel siblings streaming together do not retarget it mid-press;
+   * with several live it can differ between windows, and the user can press
+   * again, or use a column's own Stop, to reach the others.
    * When it points at a sub-thread, that thread is INTERRUPTED
    * (`interruptThread`): the worker turn is preempted but the thread stays
    * open, so its column keeps the composer and the user can keep interacting
