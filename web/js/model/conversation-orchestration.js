@@ -62,7 +62,10 @@ export async function waitForApproval(conversation, messageThread, toolUseId) {
 export async function continueThread(conversation, messageThread, beforeContinue) {
   const { default: actionExecutor } = await import('../services/action-executor.js');
 
-  if (conversation.isProcessing || actionExecutor.hasRunningActions() || messageThread.hasBusyItems()) {
+  // Asked of THIS thread, not the whole conversation: a sibling being driven is
+  // no reason to refuse a continue here — the worker admits an idle thread while
+  // others run.
+  if (messageThread.isProcessing || actionExecutor.hasRunningActions() || messageThread.hasBusyItems()) {
     return false;
   }
 

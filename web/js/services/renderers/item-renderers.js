@@ -670,8 +670,8 @@ export function renderThread(host, container, message) {
     /** @type {import('../../utils/thread-display.js').ThreadLiveStatus|null} */
     let live = null;
     if (llmState && conv?.id) {
-      const msg = llmState.getStatusMessage(conv.id) || '';
-      if (msg) live = { message: msg, threadId: llmState.getStatusThreadId(conv.id) };
+      const byThread = llmState.getLiveThreadMessages(conv.id);
+      if (Object.keys(byThread).length > 0) live = { byThread };
     }
     const status = getThreadStatus(message, live);
     paintThreadSummary(summary, text, { status });

@@ -86,7 +86,7 @@ export default function systemPromptContribution({ enabledPluginIds }) {
         'out of your context. Give `goal` only a very short user-facing label. Put the complete self-contained ' +
         'task and context in `prompt`, and put the required contents and shape of the final answer in `resultSpec`. ' +
         'Give each thread one task — never a task list, and never tell it to spawn further threads; run multiple tasks ' +
-        'as separate threads yourself, one at a time.'
+        'as separate threads yourself.'
     );
   }
 

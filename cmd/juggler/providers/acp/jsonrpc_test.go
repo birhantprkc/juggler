@@ -183,13 +183,15 @@ func TestTransportContextCancelUnblocksCall(t *testing.T) {
 }
 
 func TestHandshake(t *testing.T) {
-	conv := &conversation{client: &Client{workingDir: "/tmp/work"}, approver: defaultApprover{}, initLock: newLock()}
-	tr, fa := startTransport(t, conv)
+	conv := newConversation(&Client{workingDir: "/tmp/work"}, "c1", defaultApprover{})
+	thread := conv.thread("")
+	tr, fa := startTransport(t, thread)
+	t.Cleanup(func() { _ = conv.Close() })
 
 	sidCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		sid, err := conv.handshake(context.Background(), tr)
+		sid, err := thread.handshake(context.Background(), tr)
 		sidCh <- sid
 		errCh <- err
 	}()

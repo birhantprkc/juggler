@@ -50,7 +50,11 @@ type turnState struct {
 	// decide whether the park already excludes the frozen span.
 	approvalWaitStartedAt atomic.Int64
 	// wasBlockedOnApprovals records the previous approval reconciliation state.
+	// The actor owns approval-edge reconciliation for actor-backed runs.
 	wasBlockedOnApprovals bool
+	// completedIdle tells the actor that this run published its normal idle edge;
+	// conversation-owned counter and undo finalization happen at retirement.
+	completedIdle bool
 
 	// lastProgressWriteMs throttles processing-state progress writes.
 	lastProgressWriteMs int64

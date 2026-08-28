@@ -308,7 +308,7 @@ export async function runTests() {
     assert(getGroupStatus(running).kind === 'running', 'an unsettled row keeps the group live');
     // The live wording belongs to the conversation, and the footer under the
     // tile is already showing it: the tile says the run is live by pulsing.
-    const liveStatus = getGroupStatus(running, { message: 'Streaming • 40 tokens', threadId: null });
+    const liveStatus = getGroupStatus(running, { byThread: { '': 'Streaming • 40 tokens' } });
     assert(liveStatus.message === '' && liveStatus.spinner === false,
       `a live group repeats neither the status line nor its spinner, got "${liveStatus.message}"`);
 
@@ -336,7 +336,7 @@ export async function runTests() {
       'precondition: a deleted row reports no state at all');
     const gone = getGroupStatus(stale.members, null);
     assert(gone.kind === 'idle', `a group of deleted rows is not running, got "${gone.kind}"`);
-    assert(getGroupStatus(stale.members, { message: 'Streaming', threadId: null }).kind === 'idle',
+    assert(getGroupStatus(stale.members, { byThread: { '': 'Streaming' } }).kind === 'idle',
       'nor is it running just because the conversation is busy elsewhere');
     assert(countGroupRows(stale.members) === 0, 'and it counts none of them as rows');
 
@@ -345,7 +345,7 @@ export async function runTests() {
     const fresh = build([tool('read'), tool('bash', { state: '' })]).items;
     assert(getGroupStatus(fresh, null).kind === 'idle',
       'an idle conversation cannot have a running group');
-    assert(getGroupStatus(fresh, { message: 'Streaming', threadId: null }).kind === 'running',
+    assert(getGroupStatus(fresh, { byThread: { '': 'Streaming' } }).kind === 'running',
       'the same row mid-turn is live work');
 
     // A claimed row is live on its own evidence, idle conversation or not.

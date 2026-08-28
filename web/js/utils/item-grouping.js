@@ -42,6 +42,7 @@
 import contextItemRegistry from '../registries/context-item-registry.js';
 import { hasPendingApprovalInTree, hasUnsettledToolInTree } from '../model/thread-navigation.js';
 import { TOOL_STATES, isProviderStateMessage } from '../../sdk/lib/message.js';
+import { anyThreadLive } from './thread-display.js';
 
 /** Display `type` reported by a group entry (never a document item type). */
 export const GROUP_TYPE = 'tool-group';
@@ -396,11 +397,15 @@ export function getGroupStatus(members, live) {
   // being evaluated. Asking the question the other way round ("is it something
   // other than completed/cancelled") makes every unknown or missing state read
   // as running, so an idle conversation shows a spinner nothing will clear.
+  //
+  // Conversation-wide is the right scope for that second guard even though
+  // several threads may be running: it only widens the window in which THESE
+  // rows — already required to be unsettled — count as live.
   const claimed = present.some((m) => {
     const state = m?.get?.('state');
     return state === TOOL_STATES.APPROVED || state === TOOL_STATES.RUNNING;
   });
-  if (claimed || (live?.message && hasUnsettledToolInTree(present))) {
+  if (claimed || (anyThreadLive(live) && hasUnsettledToolInTree(present))) {
     return { kind: 'running', goal, message: '', spinner: false };
   }
 

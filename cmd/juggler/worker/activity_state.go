@@ -173,6 +173,16 @@ func preferRun(a map[string]any, aKey string, b map[string]any, bKey string) boo
 	return aKey < bKey
 }
 
+// runProjectedFields are the spinner fields a run owns: what it is doing, since
+// when, and how much has flowed. Each live run carries its own copy in its entry
+// — two runs streaming at once each describe themselves — and the projection
+// republishes the chosen run's copy at the top level for the conversation-wide
+// readers.
+var runProjectedFields = []string{
+	"status", "message", "code", "startedAt",
+	"description", "phase", "inputTokens", "outputTokens", "cachedTokens",
+}
+
 // projectLiveRun refreshes the top-level activity/threadItemId/claimedAt fields
 // from the registry. threadItemId is deliberately left in place when no run is
 // live: a released claim keeps naming the thread it was released from, which is
@@ -186,6 +196,13 @@ func projectLiveRun(state map[string]any, touchedThreadID string) {
 		return
 	}
 	state["activity"] = entryActivity(entry)
+	for _, field := range runProjectedFields {
+		if value, ok := entry[field]; ok {
+			state[field] = value
+		} else {
+			delete(state, field)
+		}
+	}
 	if id, ok := entry["threadItemId"].(string); ok {
 		state["threadItemId"] = id
 	}
@@ -229,6 +246,26 @@ func (w *ConversationWorker) patchRunIf(
 	)
 }
 
+// statusIsLive reports whether a run entry's own status is one that is still
+// working. The mid-stream progress writers gate on it, so a chunk that arrives
+// after its run rested cannot revive a spinner on that thread.
+func statusIsLive(entry map[string]any) bool {
+	switch status, _ := entry["status"].(string); status {
+	case "preparing", "streaming", "processing_tools", "retrying":
+		return true
+	default:
+		return false
+	}
+}
+
+// patchLiveRun applies mutate to this run's OWN entry, and only while that entry
+// is still working. Every mid-stream progress field goes through it: a run
+// describes itself, so two turns streaming at once cannot overwrite each other's
+// token counts or activity line.
+func (r *run) patchLiveRun(mutate func(entry map[string]any)) {
+	r.patchRunIf(r.t.thread.itemID, statusIsLive, func(entry, _ map[string]any) { mutate(entry) })
+}
+
 // claimLLM atomically claims the given thread for an LLM turn. The
 // compare-and-set reads that thread's run entry and, if it is not already
 // calling the LLM, writes the claim. Returns true on success; false if this
@@ -244,28 +281,30 @@ func (w *ConversationWorker) claimLLM(threadItemID string) bool {
 			// Succeed from idle or "awaiting_llm"; fail if already "calling_llm".
 			return entryActivity(entry) != ActivityCallingLLM
 		},
-		func(entry, state map[string]any) {
+		func(entry, _ map[string]any) {
 			now := time.Now().UnixMilli()
 			entry["activity"] = ActivityCallingLLM
 			entry["claimedAt"] = now
-			// Keep status/message/startedAt fields as-is so the UI doesn't
-			// briefly flicker through an intermediate state; sendStatus will
-			// shortly overwrite them with the first loop phase.
-			if _, hasStatus := state["status"]; !hasStatus {
-				state["status"] = "preparing"
+			// Seed the entry, not the frame: the projection republishes the
+			// entry's own fields and would drop anything written beside it. Any
+			// status this thread already carries is kept, so the UI doesn't
+			// flicker through an intermediate state; sendStatus overwrites it
+			// with the first loop phase a moment later.
+			if _, hasStatus := entry["status"]; !hasStatus {
+				entry["status"] = "preparing"
 			}
-			if _, hasStarted := state["startedAt"]; !hasStarted {
-				state["startedAt"] = now
+			if _, hasStarted := entry["startedAt"]; !hasStarted {
+				entry["startedAt"] = now
 			}
 		},
 	)
 }
 
 // releaseLLM clears one thread's claim without touching any other
-// processingState field. Symmetric with claimLLM. The normal end-of-loop path
-// goes through sendStatus("idle", "") which ALSO clears claims; releaseLLM is
-// used by error paths and the child→parent handoff, where only the thread that
-// just finished may be released.
+// processingState field. Symmetric with claimLLM. An idle frame drops the entry
+// for the thread the frame names, so every path that rests a thread it is not
+// itself running — the reducer's rest branch, the cancel park, the child→parent
+// handoff, an abandoned pickup — names that thread here instead.
 func (w *ConversationWorker) releaseLLM(threadItemID string) {
 	w.patchRunIf(threadItemID,
 		func(entry map[string]any) bool { return entryActivity(entry) != ActivityNone },
@@ -364,8 +403,11 @@ func (w *ConversationWorker) patchProcessingState(mutate func(map[string]any)) {
 // re-drive for exactly this first load, then is consumed so a later reload of the
 // clone behaves like any normal conversation.
 func (r *run) reconcileProcessingStateOnLoad() {
-	// Rests the conversation AND empties the run registry: a freshly loaded doc
-	// may carry claims persisted mid-turn, and nothing is running yet.
+	// Empties the run registry and rests the conversation: a freshly loaded doc
+	// may carry claims persisted mid-turn, on any number of threads, and nothing
+	// is running yet. An idle frame alone drops only its own run's entry, so the
+	// registry is swept explicitly first.
+	r.releaseAllLLM()
 	r.sendStatus("idle", "")
 	if b, _ := r.doc.GetMetadata(metaForkParked).(bool); b {
 		r.doc.SetMetadata(metaForkParked, false) // one-shot: consume the marker
@@ -426,10 +468,11 @@ func (w *ConversationWorker) publishPolitePending(pending bool) {
 // it makes the timer disappear — used while a turn is parked on a human approval,
 // so the deliberation is never shown as elapsed work. startedAt reappears (with
 // the wait excluded) when work resumes, via advanceElapsedAnchor.
-func (w *ConversationWorker) hideElapsedAnchor() {
-	w.patchProcessingState(func(m map[string]any) {
-		delete(m, "startedAt")
-	})
+func (r *run) hideElapsedAnchor() {
+	r.patchRunIf(r.t.thread.itemID,
+		func(entry map[string]any) bool { return entryActivity(entry) != ActivityNone },
+		func(entry, _ map[string]any) { delete(entry, "startedAt") },
+	)
 }
 
 // advanceElapsedAnchor pushes processingStartedAt forward by waitMs (the just-
@@ -444,9 +487,10 @@ func (r *run) advanceElapsedAnchor(waitMs int64) {
 		anchor += waitMs
 		r.t.processingStartedAt.Store(anchor)
 	}
-	r.patchProcessingState(func(m map[string]any) {
-		m["startedAt"] = anchor
-	})
+	r.patchRunIf(r.t.thread.itemID,
+		func(entry map[string]any) bool { return entryActivity(entry) != ActivityNone },
+		func(entry, _ map[string]any) { entry["startedAt"] = anchor },
+	)
 }
 
 // readProcessingState returns the doc's processingState as a plain map (nil if

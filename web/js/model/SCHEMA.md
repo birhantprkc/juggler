@@ -59,19 +59,42 @@ the on-disk folder name and is mutated via the rename API (see comment in
 thread item id (`"root"` for the root thread):
 
 ```js
-runs: { "<threadItemId>": { activity, threadItemId, claimedAt, explicitContinuation } }
+runs: {
+  "<threadItemId>": {
+    activity, threadItemId, claimedAt, explicitContinuation,
+    status, message, code, startedAt,
+    description, phase, inputTokens, outputTokens, cachedTokens
+  }
+}
 ```
 
-It is the **source of truth**: the worker takes, releases and queues claims as a
-compare-and-set against one thread's entry, so an idle thread is never refused
-because an unrelated sibling is busy.
+It is the **source of truth**, and **several entries at once is ordinary**: the
+worker admits any number of read-only child threads alongside one write-capable
+run, so a parent and its children stream together. Claims are taken, released
+and queued as a compare-and-set against one thread's entry, so an idle thread is
+never refused because an unrelated sibling is busy.
 
-The sibling top-level fields — `activity`, `threadItemId`, `claimedAt` — are a
-**projection** of whichever run is live: the thread just touched if it still
-holds a claim, else a run actually calling the LLM, else one awaiting dispatch.
-Read the projection for "what is this conversation doing"; read `runs` for what
-one named thread is doing. Every field is worker-written and rebuilt from
-scratch on load, so nothing here is durable state.
+Each entry describes **its own run**, which is why the spinner fields live
+there: what it is doing (`status`, `message`, `code`), since when (`startedAt` —
+absent while parked on an approval, so the elapsed digit disappears rather than
+counting the wait), and what has flowed (`description`, `phase`, and the token
+counts, all dropped when the run moves to its next phase). Two runs streaming at
+once each report their own totals.
+
+The top-level fields — `activity`, `threadItemId`, `claimedAt`, plus a copy of
+the spinner fields above — are a **projection** of whichever single run is live:
+the thread just touched if it still holds a claim, else a run actually calling
+the LLM, else one awaiting dispatch, breaking ties on the most recent claim.
+`politePending` is genuinely conversation-wide and is not projected from any
+run.
+
+Read the projection for "is this conversation doing anything" and for readers
+that can only act on one run (which column to reveal, which run a bare Escape
+interrupts). Read `runs` for what one named thread is doing — a spinner, an
+elapsed digit, a per-column busy check. A reader that asks the projection about
+a specific thread is wrong whenever a sibling is running. Every field is
+worker-written and rebuilt from scratch on load, so nothing here is durable
+state.
 
 `undoLog` and `metadata.undoState` are split deliberately: the log is a CRDT
 that survives sync; the state is the worker's view of "what can be

@@ -44,10 +44,54 @@ const THROUGHPUT_STALL_MS = 2000;
 const THROUGHPUT_SMOOTHING = 0.3;
 
 /**
+ * Key one thread's run by. The root thread has no item id, so it keys on the
+ * empty string — the shape every caller already passes around for "the root
+ * column" (`messageThread.threadItemId || null`).
+ * @param {string|null|undefined} threadItemId
+ * @returns {string} Thread key
+ */
+function threadKey(threadItemId) {
+  return threadItemId || '';
+}
+
+/**
+ * The runs a processingState frame describes, keyed by thread.
+ *
+ * `processingState.runs` is the source of truth — one entry per thread holding
+ * an LLM claim (see model/SCHEMA.md). A frame carrying only the top-level
+ * projection still describes exactly one run, on the thread its `threadItemId`
+ * names, so synthesize that rather than reading the frame as idle. Mirrors the
+ * worker's own `runsView` (cmd/juggler/worker/activity_state.go).
+ * @param {any} state - processingState frame
+ * @returns {Record<string, any>} Run frames keyed by thread key
+ */
+function runsView(state) {
+  const runs = state?.runs;
+  if (runs && typeof runs === 'object') {
+    /** @type {Record<string, any>} */
+    const out = {};
+    for (const [key, entry] of Object.entries(runs)) {
+      if (entry && typeof entry === 'object') {
+        out[threadKey(/** @type {any} */ (entry).threadItemId ?? (key === 'root' ? '' : key))] = entry;
+      }
+    }
+    return out;
+  }
+  if (!state?.activity) return {};
+  return { [threadKey(state.threadItemId)]: state };
+}
+
+/**
  * LLMState - Centralized state management for LLM loop
  *
  * Manages processing state and UI updates for LLM conversations.
  * Per-conversation tab tracking ensures each conversation's UI updates independently.
+ *
+ * State is held per RUN — one conversation, one thread — because a conversation
+ * can be driving several threads at once (a parent and its read-only children).
+ * The conversation-wide getters answer "is anything running here", which is what
+ * the tab badge, the busy barrier and the Escape ladder ask; the thread-scoped
+ * getters answer "is THIS column running", which is what a spinner asks.
  *
  * Note: Iteration limits are enforced by Strategy plugins.
  */
@@ -58,20 +102,17 @@ class LLMState {
 
     /**
      * Status messages are THE source of truth for processing state.
-     * If a conversation has a message, it's processing. If not, it's not.
+     * If a run has a message, that thread is processing. If not, it's not.
      * This makes it structurally impossible to show a spinner without a message.
-     * @type {Map<string, string>} @private Map of conversationId -> status message
+     * @type {Map<string, Map<string, string>>} @private conversationId -> threadKey -> status message
      */
     this._statusMessages = new Map();
 
-    /** @type {Map<string, StatusData>} @private Map of conversationId -> current status data */
+    /** @type {Map<string, Map<string, StatusData>>} @private conversationId -> threadKey -> current status data */
     this._statusData = new Map();
 
     /** @type {Map<string, number>} @private Map of conversationId -> animation frame ID for elapsed time updates */
     this._animationFrames = new Map();
-
-    /** @type {Map<string, number>} @private Map of conversationId -> last activity timestamp */
-    this._lastActivityTime = new Map();
 
     /** @type {Map<string, (event: any) => void>} @private Map of conversationId -> Yjs metadata observer */
     this._metadataObservers = new Map();
@@ -79,14 +120,47 @@ class LLMState {
     /** @type {Map<string, import('../model/conversation.js').default>} @private Map of conversationId -> conversation instance */
     this._conversations = new Map();
 
-    /** @type {Map<string, string|null>} @private Map of conversationId -> threadItemId the current status targets (null = root) */
+    /**
+     * Which run the conversation-wide getters answer for: the thread the doc's
+     * top-level projection names. The worker picks it (most recently claimed,
+     * see projectLiveRun), so every client agrees on which of several live runs
+     * a single-answer reader is shown.
+     * @type {Map<string, string|null>} @private conversationId -> threadItemId (null = root)
+     */
     this._statusThreadIds = new Map();
 
     /** @type {Set<(conversationId: string) => void>} @private Observers notified whenever a conversation's processing state changes */
     this._statusObservers = new Set();
 
-    /** @type {Map<string, {tokens: number, at: number, rate: number}>} @private Map of conversationId -> last output-token sample and the rate derived from it */
+    /** @type {Map<string, Map<string, {tokens: number, at: number, rate: number}>>} @private conversationId -> threadKey -> last output-token sample and the rate derived from it */
     this._throughput = new Map();
+  }
+
+  /**
+   * The per-thread map for a conversation, created on demand.
+   * @template T
+   * @param {Map<string, Map<string, T>>} store
+   * @param {string} conversationId
+   * @returns {Map<string, T>} The conversation's per-thread map
+   * @private
+   */
+  _perThread(store, conversationId) {
+    let byThread = store.get(conversationId);
+    if (!byThread) {
+      byThread = new Map();
+      store.set(conversationId, byThread);
+    }
+    return byThread;
+  }
+
+  /**
+   * The thread key the conversation-wide getters answer for.
+   * @param {string} conversationId
+   * @returns {string} Thread key of the projected run
+   * @private
+   */
+  _projectedKey(conversationId) {
+    return threadKey(this._statusThreadIds.get(conversationId));
   }
 
   /**
@@ -145,28 +219,66 @@ class LLMState {
    * @returns {boolean} True if any conversation is currently processing
    */
   get isActive() {
-    return this._statusMessages.size > 0;
+    for (const byThread of this._statusMessages.values()) {
+      if (byThread.size > 0) return true;
+    }
+    return false;
   }
 
   /**
-   * Get the current status message for a conversation.
+   * The status message for the conversation's projected run — what a single
+   * status line describing the whole conversation should say. A column asking
+   * about its own thread wants getThreadStatusMessage instead.
    * @param {string} conversationId - Conversation ID
    * @returns {string} The status message, or empty string if not processing
    */
   getStatusMessage(conversationId) {
-    const message = this._statusMessages.get(conversationId) || '';
+    return this.getThreadStatusMessage(conversationId, this._statusThreadIds.get(conversationId));
+  }
+
+  /**
+   * The status message for ONE thread's run: what that column's spinner says,
+   * elapsed digit and token counts included. Empty when that thread is not the
+   * one running — a sibling being driven is not this thread's business.
+   * @param {string} conversationId - Conversation ID
+   * @param {string|null} [threadItemId] - Thread item id (null/omitted = root)
+   * @returns {string} The status message, or empty string when this thread is idle
+   */
+  getThreadStatusMessage(conversationId, threadItemId) {
+    const key = threadKey(threadItemId);
+    const message = this._statusMessages.get(conversationId)?.get(key) || '';
     if (!message) return '';
     // Render seam: status strings are stored unadorned. Error/cancelled are
     // terminal notices and render verbatim; every other status is a live
     // in-progress label and gets the single trailing busy marker here — the one
     // place the ellipsis is added.
-    const type = this._statusData.get(conversationId)?.type;
+    const type = this._statusData.get(conversationId)?.get(key)?.type;
     if (type === 'error' || type === 'cancelled') return message;
     return StatusMessageBuilder.withBusyMarker(message);
   }
 
   /**
-   * Get the thread item ID that the current status targets.
+   * Every running thread's status line, keyed by thread item id ('' for root).
+   * The snapshot a surface takes once and asks about several threads — a column
+   * paints its own footer from it and its child tiles from the same object, so
+   * a tile and the sub-thread's own footer always read identically.
+   * @param {string} conversationId - Conversation ID
+   * @returns {Record<string, string>} Status line per live thread; empty when nothing is running
+   */
+  getLiveThreadMessages(conversationId) {
+    /** @type {Record<string, string>} */
+    const out = {};
+    for (const key of this._statusMessages.get(conversationId)?.keys() || []) {
+      const message = this.getThreadStatusMessage(conversationId, key);
+      if (message) out[key] = message;
+    }
+    return out;
+  }
+
+  /**
+   * Get the thread item ID that the conversation's projected status targets.
+   * One answer for readers that can only act on one column — which column to
+   * reveal, which run a bare Escape interrupts. Not "the only thread running".
    * @param {string} conversationId - Conversation ID
    * @returns {string|null} The thread item ID, or null if status targets root
    */
@@ -175,24 +287,26 @@ class LLMState {
   }
 
   /**
-   * Live per-step input usage for the in-flight turn, or null.
+   * Live per-step input usage for ONE thread's in-flight turn, or null.
    *
-   * Returns the running prompt-token total the worker has stamped into the Yjs
-   * processingState (input plus its cached portion) while the conversation is
-   * processing and at least one usage chunk has arrived. Callers that want a
-   * meter to grow through the turn read this; it is null when the conversation
-   * is idle or before the provider has reported any usage. Only meaningful for
-   * models whose provider sets streamsLiveUsage — other providers may report a
-   * number here that isn't fit for the context meter, so gate on that flag.
+   * Returns the running prompt-token total the worker has stamped into that
+   * run's processingState entry (input plus its cached portion) while the
+   * thread is being driven and at least one usage chunk has arrived. Callers
+   * that want a meter to grow through the turn read this; it is null when the
+   * thread is idle or before the provider has reported any usage. Per thread
+   * because a context meter measures one transcript: a child's prompt is not
+   * the parent's. Only meaningful for models whose provider sets
+   * streamsLiveUsage — other providers may report a number here that isn't fit
+   * for the context meter, so gate on that flag.
    *
    * The cached portion is null when the step carried no cache figure at all:
    * unknown, not a miss. A reported 0 comes back as 0.
    * @param {string} conversationId - Conversation ID
+   * @param {string|null} [threadItemId] - Thread item id (null/omitted = root)
    * @returns {{inputTokens: number, cachedTokens: number|null}|null} Live usage, or null when idle or no usage reported yet.
    */
-  getLiveInputUsage(conversationId) {
-    if (!this.isConversationProcessing(conversationId)) return null;
-    const data = this._statusData.get(conversationId);
+  getLiveInputUsage(conversationId, threadItemId) {
+    const data = this._statusData.get(conversationId)?.get(threadKey(threadItemId));
     const inputTokens = data?.inputTokens;
     if (typeof inputTokens !== 'number' || inputTokens <= 0) return null;
     const cached = data?.cachedTokens;
@@ -215,16 +329,19 @@ class LLMState {
    * preparing a request, waiting on the network, or simply idle. That zero is
    * the honest answer, not a placeholder: during a slow tool call no output IS
    * arriving. Callers should render it as "barely moving", never as "broken".
+   * Asked of one thread: a column's spinner reports the flow into the run it is
+   * showing, not the sum of everything the conversation happens to be doing.
    * @param {string} conversationId - Conversation ID
+   * @param {string|null} [threadItemId] - Thread item id (null/omitted = root)
    * @returns {number} Tokens per second, or 0 when no output is flowing.
    */
-  getThroughput(conversationId) {
-    if (!this.isConversationProcessing(conversationId)) return 0;
+  getThroughput(conversationId, threadItemId) {
+    const key = threadKey(threadItemId);
     // Only the streaming phase carries token flow. Every other phase has a
     // legitimate reason to report nothing, and inferring a rate from a stale
     // sample would invent movement that isn't happening.
-    if (this._statusData.get(conversationId)?.type !== 'streaming') return 0;
-    const sample = this._throughput.get(conversationId);
+    if (this._statusData.get(conversationId)?.get(key)?.type !== 'streaming') return 0;
+    const sample = this._throughput.get(conversationId)?.get(key);
     if (!sample) return 0;
     // A sample that has stopped advancing is a stall, not a held rate — decay
     // it to zero rather than coasting on the last good number.
@@ -240,17 +357,19 @@ class LLMState {
    * treating those as observations would divide a zero delta by real time and
    * read every turn as a stall.
    * @param {string} conversationId - Conversation ID
+   * @param {string} key - Thread key the sample belongs to
    * @param {number|undefined} outputTokens - Running output-token count, if reported.
    * @private
    */
-  _sampleThroughput(conversationId, outputTokens) {
+  _sampleThroughput(conversationId, key, outputTokens) {
     if (typeof outputTokens !== 'number' || outputTokens < 0) return;
     const now = Date.now();
-    const prev = this._throughput.get(conversationId);
+    const samples = this._perThread(this._throughput, conversationId);
+    const prev = samples.get(key);
     // First sample of a turn, or a count that went backwards (a new turn reusing
     // the entry): anchor on it without emitting a rate.
     if (!prev || outputTokens < prev.tokens) {
-      this._throughput.set(conversationId, { tokens: outputTokens, at: now, rate: 0 });
+      samples.set(key, { tokens: outputTokens, at: now, rate: 0 });
       return;
     }
     const dt = now - prev.at;
@@ -262,7 +381,7 @@ class LLMState {
     const rate = prev.rate > 0
       ? prev.rate + THROUGHPUT_SMOOTHING * (instant - prev.rate)
       : instant;
-    this._throughput.set(conversationId, { tokens: outputTokens, at: now, rate });
+    samples.set(key, { tokens: outputTokens, at: now, rate });
   }
 
   /**
@@ -273,13 +392,16 @@ class LLMState {
    * - Starts/restarts elapsed time timer
    * @param {string} conversationId - ID of conversation being processed
    * @param {number} [startedAt] - Backend Unix millis timestamp when processing began
+   * @param {string|null} [threadItemId] - Thread being driven (null/omitted = root)
    */
-  start(conversationId, startedAt) {
+  start(conversationId, startedAt, threadItemId) {
+    const key = threadKey(threadItemId);
+    const dataByThread = this._perThread(this._statusData, conversationId);
     // Ensure statusData exists
-    let statusData = this._statusData.get(conversationId);
+    let statusData = dataByThread.get(key);
     if (!statusData) {
       statusData = { type: 'preparing' };
-      this._statusData.set(conversationId, statusData);
+      dataByThread.set(key, statusData);
     }
 
     // startTime is ENTIRELY the worker's shared anchor — never a local clock.
@@ -298,7 +420,7 @@ class LLMState {
 
     // Build and store status message - THIS is what makes isProcessing true
     const message = this._buildStatusMessage(statusData.type, statusData);
-    this._statusMessages.set(conversationId, message);
+    this._perThread(this._statusMessages, conversationId).set(key, message);
 
     // Update UI
     this._notifyConversationArea(conversationId);
@@ -348,29 +470,67 @@ class LLMState {
   }
 
   /**
-   * Check if a specific conversation is currently processing.
-   * A conversation is processing if and only if it has a status message.
+   * Stop ONE thread's run, leaving its live siblings alone. A thread coming to
+   * rest under a conversation still driving others is the ordinary case now, so
+   * the whole-conversation `stop` is reserved for the paths that genuinely end
+   * everything — a hard cancel, a destroy, a frame with nothing running at all.
+   * @param {string} conversationId - Conversation ID
+   * @param {string} key - Thread key that finished
+   * @private
+   */
+  _stopThread(conversationId, key) {
+    this._statusMessages.get(conversationId)?.delete(key);
+    this._statusData.get(conversationId)?.delete(key);
+    this._throughput.get(conversationId)?.delete(key);
+    if (!this.isConversationProcessing(conversationId)) {
+      this._stopElapsedTimeTimer(conversationId);
+    }
+    this._notifyConversationArea(conversationId);
+  }
+
+  /**
+   * Whether ANY thread of this conversation is currently processing — the
+   * question the tab badge, the Escape ladder and the tab ordering ask.
+   * A conversation is processing if and only if some run has a status message.
    * @param {string} conversationId - Conversation ID to check
    * @returns {boolean} True if the conversation is currently processing
    */
   isConversationProcessing(conversationId) {
-    return !!this._statusMessages.get(conversationId);
+    return (this._statusMessages.get(conversationId)?.size ?? 0) > 0;
   }
 
   /**
-   * Update status for a conversation and update UI
+   * Whether ONE thread is currently processing. What a column asks before
+   * refusing an action of its own: a sibling being driven is no reason to
+   * refuse work here.
+   * @param {string} conversationId - Conversation ID to check
+   * @param {string|null} [threadItemId] - Thread item id (null/omitted = root)
+   * @returns {boolean} True if that thread has a run in flight
+   */
+  isThreadProcessing(conversationId, threadItemId) {
+    return !!this._statusMessages.get(conversationId)?.get(threadKey(threadItemId));
+  }
+
+  /**
+   * Update status for one of a conversation's runs and update UI
    * @param {string} conversationId - Conversation ID
    * @param {string} statusType - Type of status (streaming, preparing, waiting, processing_tools, retry, error, cancelled, empty, uploading, custom)
    * @param {Partial<StatusData>} [data] - Additional status data
+   * @param {string|null} [threadItemId] - Thread the status describes; omitted targets the projected run
    */
-  updateStatus(conversationId, statusType, data = {}) {
+  updateStatus(conversationId, statusType, data = {}, threadItemId) {
     // Runtime validation: 'custom' status requires a message
     if (statusType === 'custom' && !data.message) {
       throw new Error('LLMState.updateStatus: "custom" status requires data.message');
     }
 
+    // Callers with no thread in hand (the websocket response handlers) mean the
+    // conversation's projected run — the same one getStatusMessage answers for.
+    const key = threadItemId === undefined ? this._projectedKey(conversationId) : threadKey(threadItemId);
+
     // Get existing status data for start time
-    const existingStatusData = this._statusData.get(conversationId);
+    const dataByThread = this._perThread(this._statusData, conversationId);
+    const existingStatusData = dataByThread.get(key);
     const startTime = existingStatusData?.startTime;
 
     // Elapsed time, or undefined when there is no shared anchor (idle, or parked
@@ -409,11 +569,11 @@ class LLMState {
     };
 
     // Store status data
-    this._statusData.set(conversationId, statusData);
+    dataByThread.set(key, statusData);
 
     // Build and store status message - THIS is the source of truth
     const message = this._buildStatusMessage(statusType, statusData);
-    this._statusMessages.set(conversationId, message);
+    this._perThread(this._statusMessages, conversationId).set(key, message);
 
     // Update UI
     this._notifyConversationArea(conversationId);
@@ -481,8 +641,8 @@ class LLMState {
         lastTime = now;
       }
 
-      // Continue only if still processing (has status message)
-      if (this._statusMessages.has(conversationId)) {
+      // Continue only if still processing (some run has a status message)
+      if (this.isConversationProcessing(conversationId)) {
         const frameId = requestFrame(animate);
         this._animationFrames.set(conversationId, frameId);
       }
@@ -506,44 +666,41 @@ class LLMState {
   }
 
   /**
-   * Update elapsed time for a conversation
-   * Called by timer every second to update status display
+   * Re-stamp every running thread's elapsed digit.
+   * Called by the timer every second. One ticker per conversation drives all of
+   * its runs: each carries its own anchor, so two threads that started a minute
+   * apart each count from their own start.
    * @param {string} conversationId - Conversation ID
    * @private
    */
   _updateElapsedTime(conversationId) {
-    // Only update if conversation is still processing (has status message)
-    if (!this._statusMessages.has(conversationId)) {
-      return;
+    const dataByThread = this._statusData.get(conversationId);
+    if (!dataByThread) return;
+
+    for (const [key, statusData] of [...dataByThread]) {
+      // Current elapsed time, or undefined when there is no shared anchor (the
+      // worker removes startedAt at idle and while parked on an approval), so the
+      // rAF tick shows no digit during an approval wait instead of counting it.
+      const elapsedTime = statusData.startTime !== undefined
+        ? Date.now() - statusData.startTime
+        : undefined;
+
+      // Update status with current elapsed time, preserving all existing fields
+      this.updateStatus(conversationId, statusData.type, {
+        inputTokens: statusData.inputTokens,
+        outputTokens: statusData.outputTokens,
+        cachedTokens: statusData.cachedTokens,
+        phase: statusData.phase,
+        description: statusData.description,
+        elapsedTime: elapsedTime,
+        // Preserve retry-specific fields
+        attempt: statusData.attempt,
+        maxRetries: statusData.maxRetries,
+        reason: statusData.reason,
+        // Preserve custom message (required for 'custom' status type)
+        message: statusData.message
+      }, key);
     }
-
-    const statusData = this._statusData.get(conversationId);
-    if (!statusData) {
-      return;
-    }
-
-    // Current elapsed time, or undefined when there is no shared anchor (the
-    // worker removes startedAt at idle and while parked on an approval), so the
-    // rAF tick shows no digit during an approval wait instead of counting it.
-    const elapsedTime = statusData.startTime !== undefined
-      ? Date.now() - statusData.startTime
-      : undefined;
-
-    // Update status with current elapsed time, preserving all existing fields
-    this.updateStatus(conversationId, statusData.type, {
-      inputTokens: statusData.inputTokens,
-      outputTokens: statusData.outputTokens,
-      cachedTokens: statusData.cachedTokens,
-      phase: statusData.phase,
-      description: statusData.description,
-      elapsedTime: elapsedTime,
-      // Preserve retry-specific fields
-      attempt: statusData.attempt,
-      maxRetries: statusData.maxRetries,
-      reason: statusData.reason,
-      // Preserve custom message (required for 'custom' status type)
-      message: statusData.message
-    });
   }
 
   /**
@@ -597,9 +754,17 @@ class LLMState {
   }
 
   /**
-   * Handle processing state change from Yjs metadata
+   * Handle processing state change from Yjs metadata.
+   *
+   * `processingState.runs` is the source of truth: one frame per thread that
+   * holds a claim, each describing itself. This fans them out to one run apiece
+   * and retires any thread that has dropped out of the registry since the last
+   * write. The top-level fields are a projection of one of those runs, so they
+   * are read only for the thread the projection names and for the frames no run
+   * appears in at all — a rest, or a terminal error, which is one run's last
+   * word about itself.
    * @param {string} conversationId - Conversation ID
-   * @param {{status: string, message?: string, code?: string, threadItemId?: string, startedAt?: number, inputTokens?: number, outputTokens?: number, cachedTokens?: number, phase?: string, description?: string}|null} state - Processing state
+   * @param {{status: string, message?: string, code?: string, threadItemId?: string, activity?: string, runs?: object, startedAt?: number, inputTokens?: number, outputTokens?: number, cachedTokens?: number, phase?: string, description?: string}|null} state - Processing state
    * @private
    */
   _handleProcessingStateChange(conversationId, state) {
@@ -609,35 +774,73 @@ class LLMState {
       return;
     }
 
-    const { status, message } = state;
-
-    // Track which thread (if any) this status targets
+    // Track which thread the projection names, for the single-answer readers.
     this._statusThreadIds.set(conversationId, state.threadItemId || null);
+
+    const runs = runsView(state);
+    const live = new Set(Object.keys(runs));
+
+    // Retire every thread that no longer holds a run. Scoped one thread at a
+    // time: a child finishing under a still-streaming parent must take its own
+    // spinner down and nothing else.
+    for (const key of [...(this._statusMessages.get(conversationId)?.keys() || [])]) {
+      if (!live.has(key)) this._stopThread(conversationId, key);
+    }
+
+    if (live.size === 0) {
+      // Nothing holds a claim, so this frame is the resting or failing run's
+      // own last word, and the top-level fields are all there is of it.
+      this._applyRunFrame(conversationId, threadKey(state.threadItemId), state);
+      // A conversation that came fully to rest names no live column any more.
+      // The worker leaves threadItemId in place on a resting frame (a released
+      // claim keeps naming what it was released from), but callers that act on
+      // it — which column to reveal, which run a bare Escape interrupts — must
+      // not be handed a thread that has stopped.
+      if (!this.isConversationProcessing(conversationId)) {
+        this._statusThreadIds.delete(conversationId);
+      }
+      return;
+    }
+    for (const key of live) this._applyRunFrame(conversationId, key, runs[key]);
+  }
+
+  /**
+   * Apply ONE run's frame — its status, elapsed anchor and token counts — to
+   * that thread's spinner state.
+   * @param {string} conversationId - Conversation ID
+   * @param {string} key - Thread key the frame describes
+   * @param {any} frame - The run's own fields (or the top-level frame, when no run holds a claim)
+   * @private
+   */
+  _applyRunFrame(conversationId, key, frame) {
+    const { status, message } = frame;
+    if (!status) return;
 
     // Sample output throughput here rather than in updateStatus: this is the
     // one path driven by an actual worker write, so every call is a real
     // observation of how much output has arrived and when.
-    this._sampleThroughput(conversationId, typeof state.outputTokens === 'number'
-      ? state.outputTokens
+    this._sampleThroughput(conversationId, key, typeof frame.outputTokens === 'number'
+      ? frame.outputTokens
       : undefined);
 
     // Pull running token counts off the Yjs state so every observing client
-    // renders the same spinner text. The worker writes these into
-    // processingState from the "progress" / "usage" stream chunks; before
-    // they're set the fields are undefined and the formatter prints just
-    // "Receiving" with no count.
+    // renders the same spinner text. The worker writes these into the run's
+    // own entry from the "progress" / "usage" stream chunks; before they're set
+    // the fields are undefined and the formatter prints just "Receiving" with
+    // no count.
     const tokenData = {
-      inputTokens: typeof state.inputTokens === 'number' ? state.inputTokens : undefined,
-      outputTokens: typeof state.outputTokens === 'number' ? state.outputTokens : undefined,
-      cachedTokens: typeof state.cachedTokens === 'number' ? state.cachedTokens : undefined,
+      inputTokens: typeof frame.inputTokens === 'number' ? frame.inputTokens : undefined,
+      outputTokens: typeof frame.outputTokens === 'number' ? frame.outputTokens : undefined,
+      cachedTokens: typeof frame.cachedTokens === 'number' ? frame.cachedTokens : undefined,
       // Provider startup and activity snapshots are separate from the scalar
-      // processingState.activity operation claim.
-      phase: typeof state.phase === 'string' ? state.phase : undefined,
-      // Each processingState value is a complete lifecycle snapshot. An absent
-      // description therefore clears the prior activity; elapsed ticks preserve
-      // it separately by passing the stored value back to updateStatus().
-      description: typeof state.description === 'string' ? state.description : ''
+      // activity operation claim.
+      phase: typeof frame.phase === 'string' ? frame.phase : undefined,
+      // Each frame is a complete lifecycle snapshot. An absent description
+      // therefore clears the prior activity; elapsed ticks preserve it
+      // separately by passing the stored value back to updateStatus().
+      description: typeof frame.description === 'string' ? frame.description : ''
     };
+    const threadItemId = key || null;
 
     // Map worker status to LLMState actions
     // Status values: preparing, streaming, processing_tools, retrying,
@@ -647,41 +850,41 @@ class LLMState {
         // A turn was accepted, so the model divergence (if any) is resolved —
         // re-arm Guard A's one-shot self-heal latch.
         this._conversations.get(conversationId)?.armSelfHeal?.();
-        this.start(conversationId, state.startedAt);
-        this.updateStatus(conversationId, 'preparing', tokenData);
+        this.start(conversationId, frame.startedAt, threadItemId);
+        this.updateStatus(conversationId, 'preparing', tokenData, threadItemId);
         break;
       }
 
       case 'streaming':
-        this.start(conversationId, state.startedAt);
-        this.updateStatus(conversationId, 'streaming', tokenData);
+        this.start(conversationId, frame.startedAt, threadItemId);
+        this.updateStatus(conversationId, 'streaming', tokenData, threadItemId);
         break;
 
       case 'processing_tools':
-        this.start(conversationId, state.startedAt);
-        this.updateStatus(conversationId, 'processing_tools', tokenData);
+        this.start(conversationId, frame.startedAt, threadItemId);
+        this.updateStatus(conversationId, 'processing_tools', tokenData, threadItemId);
         break;
 
       case 'retrying':
-        this.start(conversationId, state.startedAt);
-        this.updateStatus(conversationId, 'custom', { ...tokenData, message: state.message || 'Retrying' });
+        this.start(conversationId, frame.startedAt, threadItemId);
+        this.updateStatus(conversationId, 'custom', { ...tokenData, message: message || 'Retrying' }, threadItemId);
         break;
 
       // A summarizer run (/compact, /handoff, or context recovery). Its LLM
       // calls are hidden, so this frame — and the elapsed digit riding on it —
       // is the only progress the user sees for the whole run.
       case 'compacting':
-        this.start(conversationId, state.startedAt);
-        this.updateStatus(conversationId, 'custom', { ...tokenData, message: state.message || 'Summarizing conversation' });
+        this.start(conversationId, frame.startedAt, threadItemId);
+        this.updateStatus(conversationId, 'custom', { ...tokenData, message: message || 'Summarizing conversation' }, threadItemId);
         break;
 
       case 'idle':
         // Processing complete - stop spinner
-        this.stop(conversationId);
+        this._stopThread(conversationId, key);
         break;
 
       case 'error':
-        this.updateStatus(conversationId, 'error', { message: message || 'Unknown error' });
+        this.updateStatus(conversationId, 'error', { message: message || 'Unknown error' }, threadItemId);
         break;
 
       case 'validation-error': {
@@ -692,9 +895,9 @@ class LLMState {
         // conversation owns the resync + one-shot resend (see
         // trySelfHealMissingModel); a true return means the turn is on its way
         // again and there is nothing to warn about.
-        if (conversation && state.code === 'no-model'
-            && conversation.trySelfHealMissingModel(state.threadItemId || null)) {
-          this.stop(conversationId);
+        if (conversation && frame.code === 'no-model'
+            && conversation.trySelfHealMissingModel(threadItemId)) {
+          this._stopThread(conversationId, key);
           break;
         }
 
@@ -705,7 +908,7 @@ class LLMState {
           conversation.showWarning(message || 'Validation error');
           conversation.restorePendingMessage();
         }
-        this.stop(conversationId);
+        this._stopThread(conversationId, key);
         break;
       }
 

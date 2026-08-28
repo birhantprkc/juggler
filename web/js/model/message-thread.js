@@ -89,8 +89,13 @@ export default class MessageThread {
   /** @returns {string} Conversation ID (stable identifier for dedup/tracking) */
   get conversationId() { return this.conversation.id; }
 
-  /** @returns {boolean} Whether conversation is currently processing */
-  get isProcessing() { return this.conversation.isProcessing; }
+  /**
+   * Whether THIS thread is being driven. A busy sibling is not this thread's
+   * business — the worker takes work on an idle thread while others run — so
+   * this is the question every per-thread affordance asks.
+   * @returns {boolean} Whether this thread has a run in flight
+   */
+  get isProcessing() { return this.conversation.isThreadProcessing(this.threadItemId); }
 
   /**
    * Get the effective model config, walking up the parent chain.

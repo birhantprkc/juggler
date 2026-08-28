@@ -88,11 +88,18 @@ const engineUnreachableHold = 90 * time.Second
 // are commanded too but the engine no-ops them (its handlers early-return on the
 // workerManaged manifest), so they remain worker-executed.
 func (w *ConversationWorker) driveToolActions() {
+	w.driveToolActionsExcept(nil)
+}
+
+// driveToolActionsExcept advances tools only in threads not owned by a live run.
+// The actor is the sole caller while turns run concurrently, which keeps the
+// conversation-owned command tracker and strategy baselines single-goroutine.
+func (w *ConversationWorker) driveToolActionsExcept(liveThreads map[string]bool) {
 	// Re-evaluate tools parked awaiting approval if the active strategy changed
 	// since the last tick. This is a pure worker-side doc write (independent of
 	// the engine), so run it before the engine-attached guard — a switch made
 	// while the engine is momentarily detached must not be lost.
-	w.reevaluatePendingToolsOnStrategyChange()
+	w.reevaluatePendingToolsOnStrategyChangeExcept(liveThreads)
 
 	if !w.callbacks.engineAttached() {
 		return
@@ -104,7 +111,10 @@ func (w *ConversationWorker) driveToolActions() {
 	var cmds []toolCmd
 
 	ycrdtMu.Lock()
-	walkAllItems(w.doc.getItems(), "", func(m *ycrdt.YMap, _ string) bool {
+	walkAllItems(w.doc.getItems(), "", func(m *ycrdt.YMap, threadID string) bool {
+		if liveThreads[threadID] {
+			return false
+		}
 		if t, _ := m.Get("type").(string); t != ItemTypeToolAction {
 			return false
 		}
@@ -203,9 +213,17 @@ func (w *ConversationWorker) driveToolActions() {
 // appeared thread likewise only records its baseline (its tools are fresh). An
 // empty effective strategy is normalized to "default" by the resolver, so a
 // default→yolo switch is detected even though the doc went from "" to "yolo".
-func (w *ConversationWorker) reevaluatePendingToolsOnStrategyChange() {
-	// Snapshot the current effective strategy for root + every sub-thread.
-	current := map[string]string{"": w.doc.ResolveEffectiveStrategyID("")}
+func (w *ConversationWorker) reevaluatePendingToolsOnStrategyChangeExcept(liveThreads map[string]bool) {
+	// Snapshot the current effective strategy for every inactive thread. A live
+	// thread keeps its old baseline until its owner retires, so a strategy change
+	// made mid-run is still observed on the first safe pass.
+	current := make(map[string]string, len(w.lastReconciledStrategyIDs)+1)
+	for threadID, strategyID := range w.lastReconciledStrategyIDs {
+		current[threadID] = strategyID
+	}
+	if !liveThreads[""] {
+		current[""] = w.doc.ResolveEffectiveStrategyID("")
+	}
 	var threadIDs []string
 	ycrdtMu.Lock()
 	walkThreads(w.doc.getItems(), func(m *ycrdt.YMap, _ *ycrdt.YArray, _ string) bool {
@@ -216,7 +234,9 @@ func (w *ConversationWorker) reevaluatePendingToolsOnStrategyChange() {
 	})
 	ycrdtMu.Unlock()
 	for _, id := range threadIDs {
-		current[id] = w.doc.ResolveEffectiveStrategyID(id)
+		if !liveThreads[id] {
+			current[id] = w.doc.ResolveEffectiveStrategyID(id)
+		}
 	}
 
 	if !w.strategyBaselineSet {

@@ -5,7 +5,10 @@
 package worker
 
 import (
+	"encoding/json"
 	"testing"
+
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // TestClaimLLM_NullStateClaimsSuccessfully: claiming from a fresh worker
@@ -245,18 +248,21 @@ func TestRunRegistry_ExplicitContinuationIsPerThread(t *testing.T) {
 // TestRunRegistry_RestSweepsEveryClaim: a resting status ends the conversation,
 // not just the thread that rested — today's single-turn semantics, preserved
 // while the registry underneath learns to hold several runs.
-func TestRunRegistry_RestSweepsEveryClaim(t *testing.T) {
+func TestRunRegistry_RestPreservesSiblingClaim(t *testing.T) {
 	w := NewConversationWorker("test-run-rest", "user:test")
 
-	w.claimLLM("thread-a")
+	w.claimLLM("")
 	w.requestLLM("thread-b")
 	w.currentRun().sendStatus("idle", "")
 
-	if w.hasActiveRun() {
-		t.Fatal("after sendStatus(idle): expected every claim swept")
+	if got := w.threadActivity(""); got != ActivityNone {
+		t.Fatalf("root activity = %q, want idle", got)
 	}
-	if got := w.threadActivity("thread-b"); got != ActivityNone {
-		t.Fatalf("thread-b activity = %q, want idle", got)
+	if got := w.threadActivity("thread-b"); got != ActivityAwaitingLLM {
+		t.Fatalf("thread-b activity = %q, want sibling claim preserved", got)
+	}
+	if !w.hasActiveRun() {
+		t.Fatal("resting root swept an unrelated sibling claim")
 	}
 }
 
@@ -278,6 +284,40 @@ func TestClaimLLM_FromAwaitingSucceeds(t *testing.T) {
 	}
 }
 
+func TestRetryToolMarksExplicitContinuation(t *testing.T) {
+	w := NewConversationWorker("test-retry-continuation", "user:test")
+	t.Cleanup(func() { w.doc.Destroy() })
+	w.doc.InsertMessage(0,
+		ConversationItem{Type: ItemTypeToolAction, ItemID: "tool", ToolUseID: "call-1", ToolName: "batch_grep", State: StateCompleted, Result: json.RawMessage(`{"content":"first"}`)},
+		ConversationItem{Type: ItemTypeAssistant, ItemID: "answer", Content: "Found it."},
+	)
+
+	w.handleRetryToolAction(json.RawMessage(`{"toolUseId":"call-1"}`))
+
+	if got := w.threadActivity(""); got != ActivityAwaitingLLM {
+		t.Fatalf("retry activity = %q, want %q", got, ActivityAwaitingLLM)
+	}
+	if !w.isExplicitContinuation("") {
+		t.Fatal("retry of an older tool did not preserve continuation intent")
+	}
+}
+
+func TestAmbientActorIdleCompletesTurnFence(t *testing.T) {
+	w := NewConversationWorker("test-ambient-idle-fence", "user:test")
+	t.Cleanup(func() { w.doc.Destroy() })
+	w.actorStarted.Store(true)
+	w.requestLLM("")
+
+	w.currentRun().sendStatus("idle", "")
+
+	if got := w.docTurnCounter(); got != 1 {
+		t.Fatalf("completed turn fence = %d, want 1", got)
+	}
+	if w.hasActiveRun() {
+		t.Fatal("ambient idle left an active run entry")
+	}
+}
+
 // TestSendStatusIdleClearsAwaiting: sendStatus("idle") clears any
 // activity value, including "awaiting_llm" (crash recovery path).
 func TestSendStatusIdleClearsAwaiting(t *testing.T) {
@@ -287,5 +327,142 @@ func TestSendStatusIdleClearsAwaiting(t *testing.T) {
 	w.currentRun().sendStatus("idle", "")
 	if w.getActivity() != ActivityNone {
 		t.Fatalf("after sendStatus(idle): expected activity cleared, got %q", w.getActivity())
+	}
+}
+
+// TestRestPromotingQueueReleasesNamedThread: the reducer rests threads it is not
+// itself running, from an ambient run that carries no thread context. The idle
+// frame it publishes names the root, so the rest has to drop the named thread's
+// entry itself — otherwise the projection keeps reporting that thread, the next
+// reconcile pass decides the same rest again, and the pair spins writing
+// processing-state frames forever.
+func TestRestPromotingQueueReleasesNamedThread(t *testing.T) {
+	w := NewConversationWorker("test-rest-named-thread", "user:test")
+	t.Cleanup(func() { w.doc.Destroy() })
+	w.actorStarted.Store(true)
+	w.requestLLM("thread-a")
+
+	w.currentRun().restPromotingQueue("thread-a")
+
+	if got := w.threadActivity("thread-a"); got != ActivityNone {
+		t.Fatalf("thread-a activity = %q, want idle", got)
+	}
+	if w.hasActiveRun() {
+		t.Fatal("resting a named thread left an active run entry")
+	}
+	if got := w.getActivity(); got != ActivityNone {
+		t.Fatalf("projection activity = %q, want idle", got)
+	}
+}
+
+// TestReconcileProcessingStateOnLoadSweepsEveryClaim: a doc persisted mid-turn
+// can carry claims on several threads at once. A load is not one run resting, it
+// is the whole registry being stale, so every entry goes — an idle frame alone
+// would drop only the root's.
+func TestReconcileProcessingStateOnLoadSweepsEveryClaim(t *testing.T) {
+	w := NewConversationWorker("test-load-sweep", "user:test")
+	t.Cleanup(func() { w.doc.Destroy() })
+	w.claimLLM("")
+	w.claimLLM("thread-a")
+	w.requestLLM("thread-b")
+
+	w.currentRun().reconcileProcessingStateOnLoad()
+
+	for _, threadID := range []string{"", "thread-a", "thread-b"} {
+		if got := w.threadActivity(threadID); got != ActivityNone {
+			t.Fatalf("thread %q activity after load = %q, want idle", threadID, got)
+		}
+	}
+	if w.hasActiveRun() {
+		t.Fatal("load left an active run entry")
+	}
+}
+
+// TestConcurrentRunsCarrySeparateSpinnerFields: the spinner fields belong to the
+// run that produced them. Two runs streaming at once each report their own
+// status, elapsed anchor and token counts, and the top-level projection
+// republishes exactly one of them for the conversation-wide readers.
+func TestConcurrentRunsCarrySeparateSpinnerFields(t *testing.T) {
+	w := NewConversationWorker("test-two-run-spinner", "user:test")
+	t.Cleanup(func() { w.doc.Destroy() })
+
+	root := w.currentRun()
+	child := w.runFor(newTurnState())
+	child.t.thread.itemID = "thread-a"
+
+	root.sendStatus("streaming", "")
+	child.sendStatus("processing_tools", "")
+	root.mergeProcessingTokens(11, 0, 0)
+	child.mergeProcessingTokens(22, 0, 0)
+	child.mergeProcessingPhase("Reconnecting")
+
+	state := w.readProcessingState()
+	rootEntry := runEntryOf(state, "")
+	childEntry := runEntryOf(state, "thread-a")
+
+	if got, _ := rootEntry["status"].(string); got != "streaming" {
+		t.Fatalf("root entry status = %q, want streaming", got)
+	}
+	if got, _ := childEntry["status"].(string); got != "processing_tools" {
+		t.Fatalf("child entry status = %q, want processing_tools", got)
+	}
+	if got, _ := rootEntry["outputTokens"].(int); got != 11 {
+		t.Fatalf("root entry outputTokens = %v, want 11", rootEntry["outputTokens"])
+	}
+	if got, _ := childEntry["outputTokens"].(int); got != 22 {
+		t.Fatalf("child entry outputTokens = %v, want 22", childEntry["outputTokens"])
+	}
+	if _, hasPhase := rootEntry["phase"]; hasPhase {
+		t.Fatalf("the child's phase leaked onto the root entry: %v", rootEntry["phase"])
+	}
+
+	// The projection names the most recently claimed run and republishes its
+	// fields, so a conversation-wide reader sees one coherent frame.
+	if got, _ := state["threadItemId"].(string); got != "thread-a" {
+		t.Fatalf("projected threadItemId = %q, want thread-a", got)
+	}
+	if got, _ := state["status"].(string); got != "processing_tools" {
+		t.Fatalf("projected status = %q, want processing_tools", got)
+	}
+	if got, _ := state["outputTokens"].(int); got != 22 {
+		t.Fatalf("projected outputTokens = %v, want 22", state["outputTokens"])
+	}
+
+	// The child resting leaves the root's run — and its counts — untouched, and
+	// the projection falls back to it rather than reporting the whole
+	// conversation idle.
+	child.sendStatus("idle", "")
+	state = w.readProcessingState()
+	if runEntryOf(state, "thread-a") != nil {
+		t.Fatal("the rested child kept a run entry")
+	}
+	if got, _ := runEntryOf(state, "")["outputTokens"].(int); got != 11 {
+		t.Fatalf("root entry outputTokens after sibling rest = %v, want 11", runEntryOf(state, "")["outputTokens"])
+	}
+	if got, _ := state["status"].(string); got != "streaming" {
+		t.Fatalf("projected status after sibling rest = %q, want streaming", got)
+	}
+}
+
+// TestNewStatusFrameDropsPreviousPhaseFields: a token count belongs to the phase
+// that produced it. Moving to the next phase drops the counts and the provider
+// activity line with it, rather than captioning tool execution with the last
+// stream's digits.
+func TestNewStatusFrameDropsPreviousPhaseFields(t *testing.T) {
+	w := NewConversationWorker("test-frame-resets-progress", "user:test")
+	t.Cleanup(func() { w.doc.Destroy() })
+
+	r := w.currentRun()
+	r.sendStatus("streaming", "")
+	r.mergeProcessingTokens(7, 5, 0)
+	r.processStreamChunk(StreamChunk{Type: provider.ContentBlockTypeActivity, Content: "Thinking"})
+
+	r.sendStatus("processing_tools", "")
+
+	entry := runEntryOf(w.readProcessingState(), "")
+	for _, field := range []string{"outputTokens", "inputTokens", "description"} {
+		if _, ok := entry[field]; ok {
+			t.Fatalf("%s survived the phase change: %v", field, entry[field])
+		}
 	}
 }

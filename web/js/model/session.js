@@ -964,10 +964,13 @@ class Session {
   }
 
   /**
-   * Whether a conversation is mid-turn (LLM busy), read straight from its
-   * processingState Yjs metadata. Used only by the busy-barrier in
-   * bumpConversation, so a bumped tab tucks beneath the leading run of busy
-   * tabs instead of jumping over them.
+   * Whether a conversation is mid-turn (LLM busy ANYWHERE in it), read straight
+   * from its processingState Yjs metadata — the top-level projection, which
+   * reports a non-idle status while any of its threads holds a run.
+   * Conversation-wide on purpose: this orders TABS, and a tab is busy if
+   * anything inside it is. Used only by the busy-barrier in bumpConversation,
+   * so a bumped tab tucks beneath the leading run of busy tabs instead of
+   * jumping over them.
    * @param {import('./conversation.js').default} [conv]
    * @returns {boolean} True while the conversation is mid-turn (LLM busy)
    * @private

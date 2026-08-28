@@ -137,8 +137,22 @@ func findThreadYMap(arr *ycrdt.YArray, threadItemID string) *ycrdt.YMap {
 	return result
 }
 
+// ParentThreadID returns the itemId of the parent thread containing
+// threadItemID, "" when it stands at root level or is not found. Takes ycrdtMu,
+// for callers holding nothing — which is every turn goroutine, since the actor
+// walks the same document beside them and a walk WRITES y-crdt's position
+// cache.
+func (cd *ConversationDocument) ParentThreadID(threadItemID string) string {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	return cd.findParentThreadID(threadItemID)
+}
+
 // findParentThreadID returns the itemId of the parent thread containing threadItemID.
-// Returns "" if the thread is at root level or not found.
+// Returns "" if the thread is at root level or not found. Caller MUST hold
+// ycrdtMu: the walk is not read-only underneath — y-crdt caches the position it
+// searched from — so an unlocked call races every other walk in the process.
+// Use ParentThreadID when holding nothing.
 func (cd *ConversationDocument) findParentThreadID(threadItemID string) string {
 	var result string
 	walkThreads(cd.getItems(), func(m *ycrdt.YMap, _ *ycrdt.YArray, parent string) bool {

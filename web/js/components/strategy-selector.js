@@ -280,10 +280,12 @@ class StrategySelector extends HTMLElement {
   }
 
   /**
-   * Whether the bound conversation is idle, read from the worker's durable
-   * processingState metadata (status 'idle', or unset before the first turn) —
-   * NOT the transient LLMState runtime flag, so it agrees with the metadata event
-   * that drives rebaselining.
+   * Whether the bound conversation is idle — nothing running anywhere in it —
+   * read from the worker's durable processingState metadata (status 'idle', or
+   * unset before the first turn), NOT the transient LLMState runtime flag, so it
+   * agrees with the metadata event that drives rebaselining. Conversation-wide
+   * because a strategy switch reaches every thread that inherits it, so a run
+   * live on any of them is a run the switch could change under.
    * @returns {boolean} True when no turn is in flight
    * @private
    */

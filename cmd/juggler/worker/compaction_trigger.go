@@ -274,6 +274,9 @@ type recoveryUnit struct {
 // deterministic recovery failures, BoundedCompactionCancelledError (matching
 // errBoundedCompactionCancelled) when interrupted mid-reduce.
 func (r *run) compactToFit(limitErr *provider.ContextLimitExceededError, modelConfig *ModelConfig) (contextRecoveryResult, error) {
+	if !r.exclusivelyOwnsConversation() {
+		return contextRecoveryResult{}, errBoundedCompactionCancelled
+	}
 	before := contextRecoverySignature(r.getTargetItems())
 	if r.compactionCancelled() {
 		return contextRecoveryResult{}, errBoundedCompactionCancelled

@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	ycrdt "github.com/skyterra/y-crdt"
+
 	"juggler/cmd/juggler/providers/provider"
 )
 
@@ -24,8 +26,40 @@ import (
 // can act at a known point inside a live turn.
 func startTurningWorker(t *testing.T, mc *msgChan) *ConversationWorker {
 	t.Helper()
+	return startDelegatingWorker(t, mc, nil, nil)
+}
+
+// startDelegatingWorker is startTurningWorker with the delegation round-trip
+// wired up: the engine offers the given tools and answers each
+// build-subthread-spec with the next spec in specs. Passing neither leaves the
+// plain harness, which offers no tools and is never asked for a spec.
+//
+// A delegated child is dispatched by the reducer's walk-down, not by
+// checkForNewThreads, so a test about siblings running side by side has to come
+// through here: the doc-driven pickup path fans out on its own and would prove
+// nothing about the walk-down.
+func startDelegatingWorker(t *testing.T, mc *msgChan, tools []ToolDefinition, specs []*SubthreadSpec) *ConversationWorker {
+	t.Helper()
 	w := NewConversationWorker("conv-live-turn", "user:test")
 	t.Cleanup(func() { w.doc.Destroy() })
+
+	// Held as a channel for the same reason the mock LLM's script is: the engine
+	// callback is run by the callback registry, so a script consumed by several
+	// delegating calls is ordered without a cursor anyone has to guard. Running
+	// dry answers with no spec, which is the engine's "run this tool inline" —
+	// a test that scripts too few specs fails on the tool, not on the harness.
+	queued := make(chan *SubthreadSpec, len(specs)+1)
+	for _, s := range specs {
+		queued <- s
+	}
+	nextSpec := func() *SubthreadSpec {
+		select {
+		case s := <-queued:
+			return s
+		default:
+			return nil
+		}
+	}
 
 	initPayload, err := json.Marshal(InitMessage{
 		Type:         "init",
@@ -58,7 +92,7 @@ func startTurningWorker(t *testing.T, mc *msgChan) *ConversationWorker {
 		switch head.Type {
 		case "request-tools":
 			payload, _ := json.Marshal(ToolsResultMessage{
-				Type: "tools-result", RequestID: head.RequestID,
+				Type: "tools-result", RequestID: head.RequestID, Tools: tools,
 			})
 			w.handleToolsResult(payload)
 		case "render-context-items-request":
@@ -66,6 +100,13 @@ func startTurningWorker(t *testing.T, mc *msgChan) *ConversationWorker {
 				Type: "render-context-items-response", RequestID: head.RequestID,
 			})
 			w.handleRenderContextItemsResponse(payload)
+		case "build-subthread-spec":
+			payload, _ := json.Marshal(BuildSubthreadSpecResponse{
+				Type:      "build-subthread-spec-response",
+				RequestID: head.RequestID,
+				Spec:      nextSpec(),
+			})
+			w.subthreadSpecReply.inject(w.done, payload)
 		}
 	})
 	w.SetEngineClientID("engine")
@@ -109,6 +150,119 @@ func awaitNoLiveRun(t *testing.T, w *ConversationWorker) {
 			t.Fatal("the finished turn was never retired from the live-run registry")
 		case <-time.After(5 * time.Millisecond):
 		}
+	}
+}
+
+func TestLiveRunAdmissionAllowsOneWriterWithReadOnlySiblings(t *testing.T) {
+	w := NewConversationWorker("conv-live-admission", "user:test")
+	t.Cleanup(func() {
+		w.updateOSActivity("idle")
+		w.doc.Destroy()
+	})
+	r := w.currentRun()
+	initPayload, err := json.Marshal(InitMessage{
+		Type:         "init",
+		Conversation: SerializedConversation{ID: "conv-live-admission"},
+		Config:       WorkerConfig{ProjectPath: t.TempDir()},
+	})
+	if err != nil {
+		t.Fatalf("marshalling init: %v", err)
+	}
+	r.handleInit(initPayload)
+
+	readA, err := r.createThread(CreateThreadOptions{Goal: "read a", Prompt: "read", ReadOnly: true})
+	if err != nil {
+		t.Fatalf("creating first read-only thread: %v", err)
+	}
+	readB, err := r.createThread(CreateThreadOptions{Goal: "read b", Prompt: "read", ReadOnly: true})
+	if err != nil {
+		t.Fatalf("creating second read-only thread: %v", err)
+	}
+	writer, err := r.createThread(CreateThreadOptions{Goal: "write", Prompt: "write"})
+	if err != nil {
+		t.Fatalf("creating write-capable thread: %v", err)
+	}
+
+	w.registerLiveRun("", newTurnState())
+	if !w.canAdmitThread(readA) || !w.canAdmitThread(readB) {
+		t.Fatal("a read-only child was refused beside the root writer")
+	}
+	if w.canAdmitThread(writer) {
+		t.Fatal("a second write-capable run was admitted")
+	}
+
+	w.registerLiveRun(readA, newTurnState())
+	if w.canAdmitThread(readA) {
+		t.Fatal("the same thread was admitted twice")
+	}
+	if !w.canAdmitThread(readB) {
+		t.Fatal("a read-only sibling was refused")
+	}
+}
+
+func TestToolDriveSkipsLiveThreadAndDrivesIdleSibling(t *testing.T) {
+	h := newReattachHarness(t, "conv-live-tool-drive")
+	w := h.w
+	threadID := insertThreadReturningID(t, w, "live child")
+	threadItems := w.doc.GetThreadItemsArray(threadID)
+	w.doc.InsertMessage(0, ConversationItem{
+		Type: ItemTypeToolAction, ItemID: "root-tool", ToolUseID: "root-use",
+		ToolName: "bash", State: StateApproved,
+	})
+	w.doc.InsertMessageIntoArray(threadItems, 0, ConversationItem{
+		Type: ItemTypeToolAction, ItemID: "child-tool", ToolUseID: "child-use",
+		ToolName: "bash", State: StateApproved,
+	})
+
+	w.driveToolActionsExcept(map[string]bool{threadID: true})
+	h.flush(t)
+	if got := h.executeCount("root-use"); got != 1 {
+		t.Fatalf("idle root execute count = %d, want 1", got)
+	}
+	if got := h.executeCount("child-use"); got != 0 {
+		t.Fatalf("live child execute count = %d, want 0", got)
+	}
+
+	w.driveToolActionsExcept(nil)
+	h.flush(t)
+	if got := h.executeCount("child-use"); got != 1 {
+		t.Fatalf("retired child execute count = %d, want 1", got)
+	}
+}
+
+func TestRetiredTurnBoundariesRemainThreadOwned(t *testing.T) {
+	w := NewConversationWorker("conv-live-boundary", "user:test")
+	t.Cleanup(func() { w.doc.Destroy() })
+	w.actorStarted.Store(true)
+	r := w.currentRun()
+
+	first := newTurnState()
+	first.thread.itemID = "thread-a"
+	first.processingStartedAt.Store(101)
+	first.lastProviderNotice = "provider-a"
+	second := newTurnState()
+	second.thread.itemID = "thread-b"
+	second.processingStartedAt.Store(202)
+	second.lastProviderNotice = "provider-b"
+
+	r.finishRetiredTurn(second)
+	r.finishRetiredTurn(first)
+
+	continuedA := newTurnState()
+	r.seedThreadBoundary("thread-a", continuedA)
+	continuedB := newTurnState()
+	r.seedThreadBoundary("thread-b", continuedB)
+	if got := continuedA.processingStartedAt.Load(); got != 101 {
+		t.Fatalf("thread-a boundary start = %d, want 101", got)
+	}
+	if got := continuedA.lastProviderNotice; got != "provider-a" {
+		t.Fatalf("thread-a provider notice = %q, want provider-a", got)
+	}
+	if got := continuedB.processingStartedAt.Load(); got != 202 {
+		t.Fatalf("thread-b boundary start = %d, want 202", got)
+	}
+	if got := continuedB.lastProviderNotice; got != "provider-b" {
+		t.Fatalf("thread-b provider notice = %q, want provider-b", got)
 	}
 }
 
@@ -166,5 +320,333 @@ func TestCancelDuringADispatchedTurnUnblocksIt(t *testing.T) {
 	}
 	if w.hasActiveRun() {
 		t.Fatal("a cancelled turn left a claim behind")
+	}
+}
+
+// insertReadOnlyChild adds a read-only child thread carrying a seed message and
+// the one-shot run trigger, in a single transaction, and leaves the pickup to
+// the worker's own observer. Deliberately not insertThreadWithOpts: that one
+// fires handleItemsChange inline, which is the actor's work, not a test
+// goroutine's, while the loop is running.
+func insertReadOnlyChild(w *ConversationWorker, goal, seed string) string {
+	threadItemID := generateItemID()
+	// Under the document lock, like every production write: the actor loop is
+	// reading the same items while this lands.
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+		ymap := conversationItemToYMap(ConversationItem{
+			Type:   ItemTypeThread,
+			ItemID: threadItemID,
+			Goal:   goal,
+		})
+		items := ycrdt.NewYArray()
+		ymap.Set("items", items)
+		ymap.Set("needsStrategyRun", true)
+		ymap.Set("llmCreated", true)
+		ymap.Set("delegated", true)
+		ymap.Set("readOnly", true)
+		items.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{
+			Type:    ItemTypeUser,
+			ItemID:  generateItemID(),
+			Content: seed,
+		})})
+		w.doc.ensureItems().Push(ycrdt.ArrayAny{ymap})
+	}, w.doc.authorID)
+	return threadItemID
+}
+
+// TestReadOnlyChildrenRunSideBySide is the whole point of the exercise: two
+// children whose runs change nothing are admitted together, so both are in
+// flight at the same instant, each with its own entry in the registry and its
+// own elapsed anchor. Before admission was capability-based, the second waited
+// for the first to retire and the registry never held two.
+func TestReadOnlyChildrenRunSideBySide(t *testing.T) {
+	mc := newMsgChan()
+	w := startTurningWorker(t, mc)
+	// Two scripted turns, both held at the mock barrier, so the assertion runs
+	// while both children are genuinely mid-call.
+	w.setMockResponses([]MockResponse{
+		{
+			Blocks:            []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "found a"}},
+			StopReason:        "end_turn",
+			PauseBeforeReturn: true,
+		},
+		{
+			Blocks:            []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "found b"}},
+			StopReason:        "end_turn",
+			PauseBeforeReturn: true,
+		},
+	})
+
+	readA := insertReadOnlyChild(w, "read a", "look at a")
+	readB := insertReadOnlyChild(w, "read b", "look at b")
+
+	// Release whatever is parked once the assertions are done — and on any exit,
+	// so a failure doesn't leave two goroutines blocked on the barrier.
+	t.Cleanup(func() {
+		for i := 0; i < 400 && w.hasLiveRun(); i++ {
+			w.mock.release()
+			time.Sleep(5 * time.Millisecond)
+		}
+	})
+
+	// Waited on together, because the two are written a mailbox hop apart: a
+	// thread's claim lands in the document at pickup, and the registry entry only
+	// when the run it was handed to begins its turn. Sampling the registry once
+	// the claims are up reads that gap as a missing run, which under load is
+	// exactly what it did.
+	deadline := time.After(10 * time.Second)
+	var state map[string]any
+	for {
+		state = w.readProcessingState()
+		if runEntryOf(state, readA) != nil && runEntryOf(state, readB) != nil && len(w.liveRuns()) == 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("the two read-only children never held runs at the same time; runs=%v registry=%d",
+				state["runs"], len(w.liveRuns()))
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	entryA, entryB := runEntryOf(state, readA), runEntryOf(state, readB)
+	if entryActivity(entryA) != ActivityCallingLLM || entryActivity(entryB) != ActivityCallingLLM {
+		t.Fatalf("both children should be calling the LLM; got %q and %q",
+			entryActivity(entryA), entryActivity(entryB))
+	}
+	// Each run carries its own elapsed anchor: the spinner in each column counts
+	// from when THAT child started, not from a single conversation-wide stamp.
+	for id, entry := range map[string]map[string]any{readA: entryA, readB: entryB} {
+		if _, ok := entry["startedAt"]; !ok {
+			t.Fatalf("child %s holds a run with no elapsed anchor of its own: %v", id, entry)
+		}
+		if got, _ := entry["threadItemId"].(string); got != id {
+			t.Fatalf("run entry names thread %q, want %q", got, id)
+		}
+	}
+	// The top-level projection still describes exactly one of them, so the
+	// conversation-wide readers see a single coherent frame.
+	if projected, _ := state["threadItemId"].(string); projected != readA && projected != readB {
+		t.Fatalf("projection names %q, want one of the two running children", projected)
+	}
+}
+
+// delegatedChildIDs returns the ids of the delegated child threads sitting in
+// the root thread, in document order.
+func delegatedChildIDs(w *ConversationWorker) []string {
+	var ids []string
+	for _, item := range w.doc.GetItems() {
+		if item.Type != ItemTypeThread || item.AliasOf != "" {
+			continue
+		}
+		ids = append(ids, item.ItemID)
+	}
+	return ids
+}
+
+// TestDelegatedReadOnlySiblingsRunSideBySide is the same claim as
+// TestReadOnlyChildrenRunSideBySide, made of the path a real sub-agent takes.
+// That test seeds its children with needsStrategyRun, so checkForNewThreads
+// picks them up — and that path fans out on its own, one pickup per reconcile
+// pass. A Research or Explore call spawns its child through tryDelegateTool,
+// which sets no such trigger: the parent parks on its incomplete threads and the
+// reducer's WALK-DOWN is the only thing that ever dispatches them.
+//
+// So this is the test that speaks for what the user sees. One parent turn calls
+// the same read-only delegating tool twice; both children must be in flight at
+// once. When the walk-down could only descend into the first unsettled child and
+// dispatched at most one thread per pass, the second child sat unstarted for as
+// long as the first ran — the tile reading "Waiting for its turn…" — while the
+// capability admission that was supposed to license it was never consulted.
+func TestDelegatedReadOnlySiblingsRunSideBySide(t *testing.T) {
+	mc := newMsgChan()
+	tool := ToolDefinition{
+		Name:                 "Research",
+		Category:             "read",
+		DelegatesToSubthread: true,
+		ReadOnlySubthread:    true,
+		InputSchema:          json.RawMessage(`{"type":"object","properties":{"task":{"type":"string"}},"required":["task"]}`),
+	}
+	specs := []*SubthreadSpec{
+		{Goal: "read a", Prompt: "look at a"},
+		{Goal: "read b", Prompt: "look at b"},
+	}
+	w := startDelegatingWorker(t, mc, []ToolDefinition{tool}, specs)
+	// One parent turn calling the tool twice, then a held turn for each child, so
+	// the assertion runs while both are genuinely mid-call.
+	w.setMockResponses([]MockResponse{
+		{
+			Blocks: []LLMResponseBlock{
+				{Type: provider.ContentBlockTypeToolUse, ID: "tu-1", Name: "Research", Input: json.RawMessage(`{"task":"a"}`)},
+				{Type: provider.ContentBlockTypeToolUse, ID: "tu-2", Name: "Research", Input: json.RawMessage(`{"task":"b"}`)},
+			},
+			StopReason: "tool_use",
+		},
+		{
+			Blocks:            []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "found a"}},
+			StopReason:        "end_turn",
+			PauseBeforeReturn: true,
+		},
+		{
+			Blocks:            []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "found b"}},
+			StopReason:        "end_turn",
+			PauseBeforeReturn: true,
+		},
+	})
+
+	// Release whatever is parked once the assertions are done — and on any exit,
+	// so a failure doesn't leave two goroutines blocked on the barrier.
+	t.Cleanup(func() {
+		for i := 0; i < 400 && w.hasLiveRun(); i++ {
+			w.mock.release()
+			time.Sleep(5 * time.Millisecond)
+		}
+	})
+
+	sendUserMessage(t, w, "research a and b")
+
+	deadline := time.After(15 * time.Second)
+	var state map[string]any
+	var children []string
+	for {
+		children = delegatedChildIDs(w)
+		if len(children) == 2 {
+			state = w.readProcessingState()
+			if runEntryOf(state, children[0]) != nil && runEntryOf(state, children[1]) != nil {
+				break
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("the two delegated children never held runs at the same time; children=%v runs=%v",
+				children, state["runs"])
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	entryA, entryB := runEntryOf(state, children[0]), runEntryOf(state, children[1])
+	if entryActivity(entryA) != ActivityCallingLLM || entryActivity(entryB) != ActivityCallingLLM {
+		t.Fatalf("both delegated children should be calling the LLM; got %q and %q",
+			entryActivity(entryA), entryActivity(entryB))
+	}
+	// Each child was stamped from the tool's own claim, which is what admitted the
+	// second one beside the first. Asserted here because the whole result rests on
+	// it: an unstamped child is write-capable, and two of those serialise.
+	for _, id := range children {
+		if !w.threadIsReadOnly(id) {
+			t.Fatalf("child %s carries no readOnly stamp, so nothing licensed it to run beside its sibling", id)
+		}
+	}
+}
+
+// TestParentWaitsForEveryDelegatedSibling is the half that running the children
+// at once is worth nothing without: a parent that called two sub-agents is owed
+// two answers, so it must stay parked until BOTH have settled — the same rule a
+// batch of bash commands has always had.
+//
+// Driven through the mock's barrier one release at a time, so one child settles
+// while the other is provably still running. The parent's continuation is the
+// last scripted response and nothing may take it in that window: a parent that
+// resumes here sends a turn with the second child's result simply missing.
+//
+// What this does NOT pin is WHICH child settles first — the barrier releases
+// whichever goroutine happens to be waiting on it. So it holds the general
+// invariant ("no child live ⇒ no parent turn") end to end, and it is
+// TestDecideNextAction_WaitsForEverySibling that pins the ordering case the
+// reducer actually got wrong, where the child that answers first is the LAST one
+// in the transcript.
+func TestParentWaitsForEveryDelegatedSibling(t *testing.T) {
+	mc := newMsgChan()
+	tool := ToolDefinition{
+		Name:                 "Research",
+		Category:             "read",
+		DelegatesToSubthread: true,
+		ReadOnlySubthread:    true,
+		InputSchema:          json.RawMessage(`{"type":"object","properties":{"task":{"type":"string"}},"required":["task"]}`),
+	}
+	specs := []*SubthreadSpec{
+		{Goal: "read a", Prompt: "look at a"},
+		{Goal: "read b", Prompt: "look at b"},
+	}
+	w := startDelegatingWorker(t, mc, []ToolDefinition{tool}, specs)
+	w.setMockResponses([]MockResponse{
+		{
+			Blocks: []LLMResponseBlock{
+				{Type: provider.ContentBlockTypeToolUse, ID: "tu-1", Name: "Research", Input: json.RawMessage(`{"task":"a"}`)},
+				{Type: provider.ContentBlockTypeToolUse, ID: "tu-2", Name: "Research", Input: json.RawMessage(`{"task":"b"}`)},
+			},
+			StopReason: "tool_use",
+		},
+		{
+			Blocks:            []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "found a"}},
+			StopReason:        "end_turn",
+			PauseBeforeReturn: true,
+		},
+		{
+			Blocks:            []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "found b"}},
+			StopReason:        "end_turn",
+			PauseBeforeReturn: true,
+		},
+		// The parent's continuation. Nothing may take this until both children
+		// are done, so its presence in the queue IS the assertion.
+		{
+			Blocks:     []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "both answered"}},
+			StopReason: "end_turn",
+		},
+	})
+	t.Cleanup(func() {
+		for i := 0; i < 400 && w.hasLiveRun(); i++ {
+			w.mock.release()
+			time.Sleep(5 * time.Millisecond)
+		}
+	})
+
+	sendUserMessage(t, w, "research a and b")
+
+	// Both children in flight.
+	deadline := time.After(15 * time.Second)
+	for len(w.liveRuns()) < 2 {
+		select {
+		case <-deadline:
+			t.Fatalf("the two delegated children never ran together; runs=%v", w.readProcessingState()["runs"])
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	// Let exactly one of them through. Which one is not the point — whichever it
+	// is, the other is still running, and that is what the parent owes an answer.
+	w.mock.release()
+	for len(w.liveRuns()) > 1 {
+		select {
+		case <-deadline:
+			t.Fatal("neither child finished after a release")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	// Hold here long enough for a wrongly-resumed parent to have taken its turn.
+	// The surviving child keeps running throughout: this is the window in which
+	// the reducer used to read the transcript's last item, find it settled, and
+	// continue.
+	for i := 0; i < 60; i++ {
+		if remaining := w.mock.remaining(); remaining != 1 {
+			t.Fatalf("the parent resumed with a child still running: %d scripted responses left, want 1", remaining)
+		}
+		if !w.hasLiveRun() {
+			t.Fatal("the second child stopped running, so the window this asserts over is gone")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Once the second child settles the parent is owed nothing more, and takes
+	// its continuation.
+	w.mock.release()
+	for w.mock.remaining() > 0 {
+		select {
+		case <-deadline:
+			t.Fatal("the parent never resumed once every child had settled")
+		case <-time.After(5 * time.Millisecond):
+		}
 	}
 }

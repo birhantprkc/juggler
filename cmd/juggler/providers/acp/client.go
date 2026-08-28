@@ -80,10 +80,5 @@ func (c *Client) ListModelsWithInfo(_ context.Context) ([]provider.ModelInfo, er
 // Submit, so an unknown/misconfigured agent surfaces as a clear turn error
 // rather than failing to open.
 func (c *Client) OpenConversation(_ context.Context, convID string) (provider.Conversation, error) {
-	return &conversation{
-		client:   c,
-		convID:   convID,
-		approver: c.approver,
-		initLock: newLock(),
-	}, nil
+	return newConversation(c, convID, c.approver), nil
 }

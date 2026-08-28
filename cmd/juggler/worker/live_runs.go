@@ -4,6 +4,8 @@
 
 package worker
 
+import "juggler/cmd/juggler/osactivity"
+
 // The live-run registry.
 //
 // A dispatched turn runs on a goroutine of its own with a turnState of its own,
@@ -25,6 +27,7 @@ type liveRunEntry struct {
 	// lifetime. The run's own thread field is plain memory it owns, so this is
 	// the copy anyone off that goroutine may read.
 	threadItemID string
+	readOnly     bool
 	t            *turnState
 }
 
@@ -42,15 +45,66 @@ func (w *ConversationWorker) hasLiveRun() bool {
 	return len(w.liveRuns()) > 0
 }
 
-// liveRun returns the turn currently running, or nil when none is. Singular
-// because the dispatch gates admit exactly one at a time; Phase G, which lifts
-// them, is where callers have to say which run they mean.
-func (w *ConversationWorker) liveRun() *liveRunEntry {
-	runs := w.liveRuns()
-	if len(runs) == 0 {
-		return nil
+// liveThreadSet returns the thread ids whose state is owned by live run
+// goroutines. Actor-side reconciliation uses the snapshot to leave those
+// subtrees alone while continuing to settle idle siblings.
+func (w *ConversationWorker) liveThreadSet() map[string]bool {
+	owned := make(map[string]bool)
+	for _, live := range w.liveRuns() {
+		owned[live.threadItemID] = true
 	}
-	return &runs[0]
+	return owned
+}
+
+// liveRunForThread returns the live run on threadItemID, or nil when that
+// thread is not running.
+func (w *ConversationWorker) liveRunForThread(threadItemID string) *liveRunEntry {
+	runs := w.liveRuns()
+	for i := range runs {
+		if runs[i].threadItemID == threadItemID {
+			return &runs[i]
+		}
+	}
+	return nil
+}
+
+// liveRunOwns reports whether t belongs to a published live run. Status paths
+// use it to distinguish a turn goroutine handing finalization to retirement
+// from actor-side reducer cleanup that must finalize immediately.
+func (w *ConversationWorker) liveRunOwns(t *turnState) bool {
+	for _, live := range w.liveRuns() {
+		if live.t == t {
+			return true
+		}
+	}
+	return false
+}
+
+// canAdmitThread reports whether threadItemID can join the current live set.
+// The durable thread stamp is the admission input: root and unstamped children
+// are write-capable, while stamped read-only children may share the writer slot.
+func (w *ConversationWorker) canAdmitThread(threadItemID string) bool {
+	readOnly := w.threadIsReadOnly(threadItemID)
+	for _, live := range w.liveRuns() {
+		if live.threadItemID == threadItemID {
+			return false
+		}
+		if !readOnly && !live.readOnly {
+			return false
+		}
+	}
+	return true
+}
+
+// exclusivelyOwnsConversation reports whether this run is the only live owner.
+// Compaction rewrites shared ancestry and therefore cannot use read-only sibling
+// admission: it retains conversation-wide exclusion.
+func (r *run) exclusivelyOwnsConversation() bool {
+	if !r.actorStarted.Load() {
+		return true
+	}
+	runs := r.liveRuns()
+	return len(runs) == 1 && runs[0].t == r.t
 }
 
 // allTurnStates returns every turn this worker owns: the live ones and the
@@ -65,16 +119,24 @@ func (w *ConversationWorker) allTurnStates() []*turnState {
 	return append(out, w.turn)
 }
 
-// registerLiveRun publishes a turn as running. Run goroutine only.
+// registerLiveRun publishes a turn as running. Actor goroutine only.
 func (w *ConversationWorker) registerLiveRun(threadItemID string, t *turnState) {
 	cur := w.liveRuns()
+	if len(cur) == 0 && !w.activityAsserted {
+		osactivity.Begin()
+		w.activityAsserted = true
+	}
 	next := make([]liveRunEntry, len(cur), len(cur)+1)
 	copy(next, cur)
-	next = append(next, liveRunEntry{threadItemID: threadItemID, t: t})
+	next = append(next, liveRunEntry{
+		threadItemID: threadItemID,
+		readOnly:     w.threadIsReadOnly(threadItemID),
+		t:            t,
+	})
 	w.liveRunsPtr.Store(&next)
 }
 
-// retireLiveRun drops a finished turn from the registry. Run goroutine only.
+// retireLiveRun drops a finished turn from the registry. Actor goroutine only.
 func (w *ConversationWorker) retireLiveRun(t *turnState) {
 	cur := w.liveRuns()
 	next := make([]liveRunEntry, 0, len(cur))
@@ -97,7 +159,7 @@ func (r *run) beginTurn(threadItemID string) *run {
 	tr := r
 	if r.actorStarted.Load() {
 		t := newTurnState()
-		r.seedTurnBoundary(t)
+		r.seedThreadBoundary(threadItemID, t)
 		tr = r.runFor(t)
 	}
 	tr.t.thread.itemID = threadItemID
@@ -126,8 +188,8 @@ func (r *run) runTurn(tr *run, body func(*run)) {
 	}
 	r.storeState(StateIdle)
 	go func() {
-		defer close(tr.t.finished)
 		defer r.retireTurn(tr.t)
+		defer close(tr.t.finished)
 		body(tr)
 	}()
 }
@@ -148,39 +210,59 @@ func (w *ConversationWorker) retireTurn(t *turnState) {
 // settles whatever the turn left behind.
 func (r *run) finishRetiredTurn(t *turnState) {
 	r.retireLiveRun(t)
-	r.adoptTurnBoundary(t)
+	r.turnBoundaries[t.thread.itemID] = boundaryFromTurn(t)
+	if t.completedIdle {
+		r.bumpTurnCounterAtIdle()
+	}
+	if !r.hasLiveRun() {
+		if r.activityAsserted {
+			osactivity.End()
+			r.activityAsserted = false
+		}
+		r.finishIdleTransition()
+	} else {
+		// Publish this sibling's terminal frame promptly without closing the shared
+		// undo capture window still used by live runs.
+		r.batcher.Flush()
+	}
 	r.needsReconcile.Store(true)
 }
 
-// adoptTurnBoundary copies the state a TURN owns — its destination thread, the
-// spinner's elapsed anchor, and the notices and throttles that dedupe within a
-// turn — out of a finished run and into the ambient turn.
-//
-// A turn is longer than a run: it spans one dispatch per LLM round-trip, and
-// only the last of them ends it. Between two of them there is no run to hold
-// that state, so the ambient turn holds it and seedTurnBoundary hands it to the
-// next dispatch. Without the hand-back the elapsed digit would restart at zero
-// every time a tool completed.
-func (r *run) adoptTurnBoundary(t *turnState) {
-	r.t.thread = t.thread
-	r.t.processingStartedAt.Store(t.processingStartedAt.Load())
-	r.t.approvalWaitStartedAt.Store(t.approvalWaitStartedAt.Load())
-	r.t.wasBlockedOnApprovals = t.wasBlockedOnApprovals
-	r.t.lastProgressWriteMs = t.lastProgressWriteMs
-	r.t.lastCacheMissNotice = t.lastCacheMissNotice
-	r.t.lastProviderNotice = t.lastProviderNotice
+// turnBoundary is the state one logical turn carries between its LLM runs.
+type turnBoundary struct {
+	processingStartedAt   int64
+	approvalWaitStartedAt int64
+	wasBlockedOnApprovals bool
+	lastProgressWriteMs   int64
+	lastCacheMissNotice   string
+	lastProviderNotice    string
 }
 
-// seedTurnBoundary is adoptTurnBoundary's inverse: it hands the ambient turn's
-// boundary state to the fresh run continuing the same turn. The destination
-// thread is not copied — a dispatch names its own.
-func (r *run) seedTurnBoundary(t *turnState) {
-	t.processingStartedAt.Store(r.t.processingStartedAt.Load())
-	t.approvalWaitStartedAt.Store(r.t.approvalWaitStartedAt.Load())
-	t.wasBlockedOnApprovals = r.t.wasBlockedOnApprovals
-	t.lastProgressWriteMs = r.t.lastProgressWriteMs
-	t.lastCacheMissNotice = r.t.lastCacheMissNotice
-	t.lastProviderNotice = r.t.lastProviderNotice
+func boundaryFromTurn(t *turnState) turnBoundary {
+	return turnBoundary{
+		processingStartedAt:   t.processingStartedAt.Load(),
+		approvalWaitStartedAt: t.approvalWaitStartedAt.Load(),
+		wasBlockedOnApprovals: t.wasBlockedOnApprovals,
+		lastProgressWriteMs:   t.lastProgressWriteMs,
+		lastCacheMissNotice:   t.lastCacheMissNotice,
+		lastProviderNotice:    t.lastProviderNotice,
+	}
+}
+
+// seedThreadBoundary gives a fresh run only the boundary owned by its thread.
+// The actor owns this map, so siblings retiring in either order cannot overwrite
+// one another's continuation state.
+func (r *run) seedThreadBoundary(threadItemID string, t *turnState) {
+	boundary, ok := r.turnBoundaries[threadItemID]
+	if !ok {
+		return
+	}
+	t.processingStartedAt.Store(boundary.processingStartedAt)
+	t.approvalWaitStartedAt.Store(boundary.approvalWaitStartedAt)
+	t.wasBlockedOnApprovals = boundary.wasBlockedOnApprovals
+	t.lastProgressWriteMs = boundary.lastProgressWriteMs
+	t.lastCacheMissNotice = boundary.lastCacheMissNotice
+	t.lastProviderNotice = boundary.lastProviderNotice
 }
 
 // nudgeRetryWait tells a run parked in a retry backoff on this thread that a

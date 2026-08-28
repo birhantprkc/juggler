@@ -144,7 +144,7 @@ func (r *run) runFoldedThreadCompaction(modelConfig *ModelConfig, ctxResult *Con
 	r.beginCompactionStatus("Summarizing conversation")
 	r.recordCompactionStart(compactionKindFolded, 0, 0, 0)
 	probe := r.newBoundedReducer(compactionKindFolded, pinnedModel, boundedCompactionBudget{})
-	parentThreadID := r.doc.findParentThreadID(threadID)
+	parentThreadID := r.doc.ParentThreadID(threadID)
 	// Preserve the real turn's cacheable prefix: the folded history renders through
 	// the same wire path as a live turn, and the summarization instruction is
 	// appended as a final user message rather than swapping the system prompt.
@@ -206,7 +206,7 @@ func (r *run) runFoldedThreadCompaction(modelConfig *ModelConfig, ctxResult *Con
 }
 
 func (r *run) foldedCompactionContextItemIDs(threadID string) []string {
-	parentID := r.doc.findParentThreadID(threadID)
+	parentID := r.doc.ParentThreadID(threadID)
 	var parentItems []ConversationItem
 	if parentID == "" {
 		parentItems = r.doc.GetItems()

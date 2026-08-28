@@ -563,13 +563,12 @@ type Provider interface {
 // Conversation is one logical LLM dialogue, with provider-side state (if
 // any) that persists across turns.
 //
-// Concurrency invariant: methods are called serially per Conversation —
-// the worker manager (cmd/juggler/worker.Manager) owns one goroutine per
-// conversationID and dispatches all calls through it. Implementations
-// therefore don't need internal synchronisation. Violating this from
-// outside the worker manager is a bug at the call site, not in the
-// implementation; the manager is the sole sanctioned caller and the
-// guarantee is enforced there.
+// Concurrency invariant: Submit calls for distinct MessageRequest.ThreadID values
+// may overlap, and their callbacks may therefore run concurrently. Submit calls
+// for the same thread are serialized by the caller; stateful providers should
+// preserve that ordering when they add their own admission. Cancel may race a
+// Submit and must target only the named thread; CancelAllThreads and Close act on
+// the whole handle. Implementations must synchronize per-conversation state.
 // CancelAllThreads is the Cancel threadItemID that means "every thread of this
 // conversation" rather than one of them. It cannot be the empty string: "" is
 // the ROOT thread, a real and separately cancellable thread, and conflating the

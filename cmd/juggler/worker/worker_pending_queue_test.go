@@ -95,7 +95,7 @@ func TestQueuedMessageJoinsToolResultContinuation(t *testing.T) {
 	}
 
 	// Exactly the one scripted turn must have run.
-	if n := len(w.mock.responses); n != 0 {
+	if n := w.mock.remaining(); n != 0 {
 		t.Fatalf("expected the single scripted turn consumed, %d left — the queued message was not promoted into the tool-result continuation", n)
 	}
 

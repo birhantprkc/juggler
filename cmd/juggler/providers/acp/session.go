@@ -81,8 +81,8 @@ type cancelParams struct {
 // handshake runs initialize + session/new over a freshly-started transport and
 // returns the agent's session id. The client capabilities decline fs +
 // terminal (MVP self-contained agent).
-func (c *conversation) handshake(ctx context.Context, t *transport) (string, error) {
-	initRaw, err := t.call(ctx, "initialize", initializeParams{
+func (t *threadSession) handshake(ctx context.Context, tr *transport) (string, error) {
+	initRaw, err := tr.call(ctx, "initialize", initializeParams{
 		ProtocolVersion: acpProtocolVersion,
 		ClientCapabilities: clientCapabilities{
 			FS:       fsCapability{ReadTextFile: false, WriteTextFile: false},
@@ -102,8 +102,8 @@ func (c *conversation) handshake(ctx context.Context, t *transport) (string, err
 		jlog.Info("[acp] agent negotiated protocol version %d (client uses %d)", initRes.ProtocolVersion, acpProtocolVersion)
 	}
 
-	newRaw, err := t.call(ctx, "session/new", newSessionParams{
-		Cwd:        c.client.workingDir,
+	newRaw, err := tr.call(ctx, "session/new", newSessionParams{
+		Cwd:        t.conversation.client.workingDir,
 		MCPServers: []any{},
 	})
 	if err != nil {

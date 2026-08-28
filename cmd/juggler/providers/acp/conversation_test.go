@@ -20,17 +20,13 @@ import (
 func newConvHarness(t *testing.T) (*conversation, *fakeAgentPipes) {
 	t.Helper()
 	fa := newFakeAgent()
-	conv := &conversation{
-		client:   &Client{workingDir: "/tmp"},
-		convID:   "c1",
-		approver: defaultApprover{},
-		initLock: newLock(),
-	}
+	conv := newConversation(&Client{workingDir: "/tmp"}, "c1", defaultApprover{})
+	thread := conv.thread("")
 	tr := newTransport(fa.clientStdin, fa.clientStdout, nil, nil)
-	tr.start(conv)
-	conv.sess.Store(&session{rpc: tr, sessionID: "s1"})
+	tr.start(thread)
+	thread.sess.Store(&session{rpc: tr, sessionID: "s1"})
 	t.Cleanup(func() {
-		tr.close()
+		_ = conv.Close()
 		fa.stop()
 	})
 	return conv, fa
@@ -72,6 +68,115 @@ type submitResult struct {
 
 func userReq(text string) provider.MessageRequest {
 	return provider.MessageRequest{Messages: []provider.Message{{Type: "user", Content: text}}}
+}
+
+func threadReq(threadID, text string) provider.MessageRequest {
+	req := userReq(text)
+	req.ThreadID = threadID
+	return req
+}
+
+func installThreadHarness(t *testing.T, conv *conversation, threadID, sessionID string) *fakeAgentPipes {
+	t.Helper()
+	fa := newFakeAgent()
+	thread := conv.thread(threadID)
+	tr := newTransport(fa.clientStdin, fa.clientStdout, nil, nil)
+	tr.start(thread)
+	thread.sess.Store(&session{rpc: tr, sessionID: sessionID})
+	t.Cleanup(fa.stop)
+	return fa
+}
+
+func TestConversationConcurrentThreadRouting(t *testing.T) {
+	conv := newConversation(&Client{workingDir: "/tmp"}, "c1", defaultApprover{})
+	t.Cleanup(func() { _ = conv.Close() })
+	rootAgent := installThreadHarness(t, conv, "", "root-session")
+	childAgent := installThreadHarness(t, conv, "child", "child-session")
+	rootChunks := newChunkCollector()
+	childChunks := newChunkCollector()
+
+	rootResult := make(chan submitResult, 1)
+	childResult := make(chan submitResult, 1)
+	go func() {
+		res, err := conv.Submit(context.Background(), threadReq("", "root prompt"), rootChunks.cb)
+		rootResult <- submitResult{res, err}
+	}()
+	go func() {
+		res, err := conv.Submit(context.Background(), threadReq("child", "child prompt"), childChunks.cb)
+		childResult <- submitResult{res, err}
+	}()
+
+	rootPrompt := rootAgent.readMsg(t)
+	childPrompt := childAgent.readMsg(t)
+	rootAgent.writeNotification(t, "session/update", sessionUpdateParams{SessionID: "root-session", Update: sessionUpdate{SessionUpdate: updAgentMessageChunk, Content: &updateContent{Type: "text", Text: "root-only"}}})
+	childAgent.writeNotification(t, "session/update", sessionUpdateParams{SessionID: "child-session", Update: sessionUpdate{SessionUpdate: updAgentMessageChunk, Content: &updateContent{Type: "text", Text: "child-one"}}})
+	rootAgent.writeResult(t, rootPrompt.ID, promptResult{StopReason: "end_turn"})
+	if result := <-rootResult; result.err != nil {
+		t.Fatalf("root submit: %v", result.err)
+	}
+
+	// The root turn returning must not clear the still-active child's callback.
+	childAgent.writeNotification(t, "session/update", sessionUpdateParams{SessionID: "child-session", Update: sessionUpdate{SessionUpdate: updAgentMessageChunk, Content: &updateContent{Type: "text", Text: "-child-two"}}})
+	childAgent.writeResult(t, childPrompt.ID, promptResult{StopReason: "end_turn"})
+	if result := <-childResult; result.err != nil {
+		t.Fatalf("child submit: %v", result.err)
+	}
+
+	rootText, _ := rootChunks.textAndThinking()
+	childText, _ := childChunks.textAndThinking()
+	if rootText != "root-only" {
+		t.Fatalf("root callback text = %q, want root-only", rootText)
+	}
+	if childText != "child-one-child-two" {
+		t.Fatalf("child callback text = %q, want child-one-child-two", childText)
+	}
+}
+
+func TestConversationCancelIsThreadIsolated(t *testing.T) {
+	conv := newConversation(&Client{workingDir: "/tmp"}, "c1", defaultApprover{})
+	t.Cleanup(func() { _ = conv.Close() })
+	rootAgent := installThreadHarness(t, conv, "", "root-session")
+	childAgent := installThreadHarness(t, conv, "child", "child-session")
+
+	rootResult := make(chan submitResult, 1)
+	childResult := make(chan submitResult, 1)
+	go func() {
+		res, err := conv.Submit(context.Background(), threadReq("", "root prompt"), newChunkCollector().cb)
+		rootResult <- submitResult{res, err}
+	}()
+	go func() {
+		res, err := conv.Submit(context.Background(), threadReq("child", "child prompt"), newChunkCollector().cb)
+		childResult <- submitResult{res, err}
+	}()
+	rootPrompt := rootAgent.readMsg(t)
+	childPrompt := childAgent.readMsg(t)
+
+	conv.Cancel("child")
+	cancel := childAgent.readMsg(t)
+	if cancel.Method != "session/cancel" {
+		t.Fatalf("child method = %q, want session/cancel", cancel.Method)
+	}
+	var params cancelParams
+	if err := json.Unmarshal(cancel.Params, &params); err != nil {
+		t.Fatalf("decode cancel: %v", err)
+	}
+	if params.SessionID != "child-session" {
+		t.Fatalf("cancel session = %q, want child-session", params.SessionID)
+	}
+	select {
+	case msg := <-rootAgent.inbox:
+		t.Fatalf("root received crossover message: method=%q", msg.Method)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	childAgent.writeResult(t, childPrompt.ID, promptResult{StopReason: "cancelled"})
+	rootAgent.writeResult(t, rootPrompt.ID, promptResult{StopReason: "end_turn"})
+	if result := <-childResult; result.err != nil || result.res.StopReason != "cancelled" {
+		t.Fatalf("child result = %+v, err %v", result.res, result.err)
+	}
+	if result := <-rootResult; result.err != nil || result.res.StopReason != "end_turn" {
+		t.Fatalf("root result = %+v, err %v", result.res, result.err)
+	}
 }
 
 func TestConversationHappyPath(t *testing.T) {
@@ -236,7 +341,7 @@ func TestConversationCancelPreservesSession(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("submit did not return after cancel")
 	}
-	if conv.sess.Load() == nil {
+	if conv.thread("").sess.Load() == nil {
 		t.Fatal("cancel must preserve the session, but it was dropped")
 	}
 }
@@ -262,7 +367,7 @@ func TestConversationAgentCrash(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("submit did not return after crash")
 	}
-	if conv.sess.Load() != nil {
+	if conv.thread("").sess.Load() != nil {
 		t.Fatal("crash must drop the session so the next Submit re-spawns")
 	}
 }

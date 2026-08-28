@@ -53,9 +53,33 @@ export function getThreadDisplayContent(threadYMap, siblingArray) {
 
 /**
  * @typedef {object} ThreadLiveStatus
- * @property {string} message - Footer-style status message (e.g. "Streaming • 250 tokens"). Empty if not active.
- * @property {string|null} threadId - The thread item ID this status targets, or null for root.
+ * @property {Record<string, string>} byThread - Footer-style status message
+ *   (e.g. "Streaming • 250 tokens") per RUNNING thread, keyed by thread item id
+ *   (`''` for the root thread). A thread with no entry is not being driven.
+ *   Several entries at once is ordinary — a parent and its read-only children
+ *   run together — so a surface asks about the thread it is showing rather than
+ *   comparing against a single live thread id.
  */
+
+/**
+ * The live status line for one thread, or '' when that thread is not running.
+ * The one place the root thread's empty-string key is applied.
+ * @param {ThreadLiveStatus|null|undefined} live - Live status snapshot.
+ * @param {string|null|undefined} threadItemId - Thread item id (null for root).
+ * @returns {string} That thread's status line, or ''.
+ */
+export function liveMessageForThread(live, threadItemId) {
+  return live?.byThread?.[threadItemId || ''] || '';
+}
+
+/**
+ * Whether anything at all is being driven in this conversation.
+ * @param {ThreadLiveStatus|null|undefined} live - Live status snapshot.
+ * @returns {boolean} True while at least one thread is running.
+ */
+export function anyThreadLive(live) {
+  return Object.keys(live?.byThread || {}).length > 0;
+}
 
 /**
  * Classify a thread's current state for tile-face display. Pure function: the
@@ -67,8 +91,8 @@ export function getThreadDisplayContent(threadYMap, siblingArray) {
  *   running  — worker is actively driving this thread.
  *   pending  — `needsStrategyRun` set but the worker hasn't picked it up yet.
  *   errored  — a nested item is an error message.
- *   queued   — the conversation is still processing (a sibling is the live
- *              thread) but this one hasn't run yet: it's waiting its turn.
+ *   queued   — other threads are running but this one has not been dispatched
+ *              yet: it's waiting its turn.
  *   unfinished — this item's run was started, never settled, and nothing is
  *              driving it. Stopped mid-run: it moves again only if the user
  *              picks it up or settles it, and the caller stays parked until
@@ -113,8 +137,11 @@ export function getThreadStatus(threadYMap, live, siblingArray) {
   // Is the worker driving this session right now? Keyed on the canonical,
   // because that is the thread the worker names when it reports what it is
   // driving — so every item referring to the session answers yes together.
+  // Asked of THIS thread's own entry: siblings run alongside it, and their
+  // work says nothing about this one.
   const itemId = thread.get('itemId');
-  const isLive = !!(live && live.threadId === itemId && live.message);
+  const liveMessage = liveMessageForThread(live, itemId);
+  const isLive = !!liveMessage;
 
   // An item stamped with a run selector answers for ONE run. Once that run has
   // settled the tile is frozen: what a later call into the same thread does is
@@ -147,12 +174,7 @@ export function getThreadStatus(threadYMap, live, siblingArray) {
   }
 
   if (isLive) {
-    return {
-      kind: 'running',
-      goal,
-      message: /** @type {ThreadLiveStatus} */ (live).message,
-      spinner: true,
-    };
+    return { kind: 'running', goal, message: liveMessage, spinner: true };
   }
 
   if (thread.get('needsStrategyRun')) {
@@ -187,15 +209,14 @@ export function getThreadStatus(threadYMap, live, siblingArray) {
     }
   }
 
-  // A `live` snapshot is non-null only while the conversation is actively
-  // processing some thread (see conversation-area._snapshotLiveStatus). We
-  // already returned 'running' above if THIS thread were the live one, so
-  // reaching here with `live` present means a sibling is being driven and this
-  // incomplete thread is simply waiting its turn in the worker's queue — not
-  // stopped. Threads launched together run one at a time, so the not-yet-run
-  // siblings sit here. Once the conversation goes idle `live` is null and a
-  // still-unfinished thread correctly falls through to 'idle'.
-  if (live && live.message) {
+  // Something is being driven, and it is not this thread: it carries no entry
+  // of its own, so it has not been dispatched yet. That is a wait, not a stop —
+  // the worker admits threads as capacity allows (read-only children run
+  // alongside each other and their parent; a write-capable one waits for the
+  // single writer slot), and this one's turn comes. A sibling actually running
+  // returned 'running' above off its own entry, so it never reaches here. Once
+  // nothing is running at all a still-unfinished thread falls through to 'idle'.
+  if (anyThreadLive(live)) {
     return { kind: 'queued', goal, message: 'Waiting for its turn…', spinner: false };
   }
 

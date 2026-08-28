@@ -402,17 +402,19 @@ class ConversationFooter extends HTMLElement {
 
     const conv = thread.conversation;
     const budget = Number(conv?.contextWindow) || 0;
-    const processing = !!conv?.isProcessing;
+    // This column's own thread: a meter measures one transcript, so a sibling's
+    // turn must neither fill it nor blank it.
+    const processing = !!thread.isProcessing;
     const streamsLive = this._modelStreamsLiveUsage();
 
     // Live path: while a provider that reports authoritative per-step usage is
     // streaming, grow the meter against the running input total the worker has
-    // stamped into the Yjs processingState, rather than the frozen previous-turn
-    // blob anchor. Falls through to the anchor before the first usage chunk
-    // arrives (getLiveInputUsage null) and once the turn ends (processing false),
-    // so the end-of-turn number takes over seamlessly.
+    // stamped into this thread's processingState entry, rather than the frozen
+    // previous-turn blob anchor. Falls through to the anchor before the first
+    // usage chunk arrives (getLiveInputUsage null) and once the turn ends
+    // (processing false), so the end-of-turn number takes over seamlessly.
     if (processing && streamsLive) {
-      const live = conv?.llmState?.getLiveInputUsage?.(conv.id);
+      const live = conv?.llmState?.getLiveInputUsage?.(conv.id, thread.threadItemId);
       if (live) {
         /** @type {any} */ (tokenDisplay).setUsage({
           total: live.inputTokens,

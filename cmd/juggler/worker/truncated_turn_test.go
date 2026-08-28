@@ -102,7 +102,7 @@ func TestTruncatedThinkingOnlyTurnIsReportedNotRetried(t *testing.T) {
 
 	w.currentRun().runStrategyLoop("optimise clipToPolygon", false)
 
-	if n := len(w.mock.responses); n != 3 {
+	if n := w.mock.remaining(); n != 3 {
 		t.Fatalf("leftover mock responses = %d, want 3 (one call, not %d)", n, MaxBarrenTurns)
 	}
 
@@ -150,7 +150,7 @@ func TestTruncatedTurnWithTextKeepsTheTextAndReportsIt(t *testing.T) {
 
 	w.currentRun().runStrategyLoop("explain the algorithm", false)
 
-	if n := len(w.mock.responses); n != 1 {
+	if n := w.mock.remaining(); n != 1 {
 		t.Fatalf("leftover mock responses = %d, want 1 (exactly one call)", n)
 	}
 	items := itemsByType(w)
@@ -177,7 +177,7 @@ func TestBarrenTurnWithoutTruncationStillRetries(t *testing.T) {
 
 	w.currentRun().runStrategyLoop("optimise clipToPolygon", false)
 
-	if n := len(w.mock.responses); n != 1 {
+	if n := w.mock.remaining(); n != 1 {
 		t.Fatalf("leftover mock responses = %d, want 1 (exactly %d calls)", n, MaxBarrenTurns)
 	}
 

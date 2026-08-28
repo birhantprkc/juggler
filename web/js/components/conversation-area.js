@@ -30,6 +30,7 @@ import {
   runningToolsInTree,
 } from '../model/thread-navigation.js';
 import { itemGoal } from '../model/thread-alias.js';
+import { liveMessageForThread } from '../utils/thread-display.js';
 import { appendDeleteControls } from '../utils/panel-delete-controls.js';
 import { findNeighborItemId } from '../services/context-item-utilities.js';
 import {
@@ -548,19 +549,19 @@ class ConversationArea extends HTMLElement {
   }
 
   /**
-   * Snapshot the conversation's live LLM status the same way the footer
-   * reads it. Threads whose `itemId` matches `threadId` mirror this message.
-   * @returns {import('../utils/thread-display.js').ThreadLiveStatus|null} Live status snapshot, or null if idle.
+   * Snapshot every running thread's live LLM status the same way the footer
+   * reads it. A thread mirrors the message filed under its own `itemId`, so a
+   * parent and its read-only children each report their own work.
+   * @returns {import('../utils/thread-display.js').ThreadLiveStatus|null} Live status snapshot, or null when nothing is running.
    * @private
    */
   _snapshotLiveStatus() {
     const conv = this._conversation;
     const llmState = conv?.llmState;
     if (!llmState || !conv?.id) return null;
-    const message = llmState.getStatusMessage(conv.id) || '';
-    if (!message) return null;
-    const threadId = llmState.getStatusThreadId(conv.id);
-    return { message, threadId };
+    const byThread = llmState.getLiveThreadMessages(conv.id);
+    if (Object.keys(byThread).length === 0) return null;
+    return { byThread };
   }
 
   /**
@@ -1688,11 +1689,11 @@ class ConversationArea extends HTMLElement {
   _canContinue() {
     const mt = this._messageThread;
     if (!mt) return false;
-    // While the conversation is busy driving ANY thread, continueThread() bails
-    // (its `conversation.isProcessing` guard). This thread's own column can look
-    // idle from its vantage — e.g. a sibling sub-thread is the live one and this
-    // one is "Waiting for its turn…", so `hasBusyItems()` below is false — yet
-    // Continue would be a silent no-op. Hide it rather than offer a dead button.
+    // While THIS thread is being driven, continueThread() bails (its
+    // `messageThread.isProcessing` guard) — Continue would be a silent no-op,
+    // so hide it rather than offer a dead button. A busy sibling is no reason
+    // to hide it: the worker takes a continue on an idle thread while others
+    // run.
     if (mt.isProcessing) return false;
     const hasEffective = mt.getMessages().some(m => isUserMessage(m) || isAssistantMessage(m) || isToolActionMessage(m) || isThreadMessage(m));
     if (!hasEffective) return false;
@@ -1723,11 +1724,13 @@ class ConversationArea extends HTMLElement {
     const live = this._snapshotLiveStatus();
     this._broadcastLiveStatusToTiles(live);
 
-    // Footer source 1: LLM status targeting THIS column (so a column whose
-    // threadItemId is the active one shows the rich "Streaming • 250 tokens"
-    // text; columns whose tiles represent the active thread leave that to
-    // the tile face).
+    // Footer source 1: the LLM status of THIS column's own thread (so a running
+    // column shows the rich "Streaming • 250 tokens" text; columns whose tiles
+    // represent a running thread leave that to the tile face). Asked per
+    // thread, so a parent and a read-only child each show their own line at the
+    // same time.
     const myThreadId = this._messageThread?.threadItemId || null;
+    const myLiveMessage = liveMessageForThread(live, myThreadId);
     // A group column is a SLICE of its parent thread: it shares the parent's
     // message thread outright (conversation-tab._buildConversationColumn), so
     // every thread-level signal below matches in EVERY group column of a busy
@@ -1737,9 +1740,8 @@ class ConversationArea extends HTMLElement {
     const groupItems = this._isGroupColumn ? (this._groupItems || []) : null;
     /** @type {{message: string, spinner: boolean}|null} */
     let llmStatus = null;
-    if (live && live.threadId === myThreadId &&
-        (!groupItems || hasUnsettledToolInTree(groupItems))) {
-      llmStatus = { message: live.message, spinner: true };
+    if (myLiveMessage && (!groupItems || hasUnsettledToolInTree(groupItems))) {
+      llmStatus = { message: myLiveMessage, spinner: true };
     }
 
     // Footer source 2: last busy item that wants to be reflected in the
@@ -1784,7 +1786,7 @@ class ConversationArea extends HTMLElement {
     // parked on a tool call or waiting on the network — the truth of those
     // moments rather than a missing reading.
     const throughput = isProcessing
-      ? (this._conversation?.llmState?.getThroughput?.(this._conversation.id) ?? 0)
+      ? (this._conversation?.llmState?.getThroughput?.(this._conversation.id, myThreadId) ?? 0)
       : 0;
     const statusMessage = hasPendingApprovals
       ? StatusMessageBuilder.withBusyMarker('Waiting for user approval')

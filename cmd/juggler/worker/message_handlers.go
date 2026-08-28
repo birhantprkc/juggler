@@ -647,10 +647,12 @@ func (r *run) handleCancel(reason cancelReason) {
 	// loop driven inline by a test — this run is its own target, which is exactly
 	// what it has always been.
 	target := r
-	threadID := r.t.thread.itemID
-	if live := r.liveRun(); live != nil {
+	threadID := r.getProcessingThreadItemID()
+	if threadID == "" {
+		threadID = r.t.thread.itemID
+	}
+	if live := r.liveRunForThread(threadID); live != nil {
 		target = r.runFor(live.t)
-		threadID = live.threadItemID
 	}
 	target.logCancel(reason)
 
@@ -745,6 +747,10 @@ func (r *run) handleCancel(reason cancelReason) {
 		// sub-thread). Park: keep any queued messages by promoting them into
 		// the thread, then rest — don't silently re-drive the interrupted work.
 		r.promotePendingItems(threadID)
+		// Release the target claim explicitly. The ambient actor run does not carry
+		// the parked descendant's thread context, so its idle status alone would
+		// otherwise clear the root entry and leave this thread awaiting forever.
+		r.releaseLLM(threadID)
 		r.sendStatus("idle", "")
 		r.resetThreadContext()
 	}
@@ -1081,7 +1087,10 @@ func (r *run) handleUndoOrRedo(fn func() bool, payload json.RawMessage) {
 	// loop's defers finally run (writing a fallback result, transitioning to
 	// idle, etc.) they would overwrite the just-restored state. Cancelling
 	// first puts the worker on a path to Idle so the undo lands cleanly.
-	r.cancelAndWaitForIdle()
+	if !r.cancelAndWaitForIdle() {
+		r.reply(map[string]any{"type": "ack", "ackId": msg.AckID, "result": false})
+		return
+	}
 
 	// Suppress the items observer for the duration of the undo. Otherwise
 	// the UndoManager's restoration of items (e.g. a thread with a trailing
@@ -1159,22 +1168,39 @@ func (w *ConversationWorker) handleEndUndoCoalesce(payload json.RawMessage) {
 // cancelAndWaitForIdle stops any in-flight strategy loop and blocks (briefly)
 // until the worker reaches StateIdle. Called before undo/redo so the document
 // rollback can't be raced by the strategy's deferred writes.
-func (r *run) cancelAndWaitForIdle() {
-	// Conversation-wide on both halves: undo rolls the whole document back, so it
-	// waits for every run to be quiet, not just the one on the current thread.
-	if r.anyRunState() == StateIdle {
-		return
-	}
-	r.handleCancel(cancelReasonUndoRedo)
-	// Wait up to ~1s for the strategy goroutine to honour the cancel and
-	// transition to Idle. Polling is acceptable here: undo is rare and the
-	// strategy loop checks its state every iteration / on LLM cancel.
-	for i := 0; i < 100; i++ {
-		if r.anyRunState() == StateIdle {
-			return
+func (r *run) cancelAndWaitForIdle() bool {
+	runs := r.liveRuns()
+	if len(runs) == 0 {
+		if r.anyRunState() != StateIdle {
+			r.handleCancel(cancelReasonUndoRedo)
 		}
-		time.Sleep(10 * time.Millisecond)
+		return true
 	}
+
+	// Undo is conversation-wide: address every live run directly rather than
+	// trusting the lossy top-level processing-state projection to choose one.
+	r.clearPolitePending()
+	r.dispatchCancelStrategyExecution()
+	for _, live := range runs {
+		target := r.runFor(live.t)
+		target.logCancel(cancelReasonUndoRedo)
+		target.acceptCancel()
+		if p := target.t.cancelLLM.Swap(nil); p != nil {
+			(*p)()
+		}
+		if r.cancelLLMSession != nil {
+			r.cancelLLMSession(r.conversationID, live.threadItemID)
+		}
+	}
+	for _, live := range runs {
+		select {
+		case <-live.t.finished:
+		case <-time.After(time.Second):
+			r.log.Error("Timed out waiting for thread %s before history navigation", live.threadItemID)
+			return false
+		}
+	}
+	return true
 }
 
 // handleResummarizeCompactionThread re-runs the folded-compaction summarizer
@@ -1228,7 +1254,13 @@ func (w *ConversationWorker) resetToolActionAndRedrive(toolUseID string, fields 
 	// Signal that the reducer should dispatch CallLLM once the tool reaches a
 	// terminal state again. "" targets the root thread.
 	threadID, _ := w.doc.FindThreadIDForToolUseID(toolUseID)
-	w.requestLLM(threadID)
+	if w.requestLLM(threadID) {
+		// A retry may target an older tool followed by assistant text. The ordinary
+		// reducer treats that shape as resting unless the continuation intent is
+		// explicit; retry is exactly such an intent and must survive until the
+		// rerun reaches terminal state.
+		w.markExplicitContinuation(threadID)
+	}
 
 	// The reset is driven by the worker: driveToolActions pushes the new state
 	// to the engine and re-commands the tool so the retry actually runs.

@@ -40,12 +40,14 @@ export function setupHeaderControls(session) {
   /** @type {((event: any) => void) | null} */
   let metadataObserver = null;
 
-  // The conversation's LLM loop is running whenever the worker's authoritative
-  // processingState.status is anything other than 'idle' (it holds the claim
-  // for the whole busy span — LLM call, tool execution, approval waits). Undo/
-  // redo mutate the same Yjs doc the worker is actively writing, so we lock them
-  // out for the duration. Reading the doc metadata (not the local llmState
-  // projection) means viewers that didn't initiate the turn lock out too.
+  // The conversation is running whenever the worker's authoritative
+  // processingState.status is anything other than 'idle' — the top-level
+  // projection reports a running status while ANY of its threads holds a claim,
+  // for the whole busy span (LLM call, tool execution, approval waits). That is
+  // the right scope here: undo/redo roll the WHOLE document back, so one live
+  // run anywhere in it is reason enough to lock them out. Reading the doc
+  // metadata (not the local llmState projection) means viewers that didn't
+  // initiate the turn lock out too.
   const isBusy = () => {
     const status = currentConversation?.processingState?.status;
     return !!status && status !== 'idle';

@@ -97,6 +97,10 @@ func (w *ConversationWorker) handleToolExecutionReport(payload json.RawMessage, 
 // which guards on state==running + no-result, so a re-run (back at approved) or an
 // already-terminal tool is never clobbered.
 func (w *ConversationWorker) finalizeToolsAbsentFromExecReport() {
+	w.finalizeToolsAbsentFromExecReportExcept(nil)
+}
+
+func (w *ConversationWorker) finalizeToolsAbsentFromExecReportExcept(liveThreads map[string]bool) {
 	// Cond 1: an engine must be attached AND the last accepted report must be fresh.
 	if !w.callbacks.engineAttached() || w.lastExecReport == nil {
 		return
@@ -120,7 +124,10 @@ func (w *ConversationWorker) finalizeToolsAbsentFromExecReport() {
 	}
 	var cands []cand
 	ycrdtMu.Lock()
-	walkAllItems(w.doc.getItems(), "", func(m *ycrdt.YMap, _ string) bool {
+	walkAllItems(w.doc.getItems(), "", func(m *ycrdt.YMap, threadID string) bool {
+		if liveThreads[threadID] {
+			return false
+		}
 		if t, _ := m.Get("type").(string); t != ItemTypeToolAction {
 			return false
 		}

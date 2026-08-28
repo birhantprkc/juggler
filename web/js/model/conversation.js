@@ -593,11 +593,26 @@ class Conversation {
   }
 
   /**
-   * Get whether this conversation is currently processing
-   * @returns {boolean} Whether conversation is currently processing
+   * Whether ANY of this conversation's threads is currently processing.
+   *
+   * The conversation-wide question: is there work here at all. Several threads
+   * can be running at once — a parent and its read-only children — so a caller
+   * deciding what to do about ONE thread (send to it, continue it, offer it a
+   * button) must ask isThreadProcessing instead, or a busy sibling refuses work
+   * the worker would have taken.
+   * @returns {boolean} Whether the conversation is currently processing
    */
   get isProcessing() {
     return this._llmState.isConversationProcessing(this.id);
+  }
+
+  /**
+   * Whether ONE thread is currently being driven.
+   * @param {string|null} [threadItemId] - Thread item id (null/omitted = root)
+   * @returns {boolean} True while that thread has a run in flight
+   */
+  isThreadProcessing(threadItemId) {
+    return this._llmState.isThreadProcessing(this.id, threadItemId ?? null);
   }
 
   // ========================================================================
@@ -1065,9 +1080,13 @@ class Conversation {
    * Whether the conversation worker's current activity belongs to this thread's
    * subtree — i.e. stopping this thread should preempt the worker rather than
    * only settle its run. True when (a) a tool-action anywhere in the subtree is
-   * awaiting approval, or (b) the live processing column is this thread itself
-   * or one of its descendants. False for a dormant/queued thread while an
-   * unrelated sibling is the live column: that thread owns no in-flight work.
+   * awaiting approval, or (b) a running thread is this thread itself or one of
+   * its descendants. False for a dormant/queued thread while unrelated siblings
+   * run: that thread owns no in-flight work.
+   *
+   * Every running thread is considered, not just the one the top-level
+   * projection names — a parent and its read-only children run together, and a
+   * subtree with any of them in it owns work worth preempting.
    * @param {*} threadYMap - The thread Y.Map.
    * @returns {boolean} True if the worker is driving this subtree.
    * @private
@@ -1076,26 +1095,31 @@ class Conversation {
     if (!threadYMap || typeof threadYMap.get !== 'function') return false;
     const items = threadYMap.get('items');
     if (hasPendingApprovalInTree(items)) return true;
-    const liveId = this._llmState?.getStatusThreadId(this.id) ?? null;
-    if (!liveId) return false;
-    if (liveId === threadYMap.get('itemId')) return true;
-    return !!(items && findItemByIdRecursive(items.toArray(), liveId));
+    const own = threadYMap.get('itemId');
+    for (const liveId of Object.keys(this._llmState?.getLiveThreadMessages(this.id) || {})) {
+      if (!liveId) continue; // the root thread is nobody's descendant
+      if (liveId === own) return true;
+      if (items && findItemByIdRecursive(items.toArray(), liveId)) return true;
+    }
+    return false;
   }
 
   /**
-   * Interrupt whatever sub-thread is the active processing column, if any.
+   * Interrupt the sub-thread the conversation's projected run names, if any.
    *
-   * The active column is identified the same way the parent tile is — via the
-   * live status' threadId (`llmState.getStatusThreadId`). When that points at a
-   * sub-thread, it is INTERRUPTED (`interruptThread`): the worker turn is
-   * preempted but the thread stays open, so its column keeps the composer and
-   * the user can keep interacting with it. This is the fallback used when the
-   * caller doesn't know the focused vantage — a bare Escape interrupts the
-   * running child rather than closing it.
+   * ONE thread, because the caller is a keypress: this is the fallback for a
+   * bare Escape, where nobody has said which column they meant. The projection
+   * (`llmState.getStatusThreadId`) is the worker's own choice of which run
+   * describes the conversation, so every client stops the same one — and the
+   * user can press again, or use a column's own Stop, to reach the others.
+   * When it points at a sub-thread, that thread is INTERRUPTED
+   * (`interruptThread`): the worker turn is preempted but the thread stays
+   * open, so its column keeps the composer and the user can keep interacting
+   * with it.
    *
    * Must be called BEFORE any llmState.stop()/idle write, since those clear the
    * status threadId. Returns false (caller falls back to the root-turn cancel)
-   * when the active column is the root or no thread is processing.
+   * when the projected run is the root or nothing is processing.
    * @returns {Promise<boolean>} True if a sub-thread was interrupted.
    */
   async cancelActiveTurn() {
@@ -1578,15 +1602,19 @@ class Conversation {
       return 'worker not ready';
     }
 
-    // When a turn is already in flight, a message is QUEUED rather than
-    // refused — the worker parks it in pendingItems and drains it at the
-    // next boundary (see worker/pending_items.go). The only path that still
-    // can't queue is the worker-less fallback (it would start a second
-    // concurrent strategy on the main thread), so it keeps refusing.
-    const isQueueing = this.isProcessing && workerManager.isWorkerReady(this.id);
+    // When a turn is already in flight ON THE THREAD BEING SENT TO, the message
+    // is QUEUED rather than refused — the worker parks it in that thread's
+    // pendingItems and drains it at the next boundary (see
+    // worker/pending_items.go). Asked of the target thread alone: a busy
+    // sibling is not this thread's turn, and queueing behind one would hold a
+    // message the worker was ready to run. The only path that still can't queue
+    // is the worker-less fallback (it would start a second concurrent strategy
+    // on the main thread), so it keeps refusing.
+    const targetBusy = this.isThreadProcessing(this._targetThreadId(messageThread, threadItemId));
+    const isQueueing = targetBusy && workerManager.isWorkerReady(this.id);
     if (options.preemptProcessing) {
       await this.cancelAndSettle('new message preempted');
-    } else if (this.isProcessing && !isQueueing) {
+    } else if (targetBusy && !isQueueing) {
       return `conversation ${this.id} is processing`;
     }
 

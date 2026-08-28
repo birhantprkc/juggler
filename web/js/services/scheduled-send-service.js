@@ -241,11 +241,12 @@ class ScheduledSendService {
           // worker's own processingState (plus any frontend-driven tool action),
           // so it holds in a window that never started the turn.
           if (conversation.isTurnActive()) continue;
-          // processingState is a single status for the whole conversation, so it
-          // can read idle at a moment when work is demonstrably outstanding — a
-          // sub-thread whose run has not settled. Ask the document too: an
-          // unsettled child thread is a turn that has not ended, and firing into
-          // one queues the message into the run the user meant to stay out of.
+          // A thread holds a claim only while the worker is driving it, so the
+          // registry can be empty at a moment when work is demonstrably
+          // outstanding — a sub-thread whose run has not settled. Ask the
+          // document too: an unsettled child thread is a turn that has not
+          // ended, and firing into one queues the message into the run the user
+          // meant to stay out of.
           if (typeof thread.hasBusyItems === 'function' && thread.hasBusyItems()) continue;
         } else if (when > now) {
           continue;
@@ -347,8 +348,9 @@ class ScheduledSendService {
       // busy-time behaviour: when a turn is in flight the send is queued, so the
       // reads must ride the same pendingItems queue (via executeContextItemIntoPending)
       // to stay grouped with the message on promotion rather than landing in the
-      // live items array now while the message is promoted later.
-      const busy = thread.conversation.isProcessing ||
+      // live items array now while the message is promoted later. Asked of the
+      // thread being sent to, exactly as sendMessage decides to queue.
+      const busy = thread.isProcessing ||
         (typeof thread.hasBusyItems === 'function' && thread.hasBusyItems());
       const paths = await extractFileMentionsAsync(text);
       if (paths.length > 0 || textFiles.length > 0) {

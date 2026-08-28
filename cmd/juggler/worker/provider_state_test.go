@@ -13,7 +13,9 @@ import (
 func TestActivitySnapshotLivesOnlyInProcessingState(t *testing.T) {
 	w := NewConversationWorker("conv-activity", "user:test")
 	defer w.doc.Destroy()
-	w.doc.SetMetadata("processingState", map[string]any{"status": "streaming"})
+	// Through the real seam: the activity line lives in the run's own entry, so
+	// the run has to exist. A hand-written top-level status describes no run.
+	w.currentRun().sendStatus("streaming", "")
 
 	w.currentRun().processStreamChunk(StreamChunk{
 		Type:    provider.ContentBlockTypeActivity,

@@ -537,6 +537,10 @@ func (r *run) finishStrategyRun() {
 	}
 
 	r.storeState(StateIdle)
+	// The thread context is cleared before parent/sibling settlement below. Release
+	// this run's own doc claim first; a later root-scoped idle frame must not be
+	// responsible for finding it, especially now that idle preserves siblings.
+	r.releaseLLM(completedThreadID)
 	r.t.processingStartedAt.Store(0)
 	r.t.approvalWaitStartedAt.Store(0)
 	r.t.lastProgressWriteMs = 0
@@ -584,13 +588,13 @@ func (r *run) finishStrategyRun() {
 			}
 		}
 
-		// Resting empties the WHOLE run registry, which is right for this run and
-		// wrong for anyone else's: a thread queued while this one held the loop —
-		// a message typed into the root while a compaction thread summarized — would
-		// lose its dispatch and sit unanswered under an idle conversation. Read it
-		// before the sweep and re-raise it after, the same shape the pending-queue
-		// drain below uses. Only for a thread that still exists: a marker left by a
-		// deleted thread is stale, and clearing those is what the sweep is for.
+		// The idle frame below is published with this run's thread context already
+		// cleared, so it drops the ROOT entry — and a thread queued while this one
+		// held the loop may be exactly the root: a message typed there while a
+		// compaction thread summarized would lose its dispatch and sit unanswered
+		// under an idle conversation. Read the marker before resting and re-raise
+		// it after, the same shape the pending-queue drain below uses. Only for a
+		// thread that still exists: a marker left by a deleted thread is stale.
 		queuedID, requeue := r.queuedThreadIDExcept(completedThreadID)
 		if requeue && queuedID != "" && r.doc.GetThreadYMap(queuedID) == nil {
 			requeue = false
@@ -824,7 +828,7 @@ func (w *ConversationWorker) signalParentThread(completedThreadID string) bool {
 	if !settled || !llmCreated {
 		return false
 	}
-	parentThreadID := w.doc.findParentThreadID(completedThreadID)
+	parentThreadID := w.doc.ParentThreadID(completedThreadID)
 	// Release the finished CHILD's claim before requesting the parent — only the
 	// run that just ended is over. The parent may already be awaiting_llm (its
 	// own turn parked when it spawned this child), which requestLLM below reports
@@ -1056,7 +1060,11 @@ func (r *run) processLLMResponse(response *LLMResponse) (bool, error) {
 		// and dispatches evaluate-tool / execute-tool for each non-terminal
 		// tool-action, rather than relying on the engine to auto-load on an
 		// incidental sync (racy → the "tools stuck" wedge).
-		r.driveToolActions()
+		if r.actorStarted.Load() {
+			r.requestReconcile()
+		} else {
+			r.driveToolActions()
+		}
 	}
 
 	return true, nil

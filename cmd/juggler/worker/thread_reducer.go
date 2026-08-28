@@ -136,54 +136,7 @@ func decideNextAction(items []ConversationItem, activity string, isRoot bool, ex
 		}
 		return ActionNone
 
-	case ItemTypeToolAction:
-		// Only dispatch when activity="awaiting_llm" — this distinguishes a
-		// fresh tool completion from a stale one after undo or a previous turn.
-		if activity != ActivityAwaitingLLM {
-			return ActionNone
-		}
-		batch := currentToolBatch(effective)
-		// Guard: all tools in the batch must be terminal (completed or
-		// cancelled) before the LLM can continue. In mock/fast mode the
-		// reducer can fire before the browser has evaluated tool states
-		// (pending/running/undefined). Without this gate, the LLM would
-		// be called prematurely with missing tool results.
-		for _, t := range batch {
-			if !isToolTerminal(t) {
-				return ActionNone // still in flight — wait
-			}
-		}
-		if len(batch) > 0 && anyBatchCancelled(batch) {
-			// At least one tool was denied. A denial stops the automatic
-			// loop — the LLM shouldn't proceed with partial information on
-			// its own. But an explicit user Continue means "proceed anyway",
-			// so honour it (same as the assistant-last branch above);
-			// otherwise clear the awaiting marker and rest.
-			if explicitContinuation {
-				return ActionCallLLM
-			}
-			return ActionGoIdle
-		}
-		return ActionCallLLM
-
-	case ItemTypeMetaToolResult:
-		if activity == ActivityAwaitingLLM {
-			return ActionCallLLM
-		}
-		return ActionNone
-
-	case ItemTypeAssistant:
-		// Assistant text-only reply (no tool-actions after it). Rest at idle
-		// for root AND nested threads alike: ending a turn with plain
-		// assistant text is a thread's normal resting state. Coming to rest
-		// settles the run — that text is what the run returns, and what it
-		// writes as the thread's summary — but it ends nothing: the thread is
-		// free to run again. A turn that ends on an error rests the same way
-		// (see the ItemTypeError case): the error is just an item in the
-		// thread's history, not a verdict on the thread.
-		return ActionNone
-
-	case ItemTypeThread:
+	case ItemTypeToolAction, ItemTypeThread, ItemTypeMetaToolResult:
 		// A RECEIPT is never a trigger. It stands for a run nobody here asked for
 		// — a human picked a child back up — and it is only ever appended once
 		// this thread's own call has been answered, so nothing is waiting on it.
@@ -200,22 +153,51 @@ func decideNextAction(items []ConversationItem, activity string, isRoot bool, ex
 			return ActionNone
 		}
 
-		// A nested thread is the effective last item. Asked of the run THIS item
-		// stands for: a call into a session already called stands as its own alias
-		// item, which owns no transcript, and asking the alias whether it has one
-		// would rest this thread on a run that already answered.
-		if itemRunSettled(items, last) {
-			// Child finished. Only dispatch if activity signals intent
-			// (same pattern as tool-batch completion). Without the gate,
-			// undo would re-dispatch on a stale thread-with-result.
-			if activity == ActivityAwaitingLLM {
-				return ActionCallLLM
-			}
+		// Only dispatch when activity="awaiting_llm" — this distinguishes a
+		// fresh completion from a stale one after undo or a previous turn.
+		if activity != ActivityAwaitingLLM {
 			return ActionNone
 		}
-		// Child still in progress. Rest; the child's own reducer will
-		// drive it, and when it writes its result the observer fires
-		// on this thread again.
+
+		// Guard: EVERY member of the batch must have finished before the LLM can
+		// continue — every tool terminal, every child thread's run settled. Asked
+		// of the whole batch and not of its final item, because the order work is
+		// dispatched in is not the order it finishes in: sub-agents run beside
+		// each other, so any of them can be the last to answer, and a bash command
+		// standing between two of them is waited on by the same rule. Resuming
+		// early does not merely lose time — it sends the turn with the unfinished
+		// members' results missing.
+		//
+		// This is also the mock/fast-mode gate: the reducer can fire before the
+		// browser has evaluated tool states (pending/running/undefined).
+		batch := currentBatch(effective)
+		for _, member := range batch {
+			if !batchMemberSettled(items, member) {
+				return ActionNone // still in flight — wait
+			}
+		}
+		if anyBatchCancelled(batch) {
+			// At least one tool was denied. A denial stops the automatic
+			// loop — the LLM shouldn't proceed with partial information on
+			// its own. But an explicit user Continue means "proceed anyway",
+			// so honour it (same as the assistant-last branch above);
+			// otherwise clear the awaiting marker and rest.
+			if explicitContinuation {
+				return ActionCallLLM
+			}
+			return ActionGoIdle
+		}
+		return ActionCallLLM
+
+	case ItemTypeAssistant:
+		// Assistant text-only reply (no tool-actions after it). Rest at idle
+		// for root AND nested threads alike: ending a turn with plain
+		// assistant text is a thread's normal resting state. Coming to rest
+		// settles the run — that text is what the run returns, and what it
+		// writes as the thread's summary — but it ends nothing: the thread is
+		// free to run again. A turn that ends on an error rests the same way
+		// (see the ItemTypeError case): the error is just an item in the
+		// thread's history, not a verdict on the thread.
 		return ActionNone
 
 	default:
@@ -242,20 +224,60 @@ func effectiveItems(items []ConversationItem) []ConversationItem {
 	return out
 }
 
-// currentToolBatch returns the contiguous trailing run of tool-actions
-// at the end of items. Tool-actions are always inserted consecutively
-// after the assistant message that requested them, so the current batch
-// is the longest tool-action suffix.
-func currentToolBatch(items []ConversationItem) []ConversationItem {
+// currentBatch returns the contiguous trailing run of work the turn dispatched:
+// tool-actions, the child threads a delegating or create_thread call spawned,
+// and the meta-tool results answered in the worker. All three are inserted
+// consecutively after the assistant message that asked for them, so the current
+// batch is the longest suffix of the three together.
+//
+// Child threads belong in it for exactly the reason tool-actions do. A turn that
+// calls four sub-agents and a bash command is waiting on five things and is
+// finished when the LAST of them finishes — not when the last-INSERTED one does.
+// While children could only run one at a time those were the same event, because
+// the last-spawned child was necessarily the last to settle; running them side by
+// side pulls the two apart, and asking only about the final item resumes the
+// parent on whichever child happened to be quickest, discarding the rest.
+func currentBatch(items []ConversationItem) []ConversationItem {
 	end := len(items)
 	start := end
-	for start > 0 && items[start-1].Type == ItemTypeToolAction {
+	for start > 0 && isBatchMember(items[start-1]) {
 		start--
 	}
 	if start == end {
 		return nil
 	}
 	return items[start:end]
+}
+
+// isBatchMember reports whether an item is a piece of dispatched work rather
+// than a message. Receipts are members despite standing for no work of this
+// turn's: excluding them would end the walk-back early and hide the batch behind
+// one, which is the same class of mistake as stopping at the last item.
+func isBatchMember(item ConversationItem) bool {
+	switch item.Type {
+	case ItemTypeToolAction, ItemTypeThread, ItemTypeMetaToolResult:
+		return true
+	default:
+		return false
+	}
+}
+
+// batchMemberSettled reports whether one member of a batch has finished, asking
+// each kind the question that applies to it. siblings is the array the item
+// stands in, which resolving an alias to the thread it is a view of needs.
+func batchMemberSettled(siblings []ConversationItem, item ConversationItem) bool {
+	switch {
+	case item.Type == ItemTypeToolAction:
+		return isToolTerminal(item)
+	case item.Type == ItemTypeMetaToolResult:
+		return true // answered in the worker, so it arrives finished
+	case isReceiptItem(item):
+		// A run nobody in this thread asked for. It is news, not work, so there
+		// is nothing here waiting on it.
+		return true
+	default:
+		return itemRunSettled(siblings, item)
+	}
 }
 
 // isToolTerminal returns true if a tool-action is in a state that will
@@ -268,9 +290,14 @@ func isToolTerminal(t ConversationItem) bool {
 // anyBatchCancelled returns true if at least one tool-action in the
 // batch was cancelled (the user denied it). A single denial stops
 // the turn — the LLM shouldn't proceed with partial tool results.
+//
+// Asked only of tool-actions, the only batch members a user is prompted to
+// approve. A child thread carries no approval state of its own; a run of its
+// that was stopped settles as a stopped run, and the parent acts on that the way
+// it acts on any other answer.
 func anyBatchCancelled(batch []ConversationItem) bool {
 	for _, t := range batch {
-		if t.State == StateCancelled {
+		if t.Type == ItemTypeToolAction && t.State == StateCancelled {
 			return true
 		}
 	}
@@ -313,9 +340,16 @@ func (w *ConversationWorker) reconcileThread() {
 // running. The deduction is computed from in-memory state alone (processingStartedAt
 // + approvalWaitStartedAt); only the single derived startedAt field touches the doc.
 func (r *run) updateApprovalWaitAnchor() {
+	r.updateApprovalWaitAnchorForThread(r.t.thread.itemID)
+}
+
+// updateApprovalWaitAnchorForThread applies the approval edges for this run
+// without reading its mutable thread context. The actor uses the immutable
+// live-run registry copy while the turn goroutine is unwinding.
+func (r *run) updateApprovalWaitAnchorForThread(threadItemID string) {
 	// Asked of this turn's own subtree: the anchor it adjusts is this turn's, so
 	// a sibling parked at its own approval prompt must not move it.
-	hasPending, hasExecuting := r.approvalBlockState(r.t.thread.itemID)
+	hasPending, hasExecuting := r.approvalBlockState(threadItemID)
 	parked := hasPending && !hasExecuting
 	if parked == r.t.wasBlockedOnApprovals {
 		return // no edge this tick
@@ -356,15 +390,11 @@ const maxReconcilePasses = 10
 // maxReconcilePasses. The run() loop drains after every event; requestReconcile
 // drains here directly when there is no loop to hand the pass to.
 //
-// It stands down entirely while a turn is on its own goroutine. The reducer
-// drives tool execution and thread dispatch, and the running turn is writing
-// exactly that state — so the pass waits for the turn to retire, which is when
-// it always ran, back when a turn owned the loop and no pass could land mid-turn
-// at all. finishRetiredTurn re-raises the flag, so nothing is dropped by
-// waiting. Narrowing this to the threads a live run does NOT own is Phase G's
-// job, and the point of the whole exercise.
+// A pass may run while turns are live, but admission rejects their own threads
+// and preserves the single write-capable slot. This lets the walk-down discover
+// stamped read-only siblings without letting it dispatch over an owned thread.
 func (r *run) drainReconcile() {
-	for i := 0; i < maxReconcilePasses && r.needsReconcile.Load() && !r.hasLiveRun(); i++ {
+	for i := 0; i < maxReconcilePasses && r.needsReconcile.Load(); i++ {
 		r.tryReconcile()
 	}
 }
@@ -407,12 +437,17 @@ func (r *run) tryReconcile() {
 		}
 	}()
 
-	r.updateApprovalWaitAnchor()
+	liveThreads := r.liveThreadSet()
+	for _, live := range r.liveRuns() {
+		r.runFor(live.t).updateApprovalWaitAnchorForThread(live.threadItemID)
+	}
+	if len(liveThreads) == 0 {
+		r.updateApprovalWaitAnchor()
+	}
 
-	// Command the engine to advance any non-terminal tool-action. The worker
-	// observes every doc update, so it drives tool execution directly rather
-	// than relying on the engine's reactive observer to notice and react.
-	r.driveToolActions()
+	// Command the engine only for inactive threads. Live runs own their thread's
+	// tool state; the actor retains sole ownership of the shared command tracker.
+	r.driveToolActionsExcept(liveThreads)
 
 	// Doc-driven threads (a /compact or /handoff fold, any plugin-inserted
 	// needsStrategyRun thread) are picked up here as well as from the items
@@ -428,47 +463,75 @@ func (r *run) tryReconcile() {
 		return
 	}
 
-	// Read activity first. The threadItemId in processingState is only
-	// meaningful when an operation is in flight (activity != null).
-	// When idle, the reducer evaluates the root thread.
-	activity := r.getActivity()
-	threadItemID := ""
-	if activity != ActivityNone {
-		threadItemID = r.getProcessingThreadItemID()
+	// The thread the projection names is only meaningful when an operation is in
+	// flight; when nothing is, the pass starts at the root.
+	//
+	// It is a starting point and no longer the only one. The projection describes
+	// ONE run and a conversation may hold several, so a pass anchored on it alone
+	// spends itself inside whichever subtree it happens to name and never looks at
+	// the siblings — which is precisely the state a batch of read-only children
+	// arrives in, the first of them running and the rest waiting on a pass that
+	// never reaches them. The root is therefore always walked too.
+	//
+	// The anchor is still walked FIRST, and is not redundant with the root: it is
+	// the only way to reach a thread the descent deliberately refuses to walk into.
+	// continueInNewThread points the projection at a brand-new EMPTY child, and an
+	// empty child is never a descent target (see below).
+	anchor := ""
+	if r.getActivity() != ActivityNone {
+		anchor = r.getProcessingThreadItemID()
 	}
 
-	// Walk-down loop: evaluate the thread, and if the last effective item
-	// is an incomplete child thread, descend into it.
-	currentActivity := activity
-	currentThreadID := threadItemID
-	for {
+	// walkTarget is one thread the pass has yet to evaluate, carrying the activity
+	// it was reached with.
+	type walkTarget struct {
+		threadItemID string
+		activity     string
+	}
+
+	queue := []walkTarget{{threadItemID: anchor, activity: r.threadActivity(anchor)}}
+	if anchor != "" {
+		queue = append(queue, walkTarget{threadItemID: "", activity: r.threadActivity("")})
+	}
+
+	// Walk: evaluate a thread, and where it has nothing to do itself, queue the
+	// incomplete children below it. Both branches can reach the same thread, so
+	// each is evaluated once.
+	visited := make(map[string]bool, len(queue))
+	for len(queue) > 0 {
+		target := queue[0]
+		queue = queue[1:]
+		if visited[target.threadItemID] {
+			continue
+		}
+		visited[target.threadItemID] = true
+
 		var items []ConversationItem
-		if currentThreadID != "" {
-			if arr := r.doc.GetThreadItemsArray(currentThreadID); arr != nil {
+		if target.threadItemID != "" {
+			if arr := r.doc.GetThreadItemsArray(target.threadItemID); arr != nil {
 				items = r.doc.GetItemsFromArray(arr)
 			}
 		} else {
 			items = r.doc.GetItems()
 		}
-		isRoot := currentThreadID == ""
+		isRoot := target.threadItemID == ""
 
-		action := decideNextAction(items, currentActivity, isRoot, r.isExplicitContinuation(currentThreadID))
+		action := decideNextAction(items, target.activity, isRoot, r.isExplicitContinuation(target.threadItemID))
 
 		switch action {
 		case ActionNone:
-			// Check for walk-down: find the FIRST incomplete child thread
-			// among the effective items and descend into it. With multiple
-			// sibling sub-threads (parent spawned several via multi-tool-use)
-			// this dispatches them in spawn order, one per reconcile tick;
-			// each completion ticks the reducer again and the next sibling
-			// gets picked up. The descent is recursive, so sub-sub-threads
-			// and deeper inherit the same fan-out behavior.
+			// Queue EVERY incomplete child, not the first one only. A parent that
+			// spawned several children in one multi-tool-use turn parks on all of
+			// them at once, and stopping at the first would let whichever child ran
+			// hide the rest for as long as it ran: they would be dispatched in spawn
+			// order, one per completion, whatever their capability. Admission is
+			// what decides how many of them may then go at once — read-only
+			// siblings together, a write-capable one alone (canAdmitThread) — and it
+			// cannot decide anything about a thread the walk never offers it.
 			//
-			// Picking last-only would strand earlier siblings: after the
-			// last-spawned child completes, the loop terminates with
-			// !threadRunSettled(last)==false and the unfinished earlier
-			// siblings never get dispatched.
-			descended := false
+			// A child a live run already owns is queued like any other and refused
+			// by admission; walking through it is how a thread nested below one is
+			// still reached.
 			for _, item := range effectiveItems(items) {
 				// Asked of the THREAD, not of one call into it: descending is about
 				// finding a transcript with work left to do, and the thread's
@@ -482,8 +545,7 @@ func (r *run) tryReconcile() {
 				// legitimate auto-run of an empty thread is an explicit
 				// continuation (continueInNewThread / the pendingRequests
 				// orchestrator): those call requestLLM(newThreadID) so the
-				// thread is the walk-down's STARTING thread (currentThreadID set
-				// from processingState), reached at the top of this loop — never
+				// thread is the walk's ANCHOR, seeded above — never reached
 				// by descending here. Descending into an empty child instead
 				// borrows the PARENT's awaiting_llm marker (left by the parent's
 				// own pending tool/turn) and fires an LLM call on a thread the
@@ -495,18 +557,28 @@ func (r *run) tryReconcile() {
 				if childArr == nil || len(effectiveItems(r.doc.GetItemsFromArray(childArr))) == 0 {
 					continue
 				}
-				currentThreadID = item.ItemID
-				descended = true
-				break
+				// A child holding a run of its own is evaluated on that run's
+				// activity; one holding none inherits its parent's, which is what
+				// carries a parked parent's awaiting_llm down to the children it is
+				// parked on. Inheriting unconditionally would hand every sibling
+				// whichever activity the anchor happened to carry — so a child
+				// reached below a sibling mid-call would read as calling_llm and be
+				// refused by the reducer's own in-flight guard, before admission
+				// ever saw it.
+				childActivity := r.threadActivity(item.ItemID)
+				if childActivity == ActivityNone {
+					childActivity = target.activity
+				}
+				queue = append(queue, walkTarget{threadItemID: item.ItemID, activity: childActivity})
 			}
-			if descended {
-				continue // walk down into the chosen sibling
-			}
-			return // truly nothing to do
 
 		case ActionCallLLM:
-			r.dispatchCallLLMOnThread(currentThreadID)
-			return
+			// Dispatch and keep walking. The queue behind this thread holds its
+			// siblings, and they are dispatched in this same pass rather than one
+			// per pass — so a batch of read-only children all start together
+			// instead of arriving staggered across reconcile ticks. A dispatch the
+			// admission gate refuses re-raises needsReconcile itself.
+			r.dispatchCallLLMOnThread(target.threadItemID)
 
 		case ActionGoIdle:
 			// All tools were denied/cancelled while activity was "awaiting_llm".
@@ -519,11 +591,16 @@ func (r *run) tryReconcile() {
 			// while a tool is actually running cancels everything and writes idle
 			// (clearing awaiting_llm) BEFORE the reducer runs, so this continue
 			// only ever fires when the block was purely tool approvals.
-			if r.hasPendingItems(currentThreadID) {
-				r.dispatchCallLLMOnThread(currentThreadID)
+			//
+			// Resting writes conversation-wide state, so the pass ends here rather
+			// than carrying on with a queue built before it. needsReconcile brings
+			// the next pass, which sees what resting left behind.
+			if r.hasPendingItems(target.threadItemID) {
+				r.dispatchCallLLMOnThread(target.threadItemID)
 				return
 			}
-			r.restPromotingQueue(currentThreadID)
+			r.restPromotingQueue(target.threadItemID)
+			r.needsReconcile.Store(true)
 			return
 		}
 	}
@@ -537,6 +614,12 @@ func (r *run) tryReconcile() {
 // normal user bubbles sitting at idle with no polite-specific handling (D4).
 func (r *run) restPromotingQueue(threadItemID string) {
 	r.promotePendingItems(threadItemID)
+	// Release the NAMED thread's claim. An idle frame drops only the claim its
+	// own run holds, and the reducer rests threads it is not itself running —
+	// so leaving this to the frame would keep the entry standing, keep the
+	// projection reporting it, and hand the next reconcile pass the same
+	// ActionGoIdle it just handled.
+	r.releaseLLM(threadItemID)
 	r.sendStatus("idle", "")
 }
 
@@ -553,9 +636,10 @@ func (r *run) dispatchCallLLMOnThread(threadItemID string) {
 	// presents to the user as "user message appended but LLM loop never starts;
 	// hitting Continue kicks it off".
 	//
-	// Conversation-wide, and paired with the isLLMClaimed gate below: the turn
-	// this dispatches runs inline on the run() goroutine. Phase G narrows both.
-	if r.anyRunState() != StateIdle {
+	// Actor-backed runs use the live registry for thread and capability admission.
+	// Direct tests retain the ambient-state guard because they have no registry.
+	if (!r.actorStarted.Load() && r.anyRunState() != StateIdle) ||
+		(r.actorStarted.Load() && !r.canAdmitThread(threadItemID)) {
 		r.needsReconcile.Store(true)
 		return
 	}
@@ -577,12 +661,9 @@ func (r *run) dispatchCallLLMOnThread(threadItemID string) {
 	// Consume the one-shot continuation marker only once we are actually going
 	// to dispatch; if the dispatch is refused, leave it for the next reconcile tick.
 	//
-	// isLLMClaimed is the serial-execution gate, and it is deliberately
-	// conversation-wide: the claim is per-thread, but only one turn is admitted at
-	// a time, so the reducer, the tool drive and the document sequences that
-	// straddle a lock release all still have a single writer. This is the line
-	// Phase G narrows — to "in parallel, but only for read-only children".
-	if r.isLLMClaimed() || !r.claimLLM(threadItemID) {
+	// The live registry reserves the capability slot; the document claim is the
+	// same-thread compare-and-set backstop.
+	if !r.claimLLM(threadItemID) {
 		// A turn is already in flight — re-tickle so the next reconcile
 		// tick picks this up after that call completes.
 		r.needsReconcile.Store(true)

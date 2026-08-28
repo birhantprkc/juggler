@@ -169,7 +169,7 @@ func TestCompactionSubthread_DrainsRootQueueOnCompletion(t *testing.T) {
 	}
 
 	// Both scripted turns must have been consumed.
-	if n := len(w.mock.responses); n != 0 {
+	if n := w.mock.remaining(); n != 0 {
 		t.Fatalf("expected both scripted turns consumed, %d left", n)
 	}
 

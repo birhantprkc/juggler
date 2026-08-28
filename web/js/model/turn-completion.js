@@ -84,7 +84,9 @@ export function inspectTurn(conversation, items, { sinceTurn } = {}) {
   // keeps its claim while it waits and so never reaches idle on its own.
   if (hasPending) return { done: true, parked: true, parkedTool: pendingTool };
   // Read processingState ONCE (the durable signal the worker writes) and derive
-  // the phase from it.
+  // the phase from it. The top-level projection is the right read here: this
+  // asks whether the CONVERSATION has quiesced, and the projection reports a
+  // running status while any of its threads still holds a run.
   const ps = conversation.processingState;
   if (ps && ps.status !== 'idle') return notDone;
   // Idle. Fence mode additionally requires a NEW completed turn. The counter

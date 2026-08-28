@@ -155,6 +155,7 @@ import { runTests as runNewThreadFocusTests } from '../unit-tests/new-thread-foc
 import { runTests as runApprovalFocusReturnTests } from '../unit-tests/approval-focus-return-test.js';
 import { runTests as runApprovalDraftFocusTests } from '../unit-tests/approval-draft-focus-test.js';
 import { runTests as runNestedApprovalStatusTests } from '../unit-tests/nested-approval-status-test.js';
+import { runTests as runConcurrentRunsTests } from '../unit-tests/concurrent-runs-test.js';
 import { runTests as runThreadAliasTests } from '../unit-tests/thread-alias-test.js';
 import { runTests as runRunRecordsTests } from '../unit-tests/run-records-test.js';
 import { runTests as runToolGroupingTests } from '../unit-tests/tool-grouping-test.js';
@@ -427,6 +428,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:approval-focus-return', run: runApprovalFocusReturnTests, needsExclusiveRun: true },
   { name: 'unit:approval-draft-focus', run: runApprovalDraftFocusTests, needsExclusiveRun: true },
   { name: 'unit:nested-approval-status', run: runNestedApprovalStatusTests },
+  { name: 'unit:concurrent-runs', run: runConcurrentRunsTests },
   { name: 'unit:run-records', run: runRunRecordsTests },
   { name: 'unit:thread-alias', run: runThreadAliasTests },
   // Exclusive not for focus but for the shared origin: this suite writes the

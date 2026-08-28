@@ -165,14 +165,14 @@ export async function runTests() {
   }
 
   // --- 5: getThreadStatus — awaiting trumps the live "running" status ---
-  // The tile a thread is parked on has live.threadId === its own itemId and a
+  // The tile a thread is parked on carries a live entry of its own with a
   // streaming message, but a pending approval in its subtree must still win so
   // the tile turns orange (paused), not green (running). Regression: the live
   // branch ran before the pending check and masked the orange highlight on the
   // very tile the user is waiting on.
   try {
     const directWaiting = buildRoot([thread('T1', [toolAction('pending')])]).get(0);
-    const live = { message: 'Streaming • 10 tokens', threadId: 'T1' };
+    const live = { byThread: { 'T1': 'Streaming • 10 tokens' } };
     const s = getThreadStatus(directWaiting, live);
     assert(s.kind === 'paused',
       `a thread directly awaiting approval must be 'paused' even with a live ` +
@@ -180,14 +180,14 @@ export async function runTests() {
 
     // And a nested pending (live targets the parent) keeps the parent paused.
     const parentWaiting = buildRoot([thread('P1', [thread('C1', [toolAction('pending')])])]).get(0);
-    const sParent = getThreadStatus(parentWaiting, { message: 'Working…', threadId: 'P1' });
+    const sParent = getThreadStatus(parentWaiting, { byThread: { 'P1': 'Working…' } });
     assert(sParent.kind === 'paused',
       `a thread whose descendant awaits approval must be 'paused' even with a ` +
 			`live running status; got '${sParent.kind}'`);
 
     // No pending → the live running status still wins (no false paused).
     const running = buildRoot([thread('T2', [toolAction('completed')])]).get(0);
-    const sRun = getThreadStatus(running, { message: 'Streaming…', threadId: 'T2' });
+    const sRun = getThreadStatus(running, { byThread: { 'T2': 'Streaming…' } });
     assert(sRun.kind === 'running',
       `a thread with no pending approval must still report 'running' from its ` +
 			`live status; got '${sRun.kind}'`);
@@ -198,15 +198,15 @@ export async function runTests() {
     errors.push(`getThreadStatus awaiting-trumps-running: ${msg(e)}`);
   }
 
-  // --- 5b: getThreadStatus — a sibling waiting its turn is 'queued', not 'idle' ---
-  // Threads launched together run one at a time. While a sibling is the live
-  // thread, the not-yet-run ones are incomplete with no result. A non-null
-  // `live` snapshot means the conversation is still processing, so those
-  // siblings are waiting their turn ('queued') — only when the conversation
-  // goes idle (live === null) does an unfinished thread become 'idle'.
+  // --- 5b: getThreadStatus — a sibling not yet dispatched is 'queued', not 'idle' ---
+  // A thread with no live entry of its own, while others are running, has not
+  // been dispatched yet: it is incomplete with no result, and its turn comes.
+  // Only when nothing at all is running does an unfinished thread become
+  // 'idle'. A sibling that IS running carries its own entry and reports
+  // 'running' (5c), which is what makes the read-only fan-out legible.
   try {
     const waitingSibling = buildRoot([thread('S1', [])]).get(0);
-    const liveOnOther = { message: 'Streaming • 12 tokens', threadId: 'S2' };
+    const liveOnOther = { byThread: { 'S2': 'Streaming • 12 tokens' } };
     const sQueued = getThreadStatus(waitingSibling, liveOnOther);
     assert(sQueued.kind === 'queued',
       `an incomplete sibling thread must be 'queued' while another thread is ` +
@@ -224,6 +224,34 @@ export async function runTests() {
   } catch (e) {
     failed++;
     errors.push(`getThreadStatus queued-vs-idle: ${msg(e)}`);
+  }
+
+  // --- 5c: getThreadStatus — siblings that are BOTH running each report it ---
+  // Read-only children run alongside each other and alongside their parent, so
+  // "another thread is live" is no longer a reason to call this one queued.
+  // Each thread answers from its own entry: two spinners, two messages, and a
+  // third thread with no entry still waiting its turn beside them.
+  try {
+    const siblings = buildRoot([thread('R1', []), thread('R2', []), thread('R3', [])]);
+    const live = {
+      byThread: { 'R1': 'Streaming • 10 tokens', 'R2': 'Running tools • 4s' }
+    };
+    const s1 = getThreadStatus(siblings.get(0), live);
+    const s2 = getThreadStatus(siblings.get(1), live);
+    const s3 = getThreadStatus(siblings.get(2), live);
+    assert(s1.kind === 'running' && s1.spinner,
+      `a running thread must report 'running' with a spinner; got '${s1.kind}'`);
+    assert(s2.kind === 'running' && s2.spinner,
+      `a second thread running at the same time must ALSO report 'running'; got '${s2.kind}'`);
+    assert(s1.message === 'Streaming • 10 tokens' && s2.message === 'Running tools • 4s',
+      `each running thread must show its OWN status line; got '${s1.message}' / '${s2.message}'`);
+    assert(s3.kind === 'queued',
+      `a thread with no run of its own must still be 'queued' beside them; got '${s3.kind}'`);
+
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`getThreadStatus concurrent-siblings: ${msg(e)}`);
   }
 
   // --- 6: getThreadStatus — awaiting trumps a non-empty `result` ---

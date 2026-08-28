@@ -440,38 +440,46 @@ export async function runTests() {
   // L — the throughput source itself. The contract that matters is the honest
   // zero: every phase that isn't streaming must report no flow rather than a
   // stale or inferred rate, because a spinner speed is a claim about reality.
+  // Sampled and read per thread, so a column reports the flow into the run it
+  // is showing rather than whatever some sibling is doing; '' is the root's key.
   try {
     const llm = new LLMState();
     const id = 'conv-throughput';
+    const root = '';
 
-    if (llm.getThroughput(id) !== 0) throw new Error('idle conversation should report 0');
+    if (llm.getThroughput(id, root) !== 0) throw new Error('idle conversation should report 0');
 
     // Streaming with output advancing → a positive rate.
     llm.start(id);
     llm.updateStatus(id, 'streaming', { outputTokens: 0 });
-    llm._sampleThroughput(id, 0);
+    llm._sampleThroughput(id, root, 0);
     await new Promise(r => setTimeout(r, 60));
-    llm._sampleThroughput(id, 30);
-    const streaming = llm.getThroughput(id);
+    llm._sampleThroughput(id, root, 30);
+    const streaming = llm.getThroughput(id, root);
     if (!(streaming > 0)) throw new Error(`streaming with advancing tokens should be > 0, got ${streaming}`);
+
+    // A sibling thread has no samples of its own, so it reports no flow — this
+    // run's rate is not the conversation's rate.
+    if (llm.getThroughput(id, 'other-thread') !== 0)
+      throw new Error('a thread with no samples must report 0, not a sibling\'s rate');
 
     // Same samples, but parked on a tool call → 0. No output is arriving, and
     // claiming otherwise would be the spinner inventing movement.
     llm.updateStatus(id, 'processing_tools', {});
-    if (llm.getThroughput(id) !== 0)
-      throw new Error(`processing_tools should report 0, got ${llm.getThroughput(id)}`);
+    if (llm.getThroughput(id, root) !== 0)
+      throw new Error(`processing_tools should report 0, got ${llm.getThroughput(id, root)}`);
 
     // A count that stops advancing decays to 0 rather than coasting.
     llm.updateStatus(id, 'streaming', { outputTokens: 30 });
-    const stalled = llm._throughput.get(id);
+    const stalled = llm._throughput.get(id)?.get(root);
     if (stalled) stalled.at = Date.now() - 60000;
-    if (llm.getThroughput(id) !== 0)
-      throw new Error(`a stalled count should report 0, got ${llm.getThroughput(id)}`);
+    if (llm.getThroughput(id, root) !== 0)
+      throw new Error(`a stalled count should report 0, got ${llm.getThroughput(id, root)}`);
 
     // Stopping clears the sample, so a later turn can't inherit a stale rate.
     llm.stop(id);
     if (llm._throughput.has(id)) throw new Error('stop() should clear the throughput sample');
-    if (llm.getThroughput(id) !== 0) throw new Error('a stopped conversation should report 0');
+    if (llm.getThroughput(id, root) !== 0) throw new Error('a stopped conversation should report 0');
     passed++;
   } catch (e) { failed++; errors.push(`LLMState.getThroughput: ${e.message}`); }
 

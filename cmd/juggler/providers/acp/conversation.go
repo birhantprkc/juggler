@@ -16,34 +16,49 @@ import (
 	"juggler/internal/jlog"
 )
 
-// conversation is the provider.Conversation for one ACP dialogue. It owns the
-// agent subprocess + JSON-RPC transport (lazily spawned on first Submit) and
-// the agent's session id, and implements inboundHandler so the transport can
-// route the agent's session/update notifications and session/request_permission
-// calls back into the active turn.
-//
-// Concurrency: Submit/Subscribe/CacheTTL are called serially by the worker
-// manager, but Cancel/Close may race an in-flight Submit (they exist to
-// interrupt one). The live session is therefore held in an atomic pointer, and
-// the current turn in another, so the racing callers never touch a mutex on the
-// hot path.
-//
-// "Serially" is load-bearing and NOT yet true of two turns on two threads: this
-// conversation holds ONE session and ONE turn pointer and ignores
-// MessageRequest.ThreadID entirely, so a second concurrent Submit would replace
-// the first's turn pointer and every session/update would then be routed to the
-// wrong callback. Cancel is whole-conversation for the same reason — there is a
-// single sessionID to cancel. Before per-thread turns can overlap on an ACP
-// conversation it needs a per-thread session map, the way claudecode has one.
+var errConversationClosed = errors.New("acp: conversation closed")
+
+// conversation is the provider.Conversation for one Juggler dialogue. Each
+// Juggler thread owns an independent ACP subprocess, transport, and session so
+// distinct threads can submit concurrently without sharing agent history or
+// inbound callback routing. A goroutine owns the thread map; each threadSession
+// serialises its own Submit calls with a channel token.
 type conversation struct {
 	client   *Client
 	convID   string
 	approver Approver
 
-	initLock lock                    // serialises (re)spawn; never held on the reader path
-	sess     atomic.Pointer[session] // live transport + sessionId, nil until first Submit
+	ops  chan conversationOp
+	done chan struct{}
+}
 
-	turn atomic.Pointer[turnState] // the in-flight turn, nil between turns
+type conversationOpKind int
+
+const (
+	conversationGetThread conversationOpKind = iota
+	conversationCancelThread
+	conversationCancelAll
+	conversationCloseAll
+)
+
+type conversationOp struct {
+	kind     conversationOpKind
+	threadID string
+	resp     chan *threadSession
+	done     chan struct{}
+}
+
+// threadSession owns all mutable ACP state for one MessageRequest.ThreadID. The
+// transport binds this value as its inboundHandler, making notification and
+// request routing independent of every other thread.
+type threadSession struct {
+	conversation *conversation
+	threadID     string
+
+	initLock lock
+	submit   chan struct{}
+	sess     atomic.Pointer[session]
+	turn     atomic.Pointer[turnState]
 }
 
 // session bundles the live transport with its negotiated ACP session id so both
@@ -59,8 +74,74 @@ type turnState struct {
 	cb provider.StructuredStreamCallback
 
 	guard  lock
-	output strings.Builder // agent text/thinking, for the output-token estimate
-	cbErr  error           // first error the callback returned, if any
+	output strings.Builder
+	cbErr  error
+}
+
+func newConversation(client *Client, convID string, approver Approver) *conversation {
+	c := &conversation{
+		client:   client,
+		convID:   convID,
+		approver: approver,
+		ops:      make(chan conversationOp),
+		done:     make(chan struct{}),
+	}
+	go c.run()
+	return c
+}
+
+func newThreadSession(c *conversation, threadID string) *threadSession {
+	t := &threadSession{
+		conversation: c,
+		threadID:     threadID,
+		initLock:     newLock(),
+		submit:       make(chan struct{}, 1),
+	}
+	t.submit <- struct{}{}
+	return t
+}
+
+func (c *conversation) run() {
+	threads := make(map[string]*threadSession)
+	for {
+		op := <-c.ops
+		switch op.kind {
+		case conversationGetThread:
+			t := threads[op.threadID]
+			if t == nil {
+				t = newThreadSession(c, op.threadID)
+				threads[op.threadID] = t
+			}
+			op.resp <- t
+		case conversationCancelThread:
+			if t := threads[op.threadID]; t != nil {
+				t.cancel()
+			}
+			op.done <- struct{}{}
+		case conversationCancelAll:
+			for _, t := range threads {
+				t.cancel()
+			}
+			op.done <- struct{}{}
+		case conversationCloseAll:
+			for _, t := range threads {
+				t.close()
+			}
+			op.done <- struct{}{}
+			close(c.done)
+			return
+		}
+	}
+}
+
+func (c *conversation) thread(threadID string) *threadSession {
+	resp := make(chan *threadSession, 1)
+	select {
+	case c.ops <- conversationOp{kind: conversationGetThread, threadID: threadID, resp: resp}:
+		return <-resp
+	case <-c.done:
+		return nil
+	}
 }
 
 func (ts *turnState) appendOutput(s string) {
@@ -89,37 +170,44 @@ func (ts *turnState) err() error {
 	return ts.cbErr
 }
 
-// Submit drives one ACP turn: ensure a live session, send session/prompt, and
-// block until the agent reports a stop reason — session/update notifications
-// stream to the callback meanwhile.
+// Submit drives one ACP turn on req.ThreadID. Different thread sessions run
+// independently; the per-thread token keeps prompts on one ACP session ordered.
 func (c *conversation) Submit(ctx context.Context, req provider.MessageRequest, callback provider.StructuredStreamCallback) (*provider.StreamResult, error) {
 	promptText := latestUserText(req.Messages)
 	if strings.TrimSpace(promptText) == "" {
-		// Nothing to send. ACP agents own their tool loop, so there are no
-		// tool-result continuation turns to forward; an empty prompt would only
-		// confuse the agent (or make it re-run the prior turn). Fail before
-		// spawning rather than send a blank turn.
 		return nil, errors.New("acp: no user message to send")
 	}
+	t := c.thread(req.ThreadID)
+	if t == nil {
+		return nil, errConversationClosed
+	}
+	return t.submitTurn(ctx, promptText, callback)
+}
 
-	sess, err := c.ensureSession(ctx)
+func (t *threadSession) submitTurn(ctx context.Context, promptText string, callback provider.StructuredStreamCallback) (*provider.StreamResult, error) {
+	select {
+	case <-t.submit:
+		defer func() { t.submit <- struct{}{} }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	sess, err := t.ensureSession(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	ts := &turnState{cb: callback, guard: newLock()}
-	c.turn.Store(ts)
-	defer c.turn.Store(nil)
+	t.turn.Store(ts)
+	defer t.turn.CompareAndSwap(ts, nil)
 
 	raw, err := sess.rpc.call(ctx, "session/prompt", promptParams{
 		SessionID: sess.sessionID,
 		Prompt:    []contentBlock{{Type: "text", Text: promptText}},
 	})
 	if err != nil {
-		// A dead transport means the agent crashed / EOF'd — drop the session so
-		// the next Submit re-spawns cleanly.
 		if errors.Is(err, errTransportClosed) {
-			c.dropSession(sess)
+			t.dropSession(sess)
 		}
 		return nil, err
 	}
@@ -132,31 +220,47 @@ func (c *conversation) Submit(ctx context.Context, req provider.MessageRequest, 
 		jlog.Debug("[acp] session/prompt: decode result: %v", err)
 	}
 
-	out := ts.outputString()
 	return &provider.StreamResult{
 		StopReason:             pr.StopReason,
 		InputTokens:            provider.EstimateTokens(promptText),
 		InputTokensApproximate: true,
-		OutputTokens:           provider.EstimateTokens(out),
+		OutputTokens:           provider.EstimateTokens(ts.outputString()),
 	}, nil
 }
 
-// Subscribe is a no-op: ACP agents are request/response and never emit a turn
-// without a preceding session/prompt.
 func (c *conversation) Subscribe(sink provider.TurnSink) {}
 
-// CacheTTL is 0: ACP exposes no time-bounded prompt-cache anchor.
 func (c *conversation) CacheTTL() time.Duration { return 0 }
 
-// Cancel interrupts the in-flight turn while PRESERVING resumability: it sends
-// session/cancel (a cooperative interrupt) and leaves the subprocess alive so
-// the next turn continues the same session. The agent ends the current turn
-// with stopReason "cancelled", which unblocks the parked session/prompt call.
-//
-// threadItemID is ignored: the conversation has one ACP session shared by every
-// thread, so there is nothing narrower to cancel. See the type comment.
+// Cancel cooperatively interrupts one thread, or every existing thread for
+// provider.CancelAllThreads, while preserving each live ACP session.
 func (c *conversation) Cancel(threadItemID string) {
-	sess := c.sess.Load()
+	done := make(chan struct{}, 1)
+	kind := conversationCancelThread
+	if threadItemID == provider.CancelAllThreads {
+		kind = conversationCancelAll
+	}
+	select {
+	case c.ops <- conversationOp{kind: kind, threadID: threadItemID, done: done}:
+		<-done
+	case <-c.done:
+	}
+}
+
+// Close releases every thread's subprocess and transport. It is idempotent; the
+// handle is terminal after the first call.
+func (c *conversation) Close() error {
+	done := make(chan struct{}, 1)
+	select {
+	case c.ops <- conversationOp{kind: conversationCloseAll, done: done}:
+		<-done
+	case <-c.done:
+	}
+	return nil
+}
+
+func (t *threadSession) cancel() {
+	sess := t.sess.Load()
 	if sess == nil || sess.sessionID == "" {
 		return
 	}
@@ -165,35 +269,32 @@ func (c *conversation) Cancel(threadItemID string) {
 	}
 }
 
-// Close releases the subprocess and transport. Called when the conversation is
-// permanently deleted; safe to call multiple times.
-func (c *conversation) Close() error {
-	c.initLock.acquire()
-	sess := c.sess.Swap(nil)
-	c.initLock.release()
+func (t *threadSession) close() {
+	t.initLock.acquire()
+	sess := t.sess.Swap(nil)
+	t.initLock.release()
 	if sess == nil {
-		return nil
+		return
 	}
 	if sess.sessionID != "" {
 		_ = sess.rpc.notify("session/cancel", cancelParams{SessionID: sess.sessionID})
 	}
 	sess.rpc.close()
-	return nil
 }
 
-// ensureSession returns the live session, spawning the agent and running the
-// initialize + session/new handshake on first use (or after a crash dropped the
-// prior one). Double-checked under initLock so concurrent first-turns spawn once.
-func (c *conversation) ensureSession(ctx context.Context) (*session, error) {
-	if s := c.sess.Load(); s != nil && !s.rpc.closed() {
+// ensureSession lazily spawns and handshakes this thread's agent, or replaces a
+// transport dropped after a crash.
+func (t *threadSession) ensureSession(ctx context.Context) (*session, error) {
+	if s := t.sess.Load(); s != nil && !s.rpc.closed() {
 		return s, nil
 	}
-	c.initLock.acquire()
-	defer c.initLock.release()
-	if s := c.sess.Load(); s != nil && !s.rpc.closed() {
+	t.initLock.acquire()
+	defer t.initLock.release()
+	if s := t.sess.Load(); s != nil && !s.rpc.closed() {
 		return s, nil
 	}
 
+	c := t.conversation
 	agent, err := resolveAgent(c.client.workingDir, c.client.model)
 	if err != nil {
 		return nil, err
@@ -202,33 +303,28 @@ func (c *conversation) ensureSession(ctx context.Context) (*session, error) {
 	if err != nil {
 		return nil, err
 	}
-	t := newTransport(proc.stdin, proc.stdout, proc.kill, proc.reap)
-	t.start(c)
+	tr := newTransport(proc.stdin, proc.stdout, proc.kill, proc.reap)
+	tr.start(t)
 
-	sid, err := c.handshake(ctx, t)
+	sid, err := t.handshake(ctx, tr)
 	if err != nil {
-		t.close()
+		tr.close()
 		return nil, err
 	}
-	s := &session{rpc: t, sessionID: sid}
-	c.sess.Store(s)
+	s := &session{rpc: tr, sessionID: sid}
+	t.sess.Store(s)
 	return s, nil
 }
 
-// dropSession tears down and clears the given session if it is still current,
-// so the next Submit re-spawns. Used on crash recovery.
-func (c *conversation) dropSession(s *session) {
-	if c.sess.CompareAndSwap(s, nil) {
+func (t *threadSession) dropSession(s *session) {
+	if t.sess.CompareAndSwap(s, nil) {
 		s.rpc.close()
 	}
 }
 
-// --- inboundHandler ---------------------------------------------------------
-
-// handleNotification routes agent notifications. Runs inline on the reader
-// goroutine, so it must stay non-blocking (it must never take initLock — the
-// handshake holds it while parked on this very reader delivering its response).
-func (c *conversation) handleNotification(method string, params json.RawMessage) {
+// handleNotification runs inline on this thread's transport reader, preserving
+// update order while making cross-thread callback crossover impossible.
+func (t *threadSession) handleNotification(method string, params json.RawMessage) {
 	if method != "session/update" {
 		return
 	}
@@ -237,10 +333,8 @@ func (c *conversation) handleNotification(method string, params json.RawMessage)
 		jlog.Debug("[acp] session/update: decode: %v", err)
 		return
 	}
-	ts := c.turn.Load()
+	ts := t.turn.Load()
 	if ts == nil {
-		// An update with no turn in flight: the agent is chattier than the spec
-		// implies, or a late straggler after a cancel. Nothing to attribute it to.
 		return
 	}
 	chunk, ok := toStreamChunk(p.Update)
@@ -255,36 +349,28 @@ func (c *conversation) handleNotification(method string, params json.RawMessage)
 	}
 }
 
-// handleRequest routes agent→client requests. Runs on its own goroutine (the
-// reader dispatches it that way) so a blocking permission bridge can't stall
-// the session/update stream.
-func (c *conversation) handleRequest(id json.RawMessage, method string, params json.RawMessage) {
-	sess := c.sess.Load()
+func (t *threadSession) handleRequest(id json.RawMessage, method string, params json.RawMessage) {
+	sess := t.sess.Load()
 	if sess == nil {
-		// No live transport to answer on — can only happen during a torn-down
-		// window; dropping is safe (the agent is going away too).
 		return
 	}
 	switch method {
 	case "session/request_permission":
-		c.handlePermission(sess, id, params)
+		t.handlePermission(sess, id, params)
 	default:
-		// fs/read_text_file, fs/write_text_file, terminal/* — declined in the
-		// MVP (their capabilities were not advertised in initialize). Answer with
-		// method-not-found so the agent falls back to its own I/O.
 		if err := sess.rpc.respondError(id, rpcCodeMethodNotFound, "method not supported (MVP): "+method); err != nil {
 			jlog.Debug("[acp] respondError %s: %v", method, err)
 		}
 	}
 }
 
-func (c *conversation) handlePermission(sess *session, id json.RawMessage, params json.RawMessage) {
+func (t *threadSession) handlePermission(sess *session, id json.RawMessage, params json.RawMessage) {
 	var p requestPermissionParams
 	if err := json.Unmarshal(params, &p); err != nil {
 		_ = sess.rpc.respondError(id, rpcCodeInvalidParams, "invalid session/request_permission params")
 		return
 	}
-	outcome := c.approver.Approve(PermissionRequest{ToolCall: p.ToolCall, Options: p.Options})
+	outcome := t.conversation.approver.Approve(PermissionRequest{ToolCall: p.ToolCall, Options: p.Options})
 	var resp permissionResponse
 	if outcome.Selected {
 		resp = permissionResponse{Outcome: permissionOutcomeWire{Outcome: "selected", OptionID: outcome.OptionID}}
@@ -296,9 +382,6 @@ func (c *conversation) handlePermission(sess *session, id json.RawMessage, param
 	}
 }
 
-// latestUserText returns the newest user-role message's content. The agent
-// keeps its own session across prompts, so each turn sends only the new user
-// message (like a warm delta) rather than the whole history.
 func latestUserText(msgs []provider.Message) string {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if provider.MessageTypeToRole(msgs[i].Type) == "user" && strings.TrimSpace(msgs[i].Content) != "" {

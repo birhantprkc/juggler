@@ -163,9 +163,10 @@ func (r *run) processStreamChunk(chunk StreamChunk) {
 		r.processThinkingChunk(chunk)
 	case provider.ContentBlockTypeActivity:
 		// Provider activity is a complete, replaceable snapshot. It lives only in
-		// processingState and is never inserted into conversation history.
-		r.patchProcessingState(func(state map[string]any) {
-			state["description"] = chunk.Content
+		// this run's processingState entry and is never inserted into
+		// conversation history.
+		r.patchLiveRun(func(entry map[string]any) {
+			entry["description"] = chunk.Content
 		})
 	case provider.ContentBlockTypeProviderState:
 		// Hidden continuation data is durable and ordered with the provider's
@@ -181,9 +182,9 @@ func (r *run) processStreamChunk(chunk StreamChunk) {
 		}
 	case provider.ContentBlockTypeProgress:
 		// Transient mid-stream progress: a running output-token estimate
-		// from the provider. Merge into processingState so every peer
-		// renders the same digit off the doc (no point-to-point WS frame
-		// — a second browser view would never receive it). Throttled
+		// from the provider. Merge into this run's processingState entry so
+		// every peer renders the same digit off the doc (no point-to-point WS
+		// frame — a second browser view would never receive it). Throttled
 		// because text deltas can arrive ~30/sec on a fast provider; one
 		// Yjs broadcast per delta would dominate the sync channel.
 		now := time.Now().UnixMilli()
@@ -219,9 +220,11 @@ func (r *run) processStreamChunk(chunk StreamChunk) {
 	}
 }
 
-func (w *ConversationWorker) clearProcessingDescription() {
-	w.patchProcessingState(func(state map[string]any) {
-		delete(state, "description")
+// clearProcessingDescription drops this run's provider-activity line. Scoped to
+// the run's own entry: a sibling's activity snapshot is its own business.
+func (r *run) clearProcessingDescription() {
+	r.patchLiveRun(func(entry map[string]any) {
+		delete(entry, "description")
 	})
 }
 
@@ -426,61 +429,43 @@ func (r *run) processThinkingChunk(chunk StreamChunk) {
 	}
 }
 
-// mergeProcessingTokens augments the live processingState with running token
-// counts so every observing client renders the same spinner text off the doc.
-// Each non-zero argument overwrites its slot; zeros preserve the prior value
+// mergeProcessingTokens augments this run's processingState entry with running
+// token counts, so every observing client renders the same spinner text off the
+// doc. Each non-zero argument overwrites its slot; zeros preserve the prior value
 // (so the "progress" chunk handler can update outputTokens without clobbering
 // the inputTokens/cachedTokens written earlier by the "usage" chunk). No-op
-// when status isn't currently a live processing one — we don't want to revive
+// unless the run's own status is a live processing one — we don't want to revive
 // a stale spinner after sendStatus("idle").
-func (w *ConversationWorker) mergeProcessingTokens(outputTokens, inputTokens, cachedTokens int) {
-	raw := w.doc.GetMetadata("processingState")
-	state, ok := raw.(map[string]any)
-	if !ok || state == nil {
-		return
-	}
-	status, _ := state["status"].(string)
-	switch status {
-	case "preparing", "streaming", "processing_tools", "retrying":
-		// live — fall through
-	default:
-		return
-	}
-	if outputTokens > 0 {
-		state["outputTokens"] = outputTokens
-	}
-	if inputTokens > 0 {
-		state["inputTokens"] = inputTokens
-	}
-	if cachedTokens > 0 {
-		state["cachedTokens"] = cachedTokens
-	}
-	w.doc.SetMetadata("processingState", state)
+//
+// Read and write happen inside one hold on the entry the counts belong to: two
+// runs streaming at once report their own totals, and neither can lose the
+// other's update between a read and a write.
+func (r *run) mergeProcessingTokens(outputTokens, inputTokens, cachedTokens int) {
+	r.patchLiveRun(func(entry map[string]any) {
+		if outputTokens > 0 {
+			entry["outputTokens"] = outputTokens
+		}
+		if inputTokens > 0 {
+			entry["inputTokens"] = inputTokens
+		}
+		if cachedTokens > 0 {
+			entry["cachedTokens"] = cachedTokens
+		}
+	})
 }
 
-// mergeProcessingPhase writes a provider-emitted phase label into the live
-// processingState so every observing client renders the same spinner text off
-// the doc. Mirrors mergeProcessingTokens' liveness guard: a no-op unless the
-// status is a running one, so a status chunk that races past sendStatus("idle")
-// can't revive a stale spinner.
-func (w *ConversationWorker) mergeProcessingPhase(phase string) {
+// mergeProcessingPhase writes a provider-emitted phase label into this run's
+// processingState entry so every observing client renders the same spinner text
+// off the doc. Mirrors mergeProcessingTokens' liveness guard: a no-op unless the
+// run's own status is a running one, so a status chunk that races past
+// sendStatus("idle") can't revive a stale spinner.
+func (r *run) mergeProcessingPhase(phase string) {
 	if phase == "" {
 		return
 	}
-	raw := w.doc.GetMetadata("processingState")
-	state, ok := raw.(map[string]any)
-	if !ok || state == nil {
-		return
-	}
-	status, _ := state["status"].(string)
-	switch status {
-	case "preparing", "streaming", "processing_tools", "retrying":
-		// live — fall through
-	default:
-		return
-	}
-	state["phase"] = phase
-	w.doc.SetMetadata("processingState", state)
+	r.patchLiveRun(func(entry map[string]any) {
+		entry["phase"] = phase
+	})
 }
 
 // cacheMissNoticeLead states, in plain English, what a provider cache miss cost.

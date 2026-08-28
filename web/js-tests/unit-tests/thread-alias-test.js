@@ -140,7 +140,7 @@ export async function runTests() {
       { toolUseId: 'tu-1', prompt: 'where is auth?', status: 'rest', result: 'Auth lives in auth.go.' },
       { toolUseId: 'tu-2', prompt: 'who calls it?', status: '', result: '' }
     ]);
-    const live = { message: 'Streaming…', threadId: 'T1' };
+    const live = { byThread: { 'T1': 'Streaming…' } };
     const settled = getThreadStatus(canonical, live);
     assert(settled.showSummary === true && settled.spinner === false,
       `a tile whose own run has settled shows its frozen summary; got ${JSON.stringify(settled)}`);
@@ -240,7 +240,7 @@ export async function runTests() {
     const resumed = nested.get(nested.length - 1);
 
     // While that run is in flight the tile follows the session back into work.
-    const live = { message: 'Streaming…', threadId: 'T1' };
+    const live = { byThread: { 'T1': 'Streaming…' } };
     const running = getThreadStatus(aliases[0], live, root);
     assert(running.kind === 'running' && running.spinner === true,
       `the item waiting on the session must follow it back into work; got ${JSON.stringify(running)}`);
@@ -275,7 +275,7 @@ export async function runTests() {
     nested.push([item({ type: 'user', itemId: 'cont-1', continuation: true })]);
     const latest = nested.get(nested.length - 1);
 
-    const live = { message: 'Streaming…', threadId: 'T1' };
+    const live = { byThread: { 'T1': 'Streaming…' } };
     const earlier = getThreadStatus(canonical, live, root);
     const running = getThreadStatus(aliases[0], live, root);
     assert(earlier.showSummary === true && earlier.spinner === false,
@@ -343,7 +343,7 @@ export async function runTests() {
     const nested = canonical.get('items');
     nested.push([item({ type: 'user', itemId: 'cont-1', continuation: true })]);
 
-    const live = { message: 'Streaming…', threadId: 'T1' };
+    const live = { byThread: { 'T1': 'Streaming…' } };
     const running = getThreadStatus(aliases[0], live, root);
     assert(running.kind === 'running' && running.spinner === true,
       `a fed tile must still report the session working again; got ${JSON.stringify(running)}`);

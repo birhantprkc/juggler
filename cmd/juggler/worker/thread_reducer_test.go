@@ -508,9 +508,9 @@ func TestDecideNextAction_OnlyContextItems(t *testing.T) {
 	}
 }
 
-// TestCurrentToolBatch: walks back from the end collecting consecutive
-// tool-actions.
-func TestCurrentToolBatch(t *testing.T) {
+// TestCurrentBatch: walks back from the end collecting consecutive dispatched
+// work, stopping at the assistant message that asked for it.
+func TestCurrentBatch(t *testing.T) {
 	items := []ConversationItem{
 		userMsg("hi"),
 		assistantMsg("a1"),
@@ -520,7 +520,7 @@ func TestCurrentToolBatch(t *testing.T) {
 		toolAction("t3", StateCompleted),
 		toolAction("t4", StateCompleted),
 	}
-	batch := currentToolBatch(items)
+	batch := currentBatch(items)
 	if len(batch) != 2 {
 		t.Fatalf("expected 2 tools in batch, got %d", len(batch))
 	}
@@ -529,14 +529,105 @@ func TestCurrentToolBatch(t *testing.T) {
 	}
 }
 
-// TestCurrentToolBatch_NoTrailingTools: last item isn't a tool → empty batch.
-func TestCurrentToolBatch_NoTrailingTools(t *testing.T) {
+// TestCurrentBatch_NoTrailingWork: last item isn't dispatched work → empty batch.
+func TestCurrentBatch_NoTrailingWork(t *testing.T) {
 	items := []ConversationItem{
 		userMsg("hi"),
 		assistantMsg("hello"),
 	}
-	if batch := currentToolBatch(items); len(batch) != 0 {
+	if batch := currentBatch(items); len(batch) != 0 {
 		t.Errorf("expected empty batch, got %+v", batch)
+	}
+}
+
+// TestCurrentBatch_MixesToolsAndThreads: one turn calling two sub-agents either
+// side of a bash command is waiting on all three, so all three are in the batch.
+// Threads were not members while children could only run one at a time, and a
+// batch that stopped at the nearest thread would let the parent resume on a
+// half-finished turn.
+func TestCurrentBatch_MixesToolsAndThreads(t *testing.T) {
+	items := []ConversationItem{
+		userMsg("research a and b, and list the files"),
+		assistantMsg("on it"),
+		threadMsg("child-a", ""),
+		toolAction("t1", StateCompleted),
+		threadMsg("child-b", "found b"),
+	}
+	batch := currentBatch(items)
+	if len(batch) != 3 {
+		t.Fatalf("expected the two threads and the tool in the batch, got %d: %+v", len(batch), batch)
+	}
+}
+
+// TestDecideNextAction_WaitsForEverySibling is the property that broke when
+// read-only children started running side by side: a parent parked on several
+// sub-agents must wait for ALL of them, and the one that answers first is not
+// necessarily the last one in the transcript.
+//
+// The reducer used to ask only whether the FINAL item had settled. Under serial
+// dispatch that was the same question — the last-spawned child was necessarily
+// the last to finish — so once children ran together, a batch whose LAST child
+// answered first resumed the parent with its earlier siblings still running and
+// their results missing from the turn.
+func TestDecideNextAction_WaitsForEverySibling(t *testing.T) {
+	cases := []struct {
+		name  string
+		items []ConversationItem
+		want  ThreadAction
+	}{
+		{
+			// The quickest child is the last in the transcript: the tail reads
+			// "finished" while the batch has not.
+			name: "last child settled, earlier sibling still running",
+			items: []ConversationItem{
+				userMsg("research a and b"),
+				assistantMsg("on it"),
+				threadMsg("child-a", ""),
+				threadMsg("child-b", "found b"),
+			},
+			want: ActionNone,
+		},
+		{
+			name: "every child settled",
+			items: []ConversationItem{
+				userMsg("research a and b"),
+				assistantMsg("on it"),
+				threadMsg("child-a", "found a"),
+				threadMsg("child-b", "found b"),
+			},
+			want: ActionCallLLM,
+		},
+		{
+			// A bash command among the sub-agents is waited on by the same rule,
+			// from either side of it.
+			name: "bash still running between two settled children",
+			items: []ConversationItem{
+				userMsg("research a and b, and list the files"),
+				assistantMsg("on it"),
+				threadMsg("child-a", "found a"),
+				toolAction("t1", StateRunning),
+				threadMsg("child-b", "found b"),
+			},
+			want: ActionNone,
+		},
+		{
+			name: "child still running behind a finished bash",
+			items: []ConversationItem{
+				userMsg("research a, and list the files"),
+				assistantMsg("on it"),
+				threadMsg("child-a", ""),
+				toolAction("t1", StateCompleted),
+			},
+			want: ActionNone,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := decideNextAction(tc.items, ActivityAwaitingLLM, true, false); got != tc.want {
+				t.Errorf("decideNextAction = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }
 

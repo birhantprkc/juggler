@@ -5,6 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Read-only sub-agents now run in parallel, each column with its own spinner and timer
 - Tool badges now use meaningful families, with striped summaries for folded runs
 - Programs launched from Juggler can now request microphone access on macOS
 - Added a step-by-step tutorial for writing an extension, ending in working code
@@ -12,6 +13,7 @@ of changes; this project follows semantic versioning.
 - `juggler run "<prompt>"` does one prompt unattended and exits with a status
 - MCP servers connect at startup, so the first turn of a session can use their tools
 - The extension guide now covers info cards, file viewers, settings and secrets
+- A message or Continue on an idle thread no longer waits behind a busy sibling
 - Lots of work on making remote connections over slow networks more efficient and robust
 - Lots of work on handling stuck tools, and improving logging when things do go wrong
 

@@ -9,6 +9,7 @@ package worker
 
 import (
 	"fmt"
+	"sync/atomic"
 
 	"juggler/cmd/juggler/providers/provider"
 	"juggler/internal/jlog"
@@ -17,18 +18,45 @@ import (
 // mockLLMCaller holds the scripted-response state for one worker under test.
 // A non-nil pointer on the worker is the mock-mode signal; nil means production.
 type mockLLMCaller struct {
-	responses []MockResponse
+	// responses is the script, held as a channel because several of a
+	// conversation's turns run at once: a parent and its read-only children each
+	// pop from here on their own goroutine, and the queue orders them without a
+	// lock. The pointer is swapped wholesale when a test installs a new script.
+	responses atomic.Pointer[chan MockResponse]
 	// releaseCh unblocks a paused response (MockResponse.PauseBeforeReturn).
 	// Buffered so a release sent before the pause is reached is captured.
 	releaseCh chan struct{}
 }
 
 func newMockLLMCaller() *mockLLMCaller {
-	return &mockLLMCaller{releaseCh: make(chan struct{}, 1)}
+	m := &mockLLMCaller{releaseCh: make(chan struct{}, 1)}
+	m.setResponses(nil)
+	return m
 }
 
+// setResponses installs a fresh script. Called between turns, never beside one.
 func (m *mockLLMCaller) setResponses(r []MockResponse) {
-	m.responses = r
+	queue := make(chan MockResponse, len(r)+1)
+	for _, response := range r {
+		queue <- response
+	}
+	m.responses.Store(&queue)
+}
+
+// pop takes the next scripted response, reporting how many are left behind it.
+func (m *mockLLMCaller) pop() (MockResponse, int, bool) {
+	queue := *m.responses.Load()
+	select {
+	case response := <-queue:
+		return response, len(queue), true
+	default:
+		return MockResponse{}, 0, false
+	}
+}
+
+// remaining reports how many scripted responses are still queued.
+func (m *mockLLMCaller) remaining() int {
+	return len(*m.responses.Load())
 }
 
 // release signals a paused response to complete. Non-blocking: if the buffer
@@ -64,15 +92,14 @@ func (w *ConversationWorker) setMockResponses(r []MockResponse) {
 // response. This lets tests inject actions (e.g. cancel) at a deterministic
 // moment between stream and return.
 func (r *run) popMockResponse(turnID string, sink func(StreamChunk)) (*LLMResponse, error) {
-	if len(r.mock.responses) == 0 {
+	mock, remaining, ok := r.mock.pop()
+	if !ok {
 		r.tape.Record("mock-pop", map[string]any{"exhausted": true})
 		return nil, fmt.Errorf("mock responses exhausted")
 	}
 
-	mock := r.mock.responses[0]
-	r.mock.responses = r.mock.responses[1:]
 	r.tape.Record("mock-pop", map[string]any{
-		"remaining":  len(r.mock.responses),
+		"remaining":  remaining,
 		"stopReason": mock.StopReason,
 		"blocks":     len(mock.Blocks),
 	})
@@ -126,8 +153,8 @@ func (r *run) popMockResponse(turnID string, sink func(StreamChunk)) (*LLMRespon
 // callLLMMock is the mock branch of callLLM. Returns the next scripted
 // response, or an error if responses are exhausted.
 func (r *run) callLLMMockWithSink(turnID string, sink func(StreamChunk)) (*LLMResponse, error) {
-	if len(r.mock.responses) > 0 {
-		jlog.Info("[callLLM] conv=%s thread=%q mockLeft=%d", r.conversationID, r.t.thread.itemID, len(r.mock.responses))
+	if r.mock.remaining() > 0 {
+		jlog.Info("[callLLM] conv=%s thread=%q mockLeft=%d", r.conversationID, r.t.thread.itemID, r.mock.remaining())
 		response, err := r.popMockResponse(turnID, sink)
 		if err != nil {
 			return nil, err

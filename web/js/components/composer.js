@@ -1184,15 +1184,15 @@ class Composer extends HTMLElement {
     // surfaces nowhere and would otherwise strand the flag set.
     this._sending = true;
     try {
-      // While a turn is in flight (the conversation is processing, or the
-      // thread has busy items such as a running tool or an approval awaiting
-      // a decision) the message is QUEUED, not refused — Conversation.sendMessage
-      // forwards it to the worker, which parks it in pendingItems and drains it
-      // at the next boundary. So we don't block here; we just nudge the
-      // status into view so the user sees the queued bubble land.
-      const visibleConv = this.session ? this.session.getVisibleConversation() : null;
-      const busy = (visibleConv && visibleConv.isProcessing) ||
-              (this._messageThread && this._messageThread.hasBusyItems());
+      // While a turn is in flight on THIS thread (it is being driven, or it has
+      // busy items such as a running tool or an approval awaiting a decision)
+      // the message is QUEUED, not refused — Conversation.sendMessage forwards
+      // it to the worker, which parks it in pendingItems and drains it at the
+      // next boundary. So we don't block here; we just nudge the status into
+      // view so the user sees the queued bubble land. Asked of this thread,
+      // because a busy sibling queues nothing here.
+      const busy = !!this._messageThread &&
+              (this._messageThread.isProcessing || this._messageThread.hasBusyItems());
       if (busy) {
         this._scrollToStatus();
       }
