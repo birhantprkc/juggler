@@ -61,9 +61,14 @@ type App struct {
 	cleanups      []func()
 
 	// exitCode is the status the process leaves with. Written by `juggler run`
-	// from its own goroutine and read once the wait loop has returned, so it is
-	// atomic rather than a plain field. Zero for every other launch.
+	// from its own goroutine and read on the shutdown path, so it is atomic
+	// rather than a plain field. Zero for every other launch.
 	exitCode atomic.Int32
+
+	// exitProcess terminates the process, for the launches that must choose their
+	// own status rather than inherit the native quit's. Nil outside tests, which
+	// substitute it to observe the status instead of being killed by it.
+	exitProcess func(int)
 
 	// cleanupOnce gates the teardown stack so it runs exactly once no matter
 	// which shutdown path gets there first.
@@ -172,9 +177,30 @@ func (a *App) releaseResources() {
 // group and so does not even receive the terminal's Ctrl-C) is orphaned,
 // carrying on with a control channel that no longer has anyone on the other
 // end. Teardown must therefore be complete before quitNative is called.
+//
+// The same property decides where a run reports its status. `juggler run` owns
+// the process's exit code, but the only statement that reads it is Run's caller
+// — unreachable through a quit that never unwinds, which would report the
+// native quit's own success instead and call every failed, parked or timed-out
+// run a success. So a run leaves here, where teardown above is complete and the
+// status is still ours to set.
 func (a *App) beginShutdown(quitNative func()) {
 	a.releaseResources()
+	if a.flags.oneShot != nil {
+		a.exit(int(a.exitCode.Load()))
+		return
+	}
 	quitNative()
+}
+
+// exit ends the process. Indirected so the shutdown tests can watch the status
+// go by instead of terminating the test binary; a nil exitProcess is os.Exit.
+func (a *App) exit(code int) {
+	if a.exitProcess != nil {
+		a.exitProcess(code)
+		return
+	}
+	os.Exit(code)
 }
 
 // fatal prints to stderr. Used only by phases that run before jlog.Init —

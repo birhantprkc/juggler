@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -58,32 +59,7 @@ const (
 // It skips loudly when node is missing or too old — the run is driven by the
 // engine, and a node-less leg would otherwise drop this coverage in silence.
 func TestOneShotRunWritesAFileUnattended(t *testing.T) {
-	if testing.Short() {
-		t.Skip("spawns the juggler binary; skipped in -short mode")
-	}
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not found on PATH — skipping the one-shot run test " +
-			"(install Node.js 22+ to exercise the headless engine host)")
-	}
-	out, err := exec.Command(node, "--version").Output()
-	if err != nil {
-		t.Skipf("node --version failed (%v) — skipping the one-shot run test", err)
-	}
-	version := strings.TrimSpace(string(out))
-	major := 0
-	if _, err := fmt.Sscanf(strings.TrimPrefix(version, "v"), "%d", &major); err != nil || major < enginehost.MinNodeMajor {
-		t.Skipf("Node %s is too old — skipping the one-shot run test (need Node.js %d+)", version, enginehost.MinNodeMajor)
-	}
-
-	root, err := server.FindProjectRoot(".")
-	if err != nil {
-		t.Fatalf("find project root: %v", err)
-	}
-	binary := serverBinary(root)
-	if _, err := os.Stat(binary); err != nil {
-		t.Fatalf("server binary not built at %s (run make go-build): %v", binary, err)
-	}
+	binary := oneShotBinary(t)
 
 	proj := t.TempDir()
 	wantPath := filepath.Join(proj, oneShotFileName)
@@ -91,7 +67,8 @@ func TestOneShotRunWritesAFileUnattended(t *testing.T) {
 	gateway := startFakeGateway(t, wantPath)
 	cfgDir := writeOneShotConfig(t, gateway.URL+"/v1")
 
-	stdout, stderr, code := runOneShot(t, binary, proj, cfgDir)
+	stdout, stderr, code := runOneShot(t, binary, proj, cfgDir, 3*time.Minute,
+		"Create "+oneShotFileName+" in the project containing the word potato.")
 	report := func(format string, args ...any) string {
 		return fmt.Sprintf(format, args...) + "\n" + tailLog(stderr)
 	}
@@ -144,6 +121,95 @@ func TestOneShotRunWritesAFileUnattended(t *testing.T) {
 		t.Error(report("the turn carried no tools, so the model was offered nothing to do"))
 	}
 	t.Logf("transaction blob: system prompt %d chars, %d tools", prompt, tools)
+}
+
+// TestOneShotRunReportsATimeoutInItsExitStatus holds `juggler run` to its
+// documented exit codes when the run does NOT succeed.
+//
+// The whole point of the command is to be read by something unattended, and the
+// only thing a caller is guaranteed to see is the exit status. That status used
+// to be discarded on every launch that owns a native application: the run stored
+// the code it earned and then asked to shut down, which reached [NSApp
+// terminate:] and ended the process without unwinding, so the statement that
+// reads the code never ran and the process reported the native quit's own 0. A
+// batch runner would have scored every timed-out instance a success. The
+// engine-host split is what hid it — this test forces the node host, which
+// returns from its wait rather than terminating, so it can only ever see the
+// generic half of the contract; TestBeginShutdownReportsTheRunStatus covers the
+// path that actually broke.
+//
+// The gateway here accepts the completion and then never answers it, which is
+// the shape of the failure this has to survive: a provider that has taken the
+// request and gone quiet, leaving the wall clock as the only way out.
+func TestOneShotRunReportsATimeoutInItsExitStatus(t *testing.T) {
+	binary := oneShotBinary(t)
+
+	proj := t.TempDir()
+	gateway := startStalledGateway(t)
+	cfgDir := writeOneShotConfig(t, gateway.URL+"/v1")
+
+	stdout, stderr, code := runOneShot(t, binary, proj, cfgDir, 10*time.Second,
+		"Say something. Anything at all.")
+	report := func(format string, args ...any) string {
+		return fmt.Sprintf(format, args...) + "\n" + tailLog(stderr)
+	}
+
+	if code != 4 {
+		t.Fatal(report("`juggler run` exited %d, want 4 (timed out).\nstdout:\n%s", code, stdout))
+	}
+
+	outcome := decodeOnlyJSONObject(t, stdout, stderr)
+	if outcome.Status != "timeout" {
+		t.Error(report("status = %q, want timeout", outcome.Status))
+	}
+	// The payload and the process must agree. They are read by different callers
+	// — one parses stdout, one reads $? — and a run that tells them different
+	// stories is worse than one that fails outright.
+	if outcome.ExitCode != code {
+		t.Error(report("the outcome reported exit code %d but the process exited %d", outcome.ExitCode, code))
+	}
+	if outcome.ErrorText == "" {
+		t.Error(report("a timed-out run explained nothing — the caller is owed the deadline it missed"))
+	}
+	// Deliberately no assertion on conversationDir. A run that times out this
+	// early may have been killed before the engine created the conversation at
+	// all, and then there is no directory to name — under load this test reached
+	// exactly that state. Anything reading a timed-out run's trajectory has to
+	// cope with the field being empty.
+}
+
+// oneShotBinary returns the shipped binary to run, skipping the test when the
+// engine host it needs is unavailable. The run is driven by the engine, so a
+// node-less leg would otherwise drop this coverage in silence.
+func oneShotBinary(t *testing.T) string {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("spawns the juggler binary; skipped in -short mode")
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not found on PATH — skipping the one-shot run test " +
+			"(install Node.js 22+ to exercise the headless engine host)")
+	}
+	out, err := exec.Command(node, "--version").Output()
+	if err != nil {
+		t.Skipf("node --version failed (%v) — skipping the one-shot run test", err)
+	}
+	version := strings.TrimSpace(string(out))
+	major := 0
+	if _, err := fmt.Sscanf(strings.TrimPrefix(version, "v"), "%d", &major); err != nil || major < enginehost.MinNodeMajor {
+		t.Skipf("Node %s is too old — skipping the one-shot run test (need Node.js %d+)", version, enginehost.MinNodeMajor)
+	}
+
+	root, err := server.FindProjectRoot(".")
+	if err != nil {
+		t.Fatalf("find project root: %v", err)
+	}
+	binary := serverBinary(root)
+	if _, err := os.Stat(binary); err != nil {
+		t.Fatalf("server binary not built at %s (run make go-build): %v", binary, err)
+	}
+	return binary
 }
 
 // oneShotOutcome is the `--json` object `juggler run` prints on stdout.
@@ -246,14 +312,13 @@ func writeOneShotConfig(t *testing.T, baseURL string) string {
 // its stdout, stderr and exit code. The context deadline sits above the run's
 // own so a wedged binary fails this test rather than the whole suite, and the
 // process group is killed either way — the run owns a node child.
-func runOneShot(t *testing.T, binary, proj, cfgDir string) (stdout, stderr string, code int) {
+func runOneShot(t *testing.T, binary, proj, cfgDir string, timeout time.Duration, prompt string) (stdout, stderr string, code int) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, binary, "run",
-		"--project", proj, "--json", "--timeout", "3m",
-		"Create "+oneShotFileName+" in the project containing the word potato.")
+		"--project", proj, "--json", "--timeout", timeout.String(), prompt)
 	cmd.Env = append(environWithoutJuggler(),
 		"JUGGLER_CONFIG_DIR="+cfgDir,
 		"JUGGLER_LOG_DIR="+t.TempDir(),
@@ -369,6 +434,34 @@ func startFakeGateway(t *testing.T, wantPath string) *httptest.Server {
 		srv.Close()
 		t.Logf("gateway served %d tool-call turns, %d final turns, %d other completions",
 			toolCalls.Load(), finals.Load(), others.Load())
+	})
+	return srv
+}
+
+// startStalledGateway stands up a gateway that advertises the model and then
+// accepts every completion without ever answering one. It stands in for a
+// provider that has gone quiet mid-request — the failure the run's own deadline
+// exists for, and the only one that reaches the timeout exit code without
+// depending on how any real provider behaves.
+//
+// The blocked handlers are released before the server is closed, because Close
+// waits for outstanding requests and would otherwise hang the test at teardown.
+func startStalledGateway(t *testing.T) *httptest.Server {
+	t.Helper()
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"object":"list","data":[{"id":%q,"object":"model","owned_by":"juggler-test"}]}`, oneShotModelID)
+			return
+		}
+		<-release
+	}))
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+		srv.Close()
 	})
 	return srv
 }
