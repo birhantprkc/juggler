@@ -12,8 +12,8 @@ import { expandCollapsibleContaining } from '../utils/collapsible.js';
  * conversation renderer diffs and animates message elements and would clobber
  * injected wrapper nodes mid-stream. DOM mutation is confined to the highlight
  * registry, un-clipping whatever hides the active match (a collapsed
- * collapsible, a `content-visibility` row skip) and the scroll offsets that
- * reveal it, so the controller is safe to drive from a tiny presentational
+ * collapsible) and the scroll offsets that reveal it, so the controller is
+ * safe to drive from a tiny presentational
  * find-bar component and is unit-testable in isolation.
  *
  * The API (`setRoot`/`search`/`next`/`prev`/`refresh`/`clear` plus `total` and
@@ -323,8 +323,7 @@ export default class FindController {
    * thread column actions), and counting text nobody can see makes the match
    * total disagree with what the highlights show.
    *
-   * Content that is merely clipped or skipped for rendering — an `is-collapsed`
-   * collapsible, a `cv-off` row under `content-visibility: hidden` — IS searched:
+   * Content that is merely clipped — an `is-collapsed` collapsible — IS searched:
    * it is real conversation text, and {@link #revealCurrent} un-clips it on the
    * way to the match. `offsetParent`/`getComputedStyle` checks are deliberately
    * avoided here: the walk runs on every keystroke and every streaming refresh,
@@ -411,28 +410,16 @@ export default class FindController {
   }
 
   /**
-   * Give the match a box to occupy. Two things clip it away, and neither is a
-   * reason to have excluded it from the match set:
-   *   - a collapsed `.collapsible` clamp (a long user message or thread summary
-   *     showing its first 15rem behind a "Show more"), expanded via the shared
-   *     helper so the toggle and its persisted state stay in step;
-   *   - a `cv-off` row, which conversation-area applies to rows more than ~5
-   *     viewports away to skip their rendering (`content-visibility: hidden`).
-   *     A skipped subtree generates no boxes, so the highlight cannot paint and
-   *     there is nothing to measure or scroll to.
-   * Un-skipping here doesn't fight the row-visibility observers: the render
-   * observer independently clears `cv-off` within ~3 viewports (where the match
-   * is headed), and the skip observer only re-queues past ~5, so a row we scroll
-   * to stays rendered.
+   * Give the match a box to occupy. A collapsed `.collapsible` clamp (a long user
+   * message or thread summary showing its first 15rem behind a "Show more") hides
+   * the match without being a reason to have excluded it from the match set, so it
+   * is expanded via the shared helper, keeping the toggle and its persisted state
+   * in step.
    * @param {Element} el - The element containing the match's start.
    * @returns {void}
    */
   #unclip(el) {
     expandCollapsibleContaining(el);
-    for (let a = /** @type {Element|null} */ (el); a; a = a.parentElement) {
-      if (a.classList.contains('cv-off')) a.classList.remove('cv-off');
-      if (a === this.#root) break;
-    }
   }
 
   /**

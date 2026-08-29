@@ -13,8 +13,8 @@
  * interaction (open/focus, debounced typing → counter, Enter/Shift+Enter
  * navigation, whole-word toggle, Escape-to-close focus restoration, and the
  * streaming live-recount), and revealing the active match — the
- * {@link expandCollapsibleContaining} auto-open helper, the `cv-off` row
- * un-skip, and the geometry that puts the match itself on screen.
+ * {@link expandCollapsibleContaining} auto-open helper and the geometry that
+ * puts the match itself on screen.
  *
  * The count and the reveal are two halves of one guarantee: every match the
  * counter claims is one the user can be shown. So the engine tests pin down both
@@ -251,12 +251,12 @@ export async function runTests(_ctx) {
   });
 
   await run('engine: clipped-but-real text is still counted', () => {
-    // Neither of these is hidden — a "Show more" clamp and a row skipped for
-    // rendering are conversation text the user can be taken to, so they must
-    // stay findable. Revealing them is #scrollToCurrent's job (section D).
+    // A "Show more" clamp is not hidden — it is conversation text the user can be
+    // taken to, so it must stay findable. Revealing it is #scrollToCurrent's job
+    // (section D).
     const root = attach(
       '<div class="collapsible is-collapsed">clamped needle</div>'
-      + '<div class="cv-off">render-skipped needle</div>');
+      + '<div>a plain needle</div>');
     try {
       const fc = new FindController();
       fc.setRoot(root);
@@ -420,21 +420,6 @@ export async function runTests(_ctx) {
   });
 
   // ── D. Revealing the active match ────────────────────────────────────
-
-  await run('reveal: navigating renders a row skipped by content-visibility', () => {
-    const root = attach('<div class="row cv-off">a buried needle</div>');
-    try {
-      const row = /** @type {HTMLElement} */ (root.querySelector('.row'));
-      const fc = new FindController();
-      fc.setRoot(root);
-      assert(fc.search('needle').total === 1, 'the skipped row is searchable');
-      fc.next();
-      assert(!row.classList.contains('cv-off'),
-        'navigating un-skips the row, so the highlight has a box to paint in');
-    } finally {
-      root.remove();
-    }
-  });
 
   await run('reveal: navigating scrolls the match itself into view, not its block', () => {
     // A long paste is ONE text node in ONE box. Revealing the box (what

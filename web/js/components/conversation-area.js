@@ -75,34 +75,12 @@ function prefersReducedMotion() {
  */
 
 /**
- * Top-level transcript row tags eligible for the content-visibility skip (see
- * styles.css `.cv-off` and _reconcileRowVisibility). Deliberately excludes the
- * footer and pending-message bubbles, which must always render.
+ * Idle gap (ms) after a scroll this component asked for stops moving before the
+ * reader anchor takes charge of the view again. Comfortably longer than the frame
+ * gap of a smooth scroll, so a glide still in flight keeps pushing it out. See
+ * _beginProgrammaticScroll.
  */
-const CV_ROW_TAGS = new Set([
-  'USER-MESSAGE',
-  'ASSISTANT-MESSAGE',
-  'THINKING-MESSAGE',
-  'TOOL-ACTION-MESSAGE',
-  'THREAD-MESSAGE',
-  'TOOL-GROUP-MESSAGE',
-  'CONTEXT-ITEM-MESSAGE',
-  'ERROR-MESSAGE',
-  'NOTICE-MESSAGE',
-]);
-
-/**
- * Idle gap (ms) after scrolling stops before queued row collapses are flushed;
- * long enough to sit out macOS momentum scrolling. See _flushRowSkips.
- */
-const SKIP_FLUSH_IDLE_MS = 200;
-
-/**
- * Idle gap (ms) after the column's width stops changing before the collapsed
- * rows are re-measured against it; long enough to sit out a resize drag, which
- * reports a new width every frame. See _refreshRowSkipSizes.
- */
-const WIDTH_SETTLE_MS = 250;
+const PROGRAMMATIC_SCROLL_SETTLE_MS = 150;
 
 /**
  * The item ids whose own Y.Map fields changed in one observeDeep batch, or
@@ -189,20 +167,10 @@ class ConversationArea extends HTMLElement {
     this._readerAnchorObserver = null;
     /** @type {{el: HTMLElement, top: number, contentHeight: number}|null} @private - The row the reader's place is measured from, where it sat when last recorded, and the content height it was recorded against */
     this._readerAnchor = null;
-    /** @type {IntersectionObserver|null} @private - Strips `cv-off` (renders a row) once it enters the inner margin; the near edge of the content-visibility hysteresis band */
-    this._rowRenderObserver = null;
-    /** @type {IntersectionObserver|null} @private - Applies `cv-off` (skips a row) once it leaves the outer margin; the far edge of the content-visibility hysteresis band */
-    this._rowSkipObserver = null;
-    /** @type {WeakSet<Element>} @private - Rows already handed to the row-visibility observers, so reconcile only observes new ones */
-    this._observedRows = new WeakSet();
-    /** @type {Set<HTMLElement>} @private - Rows past the skip margin whose collapse is deferred until scrolling goes idle (see _flushRowSkips) */
-    this._pendingSkip = new Set();
-    /** @type {number|null} @private - Pending scroll-idle timer that flushes _pendingSkip */
-    this._skipFlushTimer = null;
-    /** @type {number|null} @private - Last observed scroller width, to tell a width change from content growth (see _noteListWidth) */
-    this._lastListWidth = null;
-    /** @type {number|null} @private - Pending settle timer that re-freezes collapsed rows after a width change */
-    this._widthSettleTimer = null;
+    /** @type {boolean} @private - True while a scroll this component asked for is still travelling, so the reader anchor doesn't read it as drift and undo it (see _beginProgrammaticScroll) */
+    this._programmaticScroll = false;
+    /** @type {number|null} @private - Settle timer that ends the programmatic-scroll window */
+    this._programmaticScrollTimer = null;
     /** @type {boolean} @private - True when this column IS a group's contents, so its rows are never re-folded */
     this._isGroupColumn = false;
     /** @type {any[]|null} @private - The folded rows this column shows, when it is a group column (null otherwise) */
@@ -632,24 +600,11 @@ class ConversationArea extends HTMLElement {
       this._readerAnchorObserver = null;
       this._readerAnchor = null;
     }
-    if (this._rowRenderObserver) {
-      this._rowRenderObserver.disconnect();
-      this._rowRenderObserver = null;
+    if (this._programmaticScrollTimer !== null) {
+      clearTimeout(this._programmaticScrollTimer);
+      this._programmaticScrollTimer = null;
     }
-    if (this._rowSkipObserver) {
-      this._rowSkipObserver.disconnect();
-      this._rowSkipObserver = null;
-    }
-    if (this._skipFlushTimer !== null) {
-      clearTimeout(this._skipFlushTimer);
-      this._skipFlushTimer = null;
-    }
-    if (this._widthSettleTimer !== null) {
-      clearTimeout(this._widthSettleTimer);
-      this._widthSettleTimer = null;
-    }
-    this._lastListWidth = null;
-    this._pendingSkip.clear();
+    this._programmaticScroll = false;
   }
 
   get composer() {
@@ -990,65 +945,24 @@ class ConversationArea extends HTMLElement {
     });
     controls.querySelector('[data-scroll="bottom"]')?.addEventListener('click', (e) => {
       e.stopPropagation();
+      this._beginProgrammaticScroll();
       scroll.scrollEndIntoView(this, true);
     });
 
     messageList.addEventListener('scroll', () => {
       this._updateScrollControls();
-      // Wherever the reader has just put the view is their place to hold.
-      this._recordReaderAnchorFromScroll();
-      // Any scroll — even a slow drag that crosses no skip margin — counts as
-      // activity, so hold off flushing queued collapses until it stops.
-      if (this._pendingSkip.size) this._armSkipFlush();
+      // Wherever the reader has just put the view is their place to hold — unless
+      // this scroll is one we asked for, which owns the view until it lands.
+      if (this._programmaticScroll) this._armProgrammaticScrollSettle();
+      else this._recordReaderAnchorFromScroll();
     }, { passive: true });
 
     // Recompute on content growth (streaming, inserts) and viewport resize, both
-    // of which change whether — and how far — the list can scroll. A width change
-    // also invalidates every frozen stand-in height, so it is noted here too.
-    this._scrollControlsResizeObserver = new ResizeObserver(() => {
-      this._updateScrollControls();
-      this._noteListWidth(messageList.clientWidth);
-    });
+    // of which change whether — and how far — the list can scroll.
+    this._scrollControlsResizeObserver = new ResizeObserver(() => this._updateScrollControls());
     this._scrollControlsResizeObserver.observe(messageList);
     const inner = this.querySelector('#message-list-inner');
     if (inner) this._scrollControlsResizeObserver.observe(inner);
-
-    // Drive the content-visibility skip (styles.css `.cv-off`) explicitly, via two
-    // observers forming a hysteresis band: a row RENDERS at the inner margin and
-    // SKIPS only past the wider outer margin, so a collapse-induced geometry shift
-    // can't carry it back across the render edge and re-toggle it forever.
-    // Renders apply immediately (a row must paint before it scrolls into view);
-    // skips are only queued and flushed once scrolling goes idle (_flushRowSkips),
-    // because collapsing a row below the viewport shifts content mid-gesture — the
-    // clunk the user sees — in this bottom-anchored (column-reverse) scroller.
-    // The render margin is lead time: a fling covers a viewport in a fraction of
-    // a second, and every row it crosses pays style, layout and paint the moment
-    // it is un-skipped. Three viewports of warning keeps that work ahead of the
-    // gesture instead of under it; the band's width (the gap to the skip margin)
-    // is what stops the toggling, so both edges move together.
-    const RENDER_MARGIN = '300% 0px'; // render within ~3 viewports (near edge)
-    const SKIP_MARGIN = '500% 0px'; // queue skip beyond ~5 viewports (far edge)
-    if (typeof IntersectionObserver !== 'undefined') {
-      // Near edge: render now and cancel any queued skip — the row is back in range.
-      this._rowRenderObserver = new IntersectionObserver((entries) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          const target = /** @type {HTMLElement} */ (entry.target);
-          target.classList.remove('cv-off');
-          this._pendingSkip.delete(target);
-        }
-      }, { root: messageList, rootMargin: RENDER_MARGIN });
-      // Far edge: queue for collapse and (re)arm the idle timer. Crossings fire
-      // throughout a scroll, so the timer keeps resetting until the gesture stops.
-      this._rowSkipObserver = new IntersectionObserver((entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) continue;
-          this._pendingSkip.add(/** @type {HTMLElement} */ (entry.target));
-        }
-        this._armSkipFlush();
-      }, { root: messageList, rootMargin: SKIP_MARGIN });
-      this._reconcileRowVisibility();
-    }
 
     this._updateScrollControls();
     this._setupReaderAnchor();
@@ -1161,6 +1075,9 @@ class ConversationArea extends HTMLElement {
    * @private
    */
   _holdReaderAnchor() {
+    // A scroll this component asked for is not drift, however much the content
+    // resizes under it; leave it alone until it lands (_beginProgrammaticScroll).
+    if (this._programmaticScroll) return;
     const anchor = this._readerAnchor;
     if (!anchor) return;
     // An anchor whose row the rebuild removed can't be measured; take the new
@@ -1181,142 +1098,39 @@ class ConversationArea extends HTMLElement {
   }
 
   /**
-   * Observe any transcript rows not yet handed to the row-visibility observers.
-   * Each new row is registered with BOTH edges of the hysteresis band — the
-   * render observer (near margin) and the skip observer (far margin). Idempotent
-   * and cheap (the WeakSet skips already-observed rows), so it is safe to call on
-   * every render; rows removed from the DOM are auto-dropped by both observers,
-   * so no explicit unobserve is needed.
-   * @private
-   */
-  _reconcileRowVisibility() {
-    if (!this._rowRenderObserver || !this._rowSkipObserver) return;
-    const content = this.querySelector('#message-list-inner');
-    if (!content) return;
-    for (const child of Array.from(content.children)) {
-      if (!CV_ROW_TAGS.has(child.tagName) || this._observedRows.has(child)) continue;
-      this._observedRows.add(child);
-      this._rowRenderObserver.observe(child);
-      this._rowSkipObserver.observe(child);
-    }
-  }
-
-  /**
-   * Note the scroller's width and, once it settles, re-freeze the collapsed rows
-   * against it. Debounced: a column-resize drag reports a new width every frame,
-   * and re-rendering the transcript on each one is the very work being avoided.
-   * @param {number} width - The scroller's current width.
-   * @private
-   */
-  _noteListWidth(width) {
-    if (!width) return; // not laid out yet; the next observation carries the real width
-    if (this._lastListWidth === null || width === this._lastListWidth) {
-      this._lastListWidth = width;
-      return;
-    }
-    this._lastListWidth = width;
-    if (this._widthSettleTimer !== null) clearTimeout(this._widthSettleTimer);
-    this._widthSettleTimer = window.setTimeout(() => {
-      this._widthSettleTimer = null;
-      this._refreshRowSkipSizes();
-    }, WIDTH_SETTLE_MS);
-  }
-
-  /**
-   * Re-measure the collapsed rows after the column's width has settled.
+   * Declare that the scroll about to be issued is one this component asked for,
+   * so the reader anchor leaves it alone until it lands.
    *
-   * A skipped row stands in at the height frozen into contain-intrinsic-size when
-   * it was last collapsed, and that height is a function of the column's width —
-   * every paragraph and code block rewraps when the column narrows. So a width
-   * change leaves the whole collapsed remainder of the transcript standing in at
-   * heights that are simply wrong, and nothing discovers that until the reader
-   * scrolls back: each row springs from its stale stand-in to its real height as
-   * it renders, and the scroll lurches by the difference, row after row.
-   *
-   * The only way to learn a skipped row's true height is to render it, so that is
-   * what this does — un-skip everything collapsed and re-queue it, letting the
-   * ordinary idle flush measure and collapse it again. That costs one full layout
-   * of the transcript, but only on a settled width change, which is a relayout the
-   * user has just asked for; in exchange every stand-in height is honest again.
+   * The anchor undoes movement the reader did not ask for, and its cue is "the
+   * content changed size" (_recordReaderAnchorFromScroll). A long glide is
+   * indistinguishable by that test: rows render as it brings them into range and
+   * the content genuinely does change size, so the anchor keeps the place from
+   * before the click, measures the whole journey as drift, and scrolls back to
+   * cancel it — which also cancels the glide, because a scrollTo interrupts one
+   * in flight. The trip dies part-way and the next click starts over from wherever
+   * it stopped. A turn streaming underneath does the same with no row-skipping
+   * involved at all. So a scroll we issued is marked as ours while it travels.
    * @private
    */
-  _refreshRowSkipSizes() {
-    const content = this.querySelector('#message-list-inner');
-    if (!content) return;
-    const collapsed = /** @type {HTMLElement[]} */ (
-      Array.from(content.children).filter((row) => row.classList.contains('cv-off'))
-    );
-    if (!collapsed.length) return;
-
-    // Rendering them restores their real heights, which moves the content above
-    // the viewport; hold the reader's place across it.
-    this._holdReaderAnchorOver(() => {
-      for (const row of collapsed) {
-        row.classList.remove('cv-off');
-        row.style.removeProperty('contain-intrinsic-size');
-        // The skip observer reports crossings, not states: these rows were already
-        // outside its margin and stay there, so it will never re-queue them itself.
-        this._pendingSkip.add(row);
-      }
-    });
-    this._armSkipFlush();
+  _beginProgrammaticScroll() {
+    this._programmaticScroll = true;
+    this._armProgrammaticScrollSettle();
   }
 
   /**
-   * (Re)arm the scroll-idle timer that flushes queued row collapses. Each
-   * skip-crossing and scroll event pushes it out, so it fires only once scrolling
-   * has been quiet for SKIP_FLUSH_IDLE_MS.
+   * (Re)arm the timer that ends the programmatic-scroll window. Every scroll event
+   * the glide emits pushes it out, so it fires only once the view has been still
+   * for PROGRAMMATIC_SCROLL_SETTLE_MS — at which point where the scroll landed IS
+   * the reader's new place, and the anchor is recorded there.
    * @private
    */
-  _armSkipFlush() {
-    if (this._skipFlushTimer !== null) clearTimeout(this._skipFlushTimer);
-    this._skipFlushTimer = window.setTimeout(() => {
-      this._skipFlushTimer = null;
-      this._flushRowSkips();
-    }, SKIP_FLUSH_IDLE_MS);
-  }
-
-  /**
-   * Collapse the rows queued past the skip margin without moving the view. The
-   * freeze into contain-intrinsic-size should make each collapse height-neutral,
-   * but WebKit doesn't honour it exactly and this column-reverse scroller pins the
-   * bottom, so a residual shrink below the viewport lurches the content. So we
-   * don't trust the freeze: anchor on the row at the viewport centre, apply the
-   * batch, then correct scrollTop by however far that anchor actually moved — all
-   * synchronously, so only the corrected frame paints.
-   * @private
-   */
-  _flushRowSkips() {
-    if (!this._pendingSkip.size) return;
-    const list = /** @type {HTMLElement|null} */ (this.querySelector('#message-list'));
-    const rows = Array.from(this._pendingSkip).filter((row) => row.isConnected);
-    this._pendingSkip.clear();
-    if (!rows.length || !list) return;
-
-    // Anchor on the visible row at the viewport centre (elementFromPoint keeps
-    // this O(1)) — never one of the far-offscreen rows being collapsed.
-    const listRect = list.getBoundingClientRect();
-    let anchor = /** @type {Element|null} */ (
-      document.elementFromPoint(listRect.left + listRect.width / 2, listRect.top + listRect.height / 2)
-    );
-    while (anchor && !CV_ROW_TAGS.has(anchor.tagName)) anchor = anchor.parentElement;
-    const anchorTopBefore = anchor ? anchor.getBoundingClientRect().top : 0;
-
-    // Read all heights first (one shared layout flush), then apply freeze + cv-off.
-    const measured = rows.map((row) => ({ row, height: row.getBoundingClientRect().height }));
-    for (const { row, height } of measured) {
-      if (height > 0) row.style.containIntrinsicSize = `${height}px`;
-      row.classList.add('cv-off');
-    }
-
-    // Cancel the anchor's displacement, forced instant (the list scrolls smooth).
-    if (!anchor) return;
-    const shift = anchor.getBoundingClientRect().top - anchorTopBefore;
-    if (!shift) return;
-    const prevBehavior = list.style.scrollBehavior;
-    list.style.scrollBehavior = 'auto';
-    list.scrollTop += shift;
-    list.style.scrollBehavior = prevBehavior;
+  _armProgrammaticScrollSettle() {
+    if (this._programmaticScrollTimer !== null) clearTimeout(this._programmaticScrollTimer);
+    this._programmaticScrollTimer = window.setTimeout(() => {
+      this._programmaticScrollTimer = null;
+      this._programmaticScroll = false;
+      this._recordReaderAnchor();
+    }, PROGRAMMATIC_SCROLL_SETTLE_MS);
   }
 
   /**
@@ -1356,27 +1170,35 @@ class ConversationArea extends HTMLElement {
   }
 
   /**
-   * Smooth-scroll to the very start (oldest message) of the conversation. Uses a
-   * relative, viewport-rect-based nudge (like scrollElementIntoView) so it's
-   * agnostic to the reversed scroller's scrollTop sign, and clamped so it lands
-   * exactly at the top rather than overshooting.
+   * Smooth-scroll to the very start (oldest message) of the conversation.
    *
-   * Measured from the content column itself, never its first child: the column
-   * leads with `thread-column-actions`, which is `display: none` in a root
-   * conversation (it only appears in a thread column), and a rect taken from a
-   * box-less element reads as all zeros — a delta of a few dozen pixels of
-   * chrome, whatever the length of the conversation. The column's own top is the
-   * top of the content by construction, whatever leads it.
+   * Rects give the DIRECTION only, taken from the content column itself and never
+   * its first child: the column leads with `thread-column-actions`, which is
+   * `display: none` in a root conversation (it only appears in a thread column),
+   * and a rect from a box-less element reads as all zeros — a delta of a few dozen
+   * pixels of chrome, whatever the length of the conversation. The column's own
+   * top is the top of the content by construction, whatever leads it.
+   *
+   * The DISTANCE is then the whole scrollable range rather than that measured
+   * delta, because scrollTo clamps: overshooting lands exactly at the top, and a
+   * trip that doesn't measure its own length can't be left short when rows change
+   * height on the way (rendering as the glide brings them into range) after the
+   * target was computed. Sign-agnostic, so the reversed scroller needs no special
+   * case.
    * @private
    */
   _scrollToConversationStart() {
     const messageList = /** @type {HTMLElement|null} */ (this.querySelector('#message-list'));
     const content = /** @type {HTMLElement|null} */ (this.querySelector('#message-list-inner'));
     if (!messageList || !content) return;
-    // The scroller's own padding-top means this slightly overshoots the start,
-    // which scrollTo clamps away — landing exactly at the top rather than a rem short.
     const delta = content.getBoundingClientRect().top - messageList.getBoundingClientRect().top;
-    messageList.scrollTo({ top: messageList.scrollTop + delta, behavior: 'smooth' });
+    if (Math.abs(delta) < 1) return; // already at the start
+    const range = messageList.scrollHeight - messageList.clientHeight;
+    this._beginProgrammaticScroll();
+    messageList.scrollTo({
+      top: messageList.scrollTop + Math.sign(delta) * range,
+      behavior: 'smooth'
+    });
   }
 
   // --- Public API for keyboard navigation (called by conversation-tab) ---
@@ -1635,12 +1457,6 @@ class ConversationArea extends HTMLElement {
     this._holdReaderAnchorOver(() => {
       removeDeletedElements(currentElements, elementsToKeep);
       positionElements(this, content, footer, items, currentElements);
-
-      // Hand any newly inserted rows to the visibility observer that drives the
-      // content-visibility skip. New rows start without `cv-off` (rendered), so the
-      // just-inserted tail is never born blank; the observer applies cv-off only
-      // once it confirms a row has scrolled far out of view.
-      this._reconcileRowVisibility();
 
       // Terminal "Result" block, synthesized from the thread's `result` field
       // (after positioning items so it lands just before the footer). No-op in

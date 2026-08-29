@@ -128,10 +128,8 @@ export async function runTests() {
       `test setup: should be scrolled clear of the near-bottom band, got ${list.scrollTop}`);
 
     const selectedBefore = rootCol.getSelectedItemId();
-    // Probe a row the reader can actually see. Rows scrolled well clear of the
-    // viewport are content-visibility: hidden (`cv-off`) and stand in at their
-    // intrinsic size, so an offscreen row moves for reasons that have nothing to
-    // do with the reader's place.
+    // Probe a row the reader can actually see: the reader's place is defined by
+    // what is under their eyes, so an offscreen row is the wrong thing to measure.
     const anchorEl = centreRow(list);
     assert(!!anchorEl, 'test setup: expected a message across the middle of the viewport');
     const anchorTopBefore = /** @type {HTMLElement} */ (anchorEl).getBoundingClientRect().top;
