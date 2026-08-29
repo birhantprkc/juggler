@@ -237,6 +237,34 @@ export function removeAllElements(messageList) {
 }
 
 /**
+ * Header label for the thread-result block.
+ * @param {string} text - The fold's summary, or '' when it has none.
+ * @returns {string} The label to show above the block.
+ */
+function threadResultLabel(text) {
+  return text ? 'Summary' : 'Not summarised';
+}
+
+/**
+ * Fill the thread-result body with the summary, or with what stands in for one.
+ *
+ * The no-summary case says where the content actually is, because the fold has
+ * already happened by the time this renders: the transcript is inside this
+ * thread and the parent holds only the fold's tile, so the honest information is
+ * that nothing is lost and how to get a summary written.
+ * @param {HTMLElement} body
+ * @param {string} text - The fold's summary, or '' when it has none.
+ */
+function renderThreadResultBody(body, text) {
+  if (text) {
+    body.innerHTML = renderAssistantContentWrapped(stripThinkingTags(text));
+    decorateCodeBlocks(body);
+    return;
+  }
+  body.textContent = 'The folded transcript is intact in this thread. Re-summarise to write a summary for it.';
+}
+
+/**
  * Ensure the terminal thread-result block reflects a compaction fold's `result`.
  *
  * `result` is a field on the thread Y.Map, not an item, so the item list never
@@ -262,22 +290,32 @@ export function ensureThreadResult(area, messageList, footer) {
   const isFold = threadYMap?.get?.('boundedCompaction') === true;
   const result = threadYMap?.get?.('result');
   const text = (isFold && typeof result === 'string') ? result : '';
+  // A fold whose summarizer stopped without writing one. The block still has to
+  // render: it carries Re-summarise, and a fold with no summary is exactly the
+  // state that needs it — the parent thread shows only this fold's tile, so
+  // hiding the block here leaves no route back to a summary anywhere.
+  const unsummarized = isFold && threadYMap?.get?.('compactionUnsummarized') === true;
 
-  if (!text) {
+  if (!text && !unsummarized) {
     if (existing) existing.remove();
     return;
   }
 
+  // What the body is showing, tracked alongside the text rather than folded
+  // into it: the two states are answers to different questions, and a summary
+  // whose text happened to match a sentinel would defeat a combined key.
+  const resultState = text ? 'summary' : 'unsummarized';
+
   if (existing) {
-    // Re-render the body only when the result text actually changed, so a
+    // Re-render the body only when the rendered state actually changed, so a
     // routine re-render doesn't thrash the DOM.
-    if (existing.dataset.result !== text) {
+    if (existing.dataset.result !== text || existing.dataset.resultState !== resultState) {
       existing.dataset.result = text;
+      existing.dataset.resultState = resultState;
+      const label = /** @type {HTMLElement|null} */ (existing.querySelector('.thread-result-label'));
+      if (label) label.textContent = threadResultLabel(text);
       const body = /** @type {HTMLElement|null} */ (existing.querySelector('.thread-result-body'));
-      if (body) {
-        body.innerHTML = renderAssistantContentWrapped(stripThinkingTags(text));
-        decorateCodeBlocks(body);
-      }
+      if (body) renderThreadResultBody(body, text);
     }
     // Keep it pinned immediately before the footer (after the last item).
     if (existing.nextSibling !== footer) {
@@ -289,6 +327,7 @@ export function ensureThreadResult(area, messageList, footer) {
   const block = document.createElement('div');
   block.className = `conversation-item ${THREAD_RESULT_CLASS}`;
   block.dataset.result = text;
+  block.dataset.resultState = resultState;
 
   const content = document.createElement('div');
   content.className = 'thread-result-content';
@@ -297,7 +336,7 @@ export function ensureThreadResult(area, messageList, footer) {
   header.className = 'thread-result-header';
   const label = document.createElement('div');
   label.className = 'thread-result-label';
-  label.textContent = 'Summary';
+  label.textContent = threadResultLabel(text);
   header.appendChild(label);
 
   const headerActions = document.createElement('div');
@@ -325,8 +364,7 @@ export function ensureThreadResult(area, messageList, footer) {
 
   const body = document.createElement('div');
   body.className = 'thread-result-body markdown';
-  body.innerHTML = renderAssistantContentWrapped(stripThinkingTags(text));
-  decorateCodeBlocks(body);
+  renderThreadResultBody(body, text);
   content.appendChild(header);
   content.appendChild(body);
 

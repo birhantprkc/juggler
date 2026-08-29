@@ -1226,6 +1226,10 @@ func (r *run) handleResummarizeCompactionThread(payload json.RawMessage) {
 	handled := r.isBoundedCompactionThread(msg.ThreadItemID)
 	if handled {
 		r.clearThreadResult(msg.ThreadItemID)
+		// Drop any unsummarized marker from a previous attempt: this run is
+		// about to decide the question again, and the marker is re-set if it
+		// ends the same way.
+		r.clearCompactionUnsummarized(msg.ThreadItemID)
 		r.setThreadNeedsStrategyRun(msg.ThreadItemID)
 	}
 	r.batcher.Flush()

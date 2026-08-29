@@ -452,3 +452,109 @@ func TestHandleCompactConvergesToSingleSummary(t *testing.T) {
 		t.Fatalf("second summarization source did not contain the first summary (calls=%d)", len(sources))
 	}
 }
+
+// threadFlag reads a boolean field off a thread's Y.Map. GetThreadYMap takes
+// ycrdtMu itself, so resolve the map first and hold the lock only across the
+// field read.
+func threadFlag(w *ConversationWorker, threadID, field string) bool {
+	m := w.doc.GetThreadYMap(threadID)
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	v, _ := m.Get(field).(bool)
+	return v
+}
+
+// threadResult reads a thread's committed summary, same locking rule.
+func threadResult(w *ConversationWorker, threadID string) string {
+	m := w.doc.GetThreadYMap(threadID)
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	v, _ := m.Get("result").(string)
+	return v
+}
+
+// The reported shape: a fold commits, its summarizer is cancelled, and the
+// parent is left holding the fold tile and nothing else. Cancellation writes no
+// error item and the one-shot trigger was consumed before the run, so without an
+// explicit marker the state is indistinguishable from a summarizer that never
+// started — and the viewer's Re-summarise affordance has nothing to render
+// against, leaving no route back to a summary at all.
+func TestFoldSummarizerCancellationMarksThreadUnsummarized(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.currentRun().storeState(StateIdle)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	feedCompactionContextAndTools(w)
+	w.llmCallFunc = func(_ context.Context, _ json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
+		w.currentRun().storeState(StateCancelling)
+		return nil, context.Canceled
+	}
+	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+		arr := w.doc.ensureItems()
+		arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: "rule", ItemID: generateItemID(), Content: "rule"})})
+		arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: ItemTypeUser, ItemID: generateItemID(), Content: "hello"})})
+		arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: ItemTypeAssistant, ItemID: generateItemID(), Content: "hi"})})
+	}, w.doc.authorID)
+
+	waitAck := captureAck(t, w, "client-1", "a1")
+	w.currentRun().handleCompact(json.RawMessage(`{"type":"compact","ackId":"a1"}`))
+	waitAck()
+
+	items := w.doc.GetItems()
+	if len(items) != 2 || items[1].Type != ItemTypeThread {
+		t.Fatalf("root = %d items, want [rule, foldThread]", len(items))
+	}
+	threadID := items[1].ItemID
+	if result := threadResult(w, threadID); result != "" {
+		t.Fatalf("cancelled summarizer published %q, want no result", result)
+	}
+	if !threadFlag(w, threadID, "compactionUnsummarized") {
+		t.Fatal("a fold whose summarizer was cancelled is not marked unsummarized: the blank conversation has no recovery affordance and leaves no trace")
+	}
+}
+
+// Re-summarise is the recovery route, so it has to clear the marker and the
+// marker has to survive only until a summary actually exists.
+func TestResummariseClearsUnsummarizedMarker(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.currentRun().storeState(StateIdle)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	feedCompactionContextAndTools(w)
+	w.llmCallFunc = func(_ context.Context, _ json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
+		w.currentRun().storeState(StateCancelling)
+		return nil, context.Canceled
+	}
+	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+		arr := w.doc.ensureItems()
+		arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: ItemTypeUser, ItemID: generateItemID(), Content: "hello"})})
+		arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: ItemTypeAssistant, ItemID: generateItemID(), Content: "hi"})})
+	}, w.doc.authorID)
+
+	waitAck := captureAck(t, w, "client-1", "a1")
+	w.currentRun().handleCompact(json.RawMessage(`{"type":"compact","ackId":"a1"}`))
+	waitAck()
+
+	items := w.doc.GetItems()
+	threadID := items[len(items)-1].ItemID
+	if !threadFlag(w, threadID, "compactionUnsummarized") {
+		t.Fatal("fold was not marked unsummarized after a cancelled summarizer")
+	}
+
+	// Re-summarise against a summarizer that answers this time.
+	w.currentRun().storeState(StateIdle)
+	w.llmCallFunc = func(_ context.Context, _ json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
+		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "recovered summary"}}}, nil
+	}
+	waitAck2 := captureAck(t, w, "client-1", "a2")
+	w.currentRun().handleResummarizeCompactionThread(json.RawMessage(
+		`{"type":"resummarize-compaction-thread","threadItemId":"` + threadID + `","ackId":"a2"}`))
+	waitAck2()
+
+	if result := threadResult(w, threadID); result != "recovered summary" {
+		t.Fatalf("fold result = %q, want the re-summarised output", result)
+	}
+	if threadFlag(w, threadID, "compactionUnsummarized") {
+		t.Fatal("marker outlived the summary that made it untrue")
+	}
+}

@@ -309,15 +309,17 @@ func (s *Server) createLLMCaller() worker.LLMCallFunc {
 		}
 
 		return &worker.LLMResponse{
-			Blocks:                 toLLMResponseBlocks(blocks),
-			InputTokens:            result.InputTokens,
-			InputTokensApproximate: result.InputTokensApproximate,
-			OutputTokens:           result.OutputTokens,
-			CachedTokens:           result.CachedTokens,
-			CacheWriteTokens:       result.CacheWriteTokens,
-			StopReason:             result.StopReason,
-			TransactionID:          req.TransactionID,
-			CacheTTLMs:             conv.CacheTTL().Milliseconds(),
+			Blocks:                  toLLMResponseBlocks(blocks),
+			InputTokens:             result.InputTokens,
+			InputTokensApproximate:  result.InputTokensApproximate,
+			OutputTokens:            result.OutputTokens,
+			CachedTokens:            result.CachedTokens,
+			CacheWriteTokens:        result.CacheWriteTokens,
+			StopReason:              result.StopReason,
+			AdmissionEstimateTokens: result.AdmissionEstimateTokens,
+			AdmissionAnchored:       result.AdmissionAnchored,
+			TransactionID:           req.TransactionID,
+			CacheTTLMs:              conv.CacheTTL().Milliseconds(),
 		}, nil
 	}
 }

@@ -6,11 +6,14 @@ package provider
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"strings"
+	"sync/atomic"
 	"unicode"
 	"unicode/utf8"
 )
@@ -38,9 +41,25 @@ type ContextLimitExceededError struct {
 	OutputReserveTokens  int64
 	ContextWindowTokens  int64
 	Breakdown            RequestTokenEstimate
+	// MeasuredPrefix carries the basis of EstimatedInputTokens through recovery:
+	// true means it was projected from a provider-reported count for this
+	// thread's previous request, false that the whole request was estimated by
+	// the local heuristic. Breakdown is whole-request estimate either way, so
+	// this is the only thing that says whether the two are in the same units —
+	// which is what the recovery logs need to be readable.
+	MeasuredPrefix bool
 	// Cause is the original provider context-overflow error. Visible request
 	// admission never creates this type from an estimate alone.
 	Cause error
+}
+
+// InputBasis names how EstimatedInputTokens was arrived at, for logs and
+// messages that would otherwise present a measurement and a guess identically.
+func (e *ContextLimitExceededError) InputBasis() string {
+	if e.MeasuredPrefix {
+		return "measured"
+	}
+	return "estimated"
 }
 
 func (e *ContextLimitExceededError) Error() string {
@@ -64,10 +83,21 @@ type ContextCompactionAdvisory struct {
 	OutputReserveTokens  int64
 	ContextWindowTokens  int64
 	Breakdown            RequestTokenEstimate
+
+	// MeasuredPrefix reports that EstimatedInputTokens was projected from a
+	// provider-reported count for this conversation's previous request plus an
+	// estimate of only the messages appended since, rather than estimated in
+	// full. Breakdown always describes the whole request either way, because the
+	// recovery ladder reduces history in estimator units.
+	MeasuredPrefix bool
 }
 
 func (e *ContextCompactionAdvisory) Error() string {
-	return fmt.Sprintf("request is estimated at %d input tokens plus %d reserved output tokens against a %d-token context window; conservative compaction is advised", e.EstimatedInputTokens, e.OutputReserveTokens, e.ContextWindowTokens)
+	basis := "estimated"
+	if e.MeasuredPrefix {
+		basis = "measured"
+	}
+	return fmt.Sprintf("request is %s at %d input tokens plus %d reserved output tokens against a %d-token context window; conservative compaction is advised", basis, e.EstimatedInputTokens, e.OutputReserveTokens, e.ContextWindowTokens)
 }
 
 // UnknownContextLimitError reports that admission could not prove the request
@@ -154,7 +184,7 @@ func (c *approximateTokenCounter) add(r rune) {
 		// token alone and 0.25/char in runs (cl100k). Charging its 3-byte
 		// UTF-8 length tripled the estimate for binary junk (the
 		// lone-surrogate adversarial case), so charge the measured maximum.
-		c.flushRun()
+		c.flushRun(0)
 		c.tokens = SaturatingAdd(c.tokens, 1)
 		return
 	}
@@ -176,7 +206,7 @@ func (c *approximateTokenCounter) add(r rune) {
 	}
 	if kind != 0 {
 		if c.runKind != kind || (kind == runRepeatedPunct && c.runRune != r) {
-			c.flushRun()
+			c.flushRun(kind)
 			c.runKind = kind
 			c.runRune = r
 		}
@@ -184,19 +214,31 @@ func (c *approximateTokenCounter) add(r rune) {
 		return
 	}
 
-	c.flushRun()
+	c.flushRun(0)
 	// Every other non-ASCII rune costs its UTF-8 byte length: the provable
 	// maximum for byte-level BPE (measured: common CJK ~1.75 tokens/char, rare
 	// glyphs ~2.5, emoji ~2–3, of a 3–4 byte ceiling).
 	c.tokens = SaturatingAdd(c.tokens, int64(utf8.RuneLen(r)))
 }
 
-func (c *approximateTokenCounter) flushRun() {
+// flushRun charges the run that just ended. next is the kind of run starting
+// after it, or 0 at end of text or before a non-ASCII rune, because one rate
+// depends on what follows.
+func (c *approximateTokenCounter) flushRun(next uint8) {
 	if c.runLength == 0 {
 		return
 	}
 	var tokens int64
 	switch {
+	case c.runKind == runWhitespace && c.runLength == 1 && next == runAlphaNumeric:
+		// A single space before a word is free. BPE vocabularies carry the
+		// leading space inside the word token (" the", " quick"), so charging
+		// the separator as well double-counts every word boundary in prose and
+		// code — the largest single source of drift against cl100k. Only a lone
+		// separator absorbed by a following word qualifies: runs of two or more
+		// are real tokens and stay on the rate below, as does a trailing space
+		// with no word to be absorbed into.
+		tokens = 0
 	case c.runKind == runAlphaNumeric && c.runLength <= 16:
 		// Prose words: modest compression. Opaque runs this short (pasted ids,
 		// keys, hex) tokenize denser — up to ~1/byte — so punctuation-segmented
@@ -230,7 +272,7 @@ func (c *approximateTokenCounter) flushRun() {
 }
 
 func (c approximateTokenCounter) total() int64 {
-	c.flushRun()
+	c.flushRun(0)
 	return c.tokens
 }
 
@@ -314,6 +356,230 @@ type admissionConversation struct {
 	Conversation
 	capabilities ModelCapabilities
 	contract     BudgetContract
+
+	// anchors holds the last measurement taken for each thread that has
+	// dispatched through this conversation, keyed by MessageRequest.ThreadID.
+	//
+	// It is keyed by thread because one admissionConversation is shared by every
+	// thread in the conversation — the handle is cached per (conversation,
+	// provider, model, credential, capabilities), not per thread. A sub-thread
+	// turn sends an entirely different message array and a filtered tool set, so
+	// a single anchor would be overwritten by every sub-thread dispatch and miss
+	// on the root turn that followed. Sub-threads are routine here, so that would
+	// leave long conversations — the only ones that ever reach compaction —
+	// permanently on the estimated path this anchor exists to avoid.
+	//
+	// The map is replaced wholesale and never mutated in place, so a pointer swap
+	// is the entire synchronisation. Two dispatches racing to record can lose one
+	// update; that costs a later miss, never a wrong projection, because every
+	// read revalidates the hashes before trusting the number. Nil means nothing
+	// measured yet.
+	anchors atomic.Pointer[map[string]*measuredPrefixAnchor]
+}
+
+// maxAnchoredThreads bounds the anchor table. A conversation can open an
+// unbounded number of sub-threads over its life and each would otherwise leave
+// an entry behind for good. The bound sits well above the number of threads
+// that can be mid-dispatch at once, so the entries that earn their place — the
+// root and whatever sub-threads are live — are never the ones evicted.
+const maxAnchoredThreads = 16
+
+// measuredPrefixAnchor records what a provider actually billed for a request
+// this conversation already dispatched, so the next request can be projected
+// from that measurement instead of estimated from nothing.
+//
+// This exists because the estimator is a character heuristic that overcounts
+// real transcripts by a factor of two or more, and estimating an entire history
+// makes that error scale with the history. Anchoring takes the history out of
+// the estimate: everything up to the last measured round-trip is a number the
+// provider gave us, and only the messages appended since are estimated. The
+// heuristic's error then applies to a few thousand tokens of new tool results
+// rather than to two hundred thousand tokens of transcript.
+//
+// An anchor is valid only while the request keeps the shape it had when the
+// measurement was taken — the same leading messages, and the same envelope
+// (system prompt, tool definitions, tool choice), because the provider bills all
+// of that inside InputTokens. Anything else means the measurement describes a
+// request we are no longer sending, and admission falls back to estimating the
+// whole thing.
+//
+// The match is all-or-nothing by necessity, not by choice: one measurement
+// describes one exact prefix, so there is no partial number to re-anchor
+// against a shorter common prefix when an early message changes. A standing
+// context item that re-renders — a pinned file, edited between turns — therefore
+// costs one estimated turn before the next dispatch anchors again.
+type measuredPrefixAnchor struct {
+	messageCount int
+	prefixHash   string
+	envelopeHash string
+	inputTokens  int64
+	// seq orders anchors by when they were recorded, so the table can evict its
+	// least recently written entry without keeping a separate clock.
+	seq int64
+}
+
+// inputProjection is admission's answer to "how large is this request", and
+// which way it arrived at that number.
+type inputProjection struct {
+	total    int64
+	anchored bool
+	// breakdown is populated only on the unanchored path, where the whole
+	// request had to be estimated anyway. hasFull distinguishes a computed
+	// zero-value breakdown from an absent one.
+	breakdown RequestTokenEstimate
+	hasFull   bool
+}
+
+// hashMessages fingerprints a message sequence. Each record is length-prefixed
+// so no two different sequences can produce the same concatenation. An
+// unmarshalable message yields "", which callers treat as "cannot anchor"
+// rather than as a match.
+func hashMessages(messages []Message) string {
+	h := sha256.New()
+	for _, msg := range messages {
+		encoded, err := json.Marshal(msg)
+		if err != nil {
+			return ""
+		}
+		fmt.Fprintf(h, "%d:", len(encoded))
+		h.Write(encoded)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// hashRequestEnvelope fingerprints everything a request sends that is not a
+// message. A changed system prompt or tool set changes the billed input just as
+// a changed message does, so it invalidates an anchor the same way. Fields that
+// cannot be marshaled (ShouldContinue is a func) are deliberately excluded:
+// they are not sent to the provider as prompt content.
+func hashRequestEnvelope(req MessageRequest) string {
+	encoded, err := json.Marshal(struct {
+		SystemPrompt string           `json:"systemPrompt"`
+		Tools        []ToolDefinition `json:"tools"`
+		ToolChoice   *ToolChoice      `json:"toolChoice"`
+	}{req.SystemPrompt, req.Tools, req.ToolChoice})
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
+}
+
+// anchorFor returns this thread's stored anchor when it still describes a
+// prefix of this request.
+func (cv *admissionConversation) anchorFor(req MessageRequest) (*measuredPrefixAnchor, bool) {
+	anchors := cv.anchors.Load()
+	if anchors == nil {
+		return nil, false
+	}
+	anchor := (*anchors)[req.ThreadID]
+	if anchor == nil || anchor.messageCount == 0 || anchor.inputTokens <= 0 {
+		return nil, false
+	}
+	// Fewer messages than were measured means the transcript was rewritten —
+	// compaction folded it, or an edit dropped history — so the measurement
+	// describes messages that are no longer being sent.
+	if len(req.Messages) < anchor.messageCount {
+		return nil, false
+	}
+	if hashRequestEnvelope(req) != anchor.envelopeHash {
+		return nil, false
+	}
+	if hashMessages(req.Messages[:anchor.messageCount]) != anchor.prefixHash {
+		return nil, false
+	}
+	return anchor, true
+}
+
+// projectInputTokens sizes the request, preferring measurement over estimate.
+func (cv *admissionConversation) projectInputTokens(req MessageRequest) inputProjection {
+	if anchor, ok := cv.anchorFor(req); ok {
+		// Estimate the appended messages ONLY. The system prompt, tools,
+		// framing and any provider overhead are all inside the measured count
+		// already — re-adding them here would double-charge the very fixed
+		// costs the measurement captured, which for a provider declaring a
+		// large ProviderOverheadTokens is a large double-charge.
+		delta := EstimateMessageRequestTokenBreakdown(MessageRequest{Messages: req.Messages[anchor.messageCount:]}, 0)
+		return inputProjection{total: SaturatingAdd(anchor.inputTokens, delta.Total), anchored: true}
+	}
+	full := EstimateMessageRequestTokenBreakdown(req, cv.capabilities.ProviderOverheadTokens)
+	return inputProjection{total: full.Total, breakdown: full, hasFull: true}
+}
+
+// fullBreakdown returns a whole-request breakdown, computing one if the
+// projection took the anchored path. The compaction ladder reduces history
+// using per-item estimates and derives its fixed envelope from these
+// components, so it needs whole-request semantics even when the decision to
+// compact was made from a measurement.
+func (cv *admissionConversation) fullBreakdown(req MessageRequest, p inputProjection) RequestTokenEstimate {
+	if p.hasFull {
+		return p.breakdown
+	}
+	return EstimateMessageRequestTokenBreakdown(req, cv.capabilities.ProviderOverheadTokens)
+}
+
+// recordAnchor stores this round-trip's measurement for the next request on the
+// same thread.
+func (cv *admissionConversation) recordAnchor(req MessageRequest, result *StreamResult) {
+	// A guard-bypassing request is not a turn in any thread's transcript: the
+	// hidden compaction calls that set it swap the system prompt, drop the tools
+	// and send a synthetic transcript of their own, and the folded-summary probe
+	// sends that under the PARENT thread's id. Recording any of them would file a
+	// measurement of a request shape no real turn ever sends under a key real
+	// turns read, and evict a good anchor to do it.
+	if req.BypassContextGuard {
+		return
+	}
+	// Only a provider-reported count may anchor. InputTokensApproximate means
+	// the number is itself a local fallback estimate, so anchoring on it would
+	// pin the projection to the guesswork it exists to replace.
+	//
+	// An unusable result leaves any existing anchor in place rather than
+	// clearing it: an older anchor still describes a real measured prefix, and
+	// carrying a larger estimated delta is strictly better than estimating the
+	// entire history again.
+	if result == nil || result.InputTokens <= 0 || result.InputTokensApproximate {
+		return
+	}
+	prefix := hashMessages(req.Messages)
+	envelope := hashRequestEnvelope(req)
+	if prefix == "" || envelope == "" {
+		return
+	}
+	cv.storeAnchor(req.ThreadID, &measuredPrefixAnchor{
+		messageCount: len(req.Messages),
+		prefixHash:   prefix,
+		envelopeHash: envelope,
+		inputTokens:  int64(result.InputTokens),
+	})
+}
+
+// storeAnchor files an anchor under its thread, copying the table rather than
+// mutating the one readers hold, and evicting the oldest entry once the table
+// is over its bound.
+func (cv *admissionConversation) storeAnchor(threadID string, anchor *measuredPrefixAnchor) {
+	next := map[string]*measuredPrefixAnchor{}
+	var latest int64
+	if current := cv.anchors.Load(); current != nil {
+		for id, existing := range *current {
+			next[id] = existing
+			if existing.seq > latest {
+				latest = existing.seq
+			}
+		}
+	}
+	anchor.seq = latest + 1
+	next[threadID] = anchor
+	for len(next) > maxAnchoredThreads {
+		oldestID, oldestSeq := "", int64(math.MaxInt64)
+		for id, existing := range next {
+			if existing.seq < oldestSeq {
+				oldestID, oldestSeq = id, existing.seq
+			}
+		}
+		delete(next, oldestID)
+	}
+	cv.anchors.Store(&next)
 }
 
 // ContextSafetyReserve derives the output reserve for a known context window
@@ -393,13 +659,14 @@ func (cv *admissionConversation) Submit(ctx context.Context, req MessageRequest,
 		}
 	}
 
-	breakdown := EstimateMessageRequestTokenBreakdown(req, cv.capabilities.ProviderOverheadTokens)
-	if !req.BypassContextGuard && SaturatingAdd(breakdown.Total, reserve) > ContextCeiling(window, req.ContextCeilingFraction) {
+	projection := cv.projectInputTokens(req)
+	if !req.BypassContextGuard && SaturatingAdd(projection.total, reserve) > ContextCeiling(window, req.ContextCeilingFraction) {
 		return nil, &ContextCompactionAdvisory{
-			EstimatedInputTokens: breakdown.Total,
+			EstimatedInputTokens: projection.total,
 			OutputReserveTokens:  reserve,
 			ContextWindowTokens:  window,
-			Breakdown:            breakdown,
+			Breakdown:            cv.fullBreakdown(req, projection),
+			MeasuredPrefix:       projection.anchored,
 		}
 	}
 	// The estimate cleared the ceiling, so dispatch. It is still only an
@@ -411,14 +678,38 @@ func (cv *admissionConversation) Submit(ctx context.Context, req MessageRequest,
 		// Convert the provider's real rejection into the shared typed error so the
 		// worker can recover while retaining the authoritative cause.
 		return nil, &ContextLimitExceededError{
-			EstimatedInputTokens: breakdown.Total,
+			EstimatedInputTokens: projection.total,
 			OutputReserveTokens:  reserve,
 			ContextWindowTokens:  window,
-			Breakdown:            breakdown,
+			Breakdown:            cv.fullBreakdown(req, projection),
 			Cause:                err,
 		}
 	}
+	// Anchor the next request on what this one actually cost, then carry the
+	// projection out beside the provider's own count for the same request. This
+	// is the only point where both numbers exist: the projection is computed
+	// here and discarded otherwise, while the reported count is only read
+	// further up. Pairing them lets the caller log the ratio the advisory fires
+	// on, and whether it fired from measurement or from estimate.
+	cv.recordAnchor(req, result)
+	if result != nil {
+		result.AdmissionEstimateTokens = clampToInt(projection.total)
+		result.AdmissionAnchored = projection.anchored
+	}
 	return result, err
+}
+
+// clampToInt narrows a saturating token estimate to the int the usage fields
+// use. A saturated estimate (unmarshalable request data) pins at MaxInt rather
+// than wrapping negative, which would read as an impossible ratio in the log.
+func clampToInt(v int64) int {
+	if v > math.MaxInt {
+		return math.MaxInt
+	}
+	if v < 0 {
+		return 0
+	}
+	return int(v)
 }
 
 // isProviderContextOverflowError reports whether a provider's own error signals

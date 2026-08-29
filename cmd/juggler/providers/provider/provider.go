@@ -279,6 +279,24 @@ type StreamResult struct {
 	OutputTokens           int    `json:"outputTokens,omitempty"`
 	CachedTokens           *int   `json:"cachedTokens,omitempty"`
 	CacheWriteTokens       *int   `json:"cacheWriteTokens,omitempty"`
+
+	// AdmissionEstimateTokens is what admission estimated this request's input
+	// at before dispatching it. Unlike every field above it is a local
+	// heuristic, not a provider report — it is carried here so the estimate and
+	// the provider's own InputTokens for the same request meet in one place and
+	// their ratio is observable. That ratio matters because the automatic
+	// compaction advisory fires on the estimate: a persistent ratio above 1
+	// means compaction triggers earlier than the real prompt size warrants.
+	// Zero when admission did not estimate, which is the unknown-window case
+	// under BudgetContract.AllowUnknownLimits.
+	AdmissionEstimateTokens int `json:"admissionEstimateTokens,omitempty"`
+
+	// AdmissionAnchored reports that AdmissionEstimateTokens was projected from
+	// the previous request's provider-reported count plus an estimate of only
+	// the messages appended since, rather than estimated in full. False means
+	// the whole request was estimated, which is the case on a conversation's
+	// first dispatch and whenever the transcript prefix or envelope changed.
+	AdmissionAnchored bool `json:"admissionAnchored,omitempty"`
 }
 
 // Reported wraps a provider-reported token count for the optional (*int)

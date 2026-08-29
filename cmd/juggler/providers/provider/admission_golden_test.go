@@ -80,15 +80,112 @@ func TestApproximateTokenCountNeverUndercountsGoldenCorpus(t *testing.T) {
 	}
 }
 
-// TestApproximateTokenCountOvercountStaysBounded is a regression tripwire,
-// not a calibration target: some sample classes (space runs, single-char
-// repeats, punctuation) are deliberately charged well above any real
-// tokenizer, so the bound is loose — it exists to catch accidental
-// blow-ups (double counting, marshaling surprises), not to tighten rates.
-func TestApproximateTokenCountOvercountStaysBounded(t *testing.T) {
+// maxOvercountRatio is the calibration target: how far above cl100k each
+// sample class is allowed to estimate. The corpus above is measured truth; this
+// is policy, kept separate so tuning a rate never edits the oracle.
+//
+// Bounds sit just above what the estimator currently produces, so any change
+// that worsens a class fails here and has to be argued for rather than absorbed
+// silently. That matters because the ratio is not cosmetic: automatic
+// compaction fires on this estimate whenever admission cannot anchor to a
+// provider-reported count, and the recovery ladder picks which history to fold
+// by comparing these same per-item numbers. An estimator that runs 2x hot
+// compacts a conversation at half the window it really has.
+//
+// The rates cannot be lowered uniformly to chase these down. Several samples
+// sit at exactly 1.00 — "adversarial alnum pairs" and "adversarial alnum soup"
+// pin the >16-char rule at one token per byte, "formatted number" pins mixed
+// punctuation at one token per rune, and "deeply nested arrays" and "bracket
+// wall" pin identical-punctuation runs at 0.5/char. Those are measured maxima
+// in real BPE, and cutting them would undercount, which is the one direction
+// this estimator must never take (see the never-undercount test above).
+//
+// The loose entries are degenerate by construction rather than sloppy: long
+// runs of one repeated character merge almost completely in a real vocabulary
+// ("-"x64 is a single token) and no run-length heuristic can model that without
+// undercounting the adversarial cases it also has to cover.
+var maxOvercountRatio = map[string]float64{
+	// Degenerate single-character runs: charged far above any real tokenizer.
+	"dash rule":       34.0,
+	"space run":       26.0,
+	"single char run": 8.5,
+	"punctuation run": 4.5,
+
+	// Opaque and non-ASCII content, charged at provable per-byte maxima.
+	"replacement char run":    4.25,
+	"katakana":                3.5,
+	"mixed CJK/EN":            3.2,
+	"CJK paragraph":           3.2,
+	"korean":                  2.9,
+	"hex blob":                2.8,
+	"CJK common":              1.9,
+	"emoji":                   1.6,
+	"emoji zwj sequence":      1.6,
+	"base64 blob":             1.6,
+	"CJK rare glyphs":         1.4,
+	"combining mark":          1.2,
+	"accented words":          1.9,
+	"adversarial alnum pairs": 1.2,
+	"adversarial alnum soup":  1.2,
+
+	// Structured content: punctuation density is what keeps these above prose.
+	"snake_case":           3.3,
+	"tool call json":       2.6,
+	"deeply nested json":   2.3,
+	"go code block":        2.3,
+	"go one-liner":         2.3,
+	"small json":           2.1,
+	"url":                  1.8,
+	"quote run":            1.4,
+	"bracket wall":         1.2,
+	"deeply nested arrays": 1.2,
+	"formatted number":     1.2,
+
+	// Prose and markdown: the classes an agent transcript is mostly made of.
+	"single word":      2.2,
+	"technical prose":  2.1,
+	"markdown":         2.1,
+	"mixed whitespace": 1.7,
+	"short sentence":   1.7,
+	"prose":            1.7,
+}
+
+func TestApproximateTokenCountOvercountStaysWithinCalibration(t *testing.T) {
 	for _, sample := range goldenCorpus {
-		if est := approximateTokenCount(sample.text); est > sample.cl100kTokens*10+32 {
-			t.Errorf("%s: estimate %d exceeds tripwire for cl100k %d", sample.name, est, sample.cl100kTokens)
+		bound, ok := maxOvercountRatio[sample.name]
+		if !ok {
+			t.Errorf("%s: no calibration bound declared; add one to maxOvercountRatio", sample.name)
+			continue
 		}
+		est := approximateTokenCount(sample.text)
+		if ratio := float64(est) / float64(sample.cl100kTokens); ratio > bound {
+			t.Errorf("%s: estimate %d is %.2fx cl100k %d, above the %.2fx bound", sample.name, est, ratio, sample.cl100kTokens, bound)
+		}
+	}
+}
+
+// A single space before a word is carried inside the word's token in BPE
+// vocabularies, so charging the separator too double-counts every word boundary
+// — the largest single source of drift against cl100k on prose. Runs of
+// two or more spaces are real tokens, and a trailing space has no word to be
+// absorbed into, so both stay charged.
+func TestApproximateTokenCountAbsorbsSingleWordSeparators(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+		want int64
+	}{
+		{"lone separator is absorbed by the following word", "ab cd", 2},
+		{"no separator costs the same", "abcd", 2},
+		{"a doubled separator is charged", "ab  cd", 3},
+		{"a trailing separator is charged", "ab ", 2},
+		{"a separator before punctuation is charged", "ab .", 3},
+		{"a lone space is still a token", " ", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := approximateTokenCount(tc.text); got != tc.want {
+				t.Errorf("approximateTokenCount(%q) = %d, want %d", tc.text, got, tc.want)
+			}
+		})
 	}
 }

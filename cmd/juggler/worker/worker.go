@@ -1927,6 +1927,54 @@ func (w *ConversationWorker) writeThreadNeedsStrategyRun(threadItemID string, ne
 	})
 }
 
+// setCompactionUnsummarized records that a folded-compaction thread's
+// summarizer run ended without writing a summary.
+//
+// This state has to be explicit because the fold has already committed by the
+// time the summarizer runs: the transcript is inside the sub-thread and the
+// parent holds nothing but the fold tile, so a summarizer that stops without a
+// result leaves a conversation that reads as empty. Nothing retries it — the
+// one-shot needsStrategyRun trigger is deliberately consumed before the run
+// (see clearThreadNeedsStrategyRun) so a cancelled run cannot restart itself on
+// the next observer tick — and cancellation writes no error item either. Without
+// this flag the outcome is indistinguishable from a fold whose summarizer never
+// started, and the viewer's Re-summarise affordance has nothing to key on.
+func (w *ConversationWorker) setCompactionUnsummarized(threadItemID string) {
+	w.writeCompactionUnsummarized(threadItemID, true)
+}
+
+// clearCompactionUnsummarized drops the marker once a summary exists again, or
+// when one is about to be attempted.
+func (w *ConversationWorker) clearCompactionUnsummarized(threadItemID string) {
+	w.writeCompactionUnsummarized(threadItemID, false)
+}
+
+// writeCompactionUnsummarized resolves the thread's Y.Map and writes the marker
+// under ONE ycrdtMu hold, for the reason writeThreadNeedsStrategyRun documents:
+// a pointer resolved under an earlier hold can be tombstoned before the write
+// lands. No-op when the flag already reads as wanted.
+//
+// Written untracked: this is derived state about a run's outcome, not an edit
+// the user made, so it must not be what an undo peels off.
+func (w *ConversationWorker) writeCompactionUnsummarized(threadItemID string, unsummarized bool) {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+	threadYMap := findThreadYMap(w.doc.getItems(), threadItemID)
+	if threadYMap == nil {
+		return
+	}
+	if current, _ := threadYMap.Get("compactionUnsummarized").(bool); current == unsummarized {
+		return
+	}
+	w.doc.transactInternal(func(_ *ycrdt.Transaction) {
+		if unsummarized {
+			threadYMap.Set("compactionUnsummarized", true)
+		} else {
+			threadYMap.Delete("compactionUnsummarized")
+		}
+	})
+}
+
 // hasIncompleteThreads returns true if any thread item in the current target
 // has a run still going (child thread in progress, or not yet started).
 //

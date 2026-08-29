@@ -347,6 +347,38 @@ export async function runTests() {
       'a fold has nothing but its summary — the block IS the column');
     assert(!!foldList.querySelector('.thread-result-resummarise-btn'),
       'and it carries the only way to write that summary again');
+
+    // A fold whose summariser stopped without writing anything. This is the
+    // state the block exists for: the parent shows nothing but this fold's
+    // tile, so if the block hides itself for want of text, the Re-summarise
+    // button goes with it and there is no route back to a summary anywhere.
+    const unsummarized = thread([
+      item({ type: 'user', itemId: 'u-1', content: 'summarise this' })
+    ]);
+    unsummarized.set('boundedCompaction', true);
+    unsummarized.set('compactionUnsummarized', true);
+    const unsummarizedList = render(unsummarized);
+    const block = unsummarizedList.querySelector('.thread-result-final');
+    assert(!!block, 'a fold with no summary still renders its block — it carries the only recovery route');
+    assert(!!unsummarizedList.querySelector('.thread-result-resummarise-btn'),
+      'and Re-summarise is exactly what that state needs to offer');
+    assert(unsummarizedList.querySelector('.thread-result-label')?.textContent === 'Not summarised',
+      'the label names the state rather than promising a summary that is not there');
+    assert(/** @type {HTMLElement} */ (block).dataset.resultState === 'unsummarized',
+      'the rendered state is keyed separately from the text, so each can replace the other');
+
+    // And a summary landing afterwards replaces the notice in place.
+    // The worker deletes the marker in the same transaction that writes the
+    // summary, so clear it the way production does.
+    unsummarized.set('result', 'What the folded transcript said.');
+    unsummarized.delete('compactionUnsummarized');
+    ensureThreadResult({ _threadYMap: unsummarized, _conversation: null },
+      unsummarizedList, /** @type {any} */ (unsummarizedList.querySelector('conversation-footer')));
+    const settled = unsummarizedList.querySelector('.thread-result-final');
+    assert(/** @type {HTMLElement} */ (settled).dataset.resultState === 'summary',
+      'a summary arriving replaces the no-summary notice');
+    assert(unsummarizedList.querySelector('.thread-result-label')?.textContent === 'Summary',
+      'and the label follows it back');
     passed++;
   } catch (e) { failed++; errors.push(`Result block appears only where the summary is not: ${msg(e)}`); }
 

@@ -170,6 +170,25 @@ func (r *run) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVe
 				}
 				r.sendErrorWithData(compactErr.Error(), "", errorData)
 			}
+			// The fold committed before this run started, so ending without a
+			// summary leaves the parent holding a fold tile and nothing else.
+			// Mark it, whatever the reason: an error item goes inside the
+			// sub-thread where the parent cannot show it, and cancellation
+			// writes nothing at all. Checked against the thread rather than
+			// against compactErr because a partial run may still have committed.
+			if compactErr != nil && !r.threadHasResult(r.t.thread.itemID) {
+				// One message either way so the state is greppable by one string,
+				// but a fold the human cancelled is an outcome, not a fault: only a
+				// genuine failure is worth an ERROR in a log someone is scanning for
+				// what broke.
+				line := "[compaction] fold %s left unsummarized: %s"
+				if errors.Is(compactErr, errBoundedCompactionCancelled) {
+					r.log.Info(line, r.t.thread.itemID, compactErr.Error())
+				} else {
+					r.log.Error(line, r.t.thread.itemID, compactErr.Error())
+				}
+				r.setCompactionUnsummarized(r.t.thread.itemID)
+			}
 			r.t.txnID = ""
 			return turnDone
 		}
@@ -416,8 +435,39 @@ func (r *run) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVe
 	if response.CacheWriteTokens != nil {
 		cacheWrite = fmt.Sprintf("%d", *response.CacheWriteTokens)
 	}
-	r.log.Info("[turn tokens] thread=%q input=%d cached=%s (%s%% hit) output=%d cacheWrite=%s stop=%s in %s",
-		r.t.thread.itemID, response.InputTokens, cached, hit,
+	// est is how large admission judged this same request before dispatching
+	// it, and est/input is that judgement's error against what the provider
+	// actually billed. It is logged here because automatic compaction fires on
+	// est, not on input: a ratio well above 1.0 means compaction triggers at a
+	// fraction of the real window, which is invisible from input alone.
+	//
+	// The "anchored"/"full" tag says which way est was reached. Anchored means
+	// it was projected from the previous turn's measured count plus an estimate
+	// of only the messages added since, so the ratio should sit near 1.0. Full
+	// means the whole request was estimated by the character heuristic, which
+	// is where the large ratios live. A run of "full" on a long conversation
+	// means the transcript prefix keeps changing under us and the anchor is not
+	// holding — that, not the ratio, is the thing to chase.
+	//
+	// est=? means admission did not size the request at all (unknown window).
+	// A trailing ~ means input is itself a local fallback estimate, so there is
+	// no measurement to form a ratio against.
+	est := "?"
+	if response.AdmissionEstimateTokens > 0 {
+		basis := "full"
+		if response.AdmissionAnchored {
+			basis = "anchored"
+		}
+		est = fmt.Sprintf("%d/%s", response.AdmissionEstimateTokens, basis)
+		switch {
+		case response.InputTokensApproximate:
+			est += "~"
+		case response.InputTokens > 0:
+			est += fmt.Sprintf(" %.2fx", float64(response.AdmissionEstimateTokens)/float64(response.InputTokens))
+		}
+	}
+	r.log.Info("[turn tokens] thread=%q input=%d est=%s cached=%s (%s%% hit) output=%d cacheWrite=%s stop=%s in %s",
+		r.t.thread.itemID, response.InputTokens, est, cached, hit,
 		response.OutputTokens, cacheWrite, response.StopReason,
 		duration.Round(time.Millisecond))
 

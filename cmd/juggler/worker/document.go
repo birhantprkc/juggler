@@ -106,6 +106,18 @@ func (cd *ConversationDocument) transactTracked(fn func(*ycrdt.Transaction)) {
 	cd.doc.Transact(fn, cd.authorID)
 }
 
+// transactInternal runs fn as one transaction attributed to the document rather
+// than the local author, so the UndoManager does not capture it. It is the
+// counterpart to transactTracked for derived state — a run's outcome, display
+// bookkeeping — which syncs to the viewer like any other field but must never
+// be the thing an undo peels off instead of the user's last real edit.
+//
+// Does NOT take ycrdtMu, for the same reason transactTracked doesn't: callers
+// already hold it across resolving the target and writing it.
+func (cd *ConversationDocument) transactInternal(fn func(*ycrdt.Transaction)) {
+	cd.doc.Transact(fn, cd.txOrigin())
+}
+
 // NewConversationDocument creates a new conversation document.
 func NewConversationDocument(conversationID, authorID string) *ConversationDocument {
 	doc := ycrdt.NewDoc("", true, ycrdt.DefaultGCFilter, nil, false)

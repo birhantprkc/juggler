@@ -168,6 +168,34 @@ func endTurn(text string) *LLMResponse {
 	}
 }
 
+// repeatToTokens builds a string that admission estimates at roughly want
+// tokens, by measuring rather than by a fixed repeat count. Fixtures that
+// pressure the context window have to be expressed in the estimator's own units
+// — a hardcoded length silently stops crossing the ceiling the moment a rate
+// changes, and the test then passes vacuously instead of failing loudly.
+func repeatToTokens(t *testing.T, unit string, want int64) string {
+	t.Helper()
+	estimate := func(s string) int64 {
+		return provider.EstimateMessageRequestTokens(provider.MessageRequest{
+			Messages: []provider.Message{{Type: "tool-result", Content: s}},
+		})
+	}
+	for n := 1; n <= 1<<22; {
+		text := strings.Repeat(unit, n)
+		got := estimate(text)
+		if got >= want {
+			return text
+		}
+		next := int(float64(n) * float64(want) / float64(max(got, 1)))
+		if next <= n {
+			next = n + 1
+		}
+		n = next
+	}
+	t.Fatalf("could not reach %d tokens by repeating %q", want, unit)
+	return ""
+}
+
 // I1 + I2. A long tool chain grows the transcript past the ceiling partway
 // through. The chain must complete, every dispatch must fit, and — the point —
 // the compaction must land DURING the chain, not after it.
@@ -190,7 +218,7 @@ func TestCompactionFitsAndFiresDuringTheToolChain(t *testing.T) {
 
 	// Each result is ~2k tokens, so the transcript crosses the ceiling around
 	// turn nine and there are still calls left that a compaction can help.
-	result := strings.Repeat("output ", 590)
+	result := repeatToTokens(t, "output ", 2_000)
 
 	world.w.currentRun().runStrategyLoop("work through the list", false)
 	for i := 1; i <= toolCall; i++ {

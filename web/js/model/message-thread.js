@@ -79,9 +79,6 @@ export default class MessageThread {
     /** @type {import('juggler/strategy-type').default} */
     this.strategy = strategyRegistry.createStrategy(resolvedStrategyId, this);
 
-    /** @type {number|null} */
-    this.contextWindow = null;
-
     /** @type {boolean} @private */
     this._systemPromptPlaceholderEnsured = false;
   }

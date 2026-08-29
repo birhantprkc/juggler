@@ -215,7 +215,10 @@ export function setupYjsObservers(c) {
       if (config) {
         c._fetchContextWindow(config);
       } else {
-        c._rootMessageThread.contextWindow = null;
+        // Clear the same field _fetchContextWindow fills and the footer's token
+        // meter divides by, so unsetting the model retires the denominator
+        // instead of leaving the last model's window on the pill.
+        c.contextWindow = null;
       }
     }
 

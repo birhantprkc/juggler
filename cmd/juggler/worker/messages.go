@@ -414,16 +414,18 @@ func (e *deliveredLLMError) Unwrap() error { return e.err }
 // cache usage for the call (unknown — NOT a miss); an explicit 0 means the
 // provider reported zero. See provider.StreamResult for the full contract.
 type LLMResponse struct {
-	Blocks                 []LLMResponseBlock `json:"blocks"`
-	InputTokens            int                `json:"inputTokens"`
-	InputTokensApproximate bool               `json:"inputTokensApproximate,omitempty"`
-	OutputTokens           int                `json:"outputTokens"`
-	CachedTokens           *int               `json:"cachedTokens,omitempty"`
-	CacheWriteTokens       *int               `json:"cacheWriteTokens,omitempty"`
-	StopReason             string             `json:"stopReason"` // "end_turn", "tool_use", "max_tokens"
-	Error                  string             `json:"error,omitempty"`
-	TransactionID          string             `json:"transactionId,omitempty"`
-	CacheTTLMs             int64              `json:"cacheTTLMs,omitempty"` // Provider's prompt-cache TTL in ms; 0 if no cache concept
+	Blocks                  []LLMResponseBlock `json:"blocks"`
+	InputTokens             int                `json:"inputTokens"`
+	InputTokensApproximate  bool               `json:"inputTokensApproximate,omitempty"`
+	OutputTokens            int                `json:"outputTokens"`
+	CachedTokens            *int               `json:"cachedTokens,omitempty"`
+	CacheWriteTokens        *int               `json:"cacheWriteTokens,omitempty"`
+	StopReason              string             `json:"stopReason"`                        // "end_turn", "tool_use", "max_tokens"
+	AdmissionEstimateTokens int                `json:"admissionEstimateTokens,omitempty"` // Local pre-dispatch estimate; compare against InputTokens
+	AdmissionAnchored       bool               `json:"admissionAnchored,omitempty"`       // Estimate projected from the previous turn's measured count
+	Error                   string             `json:"error,omitempty"`
+	TransactionID           string             `json:"transactionId,omitempty"`
+	CacheTTLMs              int64              `json:"cacheTTLMs,omitempty"` // Provider's prompt-cache TTL in ms; 0 if no cache concept
 }
 
 // LLMResponseBlock represents a block in an LLM response

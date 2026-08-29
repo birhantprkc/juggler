@@ -125,13 +125,14 @@ export async function runTests(_ctx) {
 
     assert(calls.fetch > 0, '_fetchContextWindow should have been called by observer');
 
-    // Clearing model config should clear context window
-    conversation.rootMessageThread.contextWindow = 99999;
+    // Clearing model config should clear the context window the footer divides
+    // by — the one on the conversation, which is where _fetchContextWindow puts it.
+    /** @type {any} */ (conversation).contextWindow = 99999;
     conversation.rootMessageThread.modelConfig = null;
     await waitForObservers();
 
-    assert(conversation.rootMessageThread.contextWindow === null,
-      `contextWindow should be null after clearing modelConfig, got ${conversation.rootMessageThread.contextWindow}`);
+    assert(/** @type {any} */ (conversation).contextWindow === null,
+      `contextWindow should be null after clearing modelConfig, got ${/** @type {any} */ (conversation).contextWindow}`);
 
     passed++;
   } catch (e) {

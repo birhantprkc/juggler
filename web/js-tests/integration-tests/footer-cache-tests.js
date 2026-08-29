@@ -65,8 +65,6 @@ function findTokenDisplay(conversation) {
  */
 function forceContextWindow(conversation, budget) {
   /** @type {any} */ (conversation).contextWindow = budget;
-  const root = conversation.rootMessageThread;
-  if (root) root.contextWindow = budget;
   const session = /** @type {any} */ (conversation)._session;
   if (session?.notifyConversationChange) {
     session.notifyConversationChange('conversation:context-window-updated', conversation);

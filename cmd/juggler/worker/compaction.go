@@ -409,9 +409,16 @@ func (w *ConversationWorker) writeBoundedCompactionResult(threadID string, resul
 		return true
 	}
 	accounting := convertToYcrdt(compactionAccountingMap(result))
+	unsummarized, _ := m.Get("compactionUnsummarized").(bool)
 	w.doc.transactTracked(func(_ *ycrdt.Transaction) {
 		m.Set("result", result.Summary)
 		m.Set("compactionAccounting", accounting)
+		// A summary exists again, so any marker left by an earlier failed or
+		// cancelled attempt goes with it, in the same transaction that made it
+		// untrue.
+		if unsummarized {
+			m.Delete("compactionUnsummarized")
+		}
 	})
 	return true
 }

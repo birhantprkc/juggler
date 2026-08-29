@@ -96,6 +96,7 @@ func contextLimitFromAdvisory(advisory *provider.ContextCompactionAdvisory) *pro
 		OutputReserveTokens:  advisory.OutputReserveTokens,
 		ContextWindowTokens:  advisory.ContextWindowTokens,
 		Breakdown:            advisory.Breakdown,
+		MeasuredPrefix:       advisory.MeasuredPrefix,
 	}
 }
 
@@ -197,7 +198,7 @@ func (r *run) handleContextOverflow(
 	// budget is spent, the terminal move depends on the overflow kind.
 	if !recovery.canAttempt() {
 		if isAdvisory {
-			r.log.Info("[context guard] recovery attempt bound reached; estimate=%d reserve=%d window=%d; dispatching one fallback", limit.EstimatedInputTokens, limit.OutputReserveTokens, limit.ContextWindowTokens)
+			r.log.Info("[context guard] recovery attempt bound reached; %s=%d reserve=%d window=%d; dispatching one fallback", limit.InputBasis(), limit.EstimatedInputTokens, limit.OutputReserveTokens, limit.ContextWindowTokens)
 			return overflowResult{verdict: overflowBypassAndRetry}
 		}
 		// Preserve and expose the last provider-authored overflow; do not
@@ -226,7 +227,7 @@ func (r *run) handleContextOverflow(
 		return overflowResult{verdict: overflowRetry}
 	}
 	if isAdvisory {
-		r.log.Info("[context guard] estimate=%d reserve=%d window=%d; dispatching one irreducible fallback", limit.EstimatedInputTokens, limit.OutputReserveTokens, limit.ContextWindowTokens)
+		r.log.Info("[context guard] %s=%d reserve=%d window=%d; dispatching one irreducible fallback", limit.InputBasis(), limit.EstimatedInputTokens, limit.OutputReserveTokens, limit.ContextWindowTokens)
 		return overflowResult{verdict: overflowBypassAndRetry}
 	}
 	// No durable structural progress: surface the latest provider overflow
@@ -379,13 +380,17 @@ func (r *run) compactToFit(limitErr *provider.ContextLimitExceededError, modelCo
 		}
 	}
 	if k <= skip {
-		// Every foldable unit already fits verbatim within the window. Because
-		// admission only rejects requests that do not fit, this state is only
-		// reachable once shrinkOversizedTrailingToolResults above brought an
-		// oversized trailing result under budget: the request now fits without a
-		// prefix fold, so succeed and let the caller's retry proceed against the
-		// smaller history rather than summarizing history that no longer needs
-		// it. Admission on the retry is the backstop if this estimate is optimistic.
+		// Every foldable unit fits verbatim within the window, so there is
+		// nothing this pass can usefully fold. Two ways to arrive here:
+		// shrinkOversizedTrailingToolResults above brought an oversized trailing
+		// result under budget, or admission sized the request from a measured
+		// prefix while this walk sizes it from per-item estimates, and the two
+		// disagree about whether it fits. Either way the answer is the same —
+		// succeed and let the caller's retry proceed against this history rather
+		// than summarizing history the walk says needs no summary. Admission on
+		// the retry is the backstop if that judgement is optimistic: a request
+		// that really is over the ceiling is rejected again, and the caller's
+		// attempt bound turns a repeat into the bypassed fallback dispatch.
 		r.recordCompactionOutcome(compactionKindAuto, "shrink-only", CompactionResult{}, map[string]any{"suffixTokens": suffixEst})
 		r.log.Info("[compaction] trailing-result shrink sufficed; no history fold needed (suffix=%d tokens)", suffixEst)
 		return contextRecoveryOutcome(before, items), nil
