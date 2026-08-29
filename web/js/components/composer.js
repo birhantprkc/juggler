@@ -25,7 +25,19 @@ import { openSettings } from '../services/settings-launcher.js';
 import tooltipManager from '../services/tooltip-manager.js';
 import { CONTEXT_CACHE_IMPACT_CHANGED } from '../services/context-cache-impact.js';
 import { isDesktopWindow } from '../../sdk/lib/window-control.js';
+import { MESSAGE_TYPES, TOOL_STATES, isConversationalItemType } from '../../sdk/lib/message.js';
+import {
+  COMPOSER_IDLE_MS,
+  COMPOSER_LONG_THREAD_ITEMS,
+  pickComposerPlaceholder,
+} from '../utils/composer-placeholders.js';
 import { expandPasteTokens } from '../utils/paste-tokens.js';
+import {
+  isFileDrag,
+  splitDroppedFiles,
+  installFileDropGuard,
+  markFileDropAccepted,
+} from '../utils/file-drop.js';
 import {
   handleFiles,
   handleTextFiles,
@@ -80,37 +92,6 @@ const MAX_TEXTAREA_HEIGHT_PX = 400;
  * instead.
  */
 const MAX_MESSAGE_CHARS = 100_000;
-
-/**
- * Wails' injected runtime installs a `dragover`/`drop` handler on `<html>` that
- * force-sets `dropEffect = 'none'` for file drags whenever the window's
- * `enableFileDrop` flag is off — which Juggler deliberately leaves off so WebKit
- * delivers real `File` objects to the page rather than routing drops through the
- * native bridge (see `cmd/juggler-app/app_state.go`). Because `<html>` is above
- * the composer in the bubble path, that handler runs *after* the composer's
- * own `dragover` and cancels the drop after the fact: the `drop` event never
- * fires and the image is silently rejected.
- *
- * This override listens one level higher (on `document`, which bubbles after
- * `<html>`) so it runs last and re-asserts `dropEffect = 'copy'` for file drags
- * aimed at an `composer-box`, letting the drop land in the box's own `drop` handler.
- * Installed once for the whole document, regardless of how many composers mount.
- */
-let fileDropOverrideInstalled = false;
-/** Install the document-level `dragover` override (see block comment above). */
-function installFileDropOverride() {
-  if (fileDropOverrideInstalled) return;
-  fileDropOverrideInstalled = true;
-  document.addEventListener('dragover', (e) => {
-    const dt = /** @type {DragEvent} */ (e).dataTransfer;
-    if (!dt || !Array.from(dt.types || []).includes('Files')) return;
-    if (!(e.target instanceof HTMLElement) || !e.target.closest('composer-box')) return;
-    e.preventDefault();
-    dt.dropEffect = 'copy';
-  });
-}
-
-
 
 
 
@@ -172,6 +153,14 @@ class Composer extends HTMLElement {
     // a transient loss of the binding) must be a no-op, never a re-restore.
     /** @type {string|null} @private */
     this._restoredThreadKey = null;
+
+    // The conversation state the placeholder currently on screen was picked
+    // for. A bucket can hold several lines and the pick is random, so re-picking
+    // on every doc update would leave the empty box reshuffling its own text
+    // under the user; remembering the state means the line changes only when
+    // the situation it describes does.
+    /** @type {string} @private */
+    this._placeholderState = '';
 
     // Staged image attachments for the next send (AssetRefs from uploadAsset).
     // Populated by the paste/drag/picker UI (added in a later step); forwarded
@@ -274,6 +263,11 @@ class Composer extends HTMLElement {
     // not stack). See setupListeners.
     /** @type {boolean} @private */
     this._impactListenerBound = false;
+    // Guards the once-only drag-and-drop listeners on `this`, for the same
+    // reason: they ride child re-renders, and a second set would stage every
+    // dropped file twice. See setupListeners.
+    /** @type {boolean} @private */
+    this._dragListenersBound = false;
     /** @type {boolean} @private */
     this._cacheImpactWarning = false;
   }
@@ -488,40 +482,37 @@ class Composer extends HTMLElement {
       if (!hasText) void this._pasteImagesFromAsyncClipboard();
     });
 
-    // Drag-and-drop image files anywhere onto the composer. The listeners
-    // live on the host element (`this`) so the whole component is a drop zone —
-    // including the padding around the bubble — not just the inner bubble. The
-    // drag-over highlight stays on the bubble (`wrapper`) for visual feedback.
-    // The document-level override below re-enables the drop, which the Wails
-    // runtime otherwise cancels (see installFileDropOverride).
-    installFileDropOverride();
-    this.addEventListener('dragover', (e) => {
-      const dt = /** @type {DragEvent} */ (e).dataTransfer;
-      if (!dt || !Array.from(dt.types || []).includes('Files')) return;
-      e.preventDefault();
-      wrapper?.classList.add('drag-over');
-    });
-    this.addEventListener('dragleave', (e) => {
-      // Only clear when the pointer actually leaves the host, not when it
-      // crosses between the host's children (which also fire dragleave).
-      if (e.target === this) wrapper?.classList.remove('drag-over');
-    });
-    this.addEventListener('drop', (e) => {
-      wrapper?.classList.remove('drag-over');
-      const dt = /** @type {DragEvent} */ (e).dataTransfer;
-      const files = dt?.files;
-      if (!files || files.length === 0) return;
-      // Images upload to the asset store (bytes); everything else is treated as
-      // a text file and inlined as a context-item snapshot. Split so a mixed
-      // drop routes each kind to the right handler.
-      const arr = Array.from(files);
-      const images = arr.filter((f) => f.type.startsWith('image/'));
-      const texts = arr.filter((f) => !f.type.startsWith('image/'));
-      if (images.length === 0 && texts.length === 0) return;
-      e.preventDefault();
-      if (images.length > 0) this._handleFiles(images);
-      if (texts.length > 0) this._handleTextFiles(texts);
-    });
+    // Drag-and-drop files anywhere onto the composer. The listeners live on the
+    // host element (`this`) so the whole component is a drop zone — including
+    // the padding around the bubble — not just the inner bubble. The drag-over
+    // highlight stays on the bubble for visual feedback. The
+    // surrounding column is a drop zone too and hands its drops here (see
+    // conversation-area's _dropTargetComposer), so this path serves a drop that
+    // landed on the box itself.
+    //
+    // Bound once: these ride on the host, which survives the re-renders that
+    // rebuild the bubble, so a second binding would stage every dropped file
+    // twice. The bubble is therefore looked up per event rather than captured.
+    installFileDropGuard();
+    if (!this._dragListenersBound) {
+      this._dragListenersBound = true;
+      const bubble = () => this.querySelector('composer-box-wrapper');
+      this.addEventListener('dragover', (e) => {
+        if (!isFileDrag(/** @type {DragEvent} */ (e).dataTransfer)) return;
+        e.preventDefault();
+        markFileDropAccepted(e);
+        bubble()?.classList.add('drag-over');
+      });
+      this.addEventListener('dragleave', (e) => {
+        // Only clear when the pointer actually leaves the host, not when it
+        // crosses between the host's children (which also fire dragleave).
+        if (e.target === this) bubble()?.classList.remove('drag-over');
+      });
+      this.addEventListener('drop', (e) => {
+        bubble()?.classList.remove('drag-over');
+        if (this.acceptDroppedFiles(/** @type {DragEvent} */ (e).dataTransfer)) e.preventDefault();
+      });
+    }
 
     // Render any chips that survived a re-render.
     renderAttachmentChips(this);
@@ -809,6 +800,69 @@ class Composer extends HTMLElement {
       row.classList.toggle('disabled', busy);
       row.setAttribute('aria-disabled', String(busy));
     });
+  }
+
+  /**
+   * Which placeholder bucket this composer's thread is in — see
+   * utils/composer-placeholders. The order of the tests is the priority: how
+   * the last turn ENDED outranks anything about the thread as a whole, because
+   * it is the more recent and more actionable fact.
+   *
+   * How a turn ended is read from the items themselves rather than from a
+   * flag, because no durable "the last turn was cancelled" or "…errored" state
+   * exists on the conversation. The scan walks back from the end and stops at
+   * the user message that started the turn, so only the trailing turn counts.
+   * @returns {string} A key of COMPOSER_PLACEHOLDERS
+   * @private
+   */
+  _derivePlaceholderState() {
+    const thread = this._messageThread;
+    const items = thread ? thread.items : [];
+
+    // A new conversation is not an empty one: it is seeded with standing
+    // context items (agents files, project memory, the system prompt) before
+    // anyone has said anything, so the raw item count is never zero. Only
+    // conversation HISTORY counts as something having happened here — and it is
+    // the same count that decides whether the thread is long, so both lines
+    // speak about the same thing.
+    let historyCount = 0;
+    for (const item of items) {
+      if (isConversationalItemType(item?.get?.('type'))) historyCount++;
+    }
+    if (!historyCount) return 'fresh';
+
+    const status = this._conversation?.processingState?.status;
+    if (status === 'error' || status === 'validation-error') return 'error';
+
+    for (let i = items.length - 1; i >= 0; i--) {
+      const item = items[i];
+      const type = item?.get?.('type');
+      if (type === MESSAGE_TYPES.USER) break;
+      if (type === MESSAGE_TYPES.ERROR) return 'error';
+      if (type === MESSAGE_TYPES.TOOL_ACTION && item.get('state') === TOOL_STATES.CANCELLED) {
+        return 'cancelled';
+      }
+    }
+
+    const lastActivityAt = thread ? thread.lastActivityAt : 0;
+    if (lastActivityAt && Date.now() - lastActivityAt > COMPOSER_IDLE_MS) return 'idle';
+    if (historyCount >= COMPOSER_LONG_THREAD_ITEMS) return 'long';
+    return 'ready';
+  }
+
+  /**
+   * Re-derive the placeholder, picking a fresh line only when the state has
+   * actually moved. A blocked composer is left alone: `setBlocked` writes the
+   * reason it is blocked, which is a more useful thing to say than any of this.
+   * @private
+   */
+  _updatePlaceholder() {
+    const textarea = this.querySelector('textarea');
+    if (!textarea || textarea.hasAttribute('data-blocked')) return;
+    const state = this._derivePlaceholderState();
+    if (state === this._placeholderState && textarea.placeholder) return;
+    this._placeholderState = state;
+    textarea.placeholder = pickComposerPlaceholder(state);
   }
 
   /**
@@ -1388,16 +1442,15 @@ class Composer extends HTMLElement {
     if (textarea) {
       if (blocked) {
         textarea.disabled = true;
-        textarea.placeholder = reason || 'Input blocked...';
+        textarea.placeholder = reason || 'Input blocked';
         textarea.setAttribute('data-blocked', 'true');
       } else {
         textarea.disabled = false;
-        // On a touch composer Enter inserts a newline, so the desktop
-        // "Shift+Enter for new line" hint would be wrong there.
-        textarea.placeholder = this._isTouchComposer()
-          ? 'Type your message...'
-          : 'Type your message... (Shift+Enter for new line)';
         textarea.removeAttribute('data-blocked');
+        // The reason is gone, so fall back to whatever the conversation's own
+        // state has to say.
+        this._placeholderState = '';
+        this._updatePlaceholder();
       }
     }
   }
@@ -1422,13 +1475,21 @@ class Composer extends HTMLElement {
     this._conversationMetadataObserver = null;
     if (conversation) {
       this._conversationMetadataObserver = (event) => {
-        if (event.keysChanged?.has?.('processingState')) {
+        const keys = event.keysChanged;
+        if (keys?.has?.('processingState')) {
           this._updateNewThreadControls();
+        }
+        // `completedTurns` is the durable "a turn just ended" edge, and
+        // `processingState` carries the error statuses — between them they
+        // cover every transition the placeholder distinguishes.
+        if (keys?.has?.('processingState') || keys?.has?.('completedTurns')) {
+          this._updatePlaceholder();
         }
       };
       conversation.observeMetadata(this._conversationMetadataObserver);
     }
     this._updateNewThreadControls();
+    this._updatePlaceholder();
 
     const permissionControls = this.querySelector('permission-controls');
     if (permissionControls && 'setMessageThread' in permissionControls) {
@@ -1553,6 +1614,11 @@ class Composer extends HTMLElement {
       // draft (firing at once if its target already passed).
       syncScheduledSendFromDraft(this);
     }
+
+    // A different thread is a different situation, so let it re-pick even when
+    // the state happens to match the one being left behind.
+    if (isNewThread) this._placeholderState = '';
+    this._updatePlaceholder();
   }
 
   /**
@@ -1703,6 +1769,25 @@ class Composer extends HTMLElement {
    */
   _handleTextFiles(fileList) {
     handleTextFiles(this, fileList);
+  }
+
+  /**
+   * Stage the files from a drop, whatever surface caught it: the box itself, or
+   * the column around it. Images upload to the asset store as bytes and
+   * everything else is inlined as a text snapshot, so a mixed drop is routed one
+   * kind at a time.
+   *
+   * The caller cancels the event iff this took something, leaving a drag that
+   * carried nothing to the document-level guard.
+   * @param {DataTransfer|null|undefined} dataTransfer - The drop's payload.
+   * @returns {boolean} True when files were taken.
+   */
+  acceptDroppedFiles(dataTransfer) {
+    const { images, texts } = splitDroppedFiles(dataTransfer);
+    if (images.length === 0 && texts.length === 0) return false;
+    if (images.length > 0) this._handleFiles(images);
+    if (texts.length > 0) this._handleTextFiles(texts);
+    return true;
   }
 
   /**
@@ -2354,7 +2439,6 @@ class Composer extends HTMLElement {
             <composer-box-wrapper>
                 <composer-box-attachments></composer-box-attachments>
                 <textarea
-                    placeholder="Enter your command..."
                     aria-label="Message input"
                     autocorrect="off"
                     autocapitalize="off"
@@ -2415,6 +2499,9 @@ class Composer extends HTMLElement {
                 </input-controls>
             </composer-box-wrapper>
         `;
+    // Seed the placeholder synchronously: the textarea exists as of the write
+    // above, and the box is on screen before the deferred setup below runs.
+    this._updatePlaceholder();
     // Defer listener setup a frame so the just-written DOM is laid out.
     requestAnimationFrame(() => {
       this.setupListeners();

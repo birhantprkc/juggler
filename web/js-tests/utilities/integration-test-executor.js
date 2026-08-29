@@ -154,6 +154,8 @@ import { runTests as runScrollAwayAutofollowTests } from '../unit-tests/scroll-a
 import { runTests as runScrollToTopTests } from '../unit-tests/scroll-to-top-test.js';
 import { runTests as runAutoFollowHoldsTheEndTests } from '../unit-tests/auto-follow-holds-the-end-test.js';
 import { runTests as runUserSendFollowTests } from '../unit-tests/user-send-follow-test.js';
+import { runTests as runEmptyConversationHintTests } from '../unit-tests/empty-conversation-hint-test.js';
+import { runTests as runColumnFileDropTests } from '../unit-tests/column-file-drop-test.js';
 import { runTests as runColumnNavigationTests } from '../unit-tests/column-navigation-test.js';
 import { runTests as runDeleteSelectionNeighbourTests } from '../unit-tests/delete-selection-neighbour-test.js';
 import { runTests as runControlClickRevealTests } from '../unit-tests/control-click-reveal-test.js';
@@ -432,6 +434,8 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:scroll-to-top', run: runScrollToTopTests },
   { name: 'unit:auto-follow-holds-the-end', run: runAutoFollowHoldsTheEndTests },
   { name: 'unit:user-send-follow', run: runUserSendFollowTests },
+  { name: 'unit:empty-conversation-hint', run: runEmptyConversationHintTests },
+  { name: 'unit:column-file-drop', run: runColumnFileDropTests },
   { name: 'unit:column-navigation', run: runColumnNavigationTests },
   // Exclusive for the shared origin: one case writes the tool-grouping
   // localStorage preference, which every lane's renderer reads.

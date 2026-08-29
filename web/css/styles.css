@@ -1433,6 +1433,82 @@ conversation-message-list-wrapper {
     margin-bottom: auto;
 }
 
+/* A file dragged anywhere over the column washes the transcript, while the
+   composer below takes the drop ring (see components.css): the wash says the
+   whole panel will accept the drop, the ring says where the file lands. */
+conversation-area.file-drag-over conversation-message-list-wrapper::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: var(--accent-blue);
+    opacity: 0.06;
+    pointer-events: none;
+}
+
+/* The starting hint for a conversation with no history yet (see
+   conversation-area's _updateEmptyHint). It is laid OVER the empty background
+   rather than placed in the transcript: an absolutely-positioned sibling of the
+   scroller, so the id-based item diff never sees it and no reader-anchor or
+   scroll invariant has to account for a row appearing and vanishing.
+   pointer-events:none leaves the click that focuses the composer to pass
+   straight through. */
+conversation-empty-hint {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 1rem;
+    pointer-events: none;
+    color: var(--text-tertiary);
+    font-size: var(--font-size-md);
+    text-align: center;
+}
+
+.empty-hint-lead {
+    margin: 0;
+    padding: 1rem 0;
+}
+
+.empty-hint-keys {
+    display: grid;
+    grid-template-columns: max-content max-content;
+    gap: 0.375rem 0.75rem;
+    align-items: center;
+    text-align: left;
+}
+
+/* Each row hands its two cells straight to the grid above, so the keys line up
+   in one column and hiding a row is a single toggle. */
+.empty-hint-row {
+    display: contents;
+}
+
+.empty-hint-key {
+    justify-self: end;
+    min-width: 2rem;
+    padding: 0.125rem 0.5rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.375rem;
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    text-align: center;
+
+    /* System UI stack: reliably carries the ↵ ⇧ glyphs (unlike the mono font). */
+    font-family: -apple-system, system-ui, var(--font-ui), sans-serif;
+}
+
+/* A touch composer sends with a button and takes Enter as a newline, and has
+   nothing to drag an image from — keyed off the same media query the composer
+   keys that behaviour off, so the hint and the keys never disagree. */
+@media (hover: none) and (pointer: coarse) {
+    .empty-hint-pointer {
+        display: none;
+    }
+}
+
 .conversation-message-list::-webkit-scrollbar {
     width: 0.375rem;
 }

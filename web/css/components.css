@@ -4305,8 +4305,11 @@ composer-box textarea {
     max-height: none;
 }
 
-/* Drop-target highlight while dragging image files over the composer. */
-composer-box composer-box-wrapper.drag-over {
+/* Drop-target highlight while dragging files over the composer — and while
+   dragging them anywhere else over the column, which hands its drops to this
+   same box, so the ring is what says where the file will end up. */
+composer-box composer-box-wrapper.drag-over,
+conversation-area.file-drag-over composer-box composer-box-wrapper {
     box-shadow: 0 0 0 0.125rem var(--accent-color, #4a9eff);
 }
 

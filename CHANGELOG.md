@@ -6,6 +6,7 @@ of changes; this project follows semantic versioning.
 ## [Unreleased]
 
 - An expired Claude Code sign-in now says how to fix it, with a settings shortcut
+- A conversation with no history yet shows the composer keys and gestures
 
 ## [0.5.9] - 2026-08-29
 

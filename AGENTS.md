@@ -60,6 +60,21 @@ make build-windows  # Cross-compile bin/windows/*.exe (pure-Go, no cgo)
   `ResizeObserver` delivery; exercise a synchronous seam instead. Lane viewport
   width also varies by platform and may cross the 36rem phone breakpoint, so
   geometry that depends on a breakpoint belongs in an explicitly sized iframe.
+- rAF delivery in a lane is platform-split: frames never arrive on macOS or
+  Linux (WebKitGTK), but Windows (WebView2) delivers them — so product code
+  deferred through `requestAnimationFrame` is exercised only on Windows CI.
+  Test such behaviour by calling the deferred function directly.
+- The pool is `JUGGLER_TEST_WINDOWS` subprocesses x `JUGGLER_TEST_IFRAMES` lanes,
+  and the lanes inside one subprocess share a single content process — one JS
+  heap, one main thread. Raising iframes while dropping windows to 1 serialises
+  the suite onto that thread and produces cascades of arbitrary timeouts.
+- Don't use a `wait-for-progress` event count as a proxy for "the tool has
+  produced output" — how many status/claim events precede the first byte is the
+  engine's business. Wait on the output itself with `wait-for-action-output`
+  (`{ toolUseId, contains }`).
+- Suite timings are load-sensitive. A browser test that fails in a full run and
+  passes alone is a load artefact, not a regression — re-run the exact subtest
+  in isolation before investigating it.
 
 ## Git commits
 
@@ -111,6 +126,69 @@ Key invariants:
   maintain it in a reactive observer, not in click handlers.
 - **Window geometry is per-project session state**, stored server-side in the
   session and exposed at `GET/PUT /api/session/window-state`.
+- **Sub-threads reach the LLM by two dispatch paths.** Threads stamped
+  `needsStrategyRun` (compaction/handoff folds, plugin inserts) are picked up by
+  `checkForNewThreads`, one per reconcile pass; delegated children (any
+  `delegatesToSubthread` tool, via `tryDelegateTool`) set no such flag and are
+  dispatched only by the walk in `tryReconcile` (`thread_reducer.go`). A change
+  to one proves nothing about the other — test both.
+- **A launch that owns the native app loses its exit status unless it exits
+  first**: `beginShutdown` → `app.Quit()` → `[NSApp terminate:]` ends the
+  process without unwinding, so the return in `run.go` is unreachable. One-shot
+  runs exit from inside `beginShutdown` via `a.exit(...)`; `App.exitProcess` is
+  the test seam.
+- **`ProviderStatus.Available` means "can serve a turn right now"** (gated by
+  the provider's `ReadinessCheck`); `Credentialed` means "the user supplied what
+  was asked". Settings toggles read `credentialed`, never `available`, or a
+  lapsed CLI sign-in renders the switch off and blames the user for it. A
+  `ReadinessCheck` must fail open on an unanswerable probe — otherwise a
+  disabled provider can never run the turn that would re-enable it.
+
+## Web UI
+
+- **Event feeds are not interchangeable.** `session.onLLMStatusChange` fires
+  only off the `processingState` metadata key, so a doc change (a tool action
+  going pending) produces no status tick. Drive doc-state logic from
+  `conversation:changed` (`session.subscribe`), which the items observer emits
+  synchronously inside the writing Yjs transaction. Handlers there stay
+  read-only and unbatched — rAF/microtask coalescing throws away the synchrony
+  that makes them deterministic.
+- **An automatic scroll may never increase `|scrollTop|`** (distance from the
+  end) in the column-reverse `#message-list`; auto-selection can land on a
+  non-tail row and yank the view backwards. `conversation-area`'s reader anchor
+  reads "content changed size" as evidence of drift — which a streaming turn
+  satisfies — and its `scrollTo` cancels an in-flight smooth scroll, so any new
+  programmatic scroll calls `_beginProgrammaticScroll()` first and targets a
+  clamped extreme rather than a measured delta, so an interrupted trip still
+  converges. Lanes barely paint; test these by calling the guard directly.
+- **A "new" conversation is not empty in the doc** — items are seeded with
+  standing context items (system prompt, agents files, memory) before the first
+  message. Count real history with `isConversationalItemType()`
+  (`web/sdk/lib/message.js`), never `items.length === 0`.
+- Transcript render cost is linear in conversation length. A `content-visibility`
+  row skip was measured and removed (a constant factor, no change in scaling);
+  if long-thread jank returns, the fix that changes the curve is windowing.
+
+## Debugging the viewer
+
+- Viewer JS faults reach `server.log` as
+  `[viewer-fault] <source>: <message> conv=<id>` — window errors, unhandled
+  rejections, failed Yjs applies, throwing observers. Grep for it first on any
+  "the UI froze / stopped updating" report; a release-build viewer has no
+  console.
+- **One conversation frozen while the others work, and sends still go out** =
+  something threw inside `DocumentSyncManager._applyBatchedUpdates`
+  (`web/js/utils/document-sync-manager.js`). It drains the pending queue before
+  `Y.applyUpdate`, and by design every observer and re-render runs synchronously
+  inside that apply — so a render bug kills inbound sync for that one
+  conversation permanently. Outbound survives because it rides
+  `doc.on('update')`, a separate path.
+- Liveness proves nothing about the UI: the server's viewer-silence window is
+  fed by a bare `setInterval` heartbeat, and the client's stall timer by the
+  server's own heartbeat, stamped before parsing. A viewer whose render layer is
+  dead keeps both happy. To place a wedge, ask `GET /api/health/active` (false =
+  the server is idle and the bug is client-side), then check whether `doc.yjs`
+  changed when the user acted (unchanged = the input never reached the server).
 
 ## Paths
 

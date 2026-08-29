@@ -7,6 +7,7 @@ import {
   isAssistantMessage,
   isToolActionMessage,
   isThreadMessage,
+  isConversationalItemType,
 } from '../../sdk/lib/message.js';
 import './conversation-footer.js';
 import './tool-action-message.js';
@@ -48,6 +49,8 @@ import * as scroll from './conversation-area-scroll.js';
 import * as selection from './conversation-area-selection.js';
 import { StatusMessageBuilder } from '../services/status-message-builder.js';
 import { guarded } from '../utils/fault-report.js';
+import { formatBindingForPlatform, isMac } from '../services/key-shortcut-manager.js';
+import { isFileDrag, installFileDropGuard, markFileDropAccepted } from '../utils/file-drop.js';
 
 /**
  * Duration of the insert/relayout FLIP glide — the eased motion that replaces
@@ -68,6 +71,46 @@ const STREAM_RESIZE_MS = 140;
 /** @returns {boolean} True when the OS asks for reduced motion. */
 function prefersReducedMotion() {
   return !!window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+}
+
+/**
+ * The starting hint shown on the empty background of a conversation with no
+ * history yet — the four composer gestures a first-time user has no way to
+ * guess, and nothing else. It is read every time a conversation is opened
+ * before its first message, so it stays plain instruction rather than voice;
+ * the composer's own placeholder carries that.
+ *
+ * The key glyphs come from the shortcut formatter, so they read ↵ / ⇧↵ on macOS
+ * and Enter / Shift+Enter elsewhere. Neither row is true on a touch composer,
+ * where Enter inserts a newline and sending is a button — those rows and the
+ * drag-and-drop line are hidden by the same `(hover: none) and (pointer:
+ * coarse)` media query the composer keys its behaviour off.
+ * @returns {string} The hint's markup.
+ */
+function emptyHintMarkup() {
+  const mac = isMac();
+  const send = formatBindingForPlatform({ key: 'Enter' }, mac);
+  const newline = formatBindingForPlatform({ key: 'Enter', shift: true }, mac);
+  return `
+    <conversation-empty-hint class="hidden">
+      <p class="empty-hint-lead">Type your message below</p>
+      <div class="empty-hint-keys">
+        <div class="empty-hint-row empty-hint-pointer">
+          <span class="empty-hint-key">${send}</span><span>Send</span>
+        </div>
+        <div class="empty-hint-row empty-hint-pointer">
+          <span class="empty-hint-key">${newline}</span><span>New line</span>
+        </div>
+        <div class="empty-hint-row">
+          <span class="empty-hint-key">@</span><span>Reference a file</span>
+        </div>
+        <div class="empty-hint-row">
+          <span class="empty-hint-key">/</span><span>Run a command</span>
+        </div>
+      </div>
+      <p class="empty-hint-lead empty-hint-pointer">Drag-and-drop a file or image to attach it</p>
+    </conversation-empty-hint>
+  `;
 }
 
 /**
@@ -161,6 +204,8 @@ class ConversationArea extends HTMLElement {
     this._offscreenResumeTimer = null;
     /** @type {boolean} @private - True once this column has done its initial bulk render, so later structural inserts/removals animate (FLIP) while the first populate stays instant. */
     this._animationsPrimed = false;
+    /** @type {boolean} @private - Guards the once-only file-drop listeners on `this`, which outlive render() (see _setupFileDrop) */
+    this._fileDropBound = false;
     /** @type {ResizeObserver|null} @private - Recomputes scroll-control visibility on viewport/content resize */
     this._scrollControlsResizeObserver = null;
     /** @type {ResizeObserver|null} @private - Holds the reader's place when content resizes while they are scrolled away (see _setupReaderAnchor) */
@@ -649,6 +694,7 @@ class ConversationArea extends HTMLElement {
             <conversation-footer></conversation-footer>
           </div>
         </section>
+        ${emptyHintMarkup()}
         <div class="scroll-controls" id="scroll-controls">
           <button type="button" class="scroll-control-btn hidden" data-scroll="top" title="Scroll to top" aria-label="Scroll to top">${SCROLL_TOP_SVG}</button>
           <button type="button" class="scroll-control-btn hidden" data-scroll="bottom" title="Scroll to bottom" aria-label="Scroll to bottom">${SCROLL_BOTTOM_SVG}</button>
@@ -788,9 +834,72 @@ class ConversationArea extends HTMLElement {
     this.querySelector('thread-column-actions')?.classList.add('hidden');
   }
 
+  /**
+   * The composer a file dropped on this column belongs to, or null when the
+   * column has nowhere to put one — a group column hides its input, and a
+   * column mid-render has yet to build one.
+   * @returns {any|null} The column's composer, if it can take a file.
+   * @private
+   */
+  _dropTargetComposer() {
+    if (this.hasAttribute('data-hide-input')) return null;
+    const composer = /** @type {any} */ (this.composer);
+    return typeof composer?.acceptDroppedFiles === 'function' ? composer : null;
+  }
+
+  /**
+   * Make the whole column a drop zone, not just its composer.
+   *
+   * A file dropped on a conversation is meant for the message being written
+   * there, and aiming for the box is fiddly when the transcript fills the
+   * window — so the column takes the drop anywhere and hands it to its own
+   * composer, which is what makes a drop on a thread column attach to THAT
+   * thread. The box keeps its own handlers (they run first, and this one stands
+   * down when they have taken the drop); what this adds is the rest of the
+   * column's area.
+   * @private
+   */
+  _setupFileDrop() {
+    // These listeners live on the host, which outlives render() — and
+    // setupEventListeners runs again on every re-connect, so binding twice
+    // would stage every dropped file twice.
+    if (this._fileDropBound) return;
+    this._fileDropBound = true;
+    installFileDropGuard();
+
+    this.addEventListener('dragover', (e) => {
+      if (!isFileDrag(/** @type {DragEvent} */ (e).dataTransfer)) return;
+      if (!this._dropTargetComposer()) return;
+      e.preventDefault();
+      markFileDropAccepted(e);
+      this.classList.add('file-drag-over');
+    });
+
+    this.addEventListener('dragleave', (e) => {
+      // dragleave also fires for every crossing between the column's own
+      // children; the element being entered tells the two apart.
+      const entering = /** @type {DragEvent} */ (e).relatedTarget;
+      if (entering instanceof Node && this.contains(entering)) return;
+      this.classList.remove('file-drag-over');
+    });
+
+    this.addEventListener('drop', (e) => {
+      this.classList.remove('file-drag-over');
+      // The composer's own handler cancels the drop it has taken, and it has
+      // already run by the time this does.
+      if (e.defaultPrevented) return;
+      const composer = this._dropTargetComposer();
+      if (composer?.acceptDroppedFiles(/** @type {DragEvent} */ (e).dataTransfer)) {
+        e.preventDefault();
+      }
+    });
+  }
+
   setupEventListeners() {
     const wrapper = this.querySelector('conversation-message-list-wrapper');
     const composer = this.querySelector('#composer-box');
+
+    this._setupFileDrop();
 
     if (wrapper && composer) {
       // Capture-phase pre-check: detect clicks that originate inside an
@@ -1438,6 +1547,8 @@ class ConversationArea extends HTMLElement {
     const content = /** @type {HTMLElement|null} */ (this.querySelector('#message-list-inner'));
     if (!content) return;
 
+    this._updateEmptyHint(items);
+
     const footer = ensureFooterExists(this, content);
 
     if (!items || items.length === 0) {
@@ -1506,6 +1617,33 @@ class ConversationArea extends HTMLElement {
     // moved items from where they were and fade newly-inserted ones in.
     if (beforeTops) this._playInsertAnimation(content, beforeTops);
     this._animationsPrimed = true;
+  }
+
+  /**
+   * Show or hide the starting hint over the empty background.
+   *
+   * A new conversation is not an empty one: it is seeded with standing context
+   * items before the first message, so the hint is shown while the column holds
+   * no CONVERSATIONAL item — the same test the composer's placeholder uses.
+   * Only the root column qualifies: a thread column is opened from work that has
+   * already happened, so its reader is past needing this.
+   * @param {Array<any>} items - The column's items, before display grouping.
+   * @private
+   */
+  _updateEmptyHint(items) {
+    const hint = this.querySelector('conversation-empty-hint');
+    if (!hint) return;
+
+    let hasHistory = !!this._threadYMap;
+    if (!hasHistory) {
+      for (const item of items || []) {
+        if (isConversationalItemType(item?.get?.('type'))) {
+          hasHistory = true;
+          break;
+        }
+      }
+    }
+    hint.classList.toggle('hidden', hasHistory);
   }
 
   /**
