@@ -20,6 +20,12 @@
  * is hidden and software-rendered, so the rendering updates that drive a smooth
  * scroll can be throttled to nothing — waiting on a glide there waits on a scroll
  * that has not begun, which reads exactly like one that never happened.
+ *
+ * The same throttling is what the last section is about. A column also owes one
+ * scroll to the position its conversation was left at, a frame after it renders,
+ * and that frame arrives whenever the engine gets round to it — so the restore is
+ * held to the same rule as everything else here: landing it on a reader who has
+ * since scrolled is an automatic move away from their place.
  * @module unit-tests/scroll-to-top-test
  */
 
@@ -177,6 +183,26 @@ export async function runTests() {
     assert(Math.abs(list.scrollTop - anchoredAt) < Math.abs(range * 0.3),
       `with no scroll of ours in flight the anchor must still hold the reader's ` +
       `place, but left the view at ${list.scrollTop} instead of near ${anchoredAt}`);
+
+    // --- A load-time restore that arrives late stands down ---
+    //
+    // The restore of the position a conversation was left at is scheduled a frame
+    // after the render, and a frame is not owed to us promptly: an occluded window
+    // can be a long way behind, and a lane may deliver none at all. So the restore
+    // can arrive here, long after the reader has taken the view somewhere of their
+    // own, where landing it would be an automatic jump to the end and away from
+    // the place being held for them.
+    assert(!!rootCol._readerAnchor,
+      'test setup: the reader should have a place held here, or a late restore has ' +
+      'nothing to land on top of');
+    // As if this load's restore were still outstanding, whether or not this
+    // engine has already delivered the frame carrying it.
+    rootCol._initialScrollRestored = false;
+    const beforeRestore = list.scrollTop;
+    rootCol.restoreScrollPosition();
+    assert(list.scrollTop === beforeRestore,
+      `a load-time scroll restore arriving after the reader has scrolled must stand ` +
+      `down, but moved the view from ${beforeRestore} to ${list.scrollTop}`);
 
     passed = 1;
   } catch (e) {

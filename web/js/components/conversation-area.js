@@ -1386,11 +1386,16 @@ class ConversationArea extends HTMLElement {
   }
 
   /**
-   * Reset scroll restore flag (called when conversation changes)
+   * Reset scroll restore flag (called when conversation changes).
+   *
+   * The reader's place goes with it: it was a place in the conversation this
+   * column is leaving, and holding it would make the incoming conversation's
+   * restore stand down for a reader who is not there (see restoreScrollPosition).
    */
   resetScrollRestoreFlag() {
     this._initialScrollRestored = false;
     this._animationsPrimed = false;
+    this.releaseReaderAnchor();
   }
 
   // ============================================================

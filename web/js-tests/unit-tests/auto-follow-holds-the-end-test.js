@@ -132,44 +132,69 @@ export async function runTests() {
     // row is selected while the assistant message sits after it in selectable
     // order — and the assistant message alone is taller than the viewport, so
     // the tool row ends up entirely above it.
-    doc.transact(() => {
-      root.addEvent(completedToolAction('call_tall'));
-      root.addEvent(createAssistantMessage(`And here is what that produced: ${longText(120)}`));
-    }, author);
+    //
+    // How much text that takes is a font-metrics question, and a lane renders in
+    // whatever font the platform gave it: the sentence count that overhangs the
+    // viewport by a band and a half on one wraps to a third of that on another.
+    // So the batch is delivered again with twice the text until the row overhangs
+    // far enough for framing it to leave the near-bottom band. Each pass is the
+    // same scenario — a tool row followed by text taller than the viewport,
+    // arriving while the view sits at the end — so the assertions inside the loop
+    // hold for every one of them.
+    const BAND_PX = 320;
+    let overhang = 0;
+    let sentences = 60;
+    let grownTo = sentences;
+    /** @type {string|null} */
+    let selectedId = null;
+    /** @type {HTMLElement|null} */
+    let selectedEl = null;
 
-    const selectedId = rootCol.getSelectedItemId();
-    assert(!!selectedId, 'the arriving batch should have auto-selected an item');
-    const selectedEl = /** @type {HTMLElement|null} */ (
-      list.querySelector(`[message-id="${selectedId}"]`)
-    );
-    assert(!!selectedEl, 'the auto-selected item should have a row');
-    assert(/** @type {HTMLElement} */ (selectedEl).tagName === 'TOOL-ACTION-MESSAGE',
-      `test setup: rule 2 should pick the tool row over the assistant message, ` +
-      `picked a ${/** @type {HTMLElement} */ (selectedEl).tagName}`);
+    for (let attempt = 0; attempt < 6 && overhang <= BAND_PX + 80; attempt++) {
+      grownTo = sentences;
+      doc.transact(() => {
+        root.addEvent(completedToolAction(`call_tall_${attempt}`));
+        root.addEvent(createAssistantMessage(
+          `And here is what that produced: ${longText(grownTo)}`));
+      }, author);
+      sentences *= 2;
 
-    const ids = rootCol.getSelectableItemIds();
-    assert(ids[ids.length - 1] !== selectedId,
-      'test setup: the auto-selected tool row must NOT be the tail, or the ' +
-      'selection scroll takes the scroll-to-end path and proves nothing');
+      selectedId = rootCol.getSelectedItemId();
+      assert(!!selectedId, 'the arriving batch should have auto-selected an item');
+      selectedEl = /** @type {HTMLElement|null} */ (
+        list.querySelector(`[message-id="${selectedId}"]`)
+      );
+      assert(!!selectedEl, 'the auto-selected item should have a row');
+      assert(/** @type {HTMLElement} */ (selectedEl).tagName === 'TOOL-ACTION-MESSAGE',
+        `test setup: rule 2 should pick the tool row over the assistant message, ` +
+        `picked a ${/** @type {HTMLElement} */ (selectedEl).tagName}`);
 
-    assert(Math.abs(list.scrollTop) < 4,
-      `an automatic selection must not scroll away from the end, but moved the ` +
-      `view ${Math.abs(list.scrollTop)}px back to frame the row it picked`);
+      const ids = rootCol.getSelectableItemIds();
+      assert(ids[ids.length - 1] !== selectedId,
+        'test setup: the auto-selected tool row must NOT be the tail, or the ' +
+        'selection scroll takes the scroll-to-end path and proves nothing');
 
-    // The condition the minimal-movement path acts on: the row's top is above
-    // the viewport top, so "bring it fully into view" means going backwards, and
-    // far enough to leave the near-bottom band. Measured after the assertion
-    // above, because it is only the true overhang while the view is still at the
-    // end — a move backwards is precisely one that reduces it to nothing.
-    const overhang = list.getBoundingClientRect().top
-      - /** @type {HTMLElement} */ (selectedEl).getBoundingClientRect().top;
-    assert(overhang > 320,
+      assert(Math.abs(list.scrollTop) < 4,
+        `an automatic selection must not scroll away from the end, but moved the ` +
+        `view ${Math.abs(list.scrollTop)}px back to frame the row it picked`);
+
+      // The condition the minimal-movement path acts on: the row's top is above
+      // the viewport top, so "bring it fully into view" means going backwards, and
+      // far enough to leave the near-bottom band. Measured after the assertion
+      // above, because it is only the true overhang while the view is still at the
+      // end — a move backwards is precisely one that reduces it to nothing.
+      overhang = list.getBoundingClientRect().top
+        - /** @type {HTMLElement} */ (selectedEl).getBoundingClientRect().top;
+    }
+
+    assert(overhang > BAND_PX,
       `test setup: the auto-selected row should sit well above the viewport top, ` +
-      `or there was nothing here to resist; overhang is ${overhang}px`);
+      `or there was nothing here to resist; overhang is ${overhang}px with the ` +
+      `message grown to ${grownTo} sentences`);
 
     // --- The control: the reader's own selection still frames the row ---
 
-    rootCol.selectItem(selectedId);
+    rootCol.selectItem(/** @type {string} */ (selectedId));
     assert(Math.abs(list.scrollTop) > 320,
       `a selection the reader made must still bring its item into view, but the ` +
       `view stayed ${Math.abs(list.scrollTop)}px from the end`);
@@ -192,7 +217,7 @@ export async function runTests() {
     // A streaming token: content grows inside an existing item, carrying no
     // array-level delta, which is the path _setupStreamingScrollObserver serves.
     doc.transact(() => {
-      tail.set('content', `And here is what that produced: ${longText(240)}`);
+      tail.set('content', `And here is what that produced: ${longText(grownTo * 2)}`);
     }, author);
 
     assert(/** @type {HTMLElement} */ (tailEl).offsetHeight > heightBefore,

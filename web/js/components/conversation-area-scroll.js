@@ -350,8 +350,22 @@ export function saveScrollPositionImmediately(area) {
 }
 
 /**
- * Restore scroll position from localStorage. Called by conversation-tab
- * after messages are rendered. Only restores once per conversation load.
+ * Restore scroll position from localStorage. Called by conversation-tab a frame
+ * after the messages are rendered, so the rows this restores against have a
+ * layout to measure. Only restores once per conversation load.
+ *
+ * That frame is not owed to us promptly. A hidden, occluded or background window
+ * can be a long way behind, so the restore can arrive after the reader has
+ * already put the view somewhere of their own — and a held reader anchor is
+ * exactly that signal (conversation-area.js keeps one only while the reader sits
+ * away from the end, and tells their scrolling apart from content drifting under
+ * them). Restoring on top of it would be an automatic jump away from where they
+ * just went, which is the one move rule 11 exists to refuse. The restore is
+ * spent either way: it belongs to the load, and the load is over.
+ *
+ * Both branches move the view immediately rather than through scrollToBottom's
+ * coalescing frame — a restore happens once, so there is nothing to coalesce,
+ * and a second deferred jump is a second chance to land on top of the reader.
  * @param {any} area - ConversationArea instance
  */
 export function restoreScrollPosition(area) {
@@ -359,9 +373,11 @@ export function restoreScrollPosition(area) {
   area._initialScrollRestored = true;
 
   if (!area._conversation) return;
+  if (area._readerAnchor) return;
+
   const state = getScrollState(area._conversation.id);
   if (!state || state.atBottom) {
-    scrollToBottom(area, true);
+    scrollEndIntoView(area);
     return;
   }
 
@@ -378,7 +394,7 @@ export function restoreScrollPosition(area) {
       return;
     }
   }
-  scrollToBottom(area, true);
+  scrollEndIntoView(area);
 }
 
 /**
