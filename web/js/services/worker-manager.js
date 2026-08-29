@@ -1734,6 +1734,18 @@ class WorkerManager {
         id: conversationId,
         loadFromDisk: true  // Backend will load from disk and send metadata
       };
+      // CANDIDATE FIX 2: a worker entry outlives the Conversation object that
+      // owns the document. Session._doLoad replaces every conversation with a
+      // fresh, EMPTY one but leaves this map alone, so _spawnWorker's
+      // "already exists" short-circuit would skip the init — and an init is
+      // the only thing that asks the worker for state. Re-attach explicitly:
+      // the worker answers this document's state vector with the ops it lacks.
+      const existingEntry = this._workers.get(conversationId);
+      if (existingEntry && !conversation.hasRootItemsArray) {
+        existingEntry.ready = false;
+        existingEntry.loadFromDisk = true;
+        this._sendInit(conversationId, initData);
+      }
       await this._spawnWorker(conversationId, initData);
 
       // 4. Wait for ready and get metadata from backend

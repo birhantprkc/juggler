@@ -1553,8 +1553,14 @@ func (w *ConversationWorker) finishIdleTransition() {
 	w.batcher.Flush()
 }
 
+// sendReady answers the init being dispatched. It is addressed to the client
+// that sent that init, not broadcast: "ready" means "the state you asked for
+// has been sent to you", and every client's init is answered by its own. A
+// broadcast ready is a foreign answer that resolves a peer's still-outstanding
+// init before the delta addressed to that peer has gone out, leaving it holding
+// an empty document it believes is loaded.
 func (w *ConversationWorker) sendReady() {
-	w.send(map[string]any{
+	w.reply(map[string]any{
 		"type":                "ready",
 		"summarizationPrompt": DefaultSummarizationPrompt,
 	})
@@ -1566,7 +1572,7 @@ func (w *ConversationWorker) sendReadyWithMetadata(metadata map[string]any) {
 		"metadata":            metadata,
 		"summarizationPrompt": DefaultSummarizationPrompt,
 	}
-	w.send(msg)
+	w.reply(msg)
 }
 
 func (r *run) sendError(message, stack string) {
