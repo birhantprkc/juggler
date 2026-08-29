@@ -358,7 +358,7 @@ export function selectItem(area, itemId, origin = 'user', { allowReveal = true }
   // Rules 6-7: scroll selected item into view. This is a no-op when the item
   // is already fully visible (see scrollElementIntoView), so selecting an
   // on-screen item never moves the viewport.
-  if (mayScroll) scrollItemIntoView(area, itemId, smooth);
+  if (mayScroll) scrollItemIntoView(area, itemId, { smooth, automatic: origin === 'auto' });
 
   dispatchItemSelected(area, itemId, origin, false, allowReveal);
 
@@ -374,7 +374,9 @@ export function selectItem(area, itemId, origin = 'user', { allowReveal = true }
     requestAnimationFrame(() => {
       // Match the initial scroll's mode: an instant re-assert would snap and
       // kill an in-flight auto-follow glide.
-      if (area._localSelectedItemId === scrolledId) scrollItemIntoView(area, scrolledId, smooth);
+      if (area._localSelectedItemId === scrolledId) {
+        scrollItemIntoView(area, scrolledId, { smooth, automatic: origin === 'auto' });
+      }
     });
   }
 

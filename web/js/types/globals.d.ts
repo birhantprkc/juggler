@@ -89,7 +89,7 @@ interface HTMLElementTagNameMap {
 	'conversation-area': HTMLElement & {
 		conversation: unknown;
 		scrollToBottom(force?: boolean): void;
-		scrollItemIntoView(itemId: string, smooth?: boolean): void;
+		scrollItemIntoView(itemId: string, opts?: { smooth?: boolean; automatic?: boolean }): void;
 		applySelectedClass(selectedId: string | null): void;
 		getMessageThread(): unknown;
 		renderFromItems(items: unknown[], insertedMessageIds?: string[]): void;

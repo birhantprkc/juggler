@@ -5,16 +5,21 @@
 /**
  * The scroll-to-top control reaches the top.
  *
- * It scrolls by a measured delta rather than to a known offset, because the
- * reversed scroller's scrollTop sign is engine detail. That measurement is the
- * fragile part: taken from the content column's first CHILD it read as a few
- * dozen pixels of chrome on any root conversation, because the column leads with
- * a `display: none` `thread-column-actions` and a box-less element's rect is all
- * zeros. The button moved the view a fraction of an inch and stopped.
+ * Where the control aims is the fragile part, because the reversed scroller's
+ * scrollTop sign is engine detail. A delta measured from the content column's
+ * first CHILD read as a few dozen pixels of chrome on any root conversation,
+ * because the column leads with a `display: none` `thread-column-actions` and a
+ * box-less element's rect is all zeros: the button moved the view a fraction of
+ * an inch and stopped.
  *
  * So the assertion is the whole journey — press it from the end of a long
  * conversation and the oldest message must be on screen — not the shape of the
- * delta, which is free to be computed however it likes.
+ * aim, which is free to be computed however it likes.
+ *
+ * The journey is taken instantly. The control glides, and a lane's engine WebView
+ * is hidden and software-rendered, so the rendering updates that drive a smooth
+ * scroll can be throttled to nothing — waiting on a glide there waits on a scroll
+ * that has not begun, which reads exactly like one that never happened.
  * @module unit-tests/scroll-to-top-test
  */
 
@@ -26,22 +31,6 @@ import {
 } from '../utilities/test-helpers.js';
 import { createUserMessage, createAssistantMessage } from '../../sdk/lib/message.js';
 import '../../js/components/conversation-tab.js';
-
-/**
- * Wait for a smooth scroll to finish: poll until the offset holds still across
- * two reads, so the assertion sees where the scroll landed rather than a frame
- * part-way through it.
- * @param {HTMLElement} list - The `#message-list` scroller.
- * @returns {Promise<void>} Resolves once the offset has settled (or the wait caps out).
- */
-async function settled(list) {
-  let last = NaN;
-  for (let i = 0; i < 60; i++) {
-    await new Promise((r) => setTimeout(r, 50));
-    if (list.scrollTop === last) return;
-    last = list.scrollTop;
-  }
-}
 
 /**
  * @returns {Promise<{passed: number, failed: number, errors: string[]}>} Aggregated test results.
@@ -99,7 +88,6 @@ export async function runTests() {
 
     // Start from the end, where a reader who wants the top actually presses it.
     list.scrollTo({ top: 0, behavior: 'instant' });
-    await settled(list);
     assert(Math.abs(list.scrollTop) < 4,
       `test setup: should start at the end, got scrollTop ${list.scrollTop}`);
 
@@ -108,8 +96,21 @@ export async function runTests() {
       rootCol.querySelector('#scroll-controls [data-scroll="top"]')
     );
     assert(!!topBtn, 'the column should have a scroll-to-top control');
-    /** @type {HTMLElement} */ (topBtn).click();
-    await settled(list);
+
+    // Take the animator out of it. The control glides, and a lane's engine
+    // WebView is hidden and software-rendered, so the rendering updates a smooth
+    // scroll is driven by can be throttled to nothing — and a glide that has not
+    // started yet reads exactly like one that never happened. Every scroll the
+    // control asks for is still performed, in full, just instantly: where it aims
+    // is what's under test, not how it travels.
+    const realScrollTo = list.scrollTo.bind(list);
+    /** @type {any} */ (list).scrollTo = (/** @type {any} */ opts) =>
+      realScrollTo({ ...opts, behavior: 'instant' });
+    try {
+      /** @type {HTMLElement} */ (topBtn).click();
+    } finally {
+      delete (/** @type {any} */ (list).scrollTo);
+    }
 
     // |scrollTop| is the distance from the end, so the start is the far extreme
     // of the range whichever sign the engine uses.
@@ -148,7 +149,6 @@ export async function runTests() {
     })();
 
     list.scrollTo({ top: sign * range * 0.5, behavior: 'instant' });
-    await settled(list);
     rootCol._recordReaderAnchor();
     assert(!!rootCol._readerAnchor,
       'test setup: a reader anchor should be recorded away from the end');

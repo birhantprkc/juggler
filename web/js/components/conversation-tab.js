@@ -1194,15 +1194,24 @@ class ConversationTab extends JugglerElement {
    * after setting genuinely new selections — the same cases where
    * _selectItem's Rules 6-7 would fire if the selection went through
    * the normal entry point.
+   *
+   * Because it reaches the scroll module directly rather than through
+   * selectItem, rule 4b's gate is applied here: an automatic move skips a
+   * column whose reader has scrolled away, and every column it does move is
+   * held to the end by the `automatic` flag. This loop visits EVERY column, not
+   * just the one whose selection changed, so without the gate a thread this tab
+   * revealed by itself would scroll a column the reveal has nothing to do with.
+   * @param {{automatic?: boolean}} [opts] - `automatic`: the tab decided on this
+   *   move; false when it follows an action of the reader's own.
    * @private
    */
-  _scrollSelectionsIntoView() {
+  _scrollSelectionsIntoView({ automatic = false } = {}) {
     for (let i = 0; i < this._selection.selections.length; i++) {
       const col = /** @type {HTMLElement} */ (this._columns[i]); // bounded by i < this._columns.length
       const itemId = this._selection.selections[i];
-      if (col?.tagName === 'CONVERSATION-AREA' && itemId) {
-        /** @type {any} */ (col).scrollItemIntoView(itemId);
-      }
+      if (col?.tagName !== 'CONVERSATION-AREA' || !itemId) continue;
+      if (automatic && !(/** @type {any} */ (col).isScrolledNearBottom())) continue;
+      /** @type {any} */ (col).scrollItemIntoView(itemId, { automatic });
     }
   }
 
@@ -1993,10 +2002,13 @@ class ConversationTab extends JugglerElement {
     this._ensureThreadColumnSelections();
 
     // Rules 6-7: new auto-selected thread or Rule 5b neighbor selection →
-    // scroll the selected item into view in its parent column.
-    if (autoSelected || this._pendingNeighborScroll) {
+    // scroll the selected item into view in its parent column. Rule 5b follows
+    // the reader's own delete, so it moves as a reader action; a thread this tab
+    // revealed by itself is the system's own idea and answers to rule 11.
+    const neighborScroll = this._pendingNeighborScroll;
+    if (autoSelected || neighborScroll) {
       this._pendingNeighborScroll = false;
-      this._scrollSelectionsIntoView();
+      this._scrollSelectionsIntoView({ automatic: !neighborScroll });
     }
 
   }

@@ -38,10 +38,14 @@
  *      continue. This governs every AUTOMATIC move, including auto-selection
  *      (rule 4b in conversation-area-selection.js): a selection the system
  *      makes may scroll only while the reader is at the end, because scrolling
- *      away is the whole instruction. The reader's own actions are not
- *      automatic moves and are never gated by it — selecting an item (rules
- *      6-7) and sending a message (rule 8b) both scroll from wherever the view
- *      happens to be. What holds the reader's place
+ *      away is the whole instruction. Passing that gate authorises following
+ *      the conversation, never leaving it, so an automatic move is barred from
+ *      travelling away from the end as well (scrollElementIntoView) — the
+ *      direction the rule exists to protect is the one a "minimal movement"
+ *      scroll will happily take to frame a tall item. The reader's own actions
+ *      are not automatic moves and are never gated by any of this — selecting
+ *      an item (rules 6-7) and sending a message (rule 8b) both scroll from
+ *      wherever the view happens to be. What holds the reader's place
  *      against content arriving below them is a pair of anchors in
  *      conversation-area.js — one across a streaming bubble's growth, one across
  *      a structural insert — not this module.
@@ -83,9 +87,12 @@ import { MESSAGE_TAGS } from './conversation-area-rendering.js';
  * an end-follow.
  * @param {any} area - ConversationArea instance
  * @param {string} itemId
- * @param {boolean} [smooth=false]
+ * @param {{smooth?: boolean, automatic?: boolean}} [opts] - `smooth` glides the
+ *   tail/end path. `automatic` marks a move the system decided on rather than
+ *   one the reader asked for, which rule 11 holds to the end of the
+ *   conversation (see scrollElementIntoView).
  */
-export function scrollItemIntoView(area, itemId, smooth = false) {
+export function scrollItemIntoView(area, itemId, { smooth = false, automatic = false } = {}) {
   const messageList = area.querySelector('#message-list');
   if (!messageList) return;
   itemId = area._displayIdFor(itemId);
@@ -101,7 +108,7 @@ export function scrollItemIntoView(area, itemId, smooth = false) {
     scrollEndIntoView(area, smooth);
     return;
   }
-  scrollElementIntoView(area, el);
+  scrollElementIntoView(area, el, automatic);
 }
 
 /**
@@ -138,8 +145,10 @@ export function scrollEndIntoView(area, smooth = false) {
  * never scrollIntoView (which would also scroll ancestors and guess an edge).
  * @param {any} area - ConversationArea instance
  * @param {Element} el
+ * @param {boolean} [automatic=false] - True when the system chose this move, so
+ *   rule 11 bars it from travelling away from the end.
  */
-function scrollElementIntoView(area, el) {
+function scrollElementIntoView(area, el, automatic = false) {
   const messageList = area.querySelector('#message-list');
   if (!messageList) return;
   const listRect = messageList.getBoundingClientRect();
@@ -153,7 +162,19 @@ function scrollElementIntoView(area, el) {
   // as it does in a normal column, so the same offset brings the element into
   // view. Clamped, so it can't overshoot. Instant (overriding the scroller's
   // scroll-behavior: smooth) — selection inspection shouldn't glide.
-  messageList.scrollTo({ top: messageList.scrollTop + delta, behavior: 'instant' });
+  const next = messageList.scrollTop + delta;
+  // Rule 11: an automatic move may not take the view further from the end than
+  // it already is. An item taller than the viewport is brought "fully into
+  // view" by showing its TOP, and for a reader following the end that is a
+  // scroll backwards — away from the content they are there to watch, and far
+  // enough (the item's overhang) to leave the near-bottom band, after which the
+  // reader anchor holds them there and the turn finishes offscreen. Following
+  // the end outranks framing the item the system happened to pick; the reader's
+  // own selection is not automatic and still scrolls wherever it must.
+  // Distance from the end is |scrollTop| in the reversed scroller, so comparing
+  // magnitudes is the sign-agnostic form of "further away".
+  if (automatic && Math.abs(next) > Math.abs(messageList.scrollTop)) return;
+  messageList.scrollTo({ top: next, behavior: 'instant' });
 }
 
 /**

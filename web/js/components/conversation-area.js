@@ -326,11 +326,23 @@ class ConversationArea extends HTMLElement {
       // Only smooth growth while pinned to the very bottom: there, native
       // column-reverse pinning holds the footer steady on its own, so animating
       // the grown bubble's HEIGHT (never the scroll position) slides the items
-      // above up without nudging the footer. When merely near — but not at — the
-      // bottom, we leave the scroll position exactly where the user put it (no
-      // catch-up scroll; see the note at the end of the handler).
+      // above up without nudging the footer. Off the bottom the footer is not
+      // the fixed edge, so the glide has nothing to smooth against and the
+      // growth simply lands. Either way this handler issues no catch-up scroll
+      // — see the note at the end of it.
       const pinned = !!scroller && Math.abs(scroller.scrollTop) <= 1;
       const animate = pinned && !structural && !prefersReducedMotion();
+      // Whether there is a reader's place to hold is rule 11's question, not the
+      // glide's: anywhere inside the near-bottom band the reader is following
+      // the end, and native column-reverse pinning is already doing exactly what
+      // they want. Holding their place there would fight it — every batch's
+      // growth would be measured as drift and undone, walking the view backwards
+      // out of the band one relayout at a time until the anchor locks it there.
+      // Testing that with `pinned` puts any reader a stray pixel off the bottom
+      // on the wrong side of it, and disagrees with _recordReaderAnchor, which
+      // keeps no anchor in the band at all — so the two anchor paths would hold
+      // a place only one of them believes in.
+      const nearEnd = scroll.isScrolledNearBottom(this);
 
       // Only the rows this batch actually touched can have grown, and measuring
       // a row costs a forced layout — so never measure the whole transcript on
@@ -345,7 +357,7 @@ class ConversationArea extends HTMLElement {
       const fromHeights = growEls.map((el) => /** @type {HTMLElement} */ (el).offsetHeight);
 
       // Hold the reader's place across this mutation (see _holdReaderAnchorOver).
-      // While pinned we don't: native column-reverse anchoring keeps the newest
+      // Near the end we don't: native column-reverse anchoring keeps the newest
       // text in view, and the height glide below smooths it. Auto-follow of new
       // items / approvals / busy-status comes from onItemsInserted and showBusy,
       // never from here.
@@ -355,7 +367,7 @@ class ConversationArea extends HTMLElement {
         growEls.forEach((el, i) => {
           this._animateStreamingResize(/** @type {HTMLElement} */ (el), fromHeights[i] ?? 0);
         });
-      }, { skip: pinned });
+      }, { skip: nearEnd });
     };
     const container = /** @type {import('../model/message-thread.js').MessageThread} */ (this._messageThread).container;
     this._observedContainer = container;
@@ -1172,55 +1184,33 @@ class ConversationArea extends HTMLElement {
   /**
    * Smooth-scroll to the very start (oldest message) of the conversation.
    *
-   * The DISTANCE is the whole scrollable range, aimed at whichever extreme is the
-   * engine's start. scrollTo clamps, so overshooting lands exactly at the top, and
-   * a trip that doesn't measure its own length can't be left short when rows change
+   * Rects give the DIRECTION only, taken from the content column itself and never
+   * its first child: the column leads with `thread-column-actions`, which is
+   * `display: none` in a root conversation (it only appears in a thread column),
+   * and a rect from a box-less element reads as all zeros — a delta of a few dozen
+   * pixels of chrome, whatever the length of the conversation. The column's own
+   * top is the top of the content by construction, whatever leads it.
+   *
+   * The DISTANCE is then the whole scrollable range rather than that measured
+   * delta, because scrollTo clamps: overshooting lands exactly at the top, and a
+   * trip that doesn't measure its own length can't be left short when rows change
    * height on the way (rendering as the glide brings them into range) after the
-   * target was computed. The DIRECTION (which sign the engine uses for the top
-   * extreme — WebKit allows a negative scrollTop, others clamp to +range) comes
-   * from a probe of the engine itself rather than the layout rects, because rects
-   * read as all zeros on a non-painting lane and cannot be trusted for a sign.
+   * target was computed. Sign-agnostic, so the reversed scroller needs no special
+   * case.
    * @private
    */
   _scrollToConversationStart() {
     const messageList = /** @type {HTMLElement|null} */ (this.querySelector('#message-list'));
-    if (!messageList) return;
-
+    const content = /** @type {HTMLElement|null} */ (this.querySelector('#message-list-inner'));
+    if (!messageList || !content) return;
+    const delta = content.getBoundingClientRect().top - messageList.getBoundingClientRect().top;
+    if (Math.abs(delta) < 1) return; // already at the start
     const range = messageList.scrollHeight - messageList.clientHeight;
-    if (range <= 0) return; // Nothing to scroll.
-
-    // In the reversed scroller the bottom (newest) is scrollTop 0 and the
-    // magnitude grows toward the top, so |scrollTop| is the distance from the
-    // bottom and scrollHeight − clientHeight is the max. But whether the top
-    // extreme is +range or −range depends on the engine: WebKit permits a
-    // negative scrollTop, while plenty of engines clamp it to 0, putting the
-    // start at +range. A sign derived from the geometry alone drops to zero in a
-    // non-painting lane (getBoundingClientRect returns all-zero there), so probe
-    // the engine's own convention instead and aim at the absolute extreme — the
-    // one spot that is unambiguously the start whichever way the scroller is
-    // signed.
-    const sign = this._scrollTopSign(messageList, range);
     this._beginProgrammaticScroll();
-    messageList.scrollTo({ top: sign * range, behavior: 'smooth' });
-  }
-
-  /**
-   * Which sign the engine uses for scroll offsets in this reversed scroller:
-   * +1 when the top extreme is +range (clamped — scrollTop is never negative),
-   * −1 when it is −range (WebKit, which allows a negative scrollTop). Derived by
-   * nudging the list and reading its own offset back, so it is exact on every
-   * engine and never depends on the view painting.
-   * @param {HTMLElement} messageList
-   * @param {number} range
-   * @returns {number} 1 or −1
-   * @private
-   */
-  _scrollTopSign(messageList, range) {
-    const prev = messageList.scrollTop;
-    messageList.scrollTo({ top: -range, behavior: 'instant' });
-    const sign = Math.abs(messageList.scrollTop) > range / 2 ? -1 : 1;
-    messageList.scrollTo({ top: prev, behavior: 'instant' });
-    return sign;
+    messageList.scrollTo({
+      top: messageList.scrollTop + Math.sign(delta) * range,
+      behavior: 'smooth'
+    });
   }
 
   // --- Public API for keyboard navigation (called by conversation-tab) ---
@@ -1343,11 +1333,12 @@ class ConversationArea extends HTMLElement {
 
   /**
    * @param {string} itemId
-   * @param {boolean} [smooth=false]
+   * @param {{smooth?: boolean, automatic?: boolean}} [opts] - See
+   *   conversation-area-scroll.scrollItemIntoView.
    * @private
    */
-  scrollItemIntoView(itemId, smooth = false) {
-    scroll.scrollItemIntoView(this, itemId, smooth);
+  scrollItemIntoView(itemId, opts = {}) {
+    scroll.scrollItemIntoView(this, itemId, opts);
   }
 
   /**
