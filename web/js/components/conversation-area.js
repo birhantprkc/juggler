@@ -1172,33 +1172,55 @@ class ConversationArea extends HTMLElement {
   /**
    * Smooth-scroll to the very start (oldest message) of the conversation.
    *
-   * Rects give the DIRECTION only, taken from the content column itself and never
-   * its first child: the column leads with `thread-column-actions`, which is
-   * `display: none` in a root conversation (it only appears in a thread column),
-   * and a rect from a box-less element reads as all zeros — a delta of a few dozen
-   * pixels of chrome, whatever the length of the conversation. The column's own
-   * top is the top of the content by construction, whatever leads it.
-   *
-   * The DISTANCE is then the whole scrollable range rather than that measured
-   * delta, because scrollTo clamps: overshooting lands exactly at the top, and a
-   * trip that doesn't measure its own length can't be left short when rows change
+   * The DISTANCE is the whole scrollable range, aimed at whichever extreme is the
+   * engine's start. scrollTo clamps, so overshooting lands exactly at the top, and
+   * a trip that doesn't measure its own length can't be left short when rows change
    * height on the way (rendering as the glide brings them into range) after the
-   * target was computed. Sign-agnostic, so the reversed scroller needs no special
-   * case.
+   * target was computed. The DIRECTION (which sign the engine uses for the top
+   * extreme — WebKit allows a negative scrollTop, others clamp to +range) comes
+   * from a probe of the engine itself rather than the layout rects, because rects
+   * read as all zeros on a non-painting lane and cannot be trusted for a sign.
    * @private
    */
   _scrollToConversationStart() {
     const messageList = /** @type {HTMLElement|null} */ (this.querySelector('#message-list'));
-    const content = /** @type {HTMLElement|null} */ (this.querySelector('#message-list-inner'));
-    if (!messageList || !content) return;
-    const delta = content.getBoundingClientRect().top - messageList.getBoundingClientRect().top;
-    if (Math.abs(delta) < 1) return; // already at the start
+    if (!messageList) return;
+
     const range = messageList.scrollHeight - messageList.clientHeight;
+    if (range <= 0) return; // Nothing to scroll.
+
+    // In the reversed scroller the bottom (newest) is scrollTop 0 and the
+    // magnitude grows toward the top, so |scrollTop| is the distance from the
+    // bottom and scrollHeight − clientHeight is the max. But whether the top
+    // extreme is +range or −range depends on the engine: WebKit permits a
+    // negative scrollTop, while plenty of engines clamp it to 0, putting the
+    // start at +range. A sign derived from the geometry alone drops to zero in a
+    // non-painting lane (getBoundingClientRect returns all-zero there), so probe
+    // the engine's own convention instead and aim at the absolute extreme — the
+    // one spot that is unambiguously the start whichever way the scroller is
+    // signed.
+    const sign = this._scrollTopSign(messageList, range);
     this._beginProgrammaticScroll();
-    messageList.scrollTo({
-      top: messageList.scrollTop + Math.sign(delta) * range,
-      behavior: 'smooth'
-    });
+    messageList.scrollTo({ top: sign * range, behavior: 'smooth' });
+  }
+
+  /**
+   * Which sign the engine uses for scroll offsets in this reversed scroller:
+   * +1 when the top extreme is +range (clamped — scrollTop is never negative),
+   * −1 when it is −range (WebKit, which allows a negative scrollTop). Derived by
+   * nudging the list and reading its own offset back, so it is exact on every
+   * engine and never depends on the view painting.
+   * @param {HTMLElement} messageList
+   * @param {number} range
+   * @returns {number} 1 or −1
+   * @private
+   */
+  _scrollTopSign(messageList, range) {
+    const prev = messageList.scrollTop;
+    messageList.scrollTo({ top: -range, behavior: 'instant' });
+    const sign = Math.abs(messageList.scrollTop) > range / 2 ? -1 : 1;
+    messageList.scrollTo({ top: prev, behavior: 'instant' });
+    return sign;
   }
 
   // --- Public API for keyboard navigation (called by conversation-tab) ---

@@ -417,15 +417,16 @@ func TestStreamingNoBottleneck(t *testing.T) {
 	delay := callLLMDone.Sub(providerDone)
 
 	// The drain coalesces, so it never has more to do than the baseline did one
-	// chunk at a time; measured, it comes in under the baseline. The multiple
-	// leaves room for the channel handoffs the baseline does not pay for and for
-	// a slow machine's scheduling noise — a pipeline that waits per chunk is
-	// orders out, not a few times out. The floor keeps the bound tight on any
-	// machine fast enough for the baseline to be noise.
-	maxDelay := 8 * baseline
-	if maxDelay < 200*time.Millisecond {
-		maxDelay = 200 * time.Millisecond
-	}
+	// chunk at a time; the baseline proves 500 chunks cost ~10ms even under
+	// −race, so the drain itself is cheap. The only way to reach seconds is the
+	// worker goroutine being unscheduled while the provider's burst runs — which
+	// a loaded CI runner does for up to ~10s, leaving the whole stream to drain
+	// afterwards. A genuine per-chunk wait (the regression this test guards) is
+	// hundreds of ms per chunk and totals minutes, so it still blows past this
+	// bound by an order of magnitude. We cannot distinguish a slow synchronous
+	// drain from scheduler starvation — both finish synchronously inside callLLM
+	// — so the bound sits above observed starvation yet far below a real wait.
+	maxDelay := 8*baseline + 15*time.Second
 	if delay > maxDelay {
 		t.Errorf("Worker took %v to drain the %d of %d chunks still buffered when the provider finished (max allowed: %v; the same chunks cost %v with no pipeline at all) — streaming pipeline is bottlenecked",
 			delay, bufferedAtDone, len(chunks), maxDelay, baseline)
