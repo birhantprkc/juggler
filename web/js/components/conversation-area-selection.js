@@ -38,7 +38,14 @@
  *      lands cleanly on the footer rather than on a busy sub-thread
  *      tile higher up.)
  *   4. Once the user manually selects, auto-follow is suppressed
- *      until the next user message resets it.
+ *      until the next user message resets it. Suppressed means the SCROLL as
+ *      well as the selection: a pinned row is the reader's place in this
+ *      column, and a column that kept chasing its own end would carry that row
+ *      out of the viewport, where rule C reads it as the reader having moved on
+ *      and retires the pin. Every automatic move therefore asks
+ *      isFollowingEnd (conversation-area-scroll.js) rather than the bare
+ *      near-bottom test — including the reader anchors, whose job only starts
+ *      once there is a place worth keeping.
  *   4c. Items arriving in a SUB-THREAD never move this column's selection.
  *      Parallel runs make this stronger than rule 4 alone: a sub-thread's
  *      items belong to its own column, and the status path may reveal a
@@ -96,6 +103,7 @@ import {
 import contextItemRegistry from '../registries/context-item-registry.js';
 import { recordTape } from '../utils/event-tape.js';
 import {
+  isFollowingEnd,
   isScrolledNearBottom,
   scrollItemIntoView,
   scrollToFollowIfNeeded,
@@ -170,8 +178,10 @@ export function onItemsInserted(area, insertedItemIds, items) {
 
   if (autoSelected) return; // selectItem has already scrolled, rule 4b permitting
 
-  // No candidate selected — scroll follow target into view if near bottom (rule 8)
-  if (isScrolledNearBottom(area)) {
+  // No candidate selected — scroll follow target into view if this column is
+  // still following its end (rule 8). A pinned row is a reader's place even at
+  // the end, and following would carry it away (isFollowingEnd).
+  if (isFollowingEnd(area)) {
     scrollToFollowIfNeeded(area);
   }
 }
@@ -404,10 +414,14 @@ export function clearSelection(area) {
  * null so the next inserted item can auto-select.
  *
  * This reads "offscreen" as "the user has moved on", which is only honest
- * because nothing else can push the element out: a reader who is scrolled away
- * keeps their place (the reader anchors in conversation-area.js hold it against
- * both streaming growth and inserted items). So the element leaves the viewport
- * when — and only when — the user scrolls it away.
+ * because nothing else can push the element out: the reader anchors in
+ * conversation-area.js hold their place against both streaming growth and
+ * inserted items, and a pinned row is exactly what tells those anchors there is
+ * a place to hold — at the end of the conversation as much as away from it
+ * (isFollowingEnd). Without that second half the column went on following its
+ * own end while pinned, walked the pinned row off the top, and this timer then
+ * retired a pin the reader had never let go of. So the element leaves the
+ * viewport when — and only when — the user scrolls it away.
  *
  * The demotion is not itself a scroll: rule 4b keeps the view still until the
  * reader comes back to the end. What it buys is that they need no click to

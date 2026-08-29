@@ -387,7 +387,7 @@ class ConversationArea extends HTMLElement {
       // on the wrong side of it, and disagrees with _recordReaderAnchor, which
       // keeps no anchor in the band at all — so the two anchor paths would hold
       // a place only one of them believes in.
-      const nearEnd = scroll.isScrolledNearBottom(this);
+      const nearEnd = scroll.isFollowingEnd(this);
 
       // Only the rows this batch actually touched can have grown, and measuring
       // a row costs a forced layout — so never measure the whole transcript on
@@ -1126,7 +1126,7 @@ class ConversationArea extends HTMLElement {
    * @private
    */
   _recordReaderAnchor() {
-    if (scroll.isScrolledNearBottom(this)) {
+    if (scroll.isFollowingEnd(this)) {
       this._readerAnchor = null;
       return;
     }
@@ -1203,7 +1203,7 @@ class ConversationArea extends HTMLElement {
     if (!anchor) return;
     // An anchor whose row the rebuild removed can't be measured; take the new
     // top-visible row as the place instead, from this position on.
-    if (!anchor.el.isConnected || scroll.isScrolledNearBottom(this)) {
+    if (!anchor.el.isConnected || scroll.isFollowingEnd(this)) {
       this._recordReaderAnchor();
       return;
     }
@@ -1576,7 +1576,13 @@ class ConversationArea extends HTMLElement {
     const structuralChange =
       items.some((it) => it && !currentElements.has(getItemId(it)))
       || currentElements.size > elementsToKeep.size;
-    const nearBottom = scroll.isScrolledNearBottom(this);
+    // Following the end, not merely near it: a column holding a pinned row has
+    // a reader's place to keep even while parked at the bottom, and both things
+    // keyed off this answer belong to following. Skipping the anchor there is
+    // what let an arriving item carry a pinned sub-thread tile off the top —
+    // native column-reverse pinning keeps the newest content in view, so the
+    // tile leaves the viewport with no scroll of ours to blame.
+    const nearBottom = scroll.isFollowingEnd(this);
     const animate = structuralChange
       && this._animationsPrimed
       && !prefersReducedMotion()
@@ -1927,10 +1933,11 @@ class ConversationArea extends HTMLElement {
    * Trigger footer update (called by LLMState when status changes)
    */
   showBusy() {
-    // Rule 10: scroll follow target into view (only if near bottom)
-    const wasNearBottom = scroll.isScrolledNearBottom(this);
+    // Rule 10: scroll follow target into view, if this column is still
+    // following its end rather than holding a reader's place (isFollowingEnd).
+    const wasFollowing = scroll.isFollowingEnd(this);
     this.updateFooter();
-    if (wasNearBottom) {
+    if (wasFollowing) {
       scroll.scrollToFollowIfNeeded(this);
     }
   }

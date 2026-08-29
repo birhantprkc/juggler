@@ -149,6 +149,7 @@ import { runTests as runSkillCompletionTests } from '../unit-tests/skill-complet
 import { runTests as runUnclaimedConversationsTests } from '../unit-tests/unclaimed-conversations-test.js';
 import { runTests as runThreadColumnSelectionTests } from '../unit-tests/thread-column-selection-test.js';
 import { runTests as runThreadSelectionPinTests } from '../unit-tests/thread-selection-pin-test.js';
+import { runTests as runThreadPinSurvivesRevealTests } from '../unit-tests/thread-pin-survives-reveal-test.js';
 import { runTests as runParallelThreadSelectionTests } from '../unit-tests/parallel-thread-selection-test.js';
 import { runTests as runScrollAwayAutofollowTests } from '../unit-tests/scroll-away-autofollow-test.js';
 import { runTests as runScrollToTopTests } from '../unit-tests/scroll-to-top-test.js';
@@ -429,6 +430,9 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:unclaimed-conversations', run: runUnclaimedConversationsTests },
   { name: 'unit:thread-column-selection', run: runThreadColumnSelectionTests },
   { name: 'unit:thread-selection-pin', run: runThreadSelectionPinTests },
+  // Exclusive: it asserts on document.activeElement, which every lane in the
+  // shared origin can move.
+  { name: 'unit:thread-pin-survives-reveal', run: runThreadPinSurvivesRevealTests, needsExclusiveRun: true },
   { name: 'unit:parallel-thread-selection', run: runParallelThreadSelectionTests },
   { name: 'unit:scroll-away-autofollow', run: runScrollAwayAutofollowTests },
   { name: 'unit:scroll-to-top', run: runScrollToTopTests },

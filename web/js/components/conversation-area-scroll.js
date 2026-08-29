@@ -35,7 +35,11 @@
  *      conditions as rule 9).
  *  11. User scrolls far from the bottom (>~20rem) → stop auto-scrolling. No
  *      fighting. Scrolling near the bottom (~20rem) allows auto-scrolling to
- *      continue. This governs every AUTOMATIC move, including auto-selection
+ *      continue — unless a row in this column is pinned, which says a reader is
+ *      here without their having scrolled anywhere (rule 4, see
+ *      isFollowingEnd). Both questions are asked together, because being parked
+ *      at the end is only evidence that nobody is reading when nothing is
+ *      pinned. This governs every AUTOMATIC move, including auto-selection
  *      (rule 4b in conversation-area-selection.js): a selection the system
  *      makes may scroll only while the reader is at the end, because scrolling
  *      away is the whole instruction. Passing that gate authorises following
@@ -277,6 +281,61 @@ export function scrollUserSendIntoView(area) {
   if (!messageList) return;
   area.releaseReaderAnchor();
   scrollEndIntoView(area);
+}
+
+/**
+ * Rule 4 + rule 11 together: is this column following the end of its
+ * conversation, or is someone reading it?
+ *
+ * Two things say a reader has a place here, and either is enough. They are
+ * scrolled away from the end (rule 11) — or a row they pinned is on screen
+ * (rule 4), which says so without their having scrolled anywhere. The pin is
+ * the half that was missing, and only a row pinned FROM the end can show it: a
+ * row pinned part-way up a conversation is already protected by rule 11,
+ * because reaching it meant scrolling there. A sub-thread tile is pinned from
+ * the end by construction — it is the last row while the child runs, and
+ * selecting one asks to read the child column (see rule A in
+ * conversation-area-selection.js) — so it was the case with a pin and no
+ * protection: every automatic move read "near the bottom" as "nobody is
+ * reading", and the tile was carried off the top of the viewport by the
+ * arriving turn, where rule C then retired a pin the reader still held.
+ *
+ * ON SCREEN is what makes the pin evidence, and the test cannot be dropped for
+ * the simpler "is anything pinned". A reader who selects a row and then scrolls
+ * back down to watch the end is following it again, whatever their stale
+ * selection says; treating that as a place to keep hands the column to the
+ * anchors, and each batch's growth is then undone as drift — which walks the
+ * view backwards out of the near-bottom band one relayout at a time (rule 11's
+ * own failure mode, guarded by unit:auto-follow-holds-the-end). A pinned row
+ * that has left the viewport is the one rule C is about to retire anyway.
+ *
+ * Every automatic move in this component asks this rather than the bare
+ * near-bottom test: the follow scrolls, and the reader anchors' prior question
+ * of whether there is a place worth keeping.
+ * @param {any} area - ConversationArea instance
+ * @returns {boolean} True when the column may follow its own end.
+ */
+export function isFollowingEnd(area) {
+  if (area._selectionOrigin === 'user' && isPinnedRowOnScreen(area)) return false;
+  return isScrolledNearBottom(area);
+}
+
+/**
+ * Whether the column's selected row is currently within the message list's
+ * viewport, even partly. Rect-derived rather than observed: this answers a
+ * question asked DURING a mutation, and an IntersectionObserver's answer is
+ * always at least a frame stale.
+ * @param {any} area - ConversationArea instance
+ * @returns {boolean} True when the selected row is at least partly visible.
+ */
+function isPinnedRowOnScreen(area) {
+  const messageList = area.querySelector('#message-list');
+  if (!messageList || !area._localSelectedItemId) return false;
+  const el = messageList.querySelector(`[message-id="${area._localSelectedItemId}"]`);
+  if (!el) return false;
+  const list = messageList.getBoundingClientRect();
+  const row = el.getBoundingClientRect();
+  return row.bottom > list.top && row.top < list.bottom;
 }
 
 /**
