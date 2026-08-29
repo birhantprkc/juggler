@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.5.9] - 2026-08-29
+
 - Read-only sub-agents now run in parallel, each column with its own spinner and timer
 - Tool badges now use meaningful families, with striped summaries for folded runs
 - Programs launched from Juggler can now request microphone access on macOS
