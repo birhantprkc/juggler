@@ -4,6 +4,7 @@
 
 import BaseMessage, { FINAL_ITEM_ATTR } from './base-message.js';
 import { createErrorArticle } from '../utils/icon-message-renderer.js';
+import { openSettings } from '../services/settings-launcher.js';
 
 /**
  * Signatures that identify an error as a failure to reach the provider at all,
@@ -25,6 +26,15 @@ const UNREACHABLE_LEAD = 'Couldn’t reach the model. Could be problems at their
 // footer's Continue "play" glyph so the affordance reads as "try that turn again".
 const RETRY_ICON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M480-160q-134 0-227-93t-93-227q0-134 93-227t227-93q69 0 132 28.5T720-690v-110h80v280H520v-80h168q-32-56-87.5-88T480-720q-100 0-170 70t-70 170q0 100 70 170t170 70q77 0 139-44t87-116h84q-28 106-114 173t-196 67Z"/></svg>';
 
+// Settings icon (Material "settings") — the same gear the header's Settings
+// button and the model menu's settings items use, so the destination is
+// recognisable before the label is read.
+const SETTINGS_ICON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="m370-80-16-128q-13-5-24.5-12T307-235l-119 50L78-375l103-78q-1-7-1-13.5v-27q0-6.5 1-13.5L78-585l110-190 119 50q11-8 23-15t24-12l16-128h220l16 128q13 5 24.5 12t22.5 15l119-50 110 190-103 78q1 7 1 13.5v27q0 6.5-2 13.5l103 78-110 190-118-50q-11 8-23 15t-24 12L590-80H370Zm112-260q58 0 99-41t41-99q0-58-41-99t-99-41q-59 0-99.5 41T342-480q0 58 40.5 99t99.5 41Z"/></svg>';
+
+// The failure the worker classified as "the provider isn't authenticated". The
+// only kind the row acts on, and the one kind whose fix is never in this window.
+const AUTH_ERROR_KIND = 'auth';
+
 /**
  * Error message component - icon + error text with red icon, plus a Retry
  * action. Many LLM-loop errors (out-of-tokens for the window, a transient
@@ -38,10 +48,24 @@ const RETRY_ICON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 
  * continue and silently delete a piece of history on the way past. Anything
  * after the error is the answer to the question of what happened next, and it
  * already happened.
+ *
+ * A failure the worker classified as an authentication problem also carries a
+ * Provider settings action, at any position in the thread — unlike Retry it can
+ * never do damage, and the fix for it is somewhere else entirely, which is
+ * precisely what a first-time reader of one of these errors does not know.
  */
 class ErrorMessage extends BaseMessage {
   static get observedAttributes() {
-    return ['content', FINAL_ITEM_ATTR];
+    return ['content', 'error-kind', FINAL_ITEM_ATTR];
+  }
+
+  /**
+   * The worker's classification of this failure, when it made one. Only `auth`
+   * is acted on today.
+   * @returns {string} The error kind, or '' when unclassified.
+   */
+  get errorKind() {
+    return this.getAttribute('error-kind') || '';
   }
 
   /**
@@ -59,21 +83,40 @@ class ErrorMessage extends BaseMessage {
       contentBox.prepend(leadEl);
     }
 
-    if (this.isFinalItem) {
+    const isAuth = this.errorKind === AUTH_ERROR_KIND;
+    if (this.isFinalItem || isAuth) {
       const actions = document.createElement('div');
       actions.className = 'error-message-actions message-row-body';
 
-      const retryBtn = document.createElement('button');
-      retryBtn.type = 'button';
-      retryBtn.className = 'message-action-btn error-retry-btn';
-      retryBtn.title = 'Delete this error and continue the conversation';
-      retryBtn.innerHTML = `${RETRY_ICON}Retry`;
-      retryBtn.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        this._retry();
-      });
-      actions.appendChild(retryBtn);
+      // Settings first, so the action that fixes the cause reads before the one
+      // that tries again. Retrying an expired sign-in only reproduces it.
+      if (isAuth) {
+        const settingsBtn = document.createElement('button');
+        settingsBtn.type = 'button';
+        settingsBtn.className = 'message-action-btn error-settings-btn';
+        settingsBtn.title = 'Open provider settings';
+        settingsBtn.innerHTML = `${SETTINGS_ICON}Provider settings`;
+        settingsBtn.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openSettings('providers');
+        });
+        actions.appendChild(settingsBtn);
+      }
+
+      if (this.isFinalItem) {
+        const retryBtn = document.createElement('button');
+        retryBtn.type = 'button';
+        retryBtn.className = 'message-action-btn error-retry-btn';
+        retryBtn.title = 'Delete this error and continue the conversation';
+        retryBtn.innerHTML = `${RETRY_ICON}Retry`;
+        retryBtn.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          this._retry();
+        });
+        actions.appendChild(retryBtn);
+      }
       article.appendChild(actions);
     }
 

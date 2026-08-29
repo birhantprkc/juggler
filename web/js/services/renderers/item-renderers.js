@@ -26,6 +26,7 @@ import { createStreamingMarkdown } from '../../utils/streaming-markdown.js';
 import { stripThinkingTags } from '../../utils/content-utils.js';
 import { formatDuration } from '../../utils/format.js';
 import { badgeForItem } from '../../utils/item-badge.js';
+import { readItemData } from '../../utils/item-data.js';
 import { getThreadDisplayContent, getThreadStatus, paintThreadSummary } from '../../utils/thread-display.js';
 import contextItemRegistry from '../../registries/context-item-registry.js';
 import * as panelHelpers from '../../utils/properties-panel-helpers.js';
@@ -144,8 +145,7 @@ export function renderError(host, container, message) {
     undefined, message.get('transactionId'), message.get('timestamp') || undefined
   );
 
-  const dataRaw = message.get('data');
-  const data = dataRaw?.toJSON ? dataRaw.toJSON() : (typeof dataRaw === 'string' ? (() => { try { return JSON.parse(dataRaw); } catch { return null; } })() : dataRaw);
+  const data = readItemData(message);
   if (data) {
     if (data.provider) panelHelpers.addSubsection(wrapper, 'Provider', data.provider, 'properties-panel-code');
     if (data.model) panelHelpers.addSubsection(wrapper, 'Model', data.model, 'properties-panel-code');

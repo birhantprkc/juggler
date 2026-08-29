@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"juggler/cmd/juggler/providers/provider"
 )
 
 // msgChan wraps a buffered channel for use as a worker send callback.
@@ -519,6 +521,125 @@ func TestProviderUnavailableSurfacedAsValidationError(t *testing.T) {
 			return
 		case <-deadline:
 			t.Fatal("timeout waiting for validation-error status with code provider-unavailable")
+		}
+	}
+}
+
+// TestAuthErrorSurfacedWithRemediation covers the sibling of Guard B: a provider
+// that refused a call it actually made, on authentication grounds. Guard B never
+// sees this — it fires when credential resolution fails first, and a CLI-backed
+// provider resolves no credential of its own, so the refusal is the first sign
+// the login has lapsed.
+//
+// The turn must end with the provider's remediation leading, the provider's own
+// text kept underneath, an errorKind the transcript row can key its action off,
+// and no retry: an expired sign-in does not heal by being asked again.
+func TestAuthErrorSurfacedWithRemediation(t *testing.T) {
+	w := NewConversationWorker("conv-auth", "user:test")
+	defer w.doc.Destroy()
+
+	initPayload, _ := json.Marshal(InitMessage{
+		Type: "init",
+		Conversation: SerializedConversation{
+			ID:          "conv-auth",
+			ModelConfig: &ModelConfig{Provider: "claudecode", Model: "sonnet"},
+		},
+		Config: WorkerConfig{ProjectPath: t.TempDir()},
+	})
+	w.currentRun().handleInit(initPayload)
+
+	// The exact failure a user reported, in the shape the claudecode parser now
+	// produces for it.
+	const cliText = "Failed to authenticate. API Error: 401 OAuth access token has expired. Re-authenticate to continue."
+	const hint = "Claude Code isn't signed in. Run claude in a terminal and use /login."
+
+	var calls int32
+	w.llmCallFunc = func(context.Context, json.RawMessage, func(StreamChunk)) (*LLMResponse, error) {
+		atomic.AddInt32(&calls, 1)
+		return nil, fmt.Errorf("LLM error: %w", &provider.AuthError{
+			Provider: "claudecode",
+			Status:   401,
+			Message:  cliText,
+			Hint:     hint,
+		})
+	}
+
+	statusCh := make(chan map[string]any, 16)
+	w.SetCallback("viewer", func(b []byte) {
+		var m map[string]any
+		if json.Unmarshal(b, &m) == nil && m["type"] == "status" {
+			statusCh <- m
+		}
+	})
+
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		ctxResp, _ := json.Marshal(map[string]any{"type": "render-context-items-result", "systemPrompt": "sys", "contexts": []any{}})
+		toolsResp, _ := json.Marshal(map[string]any{"type": "tools-result", "tools": []any{}})
+		for {
+			if !w.contextReply.inject(done, ctxResp) {
+				return
+			}
+			if !w.toolsReply.inject(done, toolsResp) {
+				return
+			}
+		}
+	}()
+
+	w.currentRun().runStrategyLoop("Hello", false)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case m := <-statusCh:
+			if m["status"] != "validation-error" {
+				continue
+			}
+			if code, _ := m["code"].(string); code != "auth-required" {
+				t.Fatalf("expected code 'auth-required', got %q (message=%v)", code, m["message"])
+			}
+			if got := atomic.LoadInt32(&calls); got != 1 {
+				t.Fatalf("provider dispatch calls = %d, want 1 (an expired sign-in must not be retried)", got)
+			}
+			// The composer warning gets the lead only — the detail needs room to
+			// read, which the transcript has and the warning strip does not.
+			if msg, _ := m["message"].(string); msg != hint {
+				t.Errorf("status message = %q, want just the hint", msg)
+			}
+
+			var errItem *ConversationItem
+			items := w.doc.GetItems()
+			for i := range items {
+				if items[i].Type == ItemTypeError {
+					errItem = &items[i]
+					break
+				}
+			}
+			if errItem == nil {
+				t.Fatal("no error item in the doc: an ended turn must leave a durable record")
+			}
+			if !strings.HasPrefix(errItem.Content, hint) {
+				t.Errorf("error item doesn't lead with the remediation: %q", errItem.Content)
+			}
+			// Dropping the provider's own words leaves nothing to search for.
+			if !strings.Contains(errItem.Content, cliText) {
+				t.Errorf("error item dropped the provider's own text: %q", errItem.Content)
+			}
+
+			var data map[string]any
+			if err := json.Unmarshal(errItem.Data, &data); err != nil {
+				t.Fatalf("error item data is not decodable: %v", err)
+			}
+			if data["errorKind"] != "auth" {
+				t.Errorf("errorKind = %v, want \"auth\" — the transcript row keys its action off this", data["errorKind"])
+			}
+			if data["provider"] != "claudecode" {
+				t.Errorf("provider = %v, want \"claudecode\"", data["provider"])
+			}
+			return
+		case <-deadline:
+			t.Fatal("timeout waiting for validation-error status with code auth-required")
 		}
 	}
 }

@@ -459,7 +459,11 @@ export class ProvidersTab {
     toggle.type = 'checkbox';
     toggle.id = `${provider.name}-toggle`;
     toggle.className = 'provider-toggle';
-    toggle.checked = provider.available;
+    // The toggle shows what the user chose, not whether the provider can serve a
+    // turn this second. Those come apart when a readiness check refuses — a CLI
+    // whose sign-in has lapsed is still switched on — and drawing the switch from
+    // availability would tell the user they had turned something off themselves.
+    toggle.checked = provider.credentialed ?? provider.available;
 
     const toggleLabel = document.createElement('label');
     toggleLabel.setAttribute('for', toggle.id);
@@ -472,6 +476,25 @@ export class ProvidersTab {
     toggleWrapper.appendChild(toggle);
     toggleWrapper.appendChild(toggleLabel);
     controlColumn.appendChild(toggleWrapper);
+
+    // A keyless provider that is switched on but can't serve — a CLI that is
+    // installed and enabled, yet not signed in — has nowhere else to say so. Its
+    // models are gone from the menu and the toggle still reads on, so without
+    // this the first news of it is a failed turn. Same status line and re-check
+    // the OAuth providers get, shown only when there is something to report.
+    if (toggle.checked && provider.authHint) {
+      const status = document.createElement('div');
+      status.className = 'key-source-hint';
+      status.id = `${provider.name}-oauth-status`;
+      status.style.display = 'block';
+      status.textContent = provider.authHint;
+      controlColumn.appendChild(status);
+
+      const buttonGroup = document.createElement('div');
+      buttonGroup.className = 'provider-buttons';
+      buttonGroup.appendChild(this._buildOAuthRefreshButton(provider));
+      controlColumn.appendChild(buttonGroup);
+    }
 
     // Ollama: expose the daemon host so users can point at a
     // non-default (LAN / remote) Ollama instance without

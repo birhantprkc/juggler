@@ -42,6 +42,7 @@ import { FINAL_ITEM_ATTR } from './base-message.js';
 import { isGroupEntry } from '../utils/item-grouping.js';
 import { wrapWithIcon } from '../utils/icon-message-renderer.js';
 import { normalizeAttachments } from '../utils/attachments.js';
+import { readItemData } from '../utils/item-data.js';
 import { renderAssistantContentWrapped, decorateCodeBlocks } from '../../sdk/lib/markdown.js';
 import { stripThinkingTags } from '../utils/content-utils.js';
 import { itemGoal } from '../model/thread-alias.js';
@@ -659,10 +660,19 @@ function createToolActionElement(message, itemIndex) {
  * @returns {HTMLElement} Created element.
  */
 function createErrorBubble(message, itemIndex) {
+  /** @type {Record<string, string>} */
+  const attributes = {
+    content: message.get('summary') || message.get('message') || message.get('content') || 'An error occurred'
+  };
+  // The worker classifies the failure; the row only reads the verdict. Matching
+  // on the error text here instead would put the taxonomy in two places and let
+  // them disagree.
+  const kind = readItemData(message)?.errorKind;
+  if (kind) attributes['error-kind'] = String(kind);
   return createMessageElement('error-message', {
     itemId: message.get('itemId'),
     itemIndex,
-    attributes: { content: message.get('summary') || message.get('message') || message.get('content') || 'An error occurred' }
+    attributes
   });
 }
 

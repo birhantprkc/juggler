@@ -473,11 +473,19 @@ func (c *Client) processStreamLineWithEarlyReturn(line string, result *turnResul
 				if errStr == "" {
 					errStr = fmt.Sprintf("claude CLI API call failed (HTTP %d)", msg.APIErrorStatus)
 				}
+				// An authentication failure is the one thing here the user can
+				// fix, and the CLI's own wording is addressed to someone sitting
+				// at its command line. Type it so the worker can lead with what
+				// to do while still showing this text underneath.
+				if authErr := classifyClaudeAuthFailure(msg.APIErrorStatus, errStr); authErr != nil {
+					markClaudeLoginExpired()
+					return false, 0, authErr
+				}
 				return false, 0, fmt.Errorf("%s", errStr)
 			}
-			// A clean result proves the CLI is signed in — a logged-out CLI never
-			// reaches a result event (it stops to prompt for login). Unlock the
-			// passive /usage poll now that a real turn has run.
+			// A clean result proves the CLI is signed in and served a turn.
+			// Unlock the passive /usage poll, and clear any earlier expiry so a
+			// user who has just signed back in isn't still told they haven't.
 			markClaudeLoginConfirmed()
 			var resultStr string
 			if json.Unmarshal(msg.Result, &resultStr) == nil && resultStr == "" {
@@ -489,6 +497,13 @@ func (c *Client) processStreamLineWithEarlyReturn(line string, result *turnResul
 			// CLI exhausted retries or hit a fatal error — return as a proper error
 			var errStr string
 			if json.Unmarshal(msg.Result, &errStr) == nil && errStr != "" {
+				// Same reasoning as the "success" arm above: a CLI that has no
+				// usable credential answers here with bare text and no status,
+				// so the text is the only signal there is.
+				if authErr := classifyClaudeAuthFailure(msg.APIErrorStatus, errStr); authErr != nil {
+					markClaudeLoginExpired()
+					return false, 0, authErr
+				}
 				return false, 0, fmt.Errorf("%s", errStr)
 			}
 			return false, 0, fmt.Errorf("claude CLI returned an error")

@@ -18,7 +18,7 @@ func derefPct(p *float64) float64 {
 }
 
 func TestUsageStatsIgnoresWorkspaceTrustWarningOnStderr(t *testing.T) {
-	resetLoginState(t, false, false)
+	resetLoginState(t, loginUnknown, false)
 	installFakeClaude(t, fakeModeUsage, "usage-session")
 
 	stats, err := (&Client{workingDir: t.TempDir()}).UsageStats(context.Background())

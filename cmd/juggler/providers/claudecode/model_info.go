@@ -33,11 +33,17 @@ func displayName(id string) string {
 // registry at package-init time via Register() in session_manager.go.
 func Info() provider.ProviderInfo {
 	return provider.ProviderInfo{
-		Name:                     "claudecode",
-		DisplayName:              "Anthropic (Claude Code CLI)",
-		Description:              "Processes requests by invoking the claude CLI tool (so you can use a Max/Pro plan). For better results use the Anthropic API via a key.",
-		ConfigKeyName:            "", // No API key needed - uses CLI's OAuth
-		AutoDetect:               detectClaudeCLI,
+		Name:          "claudecode",
+		DisplayName:   "Anthropic (Claude Code CLI)",
+		Description:   "Processes requests by invoking the claude CLI tool (so you can use a Max/Pro plan). The CLI must be signed in — run claude in a terminal and use /login. For better results use the Anthropic API via a key.",
+		ConfigKeyName: "", // No API key needed - uses CLI's OAuth
+		AutoDetect:    detectClaudeCLI,
+		// AutoDetect only answers "is the binary there". A CLI that is installed
+		// but not signed in is indistinguishable to it, which is how an expired
+		// login stayed invisible until a turn failed. ReadinessCheck carries that
+		// second question; see claudeReadiness for why it refuses only on
+		// evidence from a real turn.
+		ReadinessCheck:           claudeReadiness,
 		ResolveModelCapabilities: conservativeAliasCapabilities,
 		// Learn-on-first-turn: a verbatim custom model id resolves no static
 		// capabilities, and the CLI only reports its real window/output limits

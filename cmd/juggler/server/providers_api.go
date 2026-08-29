@@ -61,18 +61,27 @@ type ModelWithContext struct {
 
 // ProviderStatus is one provider's published state.
 type ProviderStatus struct {
-	Name              string             `json:"name"`
-	DisplayName       string             `json:"displayName"`
-	Description       string             `json:"description"`
-	AuthType          provider.AuthType  `json:"authType"`
-	AuthSource        string             `json:"authSource,omitempty"`
-	SignInMethod      string             `json:"signInMethod,omitempty"`
-	AuthHint          string             `json:"authHint,omitempty"`
-	ConfigKeyName     string             `json:"configKeyName"`
-	EnvVarName        string             `json:"envVarName"`
-	APIKeyURL         string             `json:"apiKeyURL"`
-	KeySource         core.KeySource     `json:"keySource"`
-	Available         bool               `json:"available"`
+	Name          string            `json:"name"`
+	DisplayName   string            `json:"displayName"`
+	Description   string            `json:"description"`
+	AuthType      provider.AuthType `json:"authType"`
+	AuthSource    string            `json:"authSource,omitempty"`
+	SignInMethod  string            `json:"signInMethod,omitempty"`
+	AuthHint      string            `json:"authHint,omitempty"`
+	ConfigKeyName string            `json:"configKeyName"`
+	EnvVarName    string            `json:"envVarName"`
+	APIKeyURL     string            `json:"apiKeyURL"`
+	KeySource     core.KeySource    `json:"keySource"`
+	Available     bool              `json:"available"`
+	// Credentialed reports that the provider has what the user was asked to give
+	// it — a key saved, or a keyless provider switched on. Available is narrower:
+	// it also requires the provider to be able to serve a turn right now.
+	//
+	// The two differ exactly when a ReadinessCheck refuses, and the settings UI
+	// needs both. A toggle drawn from Available alone would flip itself off when
+	// a CLI's sign-in lapsed, telling the user they had disabled something they
+	// had not.
+	Credentialed      bool               `json:"credentialed"`
 	ModelsWithContext []ModelWithContext `json:"modelsWithContext"`
 }
 
@@ -227,6 +236,7 @@ func (s *Server) computeProviders(ctx context.Context) []ProviderStatus {
 				APIKeyURL:         pInfo.APIKeyURL,
 				KeySource:         cred.KeySource,
 				Available:         available,
+				Credentialed:      credentialed,
 				ModelsWithContext: modelsWithContext,
 			}
 		}(i, info)

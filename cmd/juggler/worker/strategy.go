@@ -348,6 +348,48 @@ func (r *run) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVe
 			return turnDone
 		}
 
+		// The provider refused a call it actually made, on authentication
+		// grounds. Guard B cannot catch this: it fires when credential
+		// resolution fails beforehand, and a CLI-backed provider resolves no
+		// credential of its own — the refusal is the first sign the login has
+		// lapsed. Same terminal shape as Guard B, and equally never retried.
+		var authErr *provider.AuthError
+		if errors.As(err, &authErr) {
+			// The provider's hint leads, because it is the only sentence here
+			// written for the person reading it — the provider's own error text
+			// is addressed to someone standing at its command line. That text
+			// still follows, since it is the only diagnosable part.
+			lead := authErr.Hint
+			if lead == "" {
+				lead = "The provider isn't signed in."
+			}
+			msg := lead
+			if detail := strings.TrimSpace(authErr.Message); detail != "" {
+				msg += "\n\n" + detail
+			}
+			errorData := map[string]any{"duration": duration.Milliseconds()}
+			if mc := r.resolveModelConfig(); mc != nil {
+				errorData["provider"] = mc.Provider
+				errorData["model"] = mc.Model
+			}
+			if authErr.Provider != "" {
+				errorData["provider"] = authErr.Provider
+			}
+			// errorKind lets the transcript row offer the remediation action
+			// without re-deriving the classification by matching on the text.
+			errorData["errorKind"] = "auth"
+			r.log.Error("❌ LLM error (authentication): %s", err.Error())
+			// Durable item first, for the same reason as Guard B: the status is
+			// a transient client-side notice and would leave nothing behind for
+			// a sign-in that lapsed while nobody was watching.
+			r.sendErrorWithData(msg, "", errorData)
+			// Only the lead goes to the composer warning. The detail belongs in
+			// the transcript, where there is room to read it.
+			r.sendStatusWithCode("validation-error", lead, "auth-required")
+			r.t.txnID = ""
+			return turnDone
+		}
+
 		var advisory *provider.ContextCompactionAdvisory
 		var contextLimit *provider.ContextLimitExceededError
 		var limit *provider.ContextLimitExceededError

@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- An expired Claude Code sign-in now says how to fix it, with a settings shortcut
+
 ## [0.5.9] - 2026-08-29
 
 - Read-only sub-agents now run in parallel, each column with its own spinner and timer

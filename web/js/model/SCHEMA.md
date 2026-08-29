@@ -230,6 +230,13 @@ A nested sub-conversation.
 | `content` | string \| undefined | Long form / detail. |
 | `summary` | string \| undefined | Renderer subtitle. |
 | `stack` | string \| undefined | Stack trace. |
+| `data` | JSON \| undefined | Worker-supplied detail: `provider`, `model`, `duration` (ms), and `errorKind`. |
+
+`errorKind` is the worker's classification of the failure, and the only thing the
+row keys its extra actions off — matching on the error text in the client would
+put the taxonomy in two places and let them disagree. Today the sole value is
+`auth`: the provider refused on authentication grounds, so the row also offers a
+Provider settings action.
 
 The row offers a Retry — delete this error and continue the thread — only while
 the error is the **last** item in its thread, since that is the only position

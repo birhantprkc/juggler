@@ -58,6 +58,8 @@ import { tests as modelAvailabilityTests } from '../integration-tests/model-avai
 import { runTests as runContextCacheImpactTests } from '../unit-tests/context-cache-impact-test.js';
 import { runTests as runCacheMissWarningTests } from '../unit-tests/cache-miss-warning-test.js';
 import { runTests as runErrorRetryGateTests } from '../unit-tests/error-retry-gate-test.js';
+import { runTests as runAuthErrorActionTests } from '../unit-tests/auth-error-action-test.js';
+import { runTests as runKeylessSignInStatusTests } from '../unit-tests/keyless-signin-status-test.js';
 import { runTests as runTokenCacheUnknownTests } from '../unit-tests/token-cache-unknown-test.js';
 import { runTests as runCompactionStatusTests } from '../unit-tests/compaction-status-test.js';
 import { runTests as runStatusMessageFormatTests } from '../unit-tests/status-message-format-test.js';
@@ -318,6 +320,8 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:context-cache-impact', run: runContextCacheImpactTests },
   { name: 'unit:cache-miss-warning', run: runCacheMissWarningTests },
   { name: 'unit:error-retry-gate', run: runErrorRetryGateTests },
+  { name: 'unit:auth-error-action', run: runAuthErrorActionTests },
+  { name: 'unit:keyless-signin-status', run: runKeylessSignInStatusTests },
   { name: 'unit:token-cache-unknown', run: runTokenCacheUnknownTests },
   { name: 'unit:compaction-status', run: runCompactionStatusTests },
   { name: 'unit:status-message-format', run: runStatusMessageFormatTests },

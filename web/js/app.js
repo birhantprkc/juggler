@@ -493,7 +493,7 @@ class JugglerApp {
       if (providersCache.hasAvailableProvider()) return;
 
       const goToSettings = await showConfirm(
-        'Juggler is a visual AI coding workbench. To get started, connect an AI provider — add an API key, or enable Claude Code if you have its CLI installed.',
+        'Juggler is a visual AI coding workbench. To get started, connect an AI provider — add an API key, or enable Claude Code if you have its CLI installed and signed in.',
         'Welcome to Juggler',
         { confirmText: 'Add a provider', cancelText: 'Later' }
       );

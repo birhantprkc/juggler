@@ -1,0 +1,138 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+package claudecode
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"sync/atomic"
+	"time"
+)
+
+// authProbeVerdict is what `claude auth status` told us. The third case is the
+// important one: the CLI is old enough not to have the subcommand, or answered
+// with something we can't read, and we must not pretend either way.
+type authProbeVerdict int
+
+const (
+	authProbeUnknown authProbeVerdict = iota
+	authProbeSignedIn
+	authProbeSignedOut
+)
+
+// claudeAuthStatusTimeout bounds the probe. It reads a local credential store,
+// so anything approaching this means the CLI is wedged, and a wedged probe must
+// not hold up a provider refresh.
+const claudeAuthStatusTimeout = 10 * time.Second
+
+// authProbeInterval throttles the probe. Provider refreshes are triggered by
+// several unrelated things (a credential file changing, a settings save,
+// startup), and while the sign-in is expired every one of them would otherwise
+// spawn a process.
+const authProbeInterval = 10 * time.Second
+
+var lastAuthProbeUnixNano atomic.Int64
+
+// authStatusProbe is the seam tests replace. Production always uses
+// runClaudeAuthStatus.
+var authStatusProbe = runClaudeAuthStatus
+
+// runClaudeAuthStatus asks the CLI whether it is signed in.
+//
+// `claude auth status` is the only supported way to ask: it is non-interactive,
+// prints JSON when stdout is not a terminal, and never opens a browser. Reading
+// the credential store ourselves was rejected — it is the Keychain on macOS and
+// a file elsewhere, the schema is internal, and rotation can leave the two
+// disagreeing.
+//
+// The subcommand does not exist on older CLI builds. That is not an error worth
+// reporting: it simply means we cannot know, which authProbeUnknown says.
+func runClaudeAuthStatus(ctx context.Context) authProbeVerdict {
+	bin := claudeBinary()
+	if bin == "" {
+		return authProbeUnknown
+	}
+	ctx, cancel := context.WithTimeout(ctx, claudeAuthStatusTimeout)
+	defer cancel()
+
+	cmd := claudeCommand(ctx, bin, []string{"auth", "status"})
+	cmd.Env = spawnEnv(bin, testExtraSpawnEnv)
+	// No stdin. Nothing here should ever be able to wait for a person.
+	cmd.Stdin = nil
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	// The exit status is deliberately ignored: it has been observed non-zero
+	// alongside a perfectly good "loggedIn": true, because unrelated warnings
+	// reach it too. The JSON is the answer; the exit code is noise.
+	_ = cmd.Run()
+
+	return parseClaudeAuthStatus(stdout.Bytes())
+}
+
+// parseClaudeAuthStatus reads the probe's stdout. Split out from the spawn
+// because this is the part that breaks when the CLI changes its output, and it
+// is worth testing against every shape it might produce.
+func parseClaudeAuthStatus(stdout []byte) authProbeVerdict {
+	var parsed struct {
+		// A pointer so an object that simply lacks the field is told apart from
+		// one that reports false. Decoding into a bool would silently read a
+		// "Did you mean…?" JSON blob as "signed out" and disable the provider.
+		LoggedIn *bool `json:"loggedIn"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(stdout), &parsed); err != nil {
+		return authProbeUnknown
+	}
+	if parsed.LoggedIn == nil {
+		return authProbeUnknown
+	}
+	if *parsed.LoggedIn {
+		return authProbeSignedIn
+	}
+	return authProbeSignedOut
+}
+
+// authProbeDue rate-limits the probe to one spawn per authProbeInterval.
+func authProbeDue() bool {
+	now := time.Now().UnixNano()
+	last := lastAuthProbeUnixNano.Load()
+	if last != 0 && now-last < int64(authProbeInterval) {
+		return false
+	}
+	return lastAuthProbeUnixNano.CompareAndSwap(last, now)
+}
+
+// claudeReadiness reports whether the CLI can serve a turn right now, and if not
+// why. Registered as the provider's ReadinessCheck, so a false here makes the
+// provider unavailable and shows the hint.
+//
+// It refuses on one signal only: a real turn that failed to authenticate. The
+// probe is never allowed to disable the provider, because `claude auth status`
+// has been observed reporting "loggedIn": true in a context where a turn had
+// just taken a genuine 401, and reporting false where an interactive login was
+// working fine. A wrong answer in that direction takes away the user's only way
+// of working.
+//
+// While expired, the probe runs — throttled — and can only ever RE-ENABLE. It
+// clears the expiry when it says signed in, and equally when it cannot answer at
+// all. That second case is not laziness: an old CLI has no `auth status`, and if
+// only a successful turn could clear the expiry, a provider we had disabled
+// could never be re-enabled by one. Letting the turn through means the worst
+// case is the same error again, reported properly, instead of a dead end.
+func claudeReadiness() (bool, string) {
+	if currentClaudeLoginState() != loginExpired {
+		return true, ""
+	}
+	if !authProbeDue() {
+		return false, claudeSignInHint
+	}
+	if authStatusProbe(context.Background()) == authProbeSignedOut {
+		return false, claudeSignInHint
+	}
+	clearClaudeLoginExpired()
+	return true, ""
+}

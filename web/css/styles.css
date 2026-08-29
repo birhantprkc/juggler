@@ -2431,9 +2431,11 @@ error-message article.error {
     color: var(--text-primary);
 }
 
-/* Retry action row sits below the error text, right-aligned. */
+/* Action row sits below the error text, right-aligned. Usually just Retry; an
+   authentication failure adds a Provider settings action ahead of it. */
 .error-message-actions {
     display: flex;
+    gap: 0.5rem;
     justify-content: flex-end;
     margin-top: 0.75rem;
 }
