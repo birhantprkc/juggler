@@ -179,7 +179,7 @@ export class CompletionMenu {
       case 'Tab':
         e.preventDefault();
         if (this.hasSelection()) {
-          this.accept();
+          this.accept({ allowSubmit: false });
         } else {
           this.tabComplete();
         }
@@ -207,8 +207,12 @@ export class CompletionMenu {
    * item `submitAfterAccept` (e.g. an argument-less slash command) the composer
    * is submitted on this same keystroke; otherwise the provider may ask to
    * re-open (e.g. after stepping into a directory).
+   * @param {object} [opts]
+   * @param {boolean} [opts.allowSubmit] - Set false to splice the text and stop
+   *   there, whatever `submitAfterAccept` says. Tab completes only: it fills in
+   *   the text and leaves sending to the user's Enter.
    */
-  accept() {
+  accept({ allowSubmit = true } = {}) {
     const item = this._items[this._index];
     if (item === undefined || !this._provider) return;
 
@@ -225,7 +229,7 @@ export class CompletionMenu {
     // A runnable-as-is item (e.g. an argument-less slash command) submits on the
     // same Enter that accepted it — one keystroke, not accept-then-send. Checked
     // before reopen since submitting ends the interaction.
-    const submit = this._provider.submitAfterAccept?.(item, this._ctx) ?? false;
+    const submit = allowSubmit && (this._provider.submitAfterAccept?.(item, this._ctx) ?? false);
     const reopen = !submit && (this._provider.reopenAfterAccept?.(item) ?? false);
     this.close();
     textarea.focus();
@@ -236,14 +240,15 @@ export class CompletionMenu {
 
   /**
    * Tab: accept the sole match, or extend the query to the longest common
-   * prefix of the matches (then re-detect from the updated textarea).
+   * prefix of the matches (then re-detect from the updated textarea). Tab never
+   * submits — it completes and hands the caret back.
    */
   tabComplete() {
     if (this._items.length === 0 || !this._provider) return;
 
     if (this._items.length === 1) {
       this._index = 0;
-      this.accept();
+      this.accept({ allowSubmit: false });
       return;
     }
 

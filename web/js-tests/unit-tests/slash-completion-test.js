@@ -15,7 +15,9 @@
  *      runs it on that same keystroke (submitAfterAccept → menu.onSubmit) so the
  *      popup never asks for a second Enter; a command taking arguments splices
  *      the text and waits for the user to type them,
- *   4. the composer wires slash + file-mention providers into one menu, with
+ *   4. Tab is a completion key: it splices the command and leaves sending to
+ *      the user, even for a command Enter would have run outright,
+ *   5. the composer wires slash + file-mention providers into one menu, with
  *      slash taking precedence at the message start.
  *
  * Assertions read SYNCHRONOUS, deterministic state: `handleInput()` selects the
@@ -217,6 +219,59 @@ export async function runTests() {
     } catch (e) {
       failed++;
       errors.push('slash-accept-runs-or-waits: ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      box._completions.close();
+      container.remove();
+    }
+  }
+
+  // ── Test 4: Tab completes the command but never sends it ─────────────────
+  // Enter on an argument-less command runs it on that keystroke (Test 3a), but
+  // Tab is a completion key: it splices "/name " and stops, leaving the send to
+  // the user's own Enter. Both Tab paths are pinned — a highlighted row, and the
+  // sole-match path through tabComplete().
+  {
+    const { box, textarea, container } = mountComposer();
+    try {
+      const menu = box._completions;
+      let submits = 0;
+      menu._onSubmit = () => { submits++; };
+
+      /** @returns {KeyboardEvent} A Tab keydown the menu can consume. */
+      const tabKey = () => new KeyboardEvent('keydown', { key: 'Tab', cancelable: true });
+
+      // (a) Tab on the highlighted argument-less command: completes, no send.
+      textarea.value = '/cl';
+      textarea.selectionStart = textarea.selectionEnd = textarea.value.length;
+      menu._provider = slashCommandProvider;
+      menu._anchorPos = 0;
+      menu._items = [{ name: 'clear', description: 'Clear the conversation' }, { name: 'clone', description: 'Clone it' }];
+      menu._index = 0;
+      menu._active = true;
+
+      assert(menu.handleKeydown(tabKey()) === true, 'the menu must consume Tab while open');
+      assert(textarea.value === '/clear ',
+        `Tab must complete to "/clear ", got ${JSON.stringify(textarea.value)}`);
+      assert(submits === 0, `Tab must NOT send the command, got ${submits} submit(s)`);
+
+      // (b) Sole match, nothing highlighted: same completion, still no send.
+      submits = 0;
+      textarea.value = '/cle';
+      textarea.selectionStart = textarea.selectionEnd = textarea.value.length;
+      menu._provider = slashCommandProvider;
+      menu._anchorPos = 0;
+      menu._items = [{ name: 'clear', description: 'Clear the conversation' }];
+      menu._index = -1;
+      menu._active = true;
+
+      menu.handleKeydown(tabKey());
+      assert(textarea.value === '/clear ',
+        `Tab on a sole match must complete to "/clear ", got ${JSON.stringify(textarea.value)}`);
+      assert(submits === 0, `Tab on a sole match must NOT send, got ${submits} submit(s)`);
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push('slash-tab-completes-without-sending: ' + (e instanceof Error ? e.message : String(e)));
     } finally {
       box._completions.close();
       container.remove();
