@@ -294,6 +294,16 @@ select {
     --accent-green-bright: #00cc7f;   /* Bright green for success/confirm */
     --accent-red-soft: #ff6b6b;       /* Soft red for errors/warnings */
 
+    /* The dim behind a modal surface — every scrim in the app, whether it is
+       the shared <modal-backdrop> element or a panel's own overlay div: the
+       settings/about/bin/confirm modals, the project picker, the command
+       editor, the drawer sidebar and the touch sheets. It is a role, not a rung
+       on the ramp below: modals stack (the command editor opens over its own
+       manager), so a panel that picks a heavier value by eye compounds with the
+       one under it into near-black. Reach for this, never --overlay-dark-*,
+       which are button fills and shadow colours. */
+    --modal-scrim: rgb(0 0 0 / 50%);
+
     /* Overlay colors (semi-transparent) */
     --overlay-dark-70: rgb(0 0 0 / 70%);
     --overlay-dark-50: rgb(0 0 0 / 50%);
@@ -2081,7 +2091,7 @@ a:hover {
         position: absolute;
         inset: 0;
         z-index: var(--z-controls);
-        background: rgb(0 0 0 / 45%);
+        background: var(--modal-scrim);
         opacity: 0;
         pointer-events: none;
         transition: opacity 200ms ease;
@@ -2277,7 +2287,7 @@ a:hover {
     .popup-sheet-scrim {
         position: fixed;
         inset: 0;
-        background: rgb(0 0 0 / 45%);
+        background: var(--modal-scrim);
         z-index: var(--z-modal);
         animation: popup-sheet-fade 200ms ease;
     }

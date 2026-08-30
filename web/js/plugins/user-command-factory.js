@@ -14,6 +14,7 @@
 
 import CommandType from 'juggler/command-type';
 import providersCache from '../services/providers-cache.js';
+import { buildModelConfig } from '../model/model-config.js';
 
 const DEFAULT_ICON = 'icon-slash';
 
@@ -54,22 +55,43 @@ function humanize(name) {
 }
 
 /**
- * Resolve a bare model id to a concrete `{provider, model}` config by searching
- * the cached provider/model list. Returns null when the id is unknown (the
- * subthread then inherits the parent's model rather than failing).
+ * The provider that serves a model id: the one named in frontmatter when it
+ * still advertises that model, else the first provider that advertises it at
+ * all. Returns '' when no provider offers it.
+ *
+ * The scan is the path for a file with `model:` and no `provider:` — what a
+ * hand-written command and the `define_command` tool produce — and the fallback
+ * for a stored provider that has since been removed or lost the model.
+ * @param {string} providerName - Provider from frontmatter (may be '')
  * @param {string} modelId - Model id from frontmatter
- * @returns {{provider: string, model: string}|null} Concrete config or null
+ * @returns {string} A provider name, or ''
  */
-function resolveModelConfig(modelId) {
+function providerFor(providerName, modelId) {
+  const advertises = (/** @type {any} */ p) => (p.modelsWithContext || []).some((/** @type {any} */ m) => m.id === modelId);
+  const providers = providersCache.get();
+  const named = providerName ? providers.find((p) => p.name === providerName) : null;
+  if (named && advertises(named)) return named.name;
+  return providers.find(advertises)?.name || '';
+}
+
+/**
+ * Resolve a command's model override to a concrete config, carrying the thinking
+ * level and serving tier the user picked. Returns null when no provider offers
+ * the model (the subthread then inherits the parent's model rather than failing)
+ * — the same lenience the rest of the app applies to a model that has gone away.
+ *
+ * Exported so the editor dialog seeds its model chip from the same resolution
+ * the command will actually run with: a file whose provider has to be inferred
+ * must show the provider it would infer, not a blank.
+ * @param {import('../services/user-commands.js').UserCommandFrontmatter} fm - Command frontmatter
+ * @returns {import('../model/model-config.js').ConcreteModelConfig|null} Concrete config or null
+ */
+export function resolveModelConfig(fm) {
+  const modelId = fm.model || '';
   if (!modelId) return null;
-  for (const provider of providersCache.get()) {
-    for (const m of provider.modelsWithContext || []) {
-      if (m.id === modelId) {
-        return { provider: provider.name, model: modelId };
-      }
-    }
-  }
-  return null;
+  const provider = providerFor(fm.provider || '', modelId);
+  if (!provider) return null;
+  return buildModelConfig(provider, modelId, fm.thinking, fm.serviceTier);
 }
 
 /**
@@ -121,7 +143,7 @@ export function makeUserCommandClass(def) {
           // per runInThread semantics. Strategy/model overrides apply to the
           // new thread only.
           const goal = fm.goal || humanize(def.name);
-          const modelConfig = resolveModelConfig(fm.model || '');
+          const modelConfig = resolveModelConfig(fm);
           const promise = thread.runInThread({
             goal,
             prompt: text,

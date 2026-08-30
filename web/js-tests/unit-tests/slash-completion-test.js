@@ -87,12 +87,31 @@ export async function runTests() {
       assert(slashCommandProvider.detect('/two words') === null,
         'once a space is typed the command name is settled — no trigger');
 
-      // fetch() is registry-backed; await it directly (no debounce). The list
-      // ends with a synthetic "New command…" row (no `name`); real commands are
-      // isolated by dropping it.
-      const realNames = (/** @type {any[]} */ items) => items.filter((c) => c.action !== 'new-command').map((c) => c.name);
-      const all = realNames(await slashCommandProvider.fetch(''));
+      // fetch() is registry-backed; await it directly (no debounce). The list is
+      // bracketed by synthetic rows (no `name`) — the two pinned buttons and the
+      // "New command…" row; real commands are isolated by dropping them all.
+      const realNames = (/** @type {any[]} */ items) => items.filter((c) => typeof c.name === 'string').map((c) => c.name);
+      const bareItems = await slashCommandProvider.fetch('');
+      const all = realNames(bareItems);
       assert(all.includes('clear'), `fetch("") must offer /clear, got ${JSON.stringify(all)}`);
+
+      // A bare "/" leads with the two buttons — the manager, standing in for the
+      // /commands row it replaces (one action, one row), and the built-ins,
+      // which live in the Extensions settings.
+      assert(bareItems[0]?.action === 'manage-commands',
+        `fetch("") must lead with the manage-commands row, got ${JSON.stringify(bareItems[0])}`);
+      assert(bareItems[1]?.action === 'browse-commands',
+        `fetch("") must follow it with the browse-commands row, got ${JSON.stringify(bareItems[1])}`);
+      assert(!all.includes('commands'),
+        `fetch("") must drop the plain /commands row, got ${JSON.stringify(all)}`);
+
+      // Typing brings it back: the buttons are a discovery affordance, not
+      // permanent rows competing with what the user is filtering for.
+      const typed = await slashCommandProvider.fetch('comm');
+      assert(typed.every((c) => c.action !== 'manage-commands' && c.action !== 'browse-commands'),
+        'a typed query must NOT pin the manage-commands or browse-commands rows');
+      assert(realNames(typed).includes('commands'),
+        `fetch("comm") must offer /commands itself, got ${JSON.stringify(realNames(typed))}`);
 
       const filtered = realNames(await slashCommandProvider.fetch('cl'));
       assert(filtered.length > 0 && filtered.every((n) => n.startsWith('cl')),
@@ -126,6 +145,10 @@ export async function runTests() {
         'a command declaring an argsHint must NOT submit on accept');
       assert(slashCommandProvider.submitAfterAccept({ action: 'new-command', query: 'x' }) === false,
         'the New command row must NOT submit on accept');
+      assert(slashCommandProvider.submitAfterAccept({ action: 'manage-commands' }) === false,
+        'the manage-commands row must NOT submit on accept');
+      assert(slashCommandProvider.submitAfterAccept({ action: 'browse-commands' }) === false,
+        'the browse-commands row must NOT submit on accept');
       passed++;
     } catch (e) {
       failed++;

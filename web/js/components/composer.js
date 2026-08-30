@@ -7,6 +7,8 @@ import './permission-controls.js';
 
 import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/constants.js';
 import slashCommandHandler from '../services/slash-command-handler.js';
+import { withoutManagerCommand, buildManageCommandsRow, buildBrowseCommandsRow } from '../services/command-manager-entry.js';
+import { openCommandManager } from './command-editor-dialog.js';
 import { isAnyPopupOpen } from '../utils/popup-manager.js';
 import { handleEscapeKey } from '../services/escape-behaviour.js';
 import { presentPopup } from '../utils/popup-surface.js';
@@ -1952,7 +1954,25 @@ class Composer extends HTMLElement {
     menu.className = 'dropdown-menu commands-menu';
     menu.id = 'commands-menu';
 
-    const commands = slashCommandHandler.getCommands();
+    // The manager leads as a button rather than sitting in the list as
+    // `/commands`, which is the row nobody reads as "you can write your own".
+    // The built-ins below it are the ones this list already shows, so their
+    // button goes where the rest of what the app loads is documented.
+    const manageRow = buildManageCommandsRow();
+    manageRow.addEventListener('click', () => {
+      this._closeCommandsMenu();
+      openCommandManager();
+    });
+    menu.appendChild(manageRow);
+
+    const browseRow = buildBrowseCommandsRow();
+    browseRow.addEventListener('click', () => {
+      this._closeCommandsMenu();
+      openSettings('extensions');
+    });
+    menu.appendChild(browseRow);
+
+    const commands = withoutManagerCommand(slashCommandHandler.getCommands());
 
     // Explicit menu ordering: tab operations first (new, duplicate), then
     // thread, then conversation-history operations (clear, compact).
@@ -2331,13 +2351,24 @@ class Composer extends HTMLElement {
       menu.appendChild(section);
     };
 
-    // Slash commands section (collapsed).
-    const commands = slashCommandHandler.getCommands();
+    // Slash commands section (collapsed), led by the manager button in place of
+    // the `/commands` row it stands for, and the built-ins' button beside it.
+    const commands = withoutManagerCommand(slashCommandHandler.getCommands());
     const ORDER = ['new', 'duplicate', 'thread', 'clear', 'compact'];
     commands.sort((a, b) => {
       const ai = ORDER.indexOf(a.name);
       const bi = ORDER.indexOf(b.name);
       return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+    });
+    const manageRow = buildManageCommandsRow('actions-sheet-item');
+    manageRow.addEventListener('click', () => {
+      this._closeActionsSheet();
+      openCommandManager();
+    });
+    const browseRow = buildBrowseCommandsRow('actions-sheet-item');
+    browseRow.addEventListener('click', () => {
+      this._closeActionsSheet();
+      openSettings('extensions');
     });
     const commandRows = commands.map((cmd) => {
       const displayLabel = cmd.label || cmd.name.charAt(0).toUpperCase() + cmd.name.slice(1);
@@ -2357,7 +2388,7 @@ class Composer extends HTMLElement {
       });
       return row;
     });
-    addSection('Slash commands', commandRows);
+    addSection('Slash commands', [manageRow, browseRow, ...commandRows]);
 
     // Skills section (collapsed) — this thread's frozen snapshot, standing in for
     // the inline `$` picker on touch. Selecting one splices `$name ` into the

@@ -13,13 +13,53 @@
  */
 
 import { writeUserCommand, deleteUserCommand, fetchUserCommands, resetUserCommandsCache, USER_COMMAND_NAME_RE } from '../services/user-commands.js';
-import { expandTemplate } from '../plugins/user-command-factory.js';
+import { expandTemplate, resolveModelConfig } from '../plugins/user-command-factory.js';
 import { reloadRegistries, REGISTRIES_RELOADED } from '../registries/reload-registries.js';
 import slashCommandHandler from '../services/slash-command-handler.js';
 import strategyRegistry from '../registries/strategy-registry.js';
+import providersCache from '../services/providers-cache.js';
+import { buildModelConfig } from '../model/model-config.js';
 import { presentModal } from '../utils/modal-surface.js';
+import { presentPopup } from '../utils/popup-surface.js';
+import { closePopupById } from '../utils/popup-manager.js';
 import { focusWhenShown } from '../utils/focus.js';
 import { showConfirm } from './modal-dialog.js';
+import './model-picker/model-chip.js';
+import './model-picker/model-picker.js';
+
+/**
+ * Popup id for the editor's model picker, so a second press on the chip
+ * dismisses the picker instead of stacking a second one over it.
+ */
+const MODEL_PICKER_POPUP_ID = 'command-editor-model-picker';
+
+/**
+ * Run modes, in the order the segmented control offers them.
+ * @type {Record<string, string>}
+ */
+const RUN_MODES = {
+  send: 'Send immediately',
+  draft: 'Insert as draft',
+  subthread: 'Run in a thread',
+};
+
+/**
+ * What each run mode actually does, shown under the control for the selected
+ * one. The three labels alone say what happens to the command, not what happens
+ * to the conversation, which is the part worth knowing before choosing.
+ * @type {Record<string, string>}
+ */
+const RUN_MODE_HINTS = {
+  send: 'Expands the template and sends it as your next message.',
+  draft: 'Puts the expanded template in the composer so you can edit it first.',
+  subthread: 'Runs the prompt in a separate thread; the result lands back here.',
+};
+
+/** Save destinations, in the order the segmented control offers them. */
+const SCOPES = {
+  project: 'This project',
+  user: 'All my projects',
+};
 
 /**
  * Set of built-in / extension command ids a user command may not shadow. User
@@ -78,19 +118,34 @@ export function openCommandEditor(options = {}) {
     const modal = presentModal({
       className: 'command-editor-overlay',
       dismissSelectors: ['.command-editor-backdrop', '#cmd-close'],
-      onClose: (result) => resolve(result ?? null),
+      onClose: (result) => {
+        // The picker lives on document.body, so it outlives the dialog unless
+        // it is taken down with it.
+        closePopupById(MODEL_PICKER_POPUP_ID);
+        resolve(result ?? null);
+      },
     });
     const overlay = modal.root;
     const close = modal.close;
+
+    // The three choices the dialog holds outside the DOM: the two segmented
+    // controls and the model override, none of which is a form field. A file may
+    // name a run mode this build does not offer, which falls back to send rather
+    // than leaving the control with nothing selected.
+    let run = RUN_MODES[fm.run || ''] ? /** @type {string} */ (fm.run) : 'send';
+    let scope = def?.scope === 'user' || options.scope === 'user' ? 'user' : 'project';
+    let modelConfig = seedModelConfig(fm);
+    // Whether the user has touched the model, so a late provider list refines
+    // the seed without overwriting a choice they have already made.
+    let modelTouched = false;
+
     overlay.innerHTML = buildMarkup({
       editing,
       name: def?.name ?? options.name ?? '',
-      scope: def?.scope ?? options.scope ?? 'project',
+      scope,
       description: fm.description ?? '',
       argsHint: fm.argsHint ?? '',
-      run: fm.run ?? 'send',
-      strategy: fm.strategy ?? '',
-      model: fm.model ?? '',
+      run,
       icon: fm.icon ?? '',
       goal: fm.goal ?? '',
       template: def?.body ?? '',
@@ -115,15 +170,85 @@ export function openCommandEditor(options = {}) {
     const templateInput = $('#cmd-template');
     const previewArgs = $('#cmd-preview-args');
     const previewOut = $('#cmd-preview-out');
-    const runRadios = overlay.querySelectorAll('input[name="cmd-run"]');
+    const runHint = $('#cmd-run-hint');
     const subthreadFields = $('#cmd-subthread-fields');
+    const modelChip = $('#cmd-model');
     const saveBtn = $('#cmd-save');
     const pathHint = $('#cmd-path-hint');
 
     const reserved = builtinCommandIds();
 
-    const currentScope = () => /** @type {any} */ (overlay.querySelector('input[name="cmd-scope"]:checked'))?.value || 'project';
-    const currentRun = () => /** @type {any} */ (overlay.querySelector('input[name="cmd-run"]:checked'))?.value || 'send';
+    // ── model override: the app's standard chip + picker ──────────────────────
+
+    const syncChip = () => {
+      modelChip.update({
+        providers: providersCache.get(),
+        config: modelConfig,
+        placeholder: 'Inherit from parent',
+        buttonTitle: 'Model for the thread',
+      });
+    };
+
+    const setModelConfig = (/** @type {any} */ next) => {
+      modelConfig = next;
+      modelTouched = true;
+      syncChip();
+    };
+
+    const openModelPicker = () => {
+      // Second press on the chip dismisses rather than re-opening.
+      if (closePopupById(MODEL_PICKER_POPUP_ID)) return;
+
+      const picker = /** @type {any} */ (document.createElement('model-picker'));
+      picker.providers = providersCache.get();
+      picker.value = modelConfig;
+      picker.noneLabel = 'Inherit from parent';
+      picker.loading = !providersCache.hasReceived();
+
+      /** @type {(() => void)|null} */
+      let release = null;
+      const closePicker = () => {
+        if (release) {
+          release();
+          release = null;
+        }
+      };
+
+      picker.addEventListener('change', (/** @type {Event} */ e) => {
+        closePicker();
+        setModelConfig(/** @type {CustomEvent} */ (e).detail);
+      });
+      picker.addEventListener('close', closePicker);
+
+      release = presentPopup({
+        surface: picker,
+        anchor: modelChip.button || modelChip,
+        id: MODEL_PICKER_POPUP_ID,
+        onClose: closePicker,
+        insideSelectors: ['model-chip', '.model-picker'],
+      });
+    };
+
+    modelChip.addEventListener('chip-toggle', openModelPicker);
+    // The pill promises its mini popover, so an open picker gets out of the way
+    // first — same contract as the settings rows.
+    modelChip.addEventListener('mini-requested', () => closePopupById(MODEL_PICKER_POPUP_ID));
+    modelChip.addEventListener('change', (/** @type {Event} */ e) => {
+      setModelConfig(/** @type {CustomEvent} */ (e).detail);
+    });
+    syncChip();
+
+    // A dialog opened before the first provider push shows the stored reference
+    // verbatim; once the list lands the label resolves, and a reference whose
+    // provider had to be inferred is re-seeded — unless the user has since
+    // chosen something, which their choice must survive.
+    if (!providersCache.hasReceived()) {
+      providersCache.waitForFirst().then(() => {
+        if (!overlay.isConnected) return;
+        if (!modelTouched && modelConfig && !modelConfig.provider) modelConfig = seedModelConfig(fm);
+        syncChip();
+      });
+    }
 
     const validateName = () => {
       const v = nameInput.value.trim();
@@ -143,20 +268,21 @@ export function openCommandEditor(options = {}) {
     };
 
     const updateRunUI = () => {
-      subthreadFields.classList.toggle('hidden', currentRun() !== 'subthread');
+      subthreadFields.classList.toggle('hidden', run !== 'subthread');
+      runHint.textContent = RUN_MODE_HINTS[run] || '';
     };
 
     const updatePathHint = () => {
-      const dir = currentScope() === 'user' ? '~/.juggler/commands' : '<project>/.juggler/commands';
+      const dir = scope === 'user' ? '~/.juggler/commands' : '<project>/.juggler/commands';
       const nm = nameInput.value.trim() || 'name';
-      pathHint.textContent = `Stored in ${dir}/${nm}.md`;
+      pathHint.textContent = `${dir}/${nm}.md`;
     };
 
     nameInput.addEventListener('input', () => { validateName(); updatePathHint(); });
     templateInput.addEventListener('input', updatePreview);
     previewArgs.addEventListener('input', updatePreview);
-    runRadios.forEach((r) => r.addEventListener('change', updateRunUI));
-    overlay.querySelectorAll('input[name="cmd-scope"]').forEach((r) => r.addEventListener('change', updatePathHint));
+    wireSegmented($('#cmd-run'), 'run', (value) => { run = value; updateRunUI(); });
+    wireSegmented($('#cmd-scope'), 'scope', (value) => { scope = value; updatePathHint(); });
 
     if (editing) {
       const del = $('#cmd-delete');
@@ -174,16 +300,22 @@ export function openCommandEditor(options = {}) {
     saveBtn.addEventListener('click', async () => {
       if (!validateName()) return;
       clearFieldErrors(overlay);
-      const scope = currentScope();
       const name = nameInput.value.trim();
+      // Overrides belong to the thread, so a command that no longer opens one
+      // writes none of them. The model ref is written whole: dropping a dial
+      // here would leave a command running at settings the user never chose.
+      const thread = run === 'subthread';
       const body = {
         description: $('#cmd-description').value.trim(),
         argsHint: $('#cmd-argshint').value.trim(),
-        run: currentRun(),
-        strategy: currentRun() === 'subthread' ? (strategySelect?.value || '') : '',
-        model: currentRun() === 'subthread' ? $('#cmd-model').value.trim() : '',
+        run,
+        strategy: thread ? (strategySelect?.value || '') : '',
+        provider: thread ? (modelConfig?.provider || '') : '',
+        model: thread ? (modelConfig?.model || '') : '',
+        thinking: thread ? (modelConfig?.thinking || '') : '',
+        serviceTier: thread ? (modelConfig?.serviceTier || '') : '',
         icon: $('#cmd-icon').value.trim(),
-        goal: currentRun() === 'subthread' ? $('#cmd-goal').value.trim() : '',
+        goal: thread ? $('#cmd-goal').value.trim() : '',
         template: templateInput.value,
       };
       saveBtn.disabled = true;
@@ -215,10 +347,15 @@ export function openCommandEditor(options = {}) {
 }
 
 /**
- * Open the `/commands` manager: a dialog listing every slash command grouped by
- * origin (Built-in / This project / All projects), with edit / delete / new
- * actions on user commands. Broken definitions are shown with their error and an
- * edit button rather than hidden. Resolves when the manager closes.
+ * Open the `/commands` manager: a dialog listing the user's own commands grouped
+ * by scope (This project / All projects), with edit / delete / new actions.
+ * Broken definitions are shown with their error and an edit button rather than
+ * hidden. Resolves when the manager closes.
+ *
+ * Built-in commands are not listed. Someone who opened the custom-command
+ * manager is here to write one, and the built-ins are already documented where
+ * every other loaded capability is — the Extensions settings, which the menus
+ * offer their own button for.
  * @returns {Promise<void>}
  */
 export function openCommandManager() {
@@ -232,9 +369,9 @@ export function openCommandManager() {
     const overlay = modal.root;
     overlay.innerHTML = `
       <div class="command-editor-backdrop"></div>
-      <div class="command-editor-panel" role="dialog" aria-modal="true" aria-label="Slash commands">
+      <div class="command-editor-panel" role="dialog" aria-modal="true" aria-label="Custom slash commands">
         <header class="command-editor-header">
-          <h2>Slash commands</h2>
+          <h2>Custom slash commands</h2>
           <button id="cmd-close" class="close-button command-editor-close" title="Close" aria-label="Close"><span class="icon-close"></span></button>
         </header>
         <div class="command-editor-body" id="cmd-manager-body"></div>
@@ -255,11 +392,8 @@ export function openCommandManager() {
     const render = async () => {
       const seq = ++renderSeq;
       const userCommands = await fetchUserCommands();
-      await slashCommandHandler.init();
       if (seq !== renderSeq) return; // superseded by a newer render
-      const builtins = slashCommandHandler.getCommands().filter((c) => !c.userDefined);
       body.innerHTML = '';
-      body.appendChild(builtinGroup('Built-in', builtins));
       body.appendChild(userGroup('This project', userCommands.filter((d) => d.scope === 'project'), render));
       body.appendChild(userGroup('All projects', userCommands.filter((d) => d.scope === 'user'), render));
     };
@@ -281,31 +415,6 @@ export function openCommandManager() {
 
     render();
   });
-}
-
-/**
- * @param {string} title
- * @param {Array<{name: string, description?: string, label?: string}>} cmds
- * @returns {HTMLElement} Group element
- */
-function builtinGroup(title, cmds) {
-  const group = document.createElement('div');
-  group.className = 'command-manager-group';
-  const h = document.createElement('h3');
-  h.textContent = title;
-  group.appendChild(h);
-  for (const c of cmds) {
-    const row = document.createElement('div');
-    row.className = 'command-manager-row';
-    const code = document.createElement('code');
-    code.textContent = '/' + c.name;
-    const desc = document.createElement('span');
-    desc.className = 'command-manager-desc';
-    desc.textContent = c.description || c.label || '';
-    row.append(code, desc);
-    group.appendChild(row);
-  }
-  return group;
 }
 
 /**
@@ -350,9 +459,13 @@ function userGroup(title, defs, refresh) {
     edit.className = 'modal-button secondary';
     edit.textContent = 'Edit';
     edit.addEventListener('click', async () => { await openCommandEditor({ def }); refresh(); });
+    // Delete is the app's standard trashcan: an icon-only button, muted until
+    // hovered, as every other per-row delete in the UI.
     const del = document.createElement('button');
-    del.className = 'modal-button danger';
-    del.textContent = 'Delete';
+    del.className = 'command-manager-delete';
+    del.title = 'Delete';
+    del.setAttribute('aria-label', `Delete /${def.name}`);
+    del.appendChild(Object.assign(document.createElement('span'), { className: 'icon-trashcan' }));
     del.addEventListener('click', async () => {
       const ok = await showConfirm(
         `Delete the /${def.name} command?`, 'Delete command', { danger: true, confirmText: 'Delete' });
@@ -400,13 +513,67 @@ function showFieldErrors(overlay, errors) {
 }
 
 /**
+ * The model config a command file describes, for the chip to show.
+ *
+ * Prefers the resolution the command will actually run with, and falls back to
+ * the stored reference verbatim when nothing can be resolved — a dialog opened
+ * before the first provider push must still show (and re-save) the model the
+ * file names, rather than reporting it as inherited and quietly dropping it.
+ * @param {import('../services/user-commands.js').UserCommandFrontmatter} fm
+ * @returns {import('../model/model-config.js').ConcreteModelConfig|null} The config, or null for inherit
+ */
+function seedModelConfig(fm) {
+  if (!fm.model) return null;
+  return resolveModelConfig(fm)
+    || buildModelConfig(fm.provider || '', fm.model, fm.thinking, fm.serviceTier);
+}
+
+/**
+ * One segmented control: a radiogroup of buttons, the active one carrying the
+ * selection. Values are ids from a fixed table, so they need no escaping.
+ * @param {string} id - Element id
+ * @param {string} ariaLabel - Group label
+ * @param {string} attr - Data attribute holding each option's value
+ * @param {Record<string, string>} options - value → label
+ * @param {string} current - The selected value
+ * @returns {string} HTML
+ */
+function segmentedHTML(id, ariaLabel, attr, options, current) {
+  const segments = Object.entries(options).map(([value, label]) => {
+    const active = value === current;
+    return `<button type="button" class="command-editor-seg${active ? ' active' : ''}" role="radio"`
+      + ` aria-checked="${active}" data-${attr}="${value}">${label}</button>`;
+  }).join('');
+  return `<div id="${id}" class="command-editor-segmented" role="radiogroup" aria-label="${ariaLabel}">${segments}</div>`;
+}
+
+/**
+ * Wire a segmented control: a press moves the active state across the group and
+ * reports the new value.
+ * @param {HTMLElement} group - The radiogroup element
+ * @param {string} attr - Data attribute holding each option's value
+ * @param {(value: string) => void} onChange - Called with the newly selected value
+ */
+function wireSegmented(group, attr, onChange) {
+  group.addEventListener('click', (e) => {
+    const pressed = /** @type {HTMLElement|null} */ (/** @type {HTMLElement} */ (e.target).closest('.command-editor-seg'));
+    if (!pressed || !group.contains(pressed)) return;
+    group.querySelectorAll('.command-editor-seg').forEach((seg) => {
+      const active = seg === pressed;
+      seg.classList.toggle('active', active);
+      seg.setAttribute('aria-checked', String(active));
+    });
+    onChange(pressed.dataset[attr] || '');
+  });
+}
+
+/**
  * Build the dialog markup.
- * @param {{editing: boolean, name: string, scope: string, description: string, argsHint: string, run: string, strategy: string, model: string, icon: string, goal: string, template: string}} v
+ * @param {{editing: boolean, name: string, scope: string, description: string, argsHint: string, run: string, icon: string, goal: string, template: string}} v
  * @returns {string} HTML
  */
 function buildMarkup(v) {
   const esc = (/** @type {string} */ s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
-  const checked = (/** @type {boolean} */ b) => (b ? ' checked' : '');
   return `
     <div class="command-editor-backdrop"></div>
     <div class="command-editor-panel" role="dialog" aria-modal="true" aria-label="Command editor">
@@ -415,21 +582,23 @@ function buildMarkup(v) {
         <button id="cmd-close" class="close-button command-editor-close" title="Close" aria-label="Close"><span class="icon-close"></span></button>
       </header>
       <div class="command-editor-body">
-        <label class="command-editor-label">Name
-          <div class="command-editor-name-row"><span class="command-editor-slash">/</span>
-            <input id="cmd-name" type="text" class="command-editor-input" value="${esc(v.name)}"
-              autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="review-pr" /></div>
-          <div id="cmd-name-error" class="command-editor-field-error" data-error-for="name"></div>
-        </label>
+        <div class="command-editor-row">
+          <label class="command-editor-label command-editor-name-field">Name
+            <div class="command-editor-name-row"><span class="command-editor-slash">/</span>
+              <input id="cmd-name" type="text" class="command-editor-input" value="${esc(v.name)}"
+                autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="review-pr" /></div>
+          </label>
+          <label class="command-editor-label">
+            <span class="command-editor-label-text">Args hint <span class="command-editor-optional">(optional)</span></span>
+            <input id="cmd-argshint" type="text" class="command-editor-input" value="${esc(v.argsHint)}" placeholder="&lt;pr-number&gt;" />
+          </label>
+        </div>
+        <div id="cmd-name-error" class="command-editor-field-error" data-error-for="name"></div>
 
         <label class="command-editor-label">Description
           <input id="cmd-description" type="text" class="command-editor-input" value="${esc(v.description)}"
             placeholder="Shown in the slash menu" />
           <div class="command-editor-field-error" data-error-for="description"></div>
-        </label>
-
-        <label class="command-editor-label">Args hint <span class="command-editor-optional">(optional)</span>
-          <input id="cmd-argshint" type="text" class="command-editor-input" value="${esc(v.argsHint)}" placeholder="&lt;pr-number&gt;" />
         </label>
 
         <label class="command-editor-label">Prompt template
@@ -440,41 +609,41 @@ function buildMarkup(v) {
         </label>
 
         <div class="command-editor-preview">
-          <label class="command-editor-label">Preview — sample args
-            <input id="cmd-preview-args" type="text" class="command-editor-input" placeholder="42 extra words" />
-          </label>
+          <div class="command-editor-preview-head">
+            <span class="command-editor-preview-title">Preview</span>
+            <input id="cmd-preview-args" type="text" class="command-editor-input command-editor-preview-args"
+              placeholder="sample args" aria-label="Sample arguments for the preview" />
+          </div>
           <pre id="cmd-preview-out" class="command-editor-preview-out"></pre>
         </div>
 
-        <fieldset class="command-editor-fieldset">
-          <legend>Run mode</legend>
-          <label><input type="radio" name="cmd-run" value="send"${checked(v.run === 'send' || !v.run)} /> Send immediately</label>
-          <label><input type="radio" name="cmd-run" value="draft"${checked(v.run === 'draft')} /> Insert as draft</label>
-          <label><input type="radio" name="cmd-run" value="subthread"${checked(v.run === 'subthread')} /> Run in a thread</label>
-        </fieldset>
+        <div class="command-editor-field">
+          <div class="command-editor-label-text">When invoked</div>
+          ${segmentedHTML('cmd-run', 'Run mode', 'run', RUN_MODES, v.run)}
+          <div id="cmd-run-hint" class="command-editor-run-hint"></div>
+        </div>
 
         <div id="cmd-subthread-fields" class="command-editor-subthread hidden">
+          <div class="command-editor-hint">Applied to the thread only. Anything left inherited follows this conversation.</div>
           <label class="command-editor-label">Thread goal
             <input id="cmd-goal" type="text" class="command-editor-input" value="${esc(v.goal)}" placeholder="PR review" />
           </label>
-          <label class="command-editor-label">Strategy override
-            <select id="cmd-strategy" class="command-editor-input"><option value="">(inherit)</option></select>
+          <label class="command-editor-label">Strategy
+            <select id="cmd-strategy" class="command-editor-select"><option value="">Inherit from parent</option></select>
           </label>
-          <label class="command-editor-label">Model override <span class="command-editor-optional">(model id)</span>
-            <input id="cmd-model" type="text" class="command-editor-input" value="${esc(v.model)}" placeholder="(inherit)" />
-          </label>
+          <div class="command-editor-label">
+            <span class="command-editor-label-text">Model</span>
+            <model-chip id="cmd-model"></model-chip>
+          </div>
         </div>
 
         <input id="cmd-icon" type="hidden" value="${esc(v.icon)}" />
-
-        <fieldset class="command-editor-fieldset">
-          <legend>Scope</legend>
-          <label><input type="radio" name="cmd-scope" value="project"${checked(v.scope !== 'user')} /> This project</label>
-          <label><input type="radio" name="cmd-scope" value="user"${checked(v.scope === 'user')} /> All my projects</label>
-        </fieldset>
       </div>
       <footer class="command-editor-footer">
-        <div id="cmd-path-hint" class="command-editor-path"></div>
+        <div class="command-editor-target">
+          ${segmentedHTML('cmd-scope', 'Where to save', 'scope', SCOPES, v.scope === 'user' ? 'user' : 'project')}
+          <div id="cmd-path-hint" class="command-editor-path"></div>
+        </div>
         <div class="command-editor-actions">
           <button id="cmd-delete" class="modal-button danger hidden">Delete</button>
           <button id="cmd-save" class="modal-button primary">Save</button>

@@ -32,7 +32,10 @@ export const USER_COMMAND_NAME_RE = /^[a-z][a-z0-9-]*$/;
  * @property {string} [argsHint] - Ghost-text hint shown after accepting the command
  * @property {string} [run] - Execution mode: 'send' (default) | 'draft' | 'subthread'
  * @property {string} [strategy] - Strategy id override (subthread only)
- * @property {string} [model] - Model id override (subthread only)
+ * @property {string} [provider] - Provider serving the model override (subthread only)
+ * @property {string} [model] - Model id override (subthread only; resolved by id when no provider is given)
+ * @property {string} [thinking] - Thinking level for the model override (subthread only)
+ * @property {string} [serviceTier] - Serving tier for the model override (subthread only)
  * @property {string} [icon] - Menu icon CSS class
  * @property {string} [goal] - Thread goal label (subthread only)
  */
@@ -95,7 +98,7 @@ export async function getRegisterableUserCommands() {
  * on a 400 validation failure. Throws only on a transport/5xx error.
  * @param {'user'|'project'} scope - Target scope
  * @param {string} name - Command name (validated server-side)
- * @param {{description?: string, argsHint?: string, run?: string, strategy?: string, model?: string, icon?: string, goal?: string, template: string}} body - Write request
+ * @param {{description?: string, argsHint?: string, run?: string, strategy?: string, provider?: string, model?: string, thinking?: string, serviceTier?: string, icon?: string, goal?: string, template: string}} body - Write request
  * @returns {Promise<{ok: boolean, status: number, data: any}>} Result envelope
  */
 export async function writeUserCommand(scope, name, body) {

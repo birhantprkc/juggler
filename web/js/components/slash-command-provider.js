@@ -4,7 +4,9 @@
 
 import slashCommandHandler from '../services/slash-command-handler.js';
 import { longestCommonPrefix } from './completion-menu.js';
-import { openCommandEditor } from './command-editor-dialog.js';
+import { openCommandEditor, openCommandManager } from './command-editor-dialog.js';
+import { withoutManagerCommand, buildManageCommandsRow, buildBrowseCommandsRow } from '../services/command-manager-entry.js';
+import { openSettings } from '../services/settings-launcher.js';
 
 /**
  * The `/` slash-command completion source for {@link CompletionMenu}.
@@ -22,15 +24,42 @@ import { openCommandEditor } from './command-editor-dialog.js';
  * a name that does not exist becomes the discovery path for creating one — but it
  * is suppressed when the query exactly names an existing command, since creating
  * a duplicate is impossible.
+ *
+ * A bare `/` also leads with the two pinned buttons — "Edit custom slash
+ * commands…", standing in for the `/commands` row it replaces, and "Browse
+ * built-in commands…", which hands the built-ins to the Extensions settings.
+ * Opening the menu with nothing typed is the moment someone is looking for what
+ * is there, and the one place a button costs no one anything. Once a query is
+ * typed they are gone and `/commands` completes normally — permanently pinned
+ * rows would take the first ArrowDown away from the first real match, and would
+ * leave every single-match list three items long, which is what Tab's
+ * auto-accept shortcut keys off.
  * @module components/slash-command-provider
  */
 
 /**
- * The sentinel item accepted to open the command editor. Kept distinct from a
- * real command (which has `name`) so `accept`/`insert` can special-case it.
+ * The sentinel items accepted to open the editor and the manager. Kept distinct
+ * from real commands (which have `name`) so `accept`/`insert` can special-case
+ * them.
  * @type {{action: 'new-command', query: string}}
  */
 const NEW_COMMAND_SENTINEL = { action: 'new-command', query: '' };
+
+/** @type {{action: 'manage-commands'}} */
+const MANAGE_COMMANDS_SENTINEL = { action: 'manage-commands' };
+
+/** @type {{action: 'browse-commands'}} */
+const BROWSE_COMMANDS_SENTINEL = { action: 'browse-commands' };
+
+/**
+ * Whether an item is one of the synthetic rows rather than a real command. They
+ * carry no `name`, so nothing that completes or runs text may include them.
+ * @param {any} item - A fetched item
+ * @returns {boolean} True for the synthetic rows
+ */
+function isSynthetic(item) {
+  return item.action === 'new-command' || item.action === 'manage-commands' || item.action === 'browse-commands';
+}
 
 /**
  * The `/` slash-command completion provider.
@@ -53,11 +82,15 @@ export const slashCommandProvider = {
     await slashCommandHandler.init();
     const q = query.toLowerCase();
     const commands = slashCommandHandler.getCommands();
-    // Items are opaque to the menu, and the list mixes real commands with a
-    // synthetic "New command…" row, so it is typed loosely.
-    const matches = /** @type {any[]} */ (commands
+    // Items are opaque to the menu, and the list mixes real commands with the
+    // synthetic rows, so it is typed loosely.
+    const listed = q === '' ? withoutManagerCommand(commands) : commands;
+    const matches = /** @type {any[]} */ (listed
       .filter(c => c.name.toLowerCase().startsWith(q) || (c.label?.toLowerCase().startsWith(q) ?? false))
       .sort((a, b) => a.name.localeCompare(b.name)));
+    // Lead a bare `/` with the two buttons, the first in place of the
+    // `/commands` row just dropped.
+    if (q === '') matches.unshift({ ...MANAGE_COMMANDS_SENTINEL }, { ...BROWSE_COMMANDS_SENTINEL });
     // Pin a "New command…" row at the end so an unmatched query (e.g. /standup)
     // becomes the create path. It carries the current query to pre-fill the name.
     // Suppress it when the query already names an existing command (built-in or
@@ -68,6 +101,14 @@ export const slashCommandProvider = {
   },
 
   renderItem(cmd) {
+    if (cmd.action === 'manage-commands') {
+      return buildManageCommandsRow('slash-command-item');
+    }
+
+    if (cmd.action === 'browse-commands') {
+      return buildBrowseCommandsRow('slash-command-item');
+    }
+
     if (cmd.action === 'new-command') {
       const li = document.createElement('li');
       li.className = 'menu-item slash-command-item slash-command-new';
@@ -105,9 +146,17 @@ export const slashCommandProvider = {
   },
 
   insert(cmd) {
+    // Opening a dialog is a side effect; the accepted text is cleared so the
+    // half-typed "/name" does not linger behind it.
+    if (cmd.action === 'manage-commands') {
+      openCommandManager();
+      return '';
+    }
+    if (cmd.action === 'browse-commands') {
+      openSettings('extensions');
+      return '';
+    }
     if (cmd.action === 'new-command') {
-      // Opening the editor is a side effect; the accepted text is cleared so the
-      // half-typed "/name" does not linger while the dialog is open.
       openCommandEditor({ name: cmd.query || '' });
       return '';
     }
@@ -119,14 +168,14 @@ export const slashCommandProvider = {
     // so fire it on that same Enter/click rather than splicing "/name " and
     // waiting for a second Enter. Commands that declare an argsHint expect the
     // user to type arguments next, so those keep the accept-then-send flow. The
-    // synthetic "New command…" row opens a dialog (never submits the composer).
-    return cmd.action !== 'new-command' && !cmd.argsHint;
+    // synthetic rows open a dialog (never submit the composer).
+    return !isSynthetic(cmd) && !cmd.argsHint;
   },
 
   tabCompleteReplacement(items, query) {
-    // Only real commands participate in prefix completion — the pinned row's
-    // synthetic query field must not pollute the longest-common-prefix.
-    const names = items.filter(c => c.action !== 'new-command').map(c => c.name);
+    // Only real commands participate in prefix completion — the synthetic rows
+    // carry no name to complete to.
+    const names = items.filter(c => !isSynthetic(c)).map(c => c.name);
     const lcp = longestCommonPrefix(names);
     return lcp.length > query.length ? '/' + lcp : null;
   },

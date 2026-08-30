@@ -230,6 +230,58 @@ func TestNoProjectScopeUnavailable(t *testing.T) {
 	}
 }
 
+func TestRoundTripModelOverride(t *testing.T) {
+	project := t.TempDir()
+	api := newTestAPI(t, project)
+	putCommand(t, api, "project", "review", UserCommandWriteRequest{
+		Description: "Review a PR",
+		Run:         "subthread",
+		Strategy:    "read-only",
+		Provider:    "anthropic",
+		Model:       "claude-sonnet-4",
+		Thinking:    "high",
+		ServiceTier: "priority",
+		Goal:        "PR review",
+		Template:    "Review PR $1.",
+	})
+	cmds := listCommands(t, api)
+	if len(cmds) != 1 {
+		t.Fatalf("got %d commands, want 1", len(cmds))
+	}
+	fm := cmds[0].Frontmatter
+	if fm.Provider != "anthropic" || fm.Model != "claude-sonnet-4" {
+		t.Errorf("provider/model = %q/%q", fm.Provider, fm.Model)
+	}
+	if fm.Thinking != "high" || fm.ServiceTier != "priority" {
+		t.Errorf("thinking/serviceTier = %q/%q", fm.Thinking, fm.ServiceTier)
+	}
+	if fm.Strategy != "read-only" || fm.Goal != "PR review" {
+		t.Errorf("strategy/goal = %q/%q", fm.Strategy, fm.Goal)
+	}
+}
+
+// A model id with no provider is what a hand-written file and the
+// define_command tool produce; it parses with an empty Provider and is resolved
+// by id on the client.
+func TestDiscoverModelWithoutProvider(t *testing.T) {
+	project := t.TempDir()
+	api := newTestAPI(t, project)
+	writeFile(t, filepath.Join(project, ".juggler", "commands"), "quick.md",
+		"---\ndescription: Quick pass\nrun: subthread\nmodel: gpt-5-mini\n---\nDo it.\n")
+
+	cmds := listCommands(t, api)
+	if len(cmds) != 1 || cmds[0].Error != "" {
+		t.Fatalf("discover: %+v", cmds)
+	}
+	fm := cmds[0].Frontmatter
+	if fm.Model != "gpt-5-mini" {
+		t.Errorf("model = %q", fm.Model)
+	}
+	if fm.Provider != "" || fm.Thinking != "" || fm.ServiceTier != "" {
+		t.Errorf("want empty provider/thinking/serviceTier, got %q/%q/%q", fm.Provider, fm.Thinking, fm.ServiceTier)
+	}
+}
+
 func TestRoundTripQuotedValue(t *testing.T) {
 	project := t.TempDir()
 	api := newTestAPI(t, project)

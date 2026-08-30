@@ -13,6 +13,7 @@
  */
 
 import { expandTemplate, makeUserCommandClass } from '../../js/plugins/user-command-factory.js';
+import providersCache from '../../js/services/providers-cache.js';
 import { assert } from '../utilities/test-helpers.js';
 
 /**
@@ -161,6 +162,83 @@ export async function runTests(_ctx) {
     assert(call.prompt === 'Review 42', `prompt=${call.prompt}`);
     assert(call.strategyId === 'read-only', `strategyId=${call.strategyId}`);
   });
+
+  // ---- model override resolution ----
+
+  // Two providers advertising the SAME model id is the case a bare id cannot
+  // decide, so it is the shape the fixture uses throughout.
+  const FAKE_PROVIDERS = [
+    { name: 'openai', modelsWithContext: [{ id: 'gpt-5' }, { id: 'gpt-5-mini' }] },
+    { name: 'azure', modelsWithContext: [{ id: 'gpt-5' }] },
+  ];
+
+  /**
+   * Run `fn` with the providers cache standing in for a live one.
+   * @param {() => Promise<void>} fn
+   * @returns {Promise<void>}
+   */
+  async function withProviders(fn) {
+    const realGet = providersCache.get;
+    providersCache.get = () => /** @type {any} */ (FAKE_PROVIDERS);
+    try {
+      await fn();
+    } finally {
+      providersCache.get = realGet;
+    }
+  }
+
+  /**
+   * The modelConfig a subthread command hands to runInThread.
+   * @param {any} frontmatter
+   * @returns {Promise<any>} The modelConfig passed to runInThread.
+   */
+  async function modelConfigFor(frontmatter) {
+    /** @type {any} */
+    let call = null;
+    const fakeThread = {
+      runInThread: (/** @type {any} */ opts) => { call = opts; return Promise.resolve({ threadItemId: 't' }); },
+    };
+    const Cls = makeUserCommandClass({
+      name: 'model-test', scope: 'user', path: '/x',
+      frontmatter: { description: 'd', run: 'subthread', ...frontmatter }, body: 'go',
+    });
+    await new Cls({ messageThread: fakeThread }).execute([]);
+    return call?.modelConfig;
+  }
+
+  await test('an explicit provider wins over another advertising the same model id', () => withProviders(async () => {
+    const config = await modelConfigFor({ provider: 'azure', model: 'gpt-5' });
+    assert(config?.provider === 'azure', `provider=${config?.provider}`);
+    assert(config.model === 'gpt-5', `model=${config.model}`);
+  }));
+
+  await test('the thinking level and serving tier ride along', () => withProviders(async () => {
+    const config = await modelConfigFor({ provider: 'openai', model: 'gpt-5', thinking: 'high', serviceTier: 'priority' });
+    assert(config?.thinking === 'high', `thinking=${config?.thinking}`);
+    assert(config.serviceTier === 'priority', `serviceTier=${config.serviceTier}`);
+  }));
+
+  await test('an absent dial is omitted, never an empty string', () => withProviders(async () => {
+    const config = await modelConfigFor({ provider: 'openai', model: 'gpt-5' });
+    assert(!('thinking' in config), 'thinking key must be absent');
+    assert(!('serviceTier' in config), 'serviceTier key must be absent');
+  }));
+
+  await test('a bare model id falls back to the first provider advertising it', () => withProviders(async () => {
+    const config = await modelConfigFor({ model: 'gpt-5' });
+    assert(config?.provider === 'openai', `provider=${config?.provider}`);
+  }));
+
+  await test('a provider that no longer advertises the model falls back to the scan', () => withProviders(async () => {
+    const config = await modelConfigFor({ provider: 'azure', model: 'gpt-5-mini' });
+    assert(config?.provider === 'openai', `provider=${config?.provider}`);
+    assert(config.model === 'gpt-5-mini', `model=${config.model}`);
+  }));
+
+  await test('an unknown model inherits the parent (null config)', () => withProviders(async () => {
+    assert(await modelConfigFor({ model: 'no-such-model' }) === null, 'unknown id => null');
+    assert(await modelConfigFor({}) === null, 'no override => null');
+  }));
 
   await test('execute with no thread is a graceful error, not a throw', async () => {
     const Cls = makeUserCommandClass({

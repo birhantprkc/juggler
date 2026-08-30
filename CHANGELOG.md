@@ -7,6 +7,7 @@ of changes; this project follows semantic versioning.
 
 - An expired Claude Code sign-in now says how to fix it, with a settings shortcut
 - A conversation with no history yet shows the composer keys and gestures
+- Improvements to the UX and features in the slash commands menu and editor panels
 
 ## [0.5.9] - 2026-08-29
 

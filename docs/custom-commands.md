@@ -15,8 +15,12 @@ Three ways, all equivalent — they write the same file:
 
 - **Type a name that doesn't exist.** `/standup` with no such command offers a
   pinned **"New command '/standup'…"** row that opens the editor pre-filled.
-- **`/commands`** opens the manager, where **New command…** creates one and each
-  existing command can be edited or deleted.
+- **"Edit custom slash commands…"** — the button at the top of the slash menu
+  (and of the `/` button's list) opens the manager, listing your own commands by
+  scope, where **New command…** creates one and each existing command can be
+  edited or deleted. `/commands` does the same thing from the keyboard. The
+  button beside it, **"Browse built-in commands…"**, opens the built-ins in the
+  Extensions settings, where every capability Juggler loads is documented.
 - **Ask the assistant.** "Make that a slash command" → it calls `define_command`
   and you approve the full definition before it's written.
 
@@ -35,7 +39,10 @@ description: Review a PR and report findings   # required — shown in the menu
 argsHint: <pr-number>                           # optional — hint after you accept it
 run: subthread                                  # send (default) | draft | subthread
 strategy: read-only                             # optional — subthread only
+provider: anthropic                             # optional — subthread only
 model: claude-haiku-...                          # optional — subthread only
+thinking: high                                  # optional — subthread only
+serviceTier: priority                           # optional — subthread only
 goal: PR review                                 # optional — short UI label, subthread only
 icon: icon-eye                                  # optional — a menu icon class
 ---
@@ -67,8 +74,16 @@ model can ask for what it needs.
   sending.
 - **`subthread`** — runs the expanded prompt in an isolated sub-thread and lands
   the result back in the conversation, keeping the main context clean. Only this
-  mode honours `strategy`, `model`, and `goal`. Keep `goal` to a few words: it is
-  shown in the thread UI, while the expanded template is the task itself.
+  mode honours `strategy`, the model fields, and `goal`. Keep `goal` to a few
+  words: it is shown in the thread UI, while the expanded template is the task
+  itself.
+
+The model override is a full reference — `provider`, `model`, and the `thinking`
+and `serviceTier` dials that model advertises — which is what the editor's model
+picker writes. `model` on its own is also valid: the id is matched against the
+providers you have configured, so a hand-written file (or one the assistant
+writes with `define_command`) needs nothing else. Either way, a model no
+provider offers is ignored and the thread inherits the conversation's own.
 
 ## Scopes
 

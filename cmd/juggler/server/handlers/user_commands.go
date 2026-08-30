@@ -37,12 +37,20 @@ var validRunModes = map[string]bool{"send": true, "draft": true, "subthread": tr
 // UserCommandFrontmatter is the parsed YAML frontmatter of a command file. All
 // fields are optional except description (required; its absence is surfaced as
 // an Error on the owning UserCommand, never a silent drop).
+// A model override is the same four-part reference the model picker produces:
+// Provider names the account it runs on, and Thinking/ServiceTier are the dials
+// that model advertises. Model alone (no Provider) is also valid — it is what a
+// hand-written file and the define_command tool produce — and is resolved
+// against the provider list by id on the client.
 type UserCommandFrontmatter struct {
 	Description string `json:"description,omitempty"`
 	ArgsHint    string `json:"argsHint,omitempty"`
-	Run         string `json:"run,omitempty"`      // send (default) | draft | subthread
-	Strategy    string `json:"strategy,omitempty"` // subthread only
-	Model       string `json:"model,omitempty"`    // subthread only
+	Run         string `json:"run,omitempty"`         // send (default) | draft | subthread
+	Strategy    string `json:"strategy,omitempty"`    // subthread only
+	Provider    string `json:"provider,omitempty"`    // subthread only
+	Model       string `json:"model,omitempty"`       // subthread only
+	Thinking    string `json:"thinking,omitempty"`    // subthread only
+	ServiceTier string `json:"serviceTier,omitempty"` // subthread only
 	Icon        string `json:"icon,omitempty"`
 	Goal        string `json:"goal,omitempty"` // subthread only — thread goal label
 }
@@ -67,7 +75,10 @@ type UserCommandWriteRequest struct {
 	ArgsHint    string `json:"argsHint"`
 	Run         string `json:"run"`
 	Strategy    string `json:"strategy"`
+	Provider    string `json:"provider"`
 	Model       string `json:"model"`
+	Thinking    string `json:"thinking"`
+	ServiceTier string `json:"serviceTier"`
 	Icon        string `json:"icon"`
 	Goal        string `json:"goal"`
 	Template    string `json:"template"` // the prompt-template body
@@ -230,7 +241,10 @@ func frontmatterOf(req UserCommandWriteRequest) UserCommandFrontmatter {
 		ArgsHint:    req.ArgsHint,
 		Run:         req.Run,
 		Strategy:    req.Strategy,
+		Provider:    req.Provider,
 		Model:       req.Model,
+		Thinking:    req.Thinking,
+		ServiceTier: req.ServiceTier,
 		Icon:        req.Icon,
 		Goal:        req.Goal,
 	}
@@ -246,7 +260,10 @@ func serializeCommand(req UserCommandWriteRequest) string {
 	writeField(&b, "argsHint", req.ArgsHint)
 	writeField(&b, "run", req.Run)
 	writeField(&b, "strategy", req.Strategy)
+	writeField(&b, "provider", req.Provider)
 	writeField(&b, "model", req.Model)
+	writeField(&b, "thinking", req.Thinking)
+	writeField(&b, "serviceTier", req.ServiceTier)
 	writeField(&b, "icon", req.Icon)
 	writeField(&b, "goal", req.Goal)
 	b.WriteString("---\n")
@@ -365,8 +382,14 @@ func assignFrontmatterField(fm *UserCommandFrontmatter, key, value string) {
 		fm.Run = value
 	case "strategy":
 		fm.Strategy = value
+	case "provider":
+		fm.Provider = value
 	case "model":
 		fm.Model = value
+	case "thinking":
+		fm.Thinking = value
+	case "serviceTier":
+		fm.ServiceTier = value
 	case "icon":
 		fm.Icon = value
 	case "goal":

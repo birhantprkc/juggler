@@ -184,6 +184,7 @@ import { runTests as runTransactionPanelTests } from '../unit-tests/transaction-
 import { runTests as runModelSelectorHudTests } from '../unit-tests/model-selector-hud-test.js';
 import { runTests as runModelPickerTests } from '../unit-tests/model-picker-test.js';
 import { runTests as runDefaultsModelHostTests } from '../unit-tests/defaults-model-host-test.js';
+import { runTests as runCommandEditorTests } from '../unit-tests/command-editor-test.js';
 import { runTests as runFindTests } from '../unit-tests/find-test.js';
 import { runTests as runContextMenuTests } from '../unit-tests/context-menu-test.js';
 import { runTests as runDisconnectionOverlayTests } from '../unit-tests/disconnection-overlay-test.js';
@@ -344,6 +345,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:model-selector-hud', run: runModelSelectorHudTests },
   { name: 'unit:model-picker', run: runModelPickerTests },
   { name: 'unit:defaults-model-host', run: runDefaultsModelHostTests },
+  { name: 'unit:command-editor', run: runCommandEditorTests },
   { name: 'unit:find', run: runFindTests },
   { name: 'unit:context-item-persistence', run: runContextItemPersistenceTests },
   { name: 'unit:context-item-seed-execute', run: runContextItemSeedExecuteTests },
