@@ -15,6 +15,13 @@
  * It is an absolutely-positioned sibling of the scroller rather than a row in
  * the transcript, so the second assertion also stands for the item diff never
  * having a chance to delete it.
+ *
+ * The hint also CENTRES ONLY IN THE CLEAR BAND between the rendered content
+ * and the composer, and hides when that band cannot hold it: on a small
+ * viewport the standing-context items and the footer would otherwise sit
+ * under the hint's text. Both are asserted by measuring the real layout —
+ * the container is offscreen, which is fine, because every measurement here
+ * is a difference of viewport-relative rects.
  * @module unit-tests/empty-conversation-hint-test
  */
 
@@ -22,6 +29,7 @@ import {
   initializeRegistries,
   createTestSession,
   createTestConversation,
+  waitFor,
   assert
 } from '../utilities/test-helpers.js';
 import { createUserMessage } from '../../sdk/lib/message.js';
@@ -66,14 +74,51 @@ export async function runTests() {
     const hint = /** @type {HTMLElement|null} */ (rootCol.querySelector('conversation-empty-hint'));
     assert(!!hint, 'the column should carry the starting hint');
 
+    // The positioned band is set from JS after the first item render, which can
+    // land a beat after that macrotask under load — wait for the placement to
+    // exist rather than trusting the beat.
+    await waitFor(() => hint.style.height !== '', { description: 'the starting hint to be positioned' });
+
     // --- A fresh conversation shows it, standing context items and all ---
 
     assert(conversation.rootItems.length > 0,
       'test setup: a new conversation should already hold seeded standing context ' +
       'items, or this proves nothing about counting items instead of history');
-    assert(/** @type {HTMLElement} */ (hint).classList.contains('hidden') === false,
-      'a conversation with no history should show the starting hint, but it is hidden' +
-      ` (the column holds ${conversation.rootItems.length} seeded item(s))`);
+    assert(hint.classList.contains('hidden') === false && hint.classList.contains('no-room') === false,
+      'a conversation with no history should show the starting hint, but it is hidden or ' +
+      `deemed not to fit (the column holds ${conversation.rootItems.length} seeded item(s))`);
+
+    // --- It centres only in the clear band, below the rendered content ---
+
+    const inner = /** @type {HTMLElement} */ (rootCol.querySelector('#message-list-inner'));
+    const scroller = /** @type {HTMLElement} */ (rootCol.querySelector('#message-list'));
+    const bandTop = inner.getBoundingClientRect().bottom;
+    const bandBottom = scroller.getBoundingClientRect().bottom;
+    assert(hint.classList.contains('no-room') === false,
+      'the 800px-tall test column should have room for the hint, but it is marked no-room');
+    const hintTop = hint.getBoundingClientRect().top;
+    const hintBottom = hint.getBoundingClientRect().bottom;
+    assert(hintTop >= bandTop - 1 && hintBottom <= bandBottom + 1,
+      `the hint must stay inside the clear band [${bandTop}, ${bandBottom}] but spans ` +
+      `[${hintTop}, ${hintBottom}]`);
+    const centreOffset = (hintTop + hintBottom) / 2 - (bandTop + bandBottom) / 2;
+    assert(Math.abs(centreOffset) <= 1,
+      `the hint should centre in the clear band but sits ${centreOffset.toFixed(1)}px off its centre`);
+
+    // --- A viewport too small to hold it hides it ---
+
+    const fullHeight = container.style.height;
+    container.style.height = '260px';
+    rootCol._positionEmptyHint();
+    assert(hint.classList.contains('no-room'),
+      'a viewport with no clear room for the hint should hide it, but it is shown');
+
+    // --- And it comes back when the room returns ---
+
+    container.style.height = fullHeight;
+    rootCol._positionEmptyHint();
+    assert(hint.classList.contains('no-room') === false,
+      'the hint should come back when the viewport has room for it again');
 
     // --- The first real message retires it ---
 
@@ -95,6 +140,11 @@ export async function runTests() {
     assert(/** @type {HTMLElement} */ (hint).classList.contains('hidden'),
       'a thread column is opened from work already done and must not show the hint');
     rootCol._threadYMap = null;
+
+    // Retiring the hint clears its geometry, so a stale band from a smaller
+    // viewport can never leak into a later show.
+    assert(hint.style.top === '' && hint.style.height === '' && !hint.classList.contains('no-room'),
+      'a retired hint should carry no leftover placement');
 
     passed = 1;
   } catch (e) {

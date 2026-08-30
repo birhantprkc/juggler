@@ -74,6 +74,13 @@ function prefersReducedMotion() {
 }
 
 /**
+ * Air the starting hint needs around its content before it will show at all:
+ * a band that can hold the hint only edge-to-edge has no room to teach, and on
+ * a small screen the honest layout is none (see _positionEmptyHint).
+ */
+const EMPTY_HINT_CLEARANCE_PX = 32;
+
+/**
  * The starting hint shown on the empty background of a conversation with no
  * history yet — the four composer gestures a first-time user has no way to
  * guess, and nothing else. It is read every time a conversation is opened
@@ -85,6 +92,9 @@ function prefersReducedMotion() {
  * where Enter inserts a newline and sending is a button — those rows and the
  * drag-and-drop line are hidden by the same `(hover: none) and (pointer:
  * coarse)` media query the composer keys its behaviour off.
+ *
+ * Everything sits in one `.empty-hint-stack` so the fit test in
+ * _positionEmptyHint can measure the content as a single block.
  * @returns {string} The hint's markup.
  */
 function emptyHintMarkup() {
@@ -93,22 +103,24 @@ function emptyHintMarkup() {
   const newline = formatBindingForPlatform({ key: 'Enter', shift: true }, mac);
   return `
     <conversation-empty-hint class="hidden">
-      <p class="empty-hint-lead">Type your message below</p>
-      <div class="empty-hint-keys">
-        <div class="empty-hint-row empty-hint-pointer">
-          <span class="empty-hint-key">${send}</span><span>Send</span>
+      <div class="empty-hint-stack">
+        <p class="empty-hint-lead">Type your message below</p>
+        <div class="empty-hint-keys">
+          <div class="empty-hint-row empty-hint-pointer">
+            <span class="empty-hint-key">${send}</span><span>Send</span>
+          </div>
+          <div class="empty-hint-row empty-hint-pointer">
+            <span class="empty-hint-key">${newline}</span><span>New line</span>
+          </div>
+          <div class="empty-hint-row">
+            <span class="empty-hint-key">@</span><span>Reference a file</span>
+          </div>
+          <div class="empty-hint-row">
+            <span class="empty-hint-key">/</span><span>Run a command</span>
+          </div>
         </div>
-        <div class="empty-hint-row empty-hint-pointer">
-          <span class="empty-hint-key">${newline}</span><span>New line</span>
-        </div>
-        <div class="empty-hint-row">
-          <span class="empty-hint-key">@</span><span>Reference a file</span>
-        </div>
-        <div class="empty-hint-row">
-          <span class="empty-hint-key">/</span><span>Run a command</span>
-        </div>
+        <p class="empty-hint-lead empty-hint-pointer">Drag-and-drop a file or image to attach it</p>
       </div>
-      <p class="empty-hint-lead empty-hint-pointer">Drag-and-drop a file or image to attach it</p>
     </conversation-empty-hint>
   `;
 }
@@ -206,6 +218,8 @@ class ConversationArea extends HTMLElement {
     this._animationsPrimed = false;
     /** @type {boolean} @private - Guards the once-only file-drop listeners on `this`, which outlive render() (see _setupFileDrop) */
     this._fileDropBound = false;
+    /** @type {ResizeObserver|null} @private - Re-positions the starting hint as the clear band between content and composer changes (see _positionEmptyHint) */
+    this._emptyHintObserver = null;
     /** @type {ResizeObserver|null} @private - Recomputes scroll-control visibility on viewport/content resize */
     this._scrollControlsResizeObserver = null;
     /** @type {ResizeObserver|null} @private - Holds the reader's place when content resizes while they are scrolled away (see _setupReaderAnchor) */
@@ -652,6 +666,10 @@ class ConversationArea extends HTMLElement {
       this._scrollControlsResizeObserver.disconnect();
       this._scrollControlsResizeObserver = null;
     }
+    if (this._emptyHintObserver) {
+      this._emptyHintObserver.disconnect();
+      this._emptyHintObserver = null;
+    }
     if (this._readerAnchorObserver) {
       this._readerAnchorObserver.disconnect();
       this._readerAnchorObserver = null;
@@ -669,6 +687,9 @@ class ConversationArea extends HTMLElement {
   }
 
   render() {
+    // Any observer from a previous DOM is now watching detached nodes; the
+    // next _positionEmptyHint re-attaches to the elements this render builds.
+    this._teardownEmptyHintObserver();
     this.innerHTML = `
       <header class="thread-column-header hidden">
         <properties-panel-section>
@@ -1547,13 +1568,12 @@ class ConversationArea extends HTMLElement {
     const content = /** @type {HTMLElement|null} */ (this.querySelector('#message-list-inner'));
     if (!content) return;
 
-    this._updateEmptyHint(items);
-
     const footer = ensureFooterExists(this, content);
 
     if (!items || items.length === 0) {
       this._memberToGroup = new Map();
       removeAllElements(content);
+      this._updateEmptyHint(items);
       return;
     }
 
@@ -1619,6 +1639,8 @@ class ConversationArea extends HTMLElement {
       this.updateFooter();
     }, { skip: nearBottom });
 
+    this._updateEmptyHint(items);
+
     // FLIP "Invert + Play": now the DOM is in its final position, glide the
     // moved items from where they were and fade newly-inserted ones in.
     if (beforeTops) this._playInsertAnimation(content, beforeTops);
@@ -1633,11 +1655,14 @@ class ConversationArea extends HTMLElement {
    * no CONVERSATIONAL item — the same test the composer's placeholder uses.
    * Only the root column qualifies: a thread column is opened from work that has
    * already happened, so its reader is past needing this.
+   *
+   * This owns one bit only: whether the hint applies at all. Where it sits and
+   * whether it fits are _positionEmptyHint's.
    * @param {Array<any>} items - The column's items, before display grouping.
    * @private
    */
   _updateEmptyHint(items) {
-    const hint = this.querySelector('conversation-empty-hint');
+    const hint = /** @type {HTMLElement|null} */ (this.querySelector('conversation-empty-hint'));
     if (!hint) return;
 
     let hasHistory = !!this._threadYMap;
@@ -1650,6 +1675,87 @@ class ConversationArea extends HTMLElement {
       }
     }
     hint.classList.toggle('hidden', hasHistory);
+    if (hasHistory) {
+      // Retired: drop the band measurements too, so a later re-show starts from
+      // the element's layout, not a band staler than the DOM.
+      hint.classList.remove('no-room');
+      hint.style.top = '';
+      hint.style.height = '';
+      this._teardownEmptyHintObserver();
+    } else {
+      this._positionEmptyHint();
+    }
+  }
+
+  /**
+   * Stop watching the band the starting hint is positioned against.
+   * @private
+   */
+  _teardownEmptyHintObserver() {
+    if (!this._emptyHintObserver) return;
+    this._emptyHintObserver.disconnect();
+    this._emptyHintObserver = null;
+  }
+
+  /**
+   * Centre the starting hint in the space that is actually clear, and hide it
+   * when there isn't enough of that space.
+   *
+   * The hint sits over the message list, but a fresh conversation's list is not
+   * empty: seeded standing-context items and the idle footer sit at its top,
+   * and the composer eats from the bottom. Centring in the whole band walks the
+   * hint over that content on a short viewport. The clear band is therefore
+   * measured: from the bottom edge of the rendered content (`#message-list-inner`)
+   * down to the bottom of the scroller. When content is shorter than the
+   * viewport the inner column's margin-bottom:auto tops the band at the top of
+   * the scroller instead, and the hint centres over the whole background as
+   * before.
+   *
+   * The bottom edge is the scroller's, not the wrapper's, so the measured band
+   * excludes the composer — with zero or negative height the hint is hidden:
+   * a viewport that small has no room to teach, and on such a screen the
+   * composer's own placeholder is the instruction (and on touch, where two of
+   * the four gestures don't apply, it is the only one).
+   * @private
+   */
+  _positionEmptyHint() {
+    const hint = /** @type {HTMLElement|null} */ (this.querySelector('conversation-empty-hint'));
+    const scroller = this.querySelector('#message-list');
+    const inner = this.querySelector('#message-list-inner');
+    if (!hint || !scroller || !inner) return;
+    const stack = /** @type {HTMLElement|null} */ (hint.querySelector('.empty-hint-stack'));
+    if (!stack) return;
+
+    // Observed while the hint is live, so streaming growth, footer changes and
+    // viewport resizes all re-measure the band. Watching the inner column also
+    // covers the scroller, whose box never changes with content.
+    if (typeof ResizeObserver === 'undefined') return;
+    if (!this._emptyHintObserver) {
+      this._emptyHintObserver = new ResizeObserver(() => this._positionEmptyHint());
+      this._emptyHintObserver.observe(inner);
+      this._emptyHintObserver.observe(scroller);
+    }
+
+    // Viewport-relative rects: both elements are in the same column, so their
+    // x/y are directly comparable. No clamp on the band's top: when the seeded
+    // content stands taller than the viewport its bottom edge sits at or below
+    // the scroller's, the band is empty, and the empty band is what hides the
+    // hint — clamping would manufacture room the content is already using.
+    const innerRect = inner.getBoundingClientRect();
+    const scrollerRect = scroller.getBoundingClientRect();
+    const bandTop = innerRect.bottom;
+    const bandBottom = scrollerRect.bottom;
+    const hintHeight = stack.offsetHeight;
+    const bandHeight = bandBottom - bandTop;
+    const fits = bandHeight - hintHeight >= EMPTY_HINT_CLEARANCE_PX;
+
+    if (!fits) {
+      hint.classList.add('no-room');
+      return;
+    }
+    hint.classList.remove('no-room');
+    hint.style.top = `${bandTop - scrollerRect.top}px`;
+    hint.style.height = `${bandHeight}px`;
   }
 
   /**

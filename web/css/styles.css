@@ -1446,25 +1446,54 @@ conversation-area.file-drag-over conversation-message-list-wrapper::after {
 }
 
 /* The starting hint for a conversation with no history yet (see
-   conversation-area's _updateEmptyHint). It is laid OVER the empty background
-   rather than placed in the transcript: an absolutely-positioned sibling of the
-   scroller, so the id-based item diff never sees it and no reader-anchor or
-   scroll invariant has to account for a row appearing and vanishing.
-   pointer-events:none leaves the click that focuses the composer to pass
-   straight through. */
+   conversation-area's _updateEmptyHint / _positionEmptyHint). It is laid OVER
+   the empty background rather than placed in the transcript: an
+   absolutely-positioned sibling of the scroller, so the id-based item diff
+   never sees it and no reader-anchor or scroll invariant has to account for a
+   row appearing and vanishing. pointer-events:none leaves the click that
+   focuses the composer to pass straight through.
+
+   top and height are MEASURED AND SET FROM JS: a new conversation is not an
+   empty one (seeded standing-context items and the idle footer sit at the top
+   of the band), so the hint is given exactly the space that is actually clear
+   — bottom of the rendered content down to the composer — and centred there.
+   The CSS placement here is only the pre-measurement default; the hint is
+   hidden until the first measurement lands, so it is never painted
+   unpositioned. Horizontally it always spans the column. */
 conversation-empty-hint {
     position: absolute;
-    inset: 0;
+    left: 0;
+    right: 0;
+    top: 0;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 0.75rem;
-    padding: 1rem;
+    padding: 0 1rem;
     pointer-events: none;
     color: var(--text-tertiary);
     font-size: var(--font-size-md);
     text-align: center;
+}
+
+/* No room for the hint in the clear band (small viewports): nothing rather
+   than a clash. Owned solely by _positionEmptyHint, never by _updateEmptyHint,
+   so the retire/show decision and the fit decision cannot fight over one
+   class. visibility rather than display so the stack keeps its layout box and
+   a later re-measure (the viewport grew back) still reads a real height. */
+conversation-empty-hint.no-room {
+    visibility: hidden;
+}
+
+/* The hint's content as one block, so the fit test measures a single height.
+   flex-shrink:0 keeps it content-sized — a frame too short for it must be
+   detectable from JS, not absorbed as a silent clip. */
+.empty-hint-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.75rem;
+    flex-shrink: 0;
 }
 
 .empty-hint-lead {
