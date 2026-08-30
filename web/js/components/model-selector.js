@@ -505,9 +505,12 @@ class ModelSelector extends HTMLElement {
   }
 
   /**
-   * The current effective `{provider, model, thinking?, serviceTier?}` pair, with
-   * both dials normalised to what the model actually advertises (an unsupported
-   * stored value means the model's default, same as everywhere else).
+   * The current effective `{provider, model, thinking?, serviceTier?}` pair. The
+   * thinking level is normalised to what the model advertises, so an unsupported
+   * stored level reads as the model's default — which is where the thinking
+   * cycle starts from. The tier is reported as stored: the model cyclers use
+   * this pair to find their place in the Recent list, and a tier normalised away
+   * here would step past the entry the user is actually on.
    * @returns {{provider: string, model: string, thinking?: string, serviceTier?: string}|null} The
    *   pair, or null when no model is selected.
    */
@@ -515,8 +518,7 @@ class ModelSelector extends HTMLElement {
     const c = this._currentConfig;
     if (!c || !c.provider || !c.model) return null;
     const level = c.thinking && this.supportedThinkingLevels().includes(c.thinking) ? c.thinking : '';
-    const tier = c.serviceTier && this.supportedServiceTiers().includes(c.serviceTier) ? c.serviceTier : '';
-    return buildModelConfig(c.provider, c.model, level, tier);
+    return buildModelConfig(c.provider, c.model, level, c.serviceTier);
   }
 
   /**
@@ -582,9 +584,10 @@ class ModelSelector extends HTMLElement {
 
   /**
    * Select a model, optionally at an explicit thinking level and serving tier.
-   * Model plus both dials is one identity: each is honoured only when the model
-   * advertises it (a stale value from a recent entry falls back to the model's
-   * default and standard serving).
+   * Model plus both dials is one identity. A thinking level is honoured only
+   * when the model advertises it (a stale level from a recent entry falls back
+   * to the model's default); the serving tier is stored exactly as asked, since
+   * the catalog decides what is shown and sent, never what is kept.
    * @param {string} providerName
    * @param {string} modelName
    * @param {string} [thinking] Native provider thinking level; absent/empty means the model's default level.
@@ -619,7 +622,14 @@ class ModelSelector extends HTMLElement {
 
     const modelEntry = provider.modelsWithContext?.find(m => m.id === modelName);
     const level = thinking && (modelEntry?.thinkingLevels || []).includes(thinking) ? thinking : '';
-    const tier = serviceTier && tierIds(modelEntry).includes(serviceTier) ? serviceTier : '';
+    // The tier is stored as asked. Whoever chose it already decided it belongs
+    // on this model (the picker's own rule for a model change), and the catalog
+    // is not a reliable veto: it is empty until the first model-list fetch lands
+    // and can come back as a fallback carrying no tiers at all. Re-deriving it
+    // here would silently spend the user's paid choice on those states. What the
+    // catalog does decide is what is DISPLAYED (model-chip) and what is SENT
+    // (the provider drops an unadvertised tier on the wire).
+    const tier = serviceTier || '';
 
     // Already selected at this exact level and tier — just close. Both dials are
     // part of the identity, so the same model at a different level or tier is a
@@ -714,8 +724,9 @@ class ModelSelector extends HTMLElement {
    * Apply a `{provider, model, thinking?, serviceTier?}` pair WITHOUT recording
    * it to the Recent list — the write path for the hold-to-cycle model shortcut,
    * whose intermediate hops must not reorder the very list being cycled (the
-   * landing pair is recorded on commit, by the document write). Each dial is
-   * honoured only when the model advertises it, like everywhere else. Unlike
+   * landing pair is recorded on commit, by the document write). The thinking
+   * level is honoured only when the model advertises it and the tier is stored
+   * as asked, like every other write path. Unlike
    * `selectProviderAndModel` this never prompts about an unavailable provider
    * (cycling just skips it, so the caller gets `false`) and never closes the
    * picker, which the gesture keeps open as its HUD.
@@ -728,7 +739,9 @@ class ModelSelector extends HTMLElement {
 
     const modelEntry = provider.modelsWithContext?.find(m => m.id === pair.model);
     const level = pair.thinking && (modelEntry?.thinkingLevels || []).includes(pair.thinking) ? pair.thinking : '';
-    const tier = pair.serviceTier && tierIds(modelEntry).includes(pair.serviceTier) ? pair.serviceTier : '';
+    // Stored as asked, like every other write — the pair's tier was recorded
+    // against this very model, so the catalog has no say in keeping it.
+    const tier = pair.serviceTier || '';
 
     const nextConfig = buildModelConfig(pair.provider, pair.model, level, tier);
 

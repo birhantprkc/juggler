@@ -14,7 +14,7 @@ import (
 )
 
 // RecentModelsCap caps the number of remembered recent
-// (provider, model, thinking) picks.
+// (provider, model, thinking, serviceTier) picks.
 const RecentModelsCap = 6
 
 // RecentModelsStore manages a user-level list of recently-used concrete
@@ -61,9 +61,12 @@ func (s *RecentModelsStore) Load() ([]ModelRef, error) {
 	return f.Models, nil
 }
 
-// Add moves ref to the front of the list, dedups by (provider, model,
-// thinking) — the same model at two thinking levels is two distinct entries —
-// and caps at RecentModelsCap. A ref with an empty provider or model is ignored.
+// Add moves ref to the front of the list, dedups by the whole ref — the same
+// model at two thinking levels, or at two serving tiers, is two distinct
+// entries — and caps at RecentModelsCap. Both dials are part of the identity
+// because re-picking a recent entry restores the pair verbatim, and an entry
+// that dropped its tier would quietly re-select standard serving.
+// A ref with an empty provider or model is ignored.
 func (s *RecentModelsStore) Add(ref ModelRef) error {
 	if ref.Provider == "" || ref.Model == "" {
 		return nil
@@ -75,7 +78,7 @@ func (s *RecentModelsStore) Add(ref ModelRef) error {
 	out := make([]ModelRef, 0, len(models)+1)
 	out = append(out, ref)
 	for _, m := range models {
-		if m.Provider == ref.Provider && m.Model == ref.Model && m.Thinking == ref.Thinking {
+		if m.Provider == ref.Provider && m.Model == ref.Model && m.Thinking == ref.Thinking && m.ServiceTier == ref.ServiceTier {
 			continue
 		}
 		out = append(out, m)

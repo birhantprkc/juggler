@@ -4,9 +4,13 @@
 
 /**
  * Recently-used concrete models for quick re-access from the model selector.
- * Most-recent first, deduped by provider+model+thinking (the same model at two
- * thinking levels is two distinct entries), capped at MAX. An absent
- * `thinking` means the model's default level.
+ * Most-recent first, deduped by provider+model+thinking+serviceTier (the same
+ * model at two thinking levels, or at two serving tiers, is two distinct
+ * entries), capped at MAX. An absent `thinking` means the model's default
+ * level; an absent `serviceTier` means standard serving. Both dials are stored
+ * because an entry is re-applied verbatim — one recorded without its tier would
+ * quietly re-select standard serving for a model the user is paying a premium
+ * to run.
  *
  * Persisted SERVER-SIDE (GET/POST /api/recent-models), not in browser
  * localStorage: localStorage is partitioned by origin (including port), so an
@@ -24,10 +28,28 @@ import { fetchJson } from './http.js';
 
 const MAX = 6;
 
-/** @typedef {{ provider: string, model: string, thinking?: string }} RecentModel */
+/** @typedef {{ provider: string, model: string, thinking?: string, serviceTier?: string }} RecentModel */
 
 /** @type {RecentModel[]} */
 let _cache = [];
+
+/**
+ * Build an entry with each dial present only when it is set, so an absent key
+ * is the neutral setting rather than an empty string — the same shape
+ * `buildModelConfig` stores.
+ * @param {string} provider
+ * @param {string} model
+ * @param {string} [thinking]
+ * @param {string} [serviceTier]
+ * @returns {RecentModel} The entry.
+ */
+function entryOf(provider, model, thinking, serviceTier) {
+  /** @type {RecentModel} */
+  const entry = { provider, model };
+  if (thinking) entry.thinking = thinking;
+  if (serviceTier) entry.serviceTier = serviceTier;
+  return entry;
+}
 
 /**
  * @param {unknown} data
@@ -37,9 +59,12 @@ function sanitize(data) {
   if (!Array.isArray(data)) return [];
   return data
     .filter(x => x && typeof x.provider === 'string' && typeof x.model === 'string')
-    .map(x => (typeof x.thinking === 'string' && x.thinking !== ''
-      ? { provider: x.provider, model: x.model, thinking: x.thinking }
-      : { provider: x.provider, model: x.model }))
+    .map(x => entryOf(
+      x.provider,
+      x.model,
+      typeof x.thinking === 'string' ? x.thinking : '',
+      typeof x.serviceTier === 'string' ? x.serviceTier : '',
+    ))
     .slice(0, MAX);
 }
 
@@ -85,19 +110,23 @@ const recentModels = {
 
   /**
    * Record a concrete model selection, moving it to the front. Entries dedupe
-   * by the provider+model+thinking triple. Updates the cache optimistically,
+   * by provider+model+thinking+serviceTier. Updates the cache optimistically,
    * then persists to the server.
    * @param {string} provider
    * @param {string} model
    * @param {string} [thinking] Canonical thinking level; absent/empty means
    *   the model's default level.
+   * @param {string} [serviceTier] Advertised tier id; absent/empty means
+   *   standard serving.
    * @returns {Promise<void>}
    */
-  async record(provider, model, thinking) {
+  async record(provider, model, thinking, serviceTier) {
     if (!provider || !model) return;
-    const entry = thinking ? { provider, model, thinking } : { provider, model };
+    const entry = entryOf(provider, model, thinking, serviceTier);
     _cache = [entry, ..._cache.filter(x =>
-      !(x.provider === provider && x.model === model && (x.thinking || '') === (thinking || '')))].slice(0, MAX);
+      !(x.provider === provider && x.model === model
+        && (x.thinking || '') === (thinking || '')
+        && (x.serviceTier || '') === (serviceTier || '')))].slice(0, MAX);
     // Best-effort persistence; the optimistic cache update already reflects the
     // pick for this session.
     await fetchJson('/api/recent-models', { method: 'POST', body: entry, fallback: null });

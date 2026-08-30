@@ -679,15 +679,18 @@ func (s *Server) handleRecentModelsPost(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Both dials are recorded: a recent entry is re-applied verbatim, so one
+	// stored without its tier would silently re-select standard serving.
 	req, ok := handlers.DecodeJSON[struct {
-		Provider string `json:"provider"`
-		Model    string `json:"model"`
-		Thinking string `json:"thinking"`
+		Provider    string `json:"provider"`
+		Model       string `json:"model"`
+		Thinking    string `json:"thinking"`
+		ServiceTier string `json:"serviceTier"`
 	}](w, r)
 	if !ok {
 		return
 	}
-	if err := s.recentModelsStore.Add(core.ModelRef{Provider: req.Provider, Model: req.Model, Thinking: req.Thinking}); err != nil {
+	if err := s.recentModelsStore.Add(core.ModelRef{Provider: req.Provider, Model: req.Model, Thinking: req.Thinking, ServiceTier: req.ServiceTier}); err != nil {
 		handlers.WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to record recent model: %v", err))
 		return
 	}

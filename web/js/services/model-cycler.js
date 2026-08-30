@@ -172,7 +172,8 @@ class ModelCycler {
     const current = this._selector?.currentConfigPair();
     this._cursor = current
       ? this._snapshot.findIndex(r => r.provider === current.provider
-        && r.model === current.model && (r.thinking || '') === (current.thinking || ''))
+        && r.model === current.model && (r.thinking || '') === (current.thinking || '')
+        && (r.serviceTier || '') === (current.serviceTier || ''))
       : -1;
   }
 

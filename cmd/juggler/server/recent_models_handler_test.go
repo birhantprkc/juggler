@@ -130,6 +130,33 @@ func TestRecentModelsHandlerThinkingTriple(t *testing.T) {
 	}
 }
 
+// TestRecentModelsHandlerServiceTierRoundTrip locks the optional `serviceTier`
+// field in the HTTP contract. The recorded entry is what a Recent row re-applies
+// verbatim, so a tier the POST decoder ignored would leave the user re-picking
+// their model at standard serving with nothing to show it changed.
+func TestRecentModelsHandlerServiceTierRoundTrip(t *testing.T) {
+	userpathstest.Isolate(t)
+	store, err := core.NewRecentModelsStore()
+	if err != nil {
+		t.Fatalf("NewRecentModelsStore: %v", err)
+	}
+	s := &Server{serverStores: serverStores{recentModelsStore: store}}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/recent-models",
+		strings.NewReader(`{"provider":"openaicodex","model":"gpt-5","thinking":"high","serviceTier":"priority"}`))
+	s.handleRecentModels(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	got := getRecentModels(t, s)
+	want := core.ModelRef{Provider: "openaicodex", Model: "gpt-5", Thinking: "high", ServiceTier: "priority"}
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("recent models = %v, want [%v]", got, want)
+	}
+}
+
 // TestRecentModelsHandlerNilStore tolerates a server with no store wired,
 // returning an empty list rather than erroring.
 func TestRecentModelsHandlerNilStore(t *testing.T) {

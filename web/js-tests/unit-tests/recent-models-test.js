@@ -5,9 +5,11 @@
 /**
  * recent-models service unit tests.
  *
- * Model + thinking level is one identity: entries carry an optional `thinking`
- * whose absence (never `''`) means "the model's default level", and the dedupe
- * key is the provider+model+thinking triple, capped at 6. The service talks to
+ * Model plus both dials is one identity: entries carry an optional `thinking`
+ * whose absence (never `''`) means "the model's default level" and an optional
+ * `serviceTier` whose absence means standard serving, and the dedupe key is all
+ * four together, capped at 6. Both dials are stored because an entry is
+ * re-applied verbatim when picked. The service talks to
  * GET/POST /api/recent-models, so `window.fetch` is stubbed (and restored in a
  * finally) per the convention in connectivity-test / extensions-disabled-test;
  * each test seeds the module's in-memory cache to a known state through
@@ -185,6 +187,32 @@ export async function runTests(_ctx) {
       list = recentModels.get();
       assert(list.length === 2 && !('thinking' in list[0]) && list[1].thinking === 'high',
         `recording the bare pair reorders only the bare row — got ${JSON.stringify(list)}`);
+    } finally {
+      stub.restore();
+    }
+  });
+
+  await run('the serving tier is part of the identity and rides the POST', async () => {
+    // An entry is re-applied verbatim when it is picked, so a tier dropped
+    // anywhere along this round-trip re-selects standard serving without saying
+    // so — the whole point of storing it.
+    await seed([
+      { provider: 'a', model: 'm' },
+      { provider: 'a', model: 'm', serviceTier: 'priority' },
+    ]);
+    assert(recentModels.get()[1].serviceTier === 'priority',
+      `a tier must survive refresh(), got ${JSON.stringify(recentModels.get())}`);
+
+    const stub = stubFetch(() => ({ ok: true, json: async () => ({}) }));
+    try {
+      await recentModels.record('a', 'm', '', 'priority');
+      const list = recentModels.get();
+      assert(list.length === 2, `the tier distinguishes the rows, got ${list.length}`);
+      assert(list[0].serviceTier === 'priority' && !('serviceTier' in list[1]),
+        `the tiered row moved to front, the standard row survived — got ${JSON.stringify(list)}`);
+      const body = JSON.parse(stub.calls[0].opts.body);
+      assert(body.serviceTier === 'priority' && !('thinking' in body),
+        `POST body must carry the tier and omit the unset dial, got ${stub.calls[0].opts.body}`);
     } finally {
       stub.restore();
     }

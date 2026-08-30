@@ -1667,7 +1667,7 @@ class Conversation {
       workerManager.sendMessage(this.id, userMessage, messageThread?.threadItemId || threadItemId, options.attachments, options.skills);
       const acceptedConfig = messageThread?.modelConfig || this.modelConfig;
       if (acceptedConfig?.provider && acceptedConfig?.model) {
-        recentModels.record(acceptedConfig.provider, acceptedConfig.model, acceptedConfig.thinking);
+        recentModels.record(acceptedConfig.provider, acceptedConfig.model, acceptedConfig.thinking, acceptedConfig.serviceTier);
       }
       // Worker will emit state patches that update proxy, which triggers UI updates
       // Processing state is managed by worker via state patches

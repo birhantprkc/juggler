@@ -123,6 +123,29 @@ func TestRecentModelsDedupByThinkingTriple(t *testing.T) {
 	})
 }
 
+// TestRecentModelsDedupIncludesServiceTier locks the serving tier into the
+// dedupe key. A recent entry is re-applied verbatim when it is picked, so the
+// same model at standard and at a paid tier must be two rows: folding them
+// together would let a click on one silently apply the other's serving class.
+func TestRecentModelsDedupIncludesServiceTier(t *testing.T) {
+	s := newTestRecentModelsStore(t)
+	_ = s.Add(ModelRef{Provider: "openaicodex", Model: "gpt-5"})
+	_ = s.Add(ModelRef{Provider: "openaicodex", Model: "gpt-5", ServiceTier: "priority"})
+	got, _ := s.Load()
+	assertModels(t, got, []ModelRef{
+		{Provider: "openaicodex", Model: "gpt-5", ServiceTier: "priority"},
+		{Provider: "openaicodex", Model: "gpt-5"},
+	})
+
+	// Re-picking the exact ref moves it to the front rather than duplicating it.
+	_ = s.Add(ModelRef{Provider: "openaicodex", Model: "gpt-5", ServiceTier: "priority"})
+	got, _ = s.Load()
+	assertModels(t, got, []ModelRef{
+		{Provider: "openaicodex", Model: "gpt-5", ServiceTier: "priority"},
+		{Provider: "openaicodex", Model: "gpt-5"},
+	})
+}
+
 // TestRecentModelsBackCompatWithoutThinking loads a file written before the
 // thinking field existed: entries must load unchanged, with an empty Thinking
 // meaning the model's default level.

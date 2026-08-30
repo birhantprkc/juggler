@@ -12,9 +12,11 @@
  *
  *   1. The bottom row's label belongs to the HOST — "No model", "Inherit from
  *      parent" and "Automatic" are the same row meaning different things.
- *   2. A `change` carries a WHOLE config, and a serving tier survives a model
- *      change only when the new model advertises it. Carrying it blindly would
- *      start billing a premium rate the new model was never chosen for.
+ *   2. A `change` carries a WHOLE config, and a serving tier survives a change
+ *      to a DIFFERENT model only when that model advertises it — carrying it
+ *      blindly would start billing a premium rate the new model was never
+ *      chosen for. Re-picking the model already in effect, or clicking a Recent
+ *      row that recorded a tier, keeps it whatever the catalog currently says.
  *   3. Typing filters, and it expands collapsed providers while it does — a
  *      match hidden inside a collapsed provider is a match the user can't reach.
  *   4. Escape closes the picker and goes no further: popup-manager's Escape
@@ -152,7 +154,7 @@ async function clearRecents() {
 
 /**
  * Fill the recent-model cache without depending on the server.
- * @param {{provider: string, model: string, thinking?: string}[]} models
+ * @param {{provider: string, model: string, thinking?: string, serviceTier?: string}[]} models
  * @returns {Promise<void>}
  */
 async function seedRecents(models) {
@@ -300,11 +302,13 @@ async function layOutAsPhoneSheet(picker) {
  * @param {any} [opts.value] - The config in effect.
  * @param {string} [opts.noneLabel] - Label for the bottom row.
  * @param {boolean} [opts.connect] - Append to `<body>` (needed for key tests).
+ * @param {any[]} [opts.providers] - Override the provider list (e.g. a catalog
+ *   carrying no tiers, which is what a cold or failed model-list fetch leaves).
  * @returns {any} The picker.
  */
-function makePicker({ value, noneLabel, connect } = {}) {
+function makePicker({ value, noneLabel, connect, providers: providerList } = {}) {
   const el = /** @type {any} */ (document.createElement('model-picker'));
-  el.providers = providers();
+  el.providers = providerList || providers();
   el.value = value || null;
   if (noneLabel) el.noneLabel = noneLabel;
   if (connect) document.body.appendChild(el); else el.render();
@@ -421,6 +425,82 @@ export async function runTests(_ctx) {
       assert(seen.model === 'plain', `picked the wrong row: ${JSON.stringify(seen)}`);
       assert(!('serviceTier' in seen),
         `switching models must never start paying a premium the model was not chosen for — got ${JSON.stringify(seen)}`);
+    });
+
+    await run('re-picking the SAME model keeps a tier the catalog has forgotten', () => {
+      // A provider list whose entry advertises nothing is the ordinary cold /
+      // failed-fetch state. Clicking the row for the model already selected is
+      // not a decision to stop paying for it.
+      const cold = [{
+        name: 'p',
+        displayName: 'Provider',
+        available: true,
+        modelsWithContext: [{ id: 'm', displayName: 'Model', contextWindow: 1000 }],
+      }];
+      const picker = makePicker({ providers: cold, value: { provider: 'p', model: 'm', serviceTier: 'priority' } });
+      /** @type {any} */
+      let seen = null;
+      picker.addEventListener('change', (/** @type {any} */ e) => { seen = e.detail; });
+      clickModel(picker, 'm');
+      assert(seen.serviceTier === 'priority',
+        `re-picking the same model must not erase its tier, got ${JSON.stringify(seen)}`);
+    });
+
+    await run('a Recent row restores the tier it recorded', async () => {
+      await seedRecents([{ provider: 'p', model: 'm', serviceTier: 'priority' }]);
+      try {
+        const picker = makePicker({ value: null });
+        const row = picker.querySelector('.recent-model');
+        assert(!!row, 'the seeded entry must render a Recent row');
+        assert(row.getAttribute('data-service-tier') === 'priority',
+          'the row carries its stored tier so a click can restore it');
+        /** @type {any} */
+        let seen = null;
+        picker.addEventListener('change', (/** @type {any} */ e) => { seen = e.detail; });
+        row.click();
+        assert(seen.serviceTier === 'priority',
+          `a Recent row re-applies the pair it recorded, got ${JSON.stringify(seen)}`);
+      } finally {
+        await clearRecents();
+      }
+    });
+
+    await run('re-picking the SAME model keeps a tier the catalog has forgotten', () => {
+      // An entry advertising nothing is the ordinary cold / failed-fetch state.
+      // Clicking the row for the model already in effect is not a decision to
+      // stop paying for it.
+      const cold = [{
+        name: 'p',
+        displayName: 'Provider',
+        available: true,
+        modelsWithContext: [{ id: 'm', displayName: 'Model', contextWindow: 1000 }],
+      }];
+      const picker = makePicker({ providers: cold, value: { provider: 'p', model: 'm', serviceTier: 'priority' } });
+      /** @type {any} */
+      let seen = null;
+      picker.addEventListener('change', (/** @type {any} */ e) => { seen = e.detail; });
+      clickModel(picker, 'm');
+      assert(seen.serviceTier === 'priority',
+        `re-picking the same model must not erase its tier, got ${JSON.stringify(seen)}`);
+    });
+
+    await run('a Recent row restores the tier it recorded', async () => {
+      await seedRecents([{ provider: 'p', model: 'm', serviceTier: 'priority' }]);
+      try {
+        const picker = makePicker();
+        const row = picker.querySelector('.recent-model');
+        assert(!!row, 'the seeded entry must render a Recent row');
+        assert(row.getAttribute('data-service-tier') === 'priority',
+          'the row carries its stored tier so a click can restore it');
+        /** @type {any} */
+        let seen = null;
+        picker.addEventListener('change', (/** @type {any} */ e) => { seen = e.detail; });
+        row.click();
+        assert(seen.serviceTier === 'priority',
+          `a Recent row re-applies the pair it recorded, got ${JSON.stringify(seen)}`);
+      } finally {
+        await clearRecents();
+      }
     });
 
     await run('being handed the same state again writes no DOM', () => {

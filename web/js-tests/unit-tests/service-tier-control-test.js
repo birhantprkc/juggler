@@ -15,6 +15,11 @@
  *      must preserve `serviceTier` and setting the tier must preserve
  *      `thinking` — a regression here silently reverts a choice the user is
  *      paying a premium for, with nothing on screen to show it happened.
+ *   3. The catalog gates what is DISPLAYED and what is SENT, never what is
+ *      KEPT. A model entry carrying no `serviceTiers` is an ordinary state —
+ *      the list is empty until the first fetch lands, and a failed fetch
+ *      publishes fallback entries — so a write that re-derived the tier from it
+ *      would erase a paid choice on a cold start or a flaky network.
  *
  * Tested on a real (registered) model-selector created via
  * `document.createElement` but never appended — connectedCallback never runs,
@@ -77,14 +82,46 @@ function makeSelector({ tiers, levels, thinking, serviceTier }) {
  * @returns {Element|null} The `.model-speed` root, or null when none rendered.
  */
 function speedControlOf({ tiers, levels, serviceTier }) {
+  return tuningOf({ tiers, levels, serviceTier }).querySelector('.model-speed');
+}
+
+/**
+ * Build a detached, rendered `<model-tuning>` for one model. Setting
+ * `modelEntry`/`value` renders synchronously, so nothing needs appending.
+ * @param {object} opts - Scenario knobs.
+ * @param {Array<{id: string, name?: string, description?: string}>} [opts.tiers] - Tiers the model advertises.
+ * @param {string[]} [opts.levels] - `thinkingLevels` the model advertises.
+ * @param {string} [opts.thinking] - Explicit level in the value.
+ * @param {string} [opts.serviceTier] - Explicit tier in the value.
+ * @returns {any} The rendered element.
+ */
+function tuningOf({ tiers, levels, thinking, serviceTier }) {
   const el = /** @type {any} */ (document.createElement('model-tuning'));
   /** @type {any} */
   const modelEntry = { id: 'model-x', contextWindow: 200000 };
   if (tiers) modelEntry.serviceTiers = tiers;
   if (levels) modelEntry.thinkingLevels = levels;
   el.modelEntry = modelEntry;
-  el.value = serviceTier ? { serviceTier } : {};
-  return el.querySelector('.model-speed');
+  /** @type {any} */
+  const value = {};
+  if (thinking) value.thinking = thinking;
+  if (serviceTier) value.serviceTier = serviceTier;
+  el.value = value;
+  return el;
+}
+
+/**
+ * Click one of the tuning control's segments and return the pair it announced.
+ * @param {any} el - A rendered `<model-tuning>`.
+ * @param {string} selector - The segment to click.
+ * @returns {{thinking: string, serviceTier: string}|null} The emitted pair.
+ */
+function pairFromClick(el, selector) {
+  /** @type {any} */
+  let detail = null;
+  el.addEventListener('change', (/** @type {any} */ e) => { detail = e.detail; });
+  /** @type {HTMLElement|null} */ (el.querySelector(selector))?.click();
+  return detail;
 }
 
 /**
@@ -179,7 +216,7 @@ export async function runTests(_ctx) {
     assert(el.written.serviceTier === 'priority', 'clearing the level must not clear the tier');
   });
 
-  await run('currentConfigPair reports both dials, normalising unadvertised values away', () => {
+  await run('currentConfigPair normalises an unsupported level away but keeps the tier', () => {
     const el = makeSelector({ tiers: [FAST], levels: ['low', 'high'], thinking: 'high', serviceTier: 'priority' });
     const pair = el.currentConfigPair();
     assert(pair.thinking === 'high' && pair.serviceTier === 'priority',
@@ -187,8 +224,46 @@ export async function runTests(_ctx) {
 
     const stale = makeSelector({ tiers: [FAST], levels: ['low', 'high'], thinking: 'medium', serviceTier: 'flex' });
     const stalePair = stale.currentConfigPair();
-    assert(!('thinking' in stalePair) && !('serviceTier' in stalePair),
-      `unadvertised values normalise away, got ${JSON.stringify(stalePair)}`);
+    assert(!('thinking' in stalePair),
+      `an unsupported level reads as the model's default, got ${JSON.stringify(stalePair)}`);
+    // The cyclers find their place in the Recent list with this pair; a tier
+    // dropped here would step past the entry the user is standing on.
+    assert(stalePair.serviceTier === 'flex',
+      `the stored tier is reported as stored, got ${JSON.stringify(stalePair)}`);
+  });
+
+  await run('a thinking click ships the stored tier, not one re-derived from the catalog', () => {
+    // The catalog advertising no tiers at all is the cold-start / failed-fetch
+    // state. Touching the OTHER dial must not spend the user's choice.
+    const bare = pairFromClick(tuningOf({ levels: ['low', 'high'], serviceTier: 'priority' }), '[data-thinking-level="high"]');
+    assert(bare !== null, 'the thinking segment must announce a pair');
+    assert(bare.serviceTier === 'priority',
+      `a thinking click kept "${bare.serviceTier}", want the stored "priority"`);
+
+    const stale = pairFromClick(tuningOf({ tiers: [FAST], levels: ['low'], serviceTier: 'flex' }), '[data-thinking-level="low"]');
+    assert(stale.serviceTier === 'flex',
+      `an unadvertised stored tier survives a thinking click, got "${stale.serviceTier}"`);
+  });
+
+  await run('a tier click still ships exactly the tier clicked', () => {
+    const chosen = pairFromClick(tuningOf({ tiers: [FAST], levels: ['low'], thinking: 'low' }), '[data-service-tier="priority"]');
+    assert(chosen.serviceTier === 'priority' && chosen.thinking === 'low',
+      `the clicked tier rides with the current level, got ${JSON.stringify(chosen)}`);
+
+    const standard = pairFromClick(tuningOf({ tiers: [FAST], serviceTier: 'priority' }), '[data-service-tier=""]');
+    assert(standard.serviceTier === '',
+      'choosing Standard clears the tier — this is the one path that may drop it');
+  });
+
+  await run('a write stores a tier the catalog does not advertise', () => {
+    // Same rule from the other end: the model entry lists no tiers, and the
+    // pair is still written whole. The provider drops an unadvertised tier on
+    // the wire, so keeping it costs nothing and losing it costs the choice.
+    const el = makeSelector({ levels: ['low', 'high'] });
+    assert(el.applyConfigPair({ provider: 'prov', model: 'model-x', thinking: 'high', serviceTier: 'priority' }) === true,
+      'the pair must apply');
+    assert(el.written.serviceTier === 'priority',
+      `wrote ${JSON.stringify(el.written)}, want the tier kept`);
   });
 
   await run('supportedServiceTiers lists advertised ids in order, empty when none', () => {

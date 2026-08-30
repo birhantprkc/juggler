@@ -232,22 +232,29 @@ class ModelPicker extends JugglerElement {
   /**
    * Announce a `{provider, model}` choice as a whole config.
    *
-   * The serving tier is carried across a model change only when the new model
-   * advertises it too — switching models must never silently start paying a
-   * premium rate the new model was never chosen for. The thinking level is
-   * honoured on the same terms: a Recent entry may carry a level the model no
-   * longer supports, which falls back to the default rather than storing one the
-   * model can't honour.
+   * A tier asked for explicitly (a Recent row restoring the pair it recorded) is
+   * honoured verbatim: it was chosen for this very model, and re-deriving it
+   * from the catalog would discard a paid choice whenever the catalog is cold or
+   * the model list came back as a fallback. Otherwise the current tier is
+   * carried only across a re-pick of the SAME model — switching models must
+   * never silently start paying a premium rate the new model was never chosen
+   * for, and nothing here can know it offers one.
+   *
+   * The thinking level is still re-derived: a Recent entry may carry a level the
+   * model no longer supports, and falling back to the default costs nothing.
    * @param {string} providerName
    * @param {string} modelId
    * @param {string} [thinking] - Requested level; absent means the model's default.
+   * @param {string} [serviceTier] - Requested tier; absent means carry the current one.
    * @private
    */
-  _pick(providerName, modelId, thinking) {
+  _pick(providerName, modelId, thinking, serviceTier) {
     const entry = this._entry(providerName, modelId);
     const level = thinking && (entry?.thinkingLevels || []).includes(thinking) ? thinking : '';
+    const sameModel = this._value?.provider === providerName && this._value?.model === modelId;
     const carried = this._value?.serviceTier;
-    const tier = carried && tierIds(entry).includes(carried) ? carried : '';
+    const tier = serviceTier
+      || (carried && (sameModel || tierIds(entry).includes(carried)) ? carried : '');
     this._emit(buildModelConfig(providerName, modelId, level, tier));
   }
 
@@ -516,9 +523,10 @@ class ModelPicker extends JugglerElement {
 
   /**
    * Build the "Recent" block that sits in the left column: up to six
-   * recently-used concrete model+level pairs for quick switching. Entries are
-   * distinct by provider+model+thinking, so the same model at two levels is two
-   * rows — the level chip after the name differentiates them. Includes the model
+   * recently-used concrete model+dial pairs for quick switching. Entries are
+   * distinct by provider+model+thinking+serviceTier, so the same model at two
+   * levels (or two tiers) is two rows — the chips after the name differentiate
+   * them. Includes the model
    * in effect when it is recent; hiding it makes a just-selected model look like
    * it was not recorded.
    *
@@ -539,16 +547,29 @@ class ModelPicker extends JugglerElement {
       const providerEntry = this._providers.find(p => p.name === r.provider);
       const providerLabel = providerEntry?.displayName || r.provider;
       const active = !!current && r.provider === current.provider && r.model === current.model
-        && (r.thinking || '') === (current.thinking || '');
-      // The stored level rides along as data-thinking so a click restores the
-      // exact pair; the chip is display-only (the whole row is the target).
+        && (r.thinking || '') === (current.thinking || '')
+        && (r.serviceTier || '') === (current.serviceTier || '');
+      // Both stored dials ride along as data attributes so a click restores the
+      // exact pair; the chips are display-only (the whole row is the target).
+      // Entries are distinct by tier as well as level, so a row that dropped its
+      // tier chip would be a second identical-looking row.
       const chip = r.thinking
         ? `<span class="recent-model-chip" title="Thinking: ${escapeHtml(r.thinking)}">${escapeHtml(r.thinking)}</span>`
         : '';
+      // The provider's own name for the tier when the catalog still carries it,
+      // otherwise the stored id verbatim — the row states what is stored.
+      const tierName = r.serviceTier
+        ? (this._entry(r.provider, r.model)?.serviceTiers || [])
+          .find((/** @type {{id: string}} */ t) => t.id === r.serviceTier)?.name || r.serviceTier
+        : '';
+      const tierChip = tierName
+        ? `<span class="recent-model-chip" title="Speed: ${escapeHtml(tierName)}">${escapeHtml(tierName)}</span>`
+        : '';
       const thinkingAttr = r.thinking ? ` data-thinking="${escapeHtml(r.thinking)}"` : '';
+      const tierAttr = r.serviceTier ? ` data-service-tier="${escapeHtml(r.serviceTier)}"` : '';
       return `
-                <li class="menu-item recent-model${active ? ' active' : ''}" data-provider="${escapeHtml(r.provider)}" data-model="${escapeHtml(r.model)}"${thinkingAttr}>
-                    <span class="recent-model-name">${escapeHtml(label)}${chip}</span>
+                <li class="menu-item recent-model${active ? ' active' : ''}" data-provider="${escapeHtml(r.provider)}" data-model="${escapeHtml(r.model)}"${thinkingAttr}${tierAttr}>
+                    <span class="recent-model-name">${escapeHtml(label)}${chip}${tierChip}</span>
                     <span class="recent-model-provider">${escapeHtml(providerLabel)}</span>
                 </li>`;
     }).join('');
@@ -866,10 +887,16 @@ class ModelPicker extends JugglerElement {
     const providerName = item.getAttribute('data-provider');
     const modelName = item.getAttribute('data-model');
     if (!providerName || !modelName) return;
-    // Recent rows carry their stored level in data-thinking so the exact pair is
-    // restored; plain list rows have no such attribute, so a bare name click
-    // selects the model at its default level.
-    this._pick(providerName, modelName, item.getAttribute('data-thinking') || undefined);
+    // Recent rows carry their stored dials in data-thinking / data-service-tier
+    // so the exact pair is restored; plain list rows have neither attribute, so
+    // a bare name click selects the model at its default level, carrying the
+    // current tier only when the model itself hasn't changed.
+    this._pick(
+      providerName,
+      modelName,
+      item.getAttribute('data-thinking') || undefined,
+      item.getAttribute('data-service-tier') || undefined,
+    );
   }
 
   // ── keyboard ──────────────────────────────────────────────────────────────

@@ -124,14 +124,29 @@ class ModelTuning extends HTMLElement {
   }
 
   /**
-   * The effective serving tier, gated the same way as the level: a tier the
-   * model no longer advertises means standard serving.
-   * @returns {string} The active tier id, or '' for standard serving.
+   * The tier to paint as active: a tier the model no longer advertises has no
+   * segment to light up, so the control shows Standard. Display only — see
+   * `_storedTier` for what a click ships.
+   * @returns {string} The tier id to highlight, or '' for standard serving.
    * @private
    */
   _activeTier() {
     const wanted = this._value.serviceTier;
     return wanted && tierIds(this._modelEntry).includes(wanted) ? wanted : '';
+  }
+
+  /**
+   * The stored tier, verbatim. What a click on the OTHER dial ships, so touching
+   * the thinking level can never erase a serving tier: the catalog may be cold,
+   * or the model list may have come back as a fallback with no tiers at all, and
+   * neither is the user changing their mind about what they are paying for. The
+   * request path gates the tier against what the model really offers, so
+   * carrying a currently-unadvertised id costs nothing.
+   * @returns {string} The stored tier id, or '' for standard serving.
+   * @private
+   */
+  _storedTier() {
+    return this._value.serviceTier || '';
   }
 
   /**
@@ -225,7 +240,7 @@ class ModelTuning extends HTMLElement {
         e.stopPropagation();
         this._emit({
           thinking: seg.getAttribute('data-thinking-level') || '',
-          serviceTier: this._activeTier(),
+          serviceTier: this._storedTier(),
         });
       });
     });
