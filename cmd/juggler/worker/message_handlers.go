@@ -185,10 +185,14 @@ func (r *run) handleInit(payload json.RawMessage) {
 			"provider": msg.Conversation.ModelConfig.Provider,
 			"model":    msg.Conversation.ModelConfig.Model,
 		}
-		// Thinking rides with the pair only when explicit — absent means the
-		// model's default level, matching the live modelConfig shape.
+		// Thinking and ServiceTier ride with the pair only when explicit —
+		// absent means the model's default level / standard serving, matching
+		// the live modelConfig shape.
 		if msg.Conversation.ModelConfig.Thinking != "" {
 			seed["thinking"] = msg.Conversation.ModelConfig.Thinking
+		}
+		if msg.Conversation.ModelConfig.ServiceTier != "" {
+			seed["serviceTier"] = msg.Conversation.ModelConfig.ServiceTier
 		}
 		r.doc.SetMetadata("defaultModelConfig", seed)
 	}

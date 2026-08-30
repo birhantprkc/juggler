@@ -372,3 +372,45 @@ func TestInitDuringProcessingDoesNotCancel(t *testing.T) {
 		t.Error("processingState should not be idle during active processing")
 	}
 }
+
+// TestInitSeedsModelConfigWithBothDials verifies that handleInit seeds the
+// conversation default with the serving tier as well as the thinking level.
+// The tier is dropped silently otherwise: the stored default still names the
+// right model, so the tab looks right while every turn runs on standard
+// serving — a choice the user pays for reverting by itself.
+func TestInitSeedsModelConfigWithBothDials(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	t.Cleanup(func() { w.doc.Destroy() })
+
+	initPayload, err := json.Marshal(InitMessage{
+		Type: "init",
+		Conversation: SerializedConversation{
+			ID: "test-conv",
+			ModelConfig: &ModelConfig{
+				Provider:    "openaicodex",
+				Model:       "gpt-5.6-luna",
+				Thinking:    "high",
+				ServiceTier: "priority",
+			},
+		},
+		Config: WorkerConfig{ProjectPath: t.TempDir()},
+	})
+	if err != nil {
+		t.Fatalf("marshalling init: %v", err)
+	}
+	w.currentRun().handleInit(initPayload)
+
+	got := w.doc.ResolveEffectiveModelConfig("")
+	if got == nil {
+		t.Fatal("defaultModelConfig was not seeded")
+	}
+	if got.Provider != "openaicodex" || got.Model != "gpt-5.6-luna" {
+		t.Fatalf("seeded wrong pair: %+v", got)
+	}
+	if got.Thinking != "high" {
+		t.Errorf("seed lost the thinking level: %+v", got)
+	}
+	if got.ServiceTier != "priority" {
+		t.Errorf("seed lost the serving tier: %+v", got)
+	}
+}
