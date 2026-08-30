@@ -7,6 +7,7 @@ package worker
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	ycrdt "github.com/skyterra/y-crdt"
 )
@@ -162,6 +163,21 @@ func (r *run) createThread(opts CreateThreadOptions) (string, error) {
 		mc := r.doc.ResolveEffectiveModelConfig(opts.ParentThreadItemID)
 		if mc == nil || mc.Model == "" {
 			return "", fmt.Errorf("please select a model before creating a thread")
+		}
+
+		// Auto-name trigger for the conversation whose FIRST user action was to
+		// dispatch a subthread — a `run: subthread` command typed into an empty
+		// tab, which asks for work without ever appending a root user message,
+		// so the trigger in handleSendMessage never sees it and the tab stays
+		// "Untitled N" for a conversation that plainly has a subject. The prompt
+		// is that subject. Restricted to a dispatch from root scope, because a
+		// child of some existing thread is not what the conversation is about,
+		// and to the same once-only and name-provenance guards the message path
+		// uses (metaAutoNamed, NameIsProvisional), so the later root message
+		// that usually follows does not retitle the tab.
+		if opts.ParentThreadItemID == "" && !opts.IsContinuation && r.autoNameFunc != nil &&
+			strings.TrimSpace(opts.Prompt) != "" && !r.hasAutoNamed() && r.NameIsProvisional() {
+			r.fireAutoName(opts.Prompt, mc.Provider, mc.Model, mc.Thinking, false)
 		}
 	}
 

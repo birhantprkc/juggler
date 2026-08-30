@@ -58,12 +58,16 @@ The template is expanded against whatever you type after the command name:
 | Placeholder    | Expands to                                             |
 | -------------- | ------------------------------------------------------ |
 | `$1` … `$9`    | The 1st … 9th positional argument (empty if not given) |
-| `$ARGUMENTS`   | Everything after the command name, as one string       |
+| `$ARGUMENTS`   | Everything after the command name, exactly as typed    |
 | `$$`           | A literal `$` (so `$$1` is the text `$1`, not an arg)  |
 
 Placeholders are single-digit, so `$10` is `$1` followed by a literal `0`. If a
 template uses placeholders and you supply no arguments, it still sends — the
 model can ask for what it needs.
+
+`$ARGUMENTS` keeps your line breaks, so a command whose argument is a long
+description — headings, lists, fenced code — reaches the prompt as you wrote it.
+The positional `$1` … `$9` are the whitespace-delimited words of that same text.
 
 ## Run modes
 

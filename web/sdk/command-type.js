@@ -165,8 +165,13 @@ class CommandType {
    * Execute the command
    *
    * Override in subclasses to implement command behavior.
+   *
+   * `args` and `rest` are the text typed after the command name, read two ways:
+   * the whitespace-delimited tokens, and that text verbatim. Take `rest` when
+   * the argument is prose the user may have written across several lines.
    * @abstract
    * @param {string[]} args - Command arguments (parsed from user input)
+   * @param {string} [rest] - The argument text as typed, line breaks intact
    * @returns {Promise<CommandResult>} Result with handled, message, error
    * @throws {Error} If not implemented
    * @example
@@ -175,8 +180,9 @@ class CommandType {
    *   return { handled: true, message: `Hello, ${target}!` };
    * }
    */
-  async execute(args) {
+  async execute(args, rest) {
     void args;
+    void rest;
     throw new Error('execute() must be implemented by subclass');
   }
 

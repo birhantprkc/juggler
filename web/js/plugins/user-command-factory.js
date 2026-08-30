@@ -22,21 +22,29 @@ const DEFAULT_ICON = 'icon-slash';
  * Expand a prompt template's placeholders against invocation args.
  *
  * - `$1`..`$9` — positional args (1-based); unfilled expand to empty string.
- * - `$ARGUMENTS` — every arg joined by a single space.
+ * - `$ARGUMENTS` — the argument text exactly as typed.
  * - `$$` — a literal `$` (escape); so `$$1` yields the literal text `$1`.
  * - `$10` is `$1` followed by a literal `0` (placeholders are single-digit).
+ *
+ * The two argument forms are the same text read two ways: `args` are its
+ * whitespace-delimited tokens, `rest` is the text itself. `$ARGUMENTS` takes the
+ * text, so a multi-line invocation — markdown headings, lists, fenced code —
+ * reaches the prompt with its line breaks intact. A caller holding only the
+ * tokens may omit `rest`, and `$ARGUMENTS` then joins them with single spaces.
  *
  * Pure function — no IO, no `this`. This is the one place the placeholder syntax
  * is defined; it is unit-tested exhaustively.
  * @param {string} body - The template body
  * @param {string[]} [args] - Invocation arguments (positional)
+ * @param {string} [rest] - The argument text as typed
  * @returns {string} The expanded prompt
  */
-export function expandTemplate(body, args = []) {
+export function expandTemplate(body, args = [], rest) {
   const argList = Array.isArray(args) ? args : [];
+  const all = typeof rest === 'string' ? rest : argList.join(' ');
   return String(body).replace(/\$(\$|ARGUMENTS|[1-9])/g, (_match, token) => {
     if (token === '$') return '$';
-    if (token === 'ARGUMENTS') return argList.join(' ');
+    if (token === 'ARGUMENTS') return all;
     return argList[Number(token) - 1] ?? '';
   });
 }
@@ -124,10 +132,11 @@ export function makeUserCommandClass(def) {
 
     /**
      * @param {string[]} args - Invocation arguments
+     * @param {string} [rest] - The argument text as typed
      * @returns {Promise<import('juggler/command-type').CommandResult>} Result
      */
-    async execute(args) {
-      const text = expandTemplate(def.body || '', args);
+    async execute(args, rest) {
+      const text = expandTemplate(def.body || '', args, rest);
       const thread = this.messageThread;
       if (!thread) return { handled: true, error: true, message: 'No active conversation' };
 

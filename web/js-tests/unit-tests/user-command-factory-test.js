@@ -8,11 +8,14 @@
  * `user-command-factory.js` turns a declarative command definition (parsed from
  * a `.juggler/commands/*.md` file) into a runnable CommandType subclass. This
  * covers the two pure pieces — placeholder expansion and MANIFEST synthesis —
- * plus the per-run-mode behaviour of `execute()` against a minimal fake thread.
+ * plus the per-run-mode behaviour of `execute()` against a minimal fake thread,
+ * and the invocation grammar upstream of them (`parseInvocation`), since the
+ * text a template expands against is only as faithful as that split.
  * @module unit-tests/user-command-factory-test
  */
 
 import { expandTemplate, makeUserCommandClass } from '../../js/plugins/user-command-factory.js';
+import { parseInvocation } from '../../js/services/slash-command-handler.js';
 import providersCache from '../../js/services/providers-cache.js';
 import { assert } from '../utilities/test-helpers.js';
 
@@ -48,13 +51,48 @@ export async function runTests(_ctx) {
     }
   }
 
+  // ---- parseInvocation ----
+
+  await test('parseInvocation splits the name from its argument text', () => {
+    const p = parseInvocation('/deploy app prod');
+    assert(p.name === 'deploy', `name=${p.name}`);
+    assert(p.rest === 'app prod', `rest=${p.rest}`);
+    assert(p.args.join('|') === 'app|prod', `args=${p.args.join('|')}`);
+  });
+
+  // The whole point: a task description typed across several lines must reach
+  // the template as it was written, not flattened to one line.
+  await test('parseInvocation keeps a multi-line argument verbatim', () => {
+    const body = 'Do the thing.\n\n## Steps\n\n* one\n* two';
+    const p = parseInvocation(`/plan ${body}`);
+    assert(p.name === 'plan', `name=${p.name}`);
+    assert(p.rest === body, `rest=${JSON.stringify(p.rest)}`);
+  });
+
+  await test('parseInvocation treats a newline as the name separator', () => {
+    const p = parseInvocation('/plan\nline one\nline two');
+    assert(p.name === 'plan', `name=${p.name}`);
+    assert(p.rest === 'line one\nline two', `rest=${JSON.stringify(p.rest)}`);
+  });
+
+  await test('parseInvocation on a bare command yields no arguments', () => {
+    const p = parseInvocation('/clear');
+    assert(p.name === 'clear', `name=${p.name}`);
+    assert(p.rest === '' && p.args.length === 0, 'no args');
+  });
+
   // ---- expandTemplate ----
 
   await test('positional $1..$9 expand from args', () => {
     assert(expandTemplate('Deploy $1 to $2', ['app', 'prod']) === 'Deploy app to prod', 'positional');
   });
 
-  await test('$ARGUMENTS joins every arg with a space', () => {
+  await test('$ARGUMENTS is the argument text as typed', () => {
+    const rest = 'first line\n\n```\ncode\n```';
+    assert(expandTemplate('Note: $ARGUMENTS', rest.split(/\s+/), rest) === `Note: ${rest}`, 'verbatim arguments');
+  });
+
+  await test('$ARGUMENTS falls back to joining args when no text is supplied', () => {
     assert(expandTemplate('Note: $ARGUMENTS', ['a', 'b', 'c']) === 'Note: a b c', 'arguments join');
   });
 
@@ -161,6 +199,22 @@ export async function runTests(_ctx) {
     assert(call && call.goal === 'PR review', `goal=${call && call.goal}`);
     assert(call.prompt === 'Review 42', `prompt=${call.prompt}`);
     assert(call.strategyId === 'read-only', `strategyId=${call.strategyId}`);
+  });
+
+  await test('subthread mode carries a multi-line argument into the prompt', async () => {
+    /** @type {any} */
+    let call = null;
+    const fakeThread = {
+      runInThread: (/** @type {any} */ opts) => { call = opts; return Promise.resolve({ threadItemId: 't', result: 'r' }); },
+    };
+    const Cls = makeUserCommandClass({
+      name: 'plan', scope: 'project', path: '/x',
+      frontmatter: { description: 'd', run: 'subthread' },
+      body: 'Plan this:\n$ARGUMENTS',
+    });
+    const rest = '## Task\n\n* one\n* two';
+    await new Cls({ messageThread: fakeThread }).execute(rest.split(/\s+/), rest);
+    assert(call.prompt === `Plan this:\n${rest}`, `prompt=${JSON.stringify(call?.prompt)}`);
   });
 
   // ---- model override resolution ----

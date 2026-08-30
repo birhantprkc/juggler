@@ -134,7 +134,8 @@ is a markdown file — YAML frontmatter (description, run mode, and a few option
 over a prompt template — that Juggler turns into a real menu command and
 hot-reloads the moment you save. Placeholders in the template expand from what
 you type after the command: "$1".."$9" for positional arguments, "$ARGUMENTS"
-for everything after the command name, and "$$" for a literal dollar sign.
+for everything after the command name exactly as typed (line breaks and all),
+and "$$" for a literal dollar sign.
 
 There are three ways to create one, all writing the same file: type a name that
 does not exist yet (the menu offers a "New command…" row that opens the editor),

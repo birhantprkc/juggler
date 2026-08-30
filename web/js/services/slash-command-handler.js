@@ -30,6 +30,27 @@ import commandRegistry from '../registries/command-registry.js';
  */
 
 /**
+ * Split a typed invocation into the command name and its argument text.
+ *
+ * The name is the first whitespace-delimited token; everything after it is the
+ * argument text, returned in both readings a command may want. `args` are its
+ * whitespace-delimited tokens, feeding positional placeholders; `rest` is that
+ * text exactly as typed, so line breaks, blank lines, indentation and fenced
+ * code survive into a prompt template. Splitting the whole line into tokens and
+ * re-joining them is what flattens a multi-line argument to one line.
+ *
+ * Pure function — the invocation grammar in one place, unit-tested.
+ * @param {string} input - Full user input, leading `/` included
+ * @returns {{name: string, args: string[], rest: string}} The parsed invocation
+ */
+export function parseInvocation(input) {
+  const line = String(input).replace(/^\//, '');
+  const [name = ''] = line.split(/\s/, 1);
+  const rest = line.slice(name.length).replace(/^\s+/, '');
+  return { name, rest, args: rest ? rest.split(/\s+/) : [] };
+}
+
+/**
  * Handles slash command execution via plugin registry
  */
 class SlashCommandHandler {
@@ -64,8 +85,8 @@ class SlashCommandHandler {
       return { handled: false };
     }
 
-    const [commandName, ...args] = input.slice(1).split(/\s+/);
-    const CommandClass = commandRegistry.getByNameOrAlias(/** @type {string} */ (commandName));
+    const { name: commandName, args, rest } = parseInvocation(input);
+    const CommandClass = commandRegistry.getByNameOrAlias(commandName);
 
     if (!CommandClass) {
       return {
@@ -122,7 +143,7 @@ class SlashCommandHandler {
     }
 
     try {
-      return await command.execute(args);
+      return await command.execute(args, rest);
     } finally {
       if (coalesceUndo) {
         const { default: workerManager } = await import('./worker-manager.js');

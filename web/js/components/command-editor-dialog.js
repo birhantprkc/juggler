@@ -263,8 +263,8 @@ export function openCommandEditor(options = {}) {
     };
 
     const updatePreview = () => {
-      const args = previewArgs.value.trim() ? previewArgs.value.trim().split(/\s+/) : [];
-      previewOut.textContent = expandTemplate(templateInput.value, args);
+      const rest = previewArgs.value.trim();
+      previewOut.textContent = expandTemplate(templateInput.value, rest ? rest.split(/\s+/) : [], rest);
     };
 
     const updateRunUI = () => {
