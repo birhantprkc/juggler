@@ -89,13 +89,12 @@ function groupIntoHunks(lines, startLineNumber = 1, contextLines = 3) {
       if (currentHunk) {
         contextBuffer.push(line);
 
-        const isNearEnd = idx >= lines.length - contextLines;
-        if (contextBuffer.length >= contextLines || isNearEnd) {
+        if (contextBuffer.length >= contextLines) {
+          // Another change close behind keeps the hunk open, so the lines
+          // between the two changes stay in it as interior context.
           let hasMore = false;
-          if (!isNearEnd) {
-            for (let k = idx + 1; k < Math.min(idx + contextLines * 2 + 1, lines.length); k++) {
-              if (/** @type {DiffLine} */ (lines[k]).type !== 'equal') { hasMore = true; break; }
-            }
+          for (let k = idx + 1; k < Math.min(idx + contextLines * 2 + 1, lines.length); k++) {
+            if (/** @type {DiffLine} */ (lines[k]).type !== 'equal') { hasMore = true; break; }
           }
 
           if (!hasMore) {
@@ -117,14 +116,19 @@ function groupIntoHunks(lines, startLineNumber = 1, contextLines = 3) {
     } else {
       if (!currentHunk) {
         currentHunk = /** @type {DiffHunk} */ ({ oldStart: startLineNumber, oldCount: 0, newStart: startLineNumber, newCount: 0, lines: [...contextBuffer] });
-        contextBuffer = [];
+      } else {
+        // Context held back as a possible hunk tail turned out to be interior:
+        // it must land ahead of this change, not after it.
+        currentHunk.lines.push(...contextBuffer);
       }
+      contextBuffer = [];
       currentHunk.lines.push(line);
     }
   }
 
   if (currentHunk) {
-    if (contextBuffer.length > 0) currentHunk.lines.push(...contextBuffer);
+    // Whatever context is left at end of input is this hunk's tail.
+    if (contextBuffer.length > 0) currentHunk.lines.push(...contextBuffer.slice(0, contextLines));
     finalizeHunkStarts(currentHunk, startLineNumber);
     hunks.push(currentHunk);
   }
