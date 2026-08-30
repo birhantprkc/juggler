@@ -100,6 +100,16 @@ export const leadingWhitespacePreservedTest = autoApproveTest(
   '   indented'
 );
 
+// `find -newermt <time>` is a read-only time comparison over files in the
+// fixture; README.md is the oldest stable resident, and `!` inverts so the
+// exact stdout is knowable without touching mtimes.
+export const findNewermtAutoApprovesTest = autoApproveTest(
+  'cmd-approval-find-newermt',
+  'find . -maxdepth 1 -name README.md ! -newermt "2038-01-01"',
+  undefined,
+  './README.md'
+);
+
 /**
  * A command outside the safe set with no matching pattern must prompt;
  * the test denies to keep the run deterministic. The presence of the
@@ -146,5 +156,6 @@ export const tests = [
   echoStderrMergeAutoApprovesTest,
   patternedCommandAutoApprovesTest,
   leadingWhitespacePreservedTest,
+  findNewermtAutoApprovesTest,
   unsafeCommandPromptsTest
 ];

@@ -202,6 +202,16 @@ const CASES = [
     command: 'find . -execdir touch x \\;', patterns: [], platform: 'darwin', expected: false },
   { name: 'find with unknown predicate prompts',
     command: 'find . -magic-flag x', patterns: [], platform: 'darwin', expected: false },
+  { name: 'find -newer file is safe',
+    command: 'find . -name "*.log" -newer marker.txt', patterns: [], platform: 'darwin', expected: true },
+  { name: 'find -newermt time spec is safe',
+    command: 'find . -maxdepth 4 -name "server*.log" -newermt "2026-08-28"', patterns: [], platform: 'darwin', expected: true },
+  { name: 'find -newerat / -newerct / -newerBt time specs are safe',
+    command: 'find . -newerct "2026-08-28" -o -newerBt "2026-08-28" -o -newerat "2026-08-28"', patterns: [], platform: 'darwin', expected: true },
+  { name: 'find -newermt without its value prompts',
+    command: 'find . -newermt', patterns: [], platform: 'darwin', expected: false },
+  { name: 'find -newermt with bogus trailing letter prompts',
+    command: 'find . -newermtz "2026-08-28"', patterns: [], platform: 'darwin', expected: false },
 
   // === redirect safety ===
   { name: 'echo > /tmp/file prompts (writes outside project)',

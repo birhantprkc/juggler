@@ -1971,6 +1971,17 @@ class FindHandler extends CommandHandler {
     '-context'
   ]);
 
+  /**
+   * GNU and BSD find generalise `-newer` to `-newerXY`, where X is the
+   * timestamp compared on the candidate file and Y the reference — a file, or
+   * with Y = `t` a literal time spec (`-newermt "2026-08-28"`) — each letter
+   * drawn from `a` access, `B` birth, `c` status-change, `m` modification,
+   * `t` time-spec. A 25-entry cross product of value-taking predicates, so it
+   * is matched as a family rather than enumerated in
+   * {@link FindHandler.VALUE_PREDICATES}.
+   */
+  static NEWERXY = /^-newer[aBcmt][aBcmt]$/;
+
   /** Standalone predicates / flags. */
   static FLAG_PREDICATES = new Set([
     '-print', '-print0', '-ls', '-prune', '-quit',
@@ -2023,7 +2034,7 @@ class FindHandler extends CommandHandler {
 
       if (FindHandler.BOOL_OPS.has(tok)) { i++; continue; }
       if (FindHandler.FLAG_PREDICATES.has(tok)) { i++; continue; }
-      if (FindHandler.VALUE_PREDICATES.has(tok)) {
+      if (FindHandler.VALUE_PREDICATES.has(tok) || FindHandler.NEWERXY.test(tok)) {
         if (i + 1 >= args.length) return false;
         i += 2;
         continue;
