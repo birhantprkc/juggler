@@ -4,15 +4,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import ContextItem from 'juggler/context-item';
-import { readFile, getTree, stat } from 'juggler/ops';
-import { formatDisplayPath, formatFileSize, formatFileContentForLLM, injectFileContentStyles, basename } from 'juggler/item-utils';
-import { fileSourceFromReadResult } from 'juggler/file-source';
+import { formatDisplayPath, formatFileContentForLLM, basename } from 'juggler/item-utils';
 import { extractFileSource } from 'juggler/registry';
 import { createElement } from 'juggler/ui';
 import { addFilePath } from 'juggler/ui';
 import { buildPickerPanel } from 'juggler/ui';
 import { smartTruncate } from 'juggler/ui';
 import { gitignoreDisabled } from './path-approval.js';
+import { fetchLiveFile, liveFileSource, liveFileInfo, renderLiveFileBody } from '../lib/live-file.js';
 
 /**
  * Safety ceiling (characters) on the file body a single pinned/@-mentioned file
@@ -45,7 +44,7 @@ const MAX_PINNED_FILE_CHARS = 2_000_000;
  * @property {boolean} [isDirectory] - True when path refers to a directory
  */
 
-injectFileContentStyles();
+/** @typedef {import('../lib/live-file.js').LiveFileResult} LiveFileResult */
 
 // ============================================================================
 // FileContentContextItem
@@ -180,7 +179,7 @@ class FileContentContextItem extends ContextItem {
 
     /**
      * TTL cache for live fetches. See {@link _fetchLive}.
-     * @type {{path: string, ts: number, pending: Promise<FetchResult>|null, result: FetchResult|null}|null}
+     * @type {{path: string, ts: number, pending: Promise<LiveFileResult>|null, result: LiveFileResult|null}|null}
      * @private
      */
     this._lastFetch = null;
@@ -236,34 +235,16 @@ class FileContentContextItem extends ContextItem {
   }
 
   /**
-   * Transient fetch result for a pinned file or directory.
-   * Mirrors the legacy FileContentData shape but is NEVER written back to
-   * `this.data` — that would mutate the Yjs document across peers on every
-   * disk change.
-   * @typedef {object} FetchResult
-   * @property {string} path - Resolved (possibly absolute) path
-   * @property {boolean} isDirectory - True if the path is a directory listing
-   * @property {boolean} exists - False if the file/dir could not be read
-   * @property {string} content - File body or rendered tree listing
-   * @property {string} [language] - Detected language identifier for syntax highlight
-   * @property {number} [size] - File size in bytes (files only)
-   * @property {number} [totalLines] - Line count for files, entry count for dirs
-   * @property {number} [lineOffset] - First line number of `content` (1-indexed)
-   * @property {number} [lineCount] - Number of lines actually included in `content`
-   * @property {string|null} [warning] - Backend warning (e.g. binary file)
-   * @property {string} [readMode] - Human-readable read-mode description
-   * @property {string} [mime] - Mime type reported by the read op ('' when unknown)
-   * @property {boolean} [isBinary] - True when the bytes are not text; the file's viewer decides what to do with them
-   */
-
-  /**
    * Fetch live file/directory contents.
    *
-   * Returns a transient {@link FetchResult}; does NOT touch `this.data`.
+   * Returns a transient {@link LiveFileResult}; does NOT touch `this.data` —
+   * writing what disk said back into the item would mutate the Yjs document
+   * across peers on every change to the file.
+   *
    * A 500ms TTL cache is kept in `this._lastFetch` so a send-time read and
    * a properties-panel render in the same tick share one round-trip.
    * Concurrent callers join the same in-flight promise.
-   * @returns {Promise<FetchResult>} Live file or directory contents
+   * @returns {Promise<LiveFileResult>} Live file or directory contents
    * @private
    */
   async _fetchLive() {
@@ -293,102 +274,30 @@ class FileContentContextItem extends ContextItem {
   }
 
   /**
-   * Underlying single-shot fetch. Always returns a usable FetchResult
+   * Underlying single-shot fetch. Always returns a usable {@link LiveFileResult}
    * (errors collapse to `exists:false`); callers should not catch.
+   *
+   * A pin is always user-initiated — the user explicitly chose this path via
+   * `@`-mention or the file picker, so it may legitimately point outside the
+   * project root — and the shared reader says so on its behalf.
    * @param {string} path - File or directory path to load
-   * @returns {Promise<FetchResult>} Fetched result; `exists:false` on error
+   * @returns {Promise<LiveFileResult>} Fetched result; `exists:false` on error
    * @private
    */
   async _doFetch(path) {
-    // Completion paths conventionally carry a trailing slash for directories,
-    // but a user may type or paste an absolute directory path without one.
-    // Probe first in that ambiguous case so folders never reach `readFile`.
-    let isDirectory = path.endsWith('/');
-    if (!isDirectory) {
-      try {
-        const metadata = await stat({ path, userInitiated: true });
-        isDirectory = metadata.isDirectory === true;
-      } catch (err) {
-        // Preserve the read operation's existing error/result behavior when
-        // metadata is unavailable (for example, a deleted path).
-      }
-    }
-
-    // A pin is always user-initiated: the user explicitly chose this path via
-    // @-mention or the file picker, so it may legitimately point outside the
-    // project root (a sibling repo, an absolute path, …). Pass `userInitiated`
-    // so the non-approval-gated read/tree ops resolve it WITHOUT the
-    // working-directory containment check — for relative `../…` mentions as
-    // well as absolute ones. Without it an out-of-root mention fails as "path
-    // is outside working directory".
-    if (isDirectory) {
-      try {
-        const treeParams = /** @type {Record<string, unknown>} */ ({ path, depth: 2, maxTokens: 4000, userInitiated: true });
-        if (gitignoreDisabled(this)) treeParams.noIgnore = true;
-        const r = await getTree(treeParams);
-        return {
-          path,
-          isDirectory: true,
-          exists: true,
-          content: r.content || '',
-          totalLines: (r.fileCount || 0) + (r.dirCount || 0),
-          size: 0,
-          language: '',
-          lineOffset: 1,
-          lineCount: 0,
-          warning: null,
-        };
-      } catch (err) {
-        console.error(`[FileContentContextItem] Failed to list directory ${path}:`, err);
-        return { path, isDirectory: true, exists: false, content: '' };
-      }
-    }
-
-    try {
-      // userInitiated: see the directory branch above. The pin unlocks the
-      // out-of-workdir escape hatch in file_ops.loadFile so a file outside the
-      // project root resolves instead of collapsing to `exists:false` (which
-      // the properties panel renders as a misleading "File not found").
-      const r = await readFile({ path, userInitiated: true });
-      return {
-        path: r.path || path,
-        isDirectory: false,
-        exists: r.exists !== false,
-        content: r.content || '',
-        language: r.language || this._getLanguageFromPath(r.path || path),
-        size: r.size || 0,
-        totalLines: r.totalLines || 0,
-        lineOffset: r.lineOffset || 1,
-        lineCount: r.lineCount || 0,
-        warning: r.warning || null,
-        // Carried, not interpreted: a binary file has no `content`, and both the
-        // properties panel and createContextText need these to hand the file to
-        // the right viewer rather than treating it as an empty text file.
-        mime: r.mime || '',
-        isBinary: r.isBinary === true,
-      };
-    } catch (err) {
-      console.error(`[FileContentContextItem] Failed to load ${path}:`, err);
-      return { path, isDirectory: false, exists: false, content: '' };
-    }
+    return fetchLiveFile(path, { noIgnore: gitignoreDisabled(this) });
   }
 
   /**
    * Build the FileSource for a live fetch result, for either realm's use of it
    * (the panel renders it, createContextText extracts from it).
-   *
-   * A pin is user-initiated by construction, so the source says so: that is what
-   * lets a viewer read the bytes of a path outside the project root — the same
-   * escape hatch {@link _doFetch} passes to the read op, and without it the
-   * viewer's byte transport refuses a file the user pinned from the Desktop.
-   * @param {FetchResult} r - A live fetch result
+   * @param {LiveFileResult} r - A live fetch result
    * @returns {import('juggler/file-source').FileSource} The file, ready to render or extract
    * @private
    */
   _liveFileSource(r) {
-    return fileSourceFromReadResult(r, this.getAbsolutePath() || r.path || '', {
+    return liveFileSource(r, this.getAbsolutePath() || r.path || '', {
       conversationId: this.conversation?.id,
-      access: { userInitiated: true },
     });
   }
 
@@ -462,7 +371,8 @@ class FileContentContextItem extends ContextItem {
     const body = createElement('div', 'file-content-body');
     container.appendChild(body);
 
-    addFilePath(headerHost, this.getAbsolutePath() || 'No file');
+    addFilePath(headerHost, this.getAbsolutePath() || 'No file', undefined,
+      { pin: this.getAbsolutePath() });
 
     if (!this.data.path) {
       body.appendChild(createElement('div', 'file-content-loading', 'No file selected'));
@@ -474,34 +384,15 @@ class FileContentContextItem extends ContextItem {
     this._fetchLive().then(r => {
       // Swap body. Replace the header info with the just-fetched stats.
       headerHost.replaceChildren();
-      let info;
-      if (r.exists && r.isDirectory && r.totalLines) {
-        info = `${r.totalLines} items`;
-      } else if (r.exists && r.size) {
-        info = `${formatFileSize(r.size)} | ${r.totalLines || 0} lines`;
-      }
-      addFilePath(headerHost, this.getAbsolutePath() || r.path || 'No file', info);
+      const absolute = this.getAbsolutePath() || r.path || '';
+      addFilePath(headerHost, absolute || 'No file', liveFileInfo(r), { pin: absolute });
 
-      body.replaceChildren();
-
-      if (!r.exists) {
-        body.appendChild(createElement('div', 'file-content-not-found',
-          `File not found: ${r.path || this.data.path}`));
-        return;
-      }
-
-      if (r.isDirectory) {
-        body.appendChild(createElement('pre', 'file-content-tree', r.content || '(empty)'));
-        return;
-      }
-
-      // The pin renders live, so the header above already carries the current
-      // stats — hence showPath:false, or the path would appear twice.
-      // <file-view> resolves the viewer for whatever is on disk now.
-      const view = /** @type {any} */ (document.createElement('file-view'));
-      view.showPath = false;
-      view.setSource(this._liveFileSource(r));
-      body.appendChild(view);
+      // The header above already carries the path and the current stats, so the
+      // body renders content alone.
+      renderLiveFileBody(body, r, {
+        absolutePath: this.getAbsolutePath() || r.path || this.data.path,
+        conversationId: this.conversation?.id,
+      });
     }).catch(err => {
       console.error('[FileContentContextItem] properties panel fetch failed:', err);
       body.replaceChildren(createElement('div', 'file-content-not-found',
@@ -584,49 +475,6 @@ class FileContentContextItem extends ContextItem {
    */
   _getFilename(path) {
     return basename(path) || path;
-  }
-
-  /**
-   * Get language from file path extension
-   * @private
-   * @param {string} path - File path
-   * @returns {string} Language identifier
-   */
-  _getLanguageFromPath(path) {
-    const ext = path.split('.').pop()?.toLowerCase() || '';
-    /** @type {Record<string, string>} */
-    const langMap = {
-      js: 'javascript',
-      ts: 'typescript',
-      jsx: 'javascript',
-      tsx: 'typescript',
-      py: 'python',
-      rb: 'ruby',
-      go: 'go',
-      rs: 'rust',
-      java: 'java',
-      c: 'c',
-      cpp: 'cpp',
-      h: 'c',
-      hpp: 'cpp',
-      cs: 'csharp',
-      php: 'php',
-      swift: 'swift',
-      kt: 'kotlin',
-      md: 'markdown',
-      json: 'json',
-      yaml: 'yaml',
-      yml: 'yaml',
-      xml: 'xml',
-      html: 'html',
-      css: 'css',
-      scss: 'scss',
-      sql: 'sql',
-      sh: 'bash',
-      bash: 'bash',
-      zsh: 'bash'
-    };
-    return langMap[ext] || ext;
   }
 }
 

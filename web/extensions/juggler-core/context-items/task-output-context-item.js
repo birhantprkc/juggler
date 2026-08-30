@@ -72,7 +72,13 @@ class TaskOutputContextItem extends ContextItem {
    * @returns {Promise<Record<string, unknown>>} Task output result
    */
   async execute(params) {
-    const result = await shellOutputDelta({ task_id: /** @type {string} */ (params.task_id) });
+    // The conversation goes with the id: reading a task's output advances a
+    // cursor, so a read aimed at the wrong conversation would consume output
+    // meant for someone else rather than merely showing it.
+    const result = await shellOutputDelta({
+      task_id: /** @type {string} */ (params.task_id),
+      conv_id: this.conversation.id,
+    });
     return /** @type {Record<string, unknown>} */ (result);
   }
 

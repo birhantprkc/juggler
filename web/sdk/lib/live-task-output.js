@@ -66,7 +66,10 @@ const DEFAULT_POLL_MS = 1000;
  * @param {string} [opts.stopLabel] - Stop button text (default "Stop").
  * @param {TaskOutputState} [opts.initialState] - Durable state shown before and
  *   underneath live registry reads.
- * @param {(params: {task_id: string}) => Promise<TaskOutputState>} [opts.readOutput]
+ * @param {string} [opts.convId] - The conversation this task belongs to. Sent with
+ *   every read so the server can refuse an id that names another conversation's
+ *   task; omitting it falls back to the project check alone.
+ * @param {(params: {task_id: string, conv_id?: string}) => Promise<TaskOutputState>} [opts.readOutput]
  *   Output reader; injectable for deterministic tests.
  * @returns {HTMLElement|null} The section element, or null if it wasn't rendered.
  */
@@ -80,6 +83,7 @@ export function renderLiveTaskOutput(wrapper, {
   onStop,
   stopLabel = 'Stop',
   initialState,
+  convId,
   readOutput = shellOutput
 }) {
   if (!taskId || !helpers) return null;
@@ -214,7 +218,7 @@ export function renderLiveTaskOutput(wrapper, {
     /** @type {TaskOutputState} */
     let state;
     try {
-      state = await readOutput({ task_id: taskId });
+      state = await readOutput({ task_id: taskId, conv_id: convId });
     } catch {
       return;
     }

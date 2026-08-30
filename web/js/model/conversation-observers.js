@@ -142,9 +142,13 @@ export function setupYjsObservers(c) {
         insertedItemIds: insertedItemIds
       });
 
-      // Also notify context-items:changed if context items were affected
+      // Also notify context-items:changed if context items were affected.
+      // Named, like every other conversation event: a listener reading one
+      // conversation has no other way to tell whose items moved.
       if (hasContextItems) {
-        c._session.notifyConversationChange('context-items:changed', null);
+        c._session.notifyConversationChange('context-items:changed', {
+          conversationId: c.id
+        });
       }
 
       // /handoff completion: when this tab's handoff summary thread finishes,

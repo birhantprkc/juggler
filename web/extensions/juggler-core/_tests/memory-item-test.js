@@ -279,6 +279,43 @@ export async function runTests(ctx) {
     assert(noMatch.success, `no-match forget is still a success: ${JSON.stringify(noMatch)}`);
   });
 
+  // ---- the file watcher's one way in ----
+
+  // The memory file lives at .juggler/MEMORY.md, inside the directory the
+  // project watcher skips wholesale — so no `file-change` ever reached this
+  // handler and a hand edit went unnoticed until something else forced a
+  // re-read. The watcher now allowlists that one path (watchedHiddenFiles in
+  // cmd/juggler/core/filewatcher.go), which is what makes this handler live.
+  // These cases pin what it does with what it is finally being sent.
+
+  await test('a change to the memory file asks the UI to re-read it', () => {
+    const { item } = makeItem();
+    let hits = 0;
+    item.onContentChange = () => { hits++; };
+
+    item.onFileChange('.juggler/MEMORY.md', 'write');
+    assert(hits === 1, `a hand edit must re-read the file, got ${hits} re-reads`);
+
+    item.onFileChange('.juggler\\MEMORY.md', 'write');
+    assert(hits === 2, `and the same path spelled the way Windows spells it, got ${hits}`);
+  });
+
+  await test('the rest of Juggler\u2019s own directory is not the memory file', () => {
+    const { item } = makeItem();
+    let hits = 0;
+    item.onContentChange = () => { hits++; };
+
+    for (const path of ['.juggler/session.json', '.juggler/config.json', 'src/main.go', '']) {
+      item.onFileChange(path, 'write');
+    }
+    assert(hits === 0, `nothing else should force a re-read, got ${hits}`);
+  });
+
+  await test('the item asks for file changes at all', () => {
+    assert(MemoryContextItem.MANIFEST.watchesFileChanges === true,
+      'without this the session never offers it a change, whatever the watcher emits');
+  });
+
   // ---- singleton ----
 
   await test('mergeOrReplace makes memory a singleton (reuse existing)', () => {

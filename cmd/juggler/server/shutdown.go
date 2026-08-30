@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"juggler/cmd/juggler/ops"
 	"juggler/internal/jlog"
 )
 
@@ -159,6 +160,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// LLM call races a closing handle.
 	if s.conversationCache != nil {
 		s.conversationCache.Shutdown()
+	}
+
+	// 4b. Stop background tasks. After the workers, so a Monitor's own delivery
+	// teardown gets to stop its task first and report it the way that path
+	// reports it; whatever is left is a plain run_in_background task, which
+	// nothing else stops. Each runs in its own process group, so exiting without
+	// this leaves it running under init with no handle anywhere.
+	if stopped := ops.StopBackgroundTasks("", "Stopped when Juggler quit", taskStopGrace); stopped > 0 {
+		jlog.Info("⏹️  Stopped %d background task(s)", stopped)
 	}
 
 	// 5. Now safe to shut down session manager and release lock

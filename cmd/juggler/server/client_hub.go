@@ -44,9 +44,12 @@ type hubOp struct {
 
 // clientDescriptor is the wire shape of one connected viewer, sent to the other
 // viewers (via clients-changed and GET /api/connectivity) so the UI can list who
-// shares the session. The id lets each recipient exclude itself.
+// shares the session. The id lets each recipient exclude itself; the viewer id,
+// when the client supplied one, is how a viewer that holds another's identity
+// can tell whether it is still connected.
 type clientDescriptor struct {
 	ID          string `json:"id"`
+	ViewerID    string `json:"viewerId,omitempty"`
 	Origin      string `json:"origin"`
 	Detail      string `json:"detail"`
 	UserAgent   string `json:"userAgent"`
@@ -97,6 +100,7 @@ func (h *clientHub) run() {
 			info := hc.c.ClientInfo()
 			list = append(list, clientDescriptor{
 				ID:          hc.c.ClientID(),
+				ViewerID:    hc.c.ViewerID(),
 				Origin:      info.Origin,
 				Detail:      info.Detail,
 				UserAgent:   info.UserAgent,

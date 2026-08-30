@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"sort"
 	"sync"
 	"time"
 
@@ -57,6 +58,11 @@ type sessionState struct {
 	// the background bin-size monitor. Read on the actor; written only via a
 	// task the monitor posts, so it never needs a lock.
 	binSizeBytes int64
+	// boardsClaimed records that the detached boards left over from the last run
+	// have been handed to a window to reopen. Read and written only on the actor,
+	// and deliberately not persisted: it is a fact about this process, not about
+	// the project. See SessionManager.ClaimDetachedBoards.
+	boardsClaimed bool
 }
 
 // sessionTask is the unit of work the actor goroutine runs.
@@ -638,35 +644,44 @@ func (m *SessionManager) GetProjectPath() string {
 	return m.projectPath
 }
 
-// GetWindowState returns the persisted native-window geometry for this
-// project, or (zero, false) if none has been saved yet. Runs on the actor
-// goroutine so it never races a concurrent save.
-func (m *SessionManager) GetWindowState() (WindowState, bool) {
+// GetWindowState returns the persisted native-window geometry for one of this
+// project's window roles, or (zero, false) if none has been saved yet. Runs on
+// the actor goroutine so it never races a concurrent save.
+func (m *SessionManager) GetWindowState(role string) (WindowState, bool) {
 	type result struct {
 		ws WindowState
 		ok bool
 	}
 	r, _ := runRead(m, func(s *sessionState) (result, error) {
-		if s.session == nil || s.session.WindowState == nil {
+		if s.session == nil {
 			return result{}, nil
 		}
-		return result{*s.session.WindowState, true}, nil
+		s.session.migrateWindowStates()
+		ws, ok := s.session.WindowStates[role]
+		return result{ws, ok}, nil
 	})
 	return r.ws, r.ok
 }
 
-// SetWindowState persists the native-window geometry for this project and
-// writes the session manifest. Runs on the actor goroutine, so the read-
-// modify-write is atomic with respect to every other session mutation.
-func (m *SessionManager) SetWindowState(ws WindowState) error {
+// SetWindowState persists the native-window geometry for one window role of this
+// project and writes the session manifest. Runs on the actor goroutine, so the
+// read-modify-write is atomic with respect to every other session mutation.
+//
+// Roles are separate slots on purpose: a detached board and the window it came
+// from are different shapes, and one shared slot had each writing over the
+// other's frame every time one of them closed.
+func (m *SessionManager) SetWindowState(role string, ws WindowState) error {
 	_, err := runWrite(m, func(s *sessionState) (struct{}, error) {
 		// No session loaded (e.g. a no-project window still at the picker) —
 		// there's nowhere to store geometry, so no-op rather than panic.
 		if s.session == nil {
 			return struct{}{}, nil
 		}
-		stored := ws
-		s.session.WindowState = &stored
+		s.session.migrateWindowStates()
+		if s.session.WindowStates == nil {
+			s.session.WindowStates = map[string]WindowState{}
+		}
+		s.session.WindowStates[role] = ws
 		return struct{}{}, s.store.Save(s.session)
 	})
 	return err
@@ -752,6 +767,151 @@ func (m *SessionManager) SetUITheme(mode string) error {
 		return struct{}{}, s.store.Save(s.session)
 	})
 	return err
+}
+
+// GetPinboard returns one board's composition — the ordered pins of the panel
+// with this id. Runs on the actor goroutine and returns a copy, so the caller
+// can hand it straight to a JSON encoder without racing a concurrent edit. A
+// board with nothing on it, and a board that does not exist, both answer with an
+// empty slice rather than nil: the wire shape should be `[]`, not `null`, and a
+// board is created by being written to rather than by being asked for.
+func (m *SessionManager) GetPinboard(boardID string) []Pin {
+	pins, _ := runRead(m, func(s *sessionState) ([]Pin, error) {
+		if s.session == nil {
+			return []Pin{}, nil
+		}
+		s.session.migrateBoards()
+		return append([]Pin{}, s.session.Boards[boardID].Pins...), nil
+	})
+	return pins
+}
+
+// ApplyPinboardOps applies a batch of semantic edits to one board and persists
+// the session, returning that board's resulting composition.
+//
+// The read-modify-write runs inside the actor closure, which is the whole point:
+// two viewers editing the same board at the same instant are serialized here and
+// both edits land, so no revision number, conflict response, or client rebase is
+// needed. An invalid batch is rejected whole and the board is left untouched.
+//
+// Editing a board that does not exist creates it, which is what makes the main
+// board need no setting up: the first pin added to a project is an add against
+// "main", and the board is whatever that leaves behind.
+//
+// A no-project session (still at the picker) has nowhere to store a board, so it
+// yields an empty one rather than an error.
+func (m *SessionManager) ApplyPinboardOps(boardID string, ops []PinboardOp) ([]Pin, error) {
+	return runWrite(m, func(s *sessionState) ([]Pin, error) {
+		if s.session == nil {
+			return []Pin{}, nil
+		}
+		s.session.migrateBoards()
+		board := s.session.Boards[boardID]
+		next, err := applyPinboardOps(board.Pins, ops)
+		if err != nil {
+			return nil, err
+		}
+		board.ID = boardID
+		board.Pins = next
+		s.session.setBoard(board)
+		if err := s.store.Save(s.session); err != nil {
+			return nil, err
+		}
+		return append([]Pin{}, next...), nil
+	})
+}
+
+// CreateBoard records a detached board: a window's own composition, seeded with
+// the pins it is to open on and tied to the conversation it is a view of.
+//
+// Creating one that already exists returns it unchanged rather than replacing
+// it. A detach is a window opening, and a window that failed to open and was
+// asked for again must not wipe the arrangement of the one that did.
+func (m *SessionManager) CreateBoard(boardID, conversationID string, pins []Pin) (Board, error) {
+	return runWrite(m, func(s *sessionState) (Board, error) {
+		if s.session == nil {
+			return Board{}, fmt.Errorf("no project is open")
+		}
+		if !ValidBoardID(boardID) {
+			return Board{}, fmt.Errorf("invalid board id %q", boardID)
+		}
+		if boardID == MainBoardID {
+			return Board{}, fmt.Errorf("the main board is not a window")
+		}
+		if conversationID == "" {
+			return Board{}, fmt.Errorf("a detached board needs the conversation it views")
+		}
+		s.session.migrateBoards()
+		if existing, ok := s.session.Boards[boardID]; ok {
+			return existing.Clone(), nil
+		}
+		if len(s.session.Boards) >= MaxBoards {
+			return Board{}, fmt.Errorf("too many boards: %d (max %d)", len(s.session.Boards), MaxBoards)
+		}
+		if len(pins) > MaxPins {
+			return Board{}, fmt.Errorf("too many pins: %d (max %d)", len(pins), MaxPins)
+		}
+		board := Board{ID: boardID, Conversation: conversationID, Pins: append([]Pin{}, pins...)}
+		s.session.setBoard(board)
+		if err := s.store.Save(s.session); err != nil {
+			return Board{}, err
+		}
+		return board.Clone(), nil
+	})
+}
+
+// DeleteBoard forgets a detached board and the geometry of the window that held
+// it — what closing that window on purpose means. The main board cannot be
+// deleted: it is the docked panel, and a project always has one.
+//
+// Deleting a board that is not there is not an error. The window closing and the
+// app quitting can both reach this, and neither is in a position to know what
+// the other has already done.
+func (m *SessionManager) DeleteBoard(boardID string) error {
+	_, err := runWrite(m, func(s *sessionState) (struct{}, error) {
+		if s.session == nil {
+			return struct{}{}, nil
+		}
+		if boardID == MainBoardID {
+			return struct{}{}, fmt.Errorf("the main board cannot be removed")
+		}
+		s.session.migrateBoards()
+		if _, ok := s.session.Boards[boardID]; !ok {
+			return struct{}{}, nil
+		}
+		delete(s.session.Boards, boardID)
+		delete(s.session.WindowStates, WindowRolePinboardFor(boardID))
+		return struct{}{}, s.store.Save(s.session)
+	})
+	return err
+}
+
+// ClaimDetachedBoards answers, once per run of this server, with the detached
+// boards left over from the last one — the windows that were open when Juggler
+// was last shut, in board order by id so two runs restore the same way.
+//
+// Once, because the answer is an instruction to open windows. Every main window
+// of a project asks, and a project can have several; the second to ask must be
+// told nothing rather than open a second copy of every board. The claim is
+// deliberately not persisted: it is about this process, and a board stays
+// restorable for as long as it exists.
+func (m *SessionManager) ClaimDetachedBoards() []Board {
+	boards, _ := runRead(m, func(s *sessionState) ([]Board, error) {
+		if s.session == nil || s.boardsClaimed {
+			return []Board{}, nil
+		}
+		s.boardsClaimed = true
+		s.session.migrateBoards()
+		detached := []Board{}
+		for _, board := range s.session.Boards {
+			if board.IsDetached() {
+				detached = append(detached, board.Clone())
+			}
+		}
+		sort.Slice(detached, func(i, j int) bool { return detached[i].ID < detached[j].ID })
+		return detached, nil
+	})
+	return boards
 }
 
 // PatchMetadata applies a targeted key-by-key patch to the session metadata

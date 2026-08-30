@@ -9,12 +9,12 @@ import (
 	"juggler/cmd/juggler/server"
 )
 
-// Window geometry is a per-project session global (stored in the project's
+// Window geometry is per-project session state (stored in the project's
 // .juggler/session.json via SessionManager), NOT a single machine-wide file.
-// Each juggler process opens exactly one project — the per-project instance
-// lock guarantees one live window per project — so keying geometry by project
-// gives every window its own slot with no cross-process write race, and
-// reopening a project restores its window where you left it.
+// Keying it by project gives every project's windows their own slots with no
+// cross-process write race, and reopening a project restores its window where
+// you left it. Within a project it is keyed by window role; this app has only
+// the main window, so that is the only slot it reads or writes.
 //
 // loadWindowState reads the saved geometry for the currently-open project, or
 // the zero value (→ default centred window) when this project has never saved
@@ -24,7 +24,7 @@ func loadWindowState(srv *server.Server) core.WindowState {
 	if sm == nil {
 		return core.WindowState{}
 	}
-	ws, _ := sm.GetWindowState()
+	ws, _ := sm.GetWindowState(core.WindowRoleMain)
 	return ws
 }
 
@@ -37,7 +37,7 @@ func saveWindowState(srv *server.Server, s core.WindowState) error {
 	if sm == nil {
 		return nil
 	}
-	return sm.SetWindowState(s)
+	return sm.SetWindowState(core.WindowRoleMain, s)
 }
 
 // Off-screen recovery (e.g. saved on a now-disconnected monitor) is handled

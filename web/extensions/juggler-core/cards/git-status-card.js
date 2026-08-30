@@ -10,56 +10,25 @@
  * with the repo's location (the root repo by the project folder name, nested
  * repos by their relative path).
  *
+ * It is also the way in to the Git pin, which shows the same tree in the room to
+ * read it: the card answers "is there anything uncommitted", and clicking it
+ * opens the pin that answers "what". The card names a source kind and lets the
+ * registry find the pin, so neither knows about the other — which is how an
+ * ambient card and its pin should meet, rather than the card importing the pin.
+ *
  * One info-card plugin of the `@juggler/core` extension; the host rail owns the
  * outer card chrome (eyebrow + × close), so this only fills the content region.
- * The latest snapshot is cached at module scope so a remount paints instantly
- * before the next poll returns. Not an ARIA live region — the counts change
- * quietly and the same information is available from git directly.
+ * The status itself comes from the shared host cache, which the Git pin reads
+ * too — so having both open costs one poll, not two — and which holds the last
+ * snapshot across remounts so this paints instantly. Not an ARIA live region:
+ * the counts change quietly and the same information is available from git.
  * @module extensions/juggler-core/cards/git-status-card
  */
 
 import InfoCardType from 'juggler/info-card-type';
-import api from '../../../js/services/api.js';
-
-/**
- * Re-poll the working-tree status this often (ms), and only while the window is
- * focused. This is a passive background card, so it stays deliberately lazy —
- * infrequent, and never running git while the user is off in their own git
- * client (see the focus gate in {@link GitStatusCard#mount}).
- */
-const REFRESH_MS = 20000;
-
-/**
- * Last status snapshot, shared across (re)mounts. `null` means "not fetched yet"
- * so the first paint shows a neutral checking state rather than a false "no repo".
- * @type {{root: string, repos: import('../../../js/services/api.js').GitRepoStatus[]}|null}
- */
-let lastSnapshot = null;
-
-/**
- * Human label for a repo: nested repos by their relative path, the root repo by
- * the project folder's name (a bare "." would be cryptic).
- * @param {string} root - Absolute project root path.
- * @param {string} repoPath - Repo path relative to root ("" for the root repo).
- * @returns {string} A short location label.
- */
-function repoLabel(root, repoPath) {
-  if (repoPath) return repoPath;
-  const base = (root || '').replace(/[/\\]+$/, '').split(/[/\\]/).pop();
-  return base || 'repo';
-}
-
-/**
- * Compose the minimal counts phrase, omitting a zero side entirely.
- * @param {import('../../../js/services/api.js').GitRepoStatus} repo
- * @returns {string} e.g. "2 changed, 1 staged", "1 staged".
- */
-function countsPhrase(repo) {
-  const parts = [];
-  if (repo.changed > 0) parts.push(`${repo.changed} changed`);
-  if (repo.staged > 0) parts.push(`${repo.staged} staged`);
-  return parts.join(', ');
-}
+import gitStatusCache from '../../../js/services/git-status-cache.js';
+import pinboardView from '../../../js/services/pinboard-view.js';
+import { countsPhrase, repoLabel } from '../lib/git-status.js';
 
 /**
  * Make a body-styled line element. Used for the whole-card status messages
@@ -99,24 +68,54 @@ function repoLine(name, counts) {
 }
 
 /**
+ * The working tree, as something the board can be asked to show. The card names
+ * a kind rather than a pin class: the registry finds whichever item type accepts
+ * it, so the card knows nothing about the Git pin and the pin knows nothing
+ * about the card.
+ * @type {import('juggler/pinboard-item-type').PinSource}
+ */
+const GIT_SOURCE = { kind: 'git' };
+
+/**
+ * Put the card's content inside a button that opens the pin, when there is a pin
+ * to open. Gated on the registry, so an affordance that would do nothing is
+ * absent rather than dead — the same gate the properties panels' pin buttons use.
+ * @param {HTMLElement[]} nodes - The rendered content.
+ * @returns {HTMLElement[]} The content, wrapped or not.
+ */
+function withLauncher(nodes) {
+  if (!pinboardView.canPin(GIT_SOURCE)) return nodes;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'info-card__git-launch';
+  button.setAttribute('aria-label', 'Open Git status in the Pinboard');
+  button.title = 'Open in the Pinboard';
+  button.append(...nodes);
+  // addSource dedupes: the Git pin is a singleton, so a second click reveals the
+  // pin that is already there rather than adding another.
+  button.addEventListener('click', () => { void pinboardView.addSource(GIT_SOURCE); });
+  return [button];
+}
+
+/**
  * Render the current snapshot into the content region.
  * @param {HTMLElement} contentEl
  * @returns {void}
  */
 function render(contentEl) {
-  const snap = lastSnapshot;
+  const snap = gitStatusCache.get();
   if (snap === null) {
-    contentEl.replaceChildren(line('Checking…'));
+    contentEl.replaceChildren(...withLauncher([line('Checking…')]));
     return;
   }
   const repos = snap.repos || [];
   if (repos.length === 0) {
-    contentEl.replaceChildren(line('No git repository'));
+    contentEl.replaceChildren(...withLauncher([line('No git repository')]));
     return;
   }
   const dirty = repos.filter((r) => r.changed > 0 || r.staged > 0);
   if (dirty.length === 0) {
-    contentEl.replaceChildren(line('No changed files'));
+    contentEl.replaceChildren(...withLauncher([line('No changed files')]));
     return;
   }
   // Only the lone-repo-at-root case hides its location; anything else labels.
@@ -125,7 +124,7 @@ function render(contentEl) {
     const counts = countsPhrase(r);
     return repoLine(showLabels ? repoLabel(snap.root, r.path) : null, counts);
   });
-  contentEl.replaceChildren(...nodes);
+  contentEl.replaceChildren(...withLauncher(nodes));
 }
 
 /**
@@ -148,59 +147,16 @@ export default class GitStatusCard extends InfoCardType {
   }
 
   /**
-   * Paint the cached snapshot immediately, then poll the server on an interval,
-   * refreshing the counts in place.
+   * Paint whatever the cache already holds, then follow it. The polling, the
+   * focus gate and the last-good-snapshot retention all belong to the cache, so
+   * mounting a second surface onto the same status costs nothing.
    * @param {HTMLElement} contentEl
-   * @returns {() => void} Teardown that stops polling.
+   * @returns {() => void} Teardown that stops watching.
    */
   mount(contentEl) {
-    let disposed = false;
-    let inFlight = false;
-    /** @type {ReturnType<typeof setInterval>|null} */
-    let timer = null;
-
-    // Never run git while Juggler is unfocused: a background `git status` poll
-    // fighting the user's own git client is worse than a slightly stale card.
-    // (We still pass --no-optional-locks server-side, but not polling at all
-    // while they're elsewhere is the real fix.) We refresh at once on refocus.
-    const focused = () => typeof document === 'undefined' || document.hasFocus();
-
-    const refresh = async () => {
-      // Skip if a poll is still outstanding (so a slow response can't stack up
-      // overlapping fetches), if torn down, or if the window isn't focused.
-      if (inFlight || disposed || !focused()) return;
-      inFlight = true;
-      try {
-        const data = await api.getGitStatus();
-        if (disposed) return;
-        lastSnapshot = {
-          root: (data && data.root) || '',
-          repos: data && Array.isArray(data.repos) ? data.repos : [],
-        };
-      } catch {
-        // Transient failure: keep the last good snapshot (and keep polling). If
-        // we never got one, stay in the neutral checking state rather than
-        // flashing a misleading "no repository".
-        if (disposed || lastSnapshot === null) return;
-      } finally {
-        inFlight = false;
-      }
-      render(contentEl);
-    };
-
-    // Regaining focus refreshes at once, so the card is current the moment the
-    // user looks back at Juggler rather than up to REFRESH_MS stale.
-    const onFocus = () => { refresh(); };
-    if (typeof window !== 'undefined') window.addEventListener('focus', onFocus);
-
+    const stopWatching = gitStatusCache.subscribe(() => render(contentEl));
     render(contentEl);
-    refresh();
-    timer = setInterval(refresh, REFRESH_MS);
-
-    return () => {
-      disposed = true;
-      if (timer) { clearInterval(timer); timer = null; }
-      if (typeof window !== 'undefined') window.removeEventListener('focus', onFocus);
-    };
+    void gitStatusCache.refresh();
+    return stopWatching;
   }
 }

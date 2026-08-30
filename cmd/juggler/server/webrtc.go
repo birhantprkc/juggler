@@ -391,6 +391,13 @@ func (c *webRTCClient) ClientID() string       { return c.id }
 func (c *webRTCClient) ClientRole() ClientRole { return c.role }
 func (c *webRTCClient) ClientInfo() ClientInfo { return c.info }
 
+// ViewerID is always empty for a data-channel viewer: the channel opens without
+// an HTTP request to carry one, so there is nowhere to read it from. Nothing can
+// address such a viewer, which costs it the surfaces built on viewer-to-viewer
+// addressing and nothing else. Announcing an id over the channel would be a
+// protocol addition, not a plumbing fix.
+func (c *webRTCClient) ViewerID() string { return "" }
+
 func (c *webRTCClient) writePump() {
 	// Marking the client closed on the way out covers the exit a write error
 	// forces: nothing drains send once this goroutine is gone, so without it a

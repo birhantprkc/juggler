@@ -299,7 +299,7 @@ func (r *run) compactToFit(limitErr *provider.ContextLimitExceededError, modelCo
 		envelope = 0
 	}
 
-	r.beginCompactionStatus("Summarizing earlier conversation to fit the context window")
+	r.beginCompactionStatus("Compacting")
 	r.recordCompactionStart(compactionKindAuto, window, reserve, envelope)
 
 	// A trailing tool-result payload too large for the suffix budget can never

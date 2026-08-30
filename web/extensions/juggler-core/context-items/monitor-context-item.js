@@ -320,6 +320,7 @@ class MonitorContextItem extends ContextItem {
     renderLiveTaskOutput(wrapper, {
       taskId,
       helpers,
+      convId: this.conversation.id,
       isRunning: () => messageThread.getTaskDeliveryStatus(taskId) === 'active'
     });
   }

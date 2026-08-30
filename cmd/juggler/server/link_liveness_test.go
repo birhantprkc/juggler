@@ -54,6 +54,7 @@ func (c *stubClient) Close()                 { c.closes <- struct{}{} }
 func (c *stubClient) ClientID() string       { return "stub-client" }
 func (c *stubClient) ClientRole() ClientRole { return c.role }
 func (c *stubClient) ClientInfo() ClientInfo { return ClientInfo{Origin: "local"} }
+func (c *stubClient) ViewerID() string       { return "" }
 func (c *stubClient) sentCount() int         { return len(c.sent) }
 func (c *stubClient) closeCount() int        { return len(c.closes) }
 func (c *stubClient) nextSent(t *testing.T) any {

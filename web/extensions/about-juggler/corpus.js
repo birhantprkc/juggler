@@ -73,6 +73,27 @@ Distinguishing ideas:
 - **Strategies** — pluggable LLM-loop policies that steer the model by gating
   which tools are available and injecting guidance, without changing the cached
   system prompt.
+- **Pinboard** — a tabbed workspace behind the right edge of the window, opened
+  with the edge tab or its shortcut. Each tab is a "pin" supplied by an
+  extension. The built-in ones keep a live file within reach (a properties panel
+  showing a file offers to pin it), follow the current plan, the current todo
+  list and the project's memory, show the git working tree, list the files
+  this conversation's tools changed, and list the background tasks it has
+  running. Plan and Todo show the list belonging to the
+  thread you are reading, falling back to the nearest parent thread that has one
+  and saying so when they do; both are read-only, since those lists change
+  through their tools. Git shows every repository under the project with its
+  branch, how far it has drifted from its upstream, and the changed files;
+  clicking the Git status card in the sidebar opens it. Changed files is the
+  other question and a different answer: it lists what the write and edit tools
+  did in this conversation, read from the transcript, so a file changed by a
+  shell command is not there and cannot be — nothing attributes a bare
+  filesystem write to anyone. Background tasks is a live inventory rather than a
+  history: a command or Monitor appears while it runs and is gone once it ends,
+  each row offering a Stop and a way back to the action that started it, where
+  its output and exit code are. Pins belong to the project session, so every viewer
+  of the project sees the same board. A pin is only a view: unlike a context
+  item, pinning a file shows it to you and not to the model.
 
 ## Tools the agent can use
 
@@ -220,12 +241,14 @@ Fastest start: the Juggler binary has an "ext" subcommand.
 
 Anatomy: an extension is a folder with a "juggler.extension.json" manifest at its
 root plus capability files whose names carry a type suffix, which is how the
-manifest globs find them. There are five capability types:
+manifest globs find them. There are six capability types:
 
 - "context-items/*-context-item.js" — tools the model can call ("juggler/context-item")
 - "strategies/*-strategy-type.js" — agentic-loop policies ("juggler/strategy-type")
 - "commands/*-command-type.js" — slash commands ("juggler/command-type")
 - "cards/*-card.js" — sidebar info tiles ("juggler/info-card-type")
+- "pins/*-pin.js" — tabs on the Pinboard, the workspace behind the right edge
+  ("juggler/pinboard-item-type")
 - "viewers/*-file-viewer.js" — how a file type is displayed and extracted for the
   model ("juggler/file-viewer")
 
@@ -333,7 +356,8 @@ extend the app), read the source rather than guessing:
   reference — that source is the canonical API documentation:
   web/sdk/context-item.js (tools/context items), web/sdk/strategy-type.js
   (strategies), web/sdk/command-type.js (slash commands),
-  web/sdk/info-card-type.js (sidebar cards), and web/sdk/file-viewer.js (file
+  web/sdk/info-card-type.js (sidebar cards), web/sdk/pinboard-item-type.js
+  (Pinboard tabs), and web/sdk/file-viewer.js (file
   display and extraction). The built-in extensions under web/extensions/
   (juggler-core and juggler-mcp) are larger working examples.
   The docs and examples/ live on GitHub, but those SDK base classes and the

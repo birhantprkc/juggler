@@ -27,7 +27,7 @@ import {
   serializeMemory,
   appendEntry,
   removeMatching
-} from '../context-items/memory/memory-format.js';
+} from '../lib/memory-format.js';
 import { assert } from '../../../js-tests/utilities/test-helpers.js';
 
 /**

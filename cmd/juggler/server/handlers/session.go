@@ -118,12 +118,20 @@ type WorkerManager interface {
 // It rides the same event type with `op:"focus"` plus a `from` id naming the
 // conversation that requested the switch, so each viewer can decide whether to
 // follow (see Session.applyConversationFocus).
+//
+// `BroadcastPinboardChanged` carries the whole board after an edit, named by the
+// board it is. Unlike the conversation list there is no per-op diff on the wire:
+// a board is a short, wholly-owned list, and shipping it entire is what lets
+// every viewer of it converge on the same order without replaying anyone's
+// operations. The name is what a viewer needs to ignore the boards it is not
+// showing — a project has several, and each document reads exactly one.
 type Broadcaster interface {
 	BroadcastSessionChanged()
 	BroadcastSessionMetadataChanged(metadata map[string]any)
 	BroadcastConversationsChanged(op, id, name string)
 	BroadcastConversationsReordered(order []string)
 	BroadcastConversationFocus(id, from string)
+	BroadcastPinboardChanged(board string, pins []core.Pin)
 }
 
 // NewSessionAPI creates a new session API handler. managerProvider must
@@ -152,30 +160,159 @@ func NewSessionAPI(
 // manager returns the current SessionManager.
 func (api *SessionAPI) manager() *core.SessionManager { return api.managerProvider() }
 
+// windowRole is which of this project's windows a geometry request is about,
+// defaulting to the main window — which is what every request meant before a
+// project could have a second kind of window, and what a caller naming no role
+// still means.
+func windowRole(r *http.Request) string {
+	if role := r.URL.Query().Get("role"); role != "" {
+		return role
+	}
+	return core.WindowRoleMain
+}
+
 // HandleGetWindowState returns the native-window geometry saved in this
-// project's session, so the desktop app can reopen the window where the user
-// left it. Geometry is per-project session state and travels with the session.
-// `hasState` is false when this project has never saved one (first open, or a
-// no-project window).
+// project's session for the requested window role, so the desktop app can reopen
+// that window where the user left it. Geometry is per-project session state and
+// travels with the session. `hasState` is false when this project has never
+// saved one for that role (first open, or a no-project window).
 func (api *SessionAPI) HandleGetWindowState(w http.ResponseWriter, r *http.Request) {
-	ws, ok := api.manager().GetWindowState()
+	ws, ok := api.manager().GetWindowState(windowRole(r))
 	WriteJSON(w, r, 0, map[string]any{"windowState": ws, "hasState": ok})
 }
 
-// HandleSetWindowState persists the native-window geometry into this project's
-// session. The desktop app posts it (debounced) as the user moves/resizes the
-// window and once more at close. A no-project session no-ops (see
-// SessionManager.SetWindowState).
+// HandleSetWindowState persists the native-window geometry for one window role
+// into this project's session. The desktop app posts it (debounced) as the user
+// moves/resizes the window and once more at close. A no-project session no-ops
+// (see SessionManager.SetWindowState).
 func (api *SessionAPI) HandleSetWindowState(w http.ResponseWriter, r *http.Request) {
 	ws, ok := DecodeJSON[core.WindowState](w, r)
 	if !ok {
 		return
 	}
-	if err := api.manager().SetWindowState(ws); err != nil {
+	if err := api.manager().SetWindowState(windowRole(r), ws); err != nil {
 		WriteError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
 	WriteJSON(w, r, http.StatusOK, map[string]any{"ok": true})
+}
+
+// boardID is which of this project's boards a request is about, defaulting to
+// the docked panel — which is what every request meant before a project could
+// have a second board, and what a caller naming none still means.
+//
+// A malformed id is refused rather than defaulted. Board ids are minted by the
+// client and travel in a window's URL, so one that arrives misspelt is a bug at
+// the other end, and quietly editing the main board instead would answer it by
+// rearranging the panel the user was looking at.
+func boardID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	id := r.URL.Query().Get("board")
+	if id == "" {
+		return core.MainBoardID, true
+	}
+	if !core.ValidBoardID(id) {
+		WriteError(w, r, http.StatusBadRequest, fmt.Sprintf("invalid board id %q", id))
+		return "", false
+	}
+	return id, true
+}
+
+// HandleGetPinboard returns one board's composition: the ordered pins of the
+// docked panel, or of the window named by `?board=`. Presentation — which tab is
+// active, how wide the panel is, whether it is open at all — is deliberately
+// absent. That is per-viewer state, and a laptop and a detached display must not
+// fight over it.
+func (api *SessionAPI) HandleGetPinboard(w http.ResponseWriter, r *http.Request) {
+	board, ok := boardID(w, r)
+	if !ok {
+		return
+	}
+	WriteJSON(w, r, 0, map[string]any{"board": board, "pins": api.manager().GetPinboard(board)})
+}
+
+// HandlePinboardOperations applies a batch of semantic edits (add, remove, move,
+// update) to one board and returns the resulting composition.
+//
+// Operations rather than a whole-board PUT, and no revision: each op names the pin
+// it acts on, so two viewers editing at once merge on the actor goroutine instead
+// of one of them being told its write was stale. Ops are idempotent, so a client
+// that retries after a dropped response cannot duplicate a pin.
+func (api *SessionAPI) HandlePinboardOperations(w http.ResponseWriter, r *http.Request) {
+	board, ok := boardID(w, r)
+	if !ok {
+		return
+	}
+	req, ok := DecodeJSON[struct {
+		Operations []core.PinboardOp `json:"operations"`
+	}](w, r)
+	if !ok {
+		return
+	}
+	if len(req.Operations) == 0 {
+		WriteError(w, r, http.StatusBadRequest, "operations is required")
+		return
+	}
+	pins, err := api.manager().ApplyPinboardOps(board, req.Operations)
+	if err != nil {
+		// A rejected batch is a malformed request, not a server fault: the ops
+		// describe pins that can't exist, or more of them than the board holds.
+		WriteError(w, r, http.StatusBadRequest, err.Error())
+		return
+	}
+	WriteJSON(w, r, http.StatusOK, map[string]any{"board": board, "pins": pins})
+	if api.broadcaster != nil {
+		api.broadcaster.BroadcastPinboardChanged(board, pins)
+	}
+}
+
+// HandleCreateBoard records a board for a window being detached: its own
+// composition, seeded with what the panel it came out of was showing, and tied
+// to the conversation it is a view of.
+//
+// The id is minted by the client, like a pin's and for the same reason — a
+// detach whose response went missing can be retried without opening a second
+// board for the same window.
+func (api *SessionAPI) HandleCreateBoard(w http.ResponseWriter, r *http.Request) {
+	req, ok := DecodeJSON[struct {
+		ID           string     `json:"id"`
+		Conversation string     `json:"conversation"`
+		Pins         []core.Pin `json:"pins"`
+	}](w, r)
+	if !ok {
+		return
+	}
+	board, err := api.manager().CreateBoard(req.ID, req.Conversation, req.Pins)
+	if err != nil {
+		WriteError(w, r, http.StatusBadRequest, err.Error())
+		return
+	}
+	WriteJSON(w, r, http.StatusOK, map[string]any{"board": board})
+}
+
+// HandleDeleteBoard forgets a board and the frame of the window that held it —
+// what closing that window on purpose means. The docked panel cannot be deleted.
+func (api *SessionAPI) HandleDeleteBoard(w http.ResponseWriter, r *http.Request) {
+	board, ok := boardID(w, r)
+	if !ok {
+		return
+	}
+	if err := api.manager().DeleteBoard(board); err != nil {
+		WriteError(w, r, http.StatusBadRequest, err.Error())
+		return
+	}
+	WriteJSON(w, r, http.StatusOK, map[string]any{"ok": true})
+}
+
+// HandleRestoreBoards answers with the detached boards left over from the last
+// run of this server — the windows that were open when Juggler was shut — and
+// answers only once.
+//
+// Once, because the answer is an instruction to open windows: every main window
+// of a project asks as soon as it knows its own address, and a project can have
+// several. It is a POST rather than a GET for the same reason. Nothing is
+// changed on disk; what is spent is the claim.
+func (api *SessionAPI) HandleRestoreBoards(w http.ResponseWriter, r *http.Request) {
+	WriteJSON(w, r, http.StatusOK, map[string]any{"boards": api.manager().ClaimDetachedBoards()})
 }
 
 // HandleGetUIZoom returns the UI zoom (root font-size %) saved in this project's

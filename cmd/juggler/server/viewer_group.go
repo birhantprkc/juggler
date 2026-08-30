@@ -11,6 +11,7 @@ package server
 import (
 	"context"
 
+	"juggler/cmd/juggler/core"
 	"juggler/cmd/juggler/mailbox"
 )
 
@@ -21,6 +22,7 @@ const (
 	vgLeave
 	vgSendToAll
 	vgSendRawToAll
+	vgSendToViewer
 	vgStartRequest
 	vgCompleteRequest
 	vgCancelRequest
@@ -34,6 +36,7 @@ type viewerOp struct {
 	kind       viewerOpKind
 	sender     Sender
 	clientID   string
+	viewerID   string
 	msg        any
 	raw        []byte
 	convID     string
@@ -71,6 +74,13 @@ type outboundMsg struct {
 // straight to the requesting engine; see processShellRequest.) The delivery
 // goroutine is the only caller of the (possibly blocking) Sender; Stop discards
 // anything undelivered, which the departed client could no longer receive anyway.
+// viewerEntry is one joined viewer: the identity it named itself by (empty when
+// it named none, which addresses nothing) and its ordered delivery pipeline.
+type viewerEntry struct {
+	viewerID string
+	mb       *mailbox.Mailbox[outboundMsg]
+}
+
 func newClientMailbox(sender Sender) *mailbox.Mailbox[outboundMsg] {
 	return mailbox.NewMailbox(func(v outboundMsg) {
 		if v.raw != nil {
@@ -82,9 +92,23 @@ func newClientMailbox(sender Sender) *mailbox.Mailbox[outboundMsg] {
 }
 
 func (g *viewerGroup) run() {
-	clients := make(map[string]*mailbox.Mailbox[outboundMsg])
+	clients := make(map[string]viewerEntry)
 	requests := make(map[string]context.CancelFunc)
 	shells := make(map[string]context.CancelFunc)
+
+	// Fan a message out to every connection presenting the given viewer id. It is
+	// normally one, but a duplicated tab can carry a copied id, and delivering to
+	// both is a harmless duplicate where picking one would be a coin toss.
+	sendToViewer := func(viewerID string, msg any) {
+		if viewerID == "" {
+			return
+		}
+		for _, e := range clients {
+			if e.viewerID == viewerID {
+				e.mb.Enqueue(outboundMsg{json: msg})
+			}
+		}
+	}
 
 	cancelAll := func() {
 		for id, cancel := range requests {
@@ -100,11 +124,11 @@ func (g *viewerGroup) run() {
 	for op := range g.ch {
 		switch op.kind {
 		case vgJoin:
-			clients[op.clientID] = newClientMailbox(op.sender)
+			clients[op.clientID] = viewerEntry{viewerID: op.viewerID, mb: newClientMailbox(op.sender)}
 
 		case vgLeave:
-			if m := clients[op.clientID]; m != nil {
-				m.Stop()
+			if e, ok := clients[op.clientID]; ok {
+				e.mb.Stop()
 			}
 			delete(clients, op.clientID)
 			remaining := len(clients)
@@ -116,14 +140,17 @@ func (g *viewerGroup) run() {
 			}
 
 		case vgSendToAll:
-			for _, m := range clients {
-				m.Enqueue(outboundMsg{json: op.msg})
+			for _, e := range clients {
+				e.mb.Enqueue(outboundMsg{json: op.msg})
 			}
 
 		case vgSendRawToAll:
-			for _, m := range clients {
-				m.Enqueue(outboundMsg{raw: op.raw})
+			for _, e := range clients {
+				e.mb.Enqueue(outboundMsg{raw: op.raw})
 			}
+
+		case vgSendToViewer:
+			sendToViewer(op.viewerID, op.msg)
 
 		case vgStartRequest:
 			if _, exists := requests[op.convID]; exists {
@@ -164,8 +191,8 @@ func (g *viewerGroup) run() {
 			op.boolResult <- exists
 
 		case vgStop:
-			for _, m := range clients {
-				m.Stop()
+			for _, e := range clients {
+				e.mb.Stop()
 			}
 			cancelAll()
 			return
@@ -174,12 +201,15 @@ func (g *viewerGroup) run() {
 }
 
 func (g *viewerGroup) join(c RealtimeClient) {
-	g.ch <- viewerOp{kind: vgJoin, sender: c, clientID: c.ClientID()}
+	g.ch <- viewerOp{kind: vgJoin, sender: c, clientID: c.ClientID(), viewerID: c.ViewerID()}
 }
 
 func (g *viewerGroup) leave(id string)         { g.ch <- viewerOp{kind: vgLeave, clientID: id} }
 func (g *viewerGroup) sendToAll(msg any)       { g.ch <- viewerOp{kind: vgSendToAll, msg: msg} }
 func (g *viewerGroup) sendRawToAll(raw []byte) { g.ch <- viewerOp{kind: vgSendRawToAll, raw: raw} }
+func (g *viewerGroup) sendToViewer(viewerID string, msg any) {
+	g.ch <- viewerOp{kind: vgSendToViewer, viewerID: viewerID, msg: msg}
+}
 func (g *viewerGroup) completeRequest(id string) {
 	g.ch <- viewerOp{kind: vgCompleteRequest, convID: id}
 }
@@ -280,6 +310,23 @@ func (b serverBroadcaster) BroadcastSessionMetadataChanged(metadata map[string]a
 	})
 }
 
+// BroadcastPinboardChanged publishes one board's whole composition after an
+// edit, so every viewer of that board converges on it without replaying
+// operations.
+//
+// Sent to everyone rather than to the viewers of that board, because the server
+// does not know who they are: which board a document reads is in its URL and is
+// never reported back. Naming the board is what lets a viewer of another one
+// ignore it, and the frame is small enough that this is cheaper than tracking
+// the answer would be.
+func (b serverBroadcaster) BroadcastPinboardChanged(board string, pins []core.Pin) {
+	b.srv.broadcastToAll(map[string]any{
+		"type":  "pinboard-changed",
+		"board": board,
+		"pins":  pins,
+	})
+}
+
 // BroadcastConversationsChanged publishes a single op-tagged
 // conversation-list diff. `op` is one of "created", "deleted",
 // "renamed", "binned", "restored", "binned-deleted", "bin-emptied".
@@ -340,6 +387,15 @@ func (s *Server) viewerSendToAll(msg any) {
 func (s *Server) viewerSendRawToAll(data []byte) {
 	if g := s.viewers(); g != nil {
 		g.sendRawToAll(data)
+	}
+}
+
+// viewerSendToViewer delivers a message to the viewers in the current project
+// presenting viewerID. An empty or unmatched id reaches nobody: this addresses,
+// it does not broadcast, and there is no queue for a viewer that is not here.
+func (s *Server) viewerSendToViewer(viewerID string, msg any) {
+	if g := s.viewers(); g != nil {
+		g.sendToViewer(viewerID, msg)
 	}
 }
 

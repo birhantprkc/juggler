@@ -1,0 +1,356 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+/**
+ * Pinboard store + item-type registry unit tests.
+ *
+ * The board is server-backed session state shared by every viewer, edited with
+ * semantic operations that the server merges. The client's whole job is to keep
+ * its copy true: sanitize anything off the wire, send well-formed ops, adopt what
+ * comes back, and notify only when the board actually differs. `window.fetch` is
+ * stubbed (and restored in a finally) per the convention in recent-models-test;
+ * websocket pushes are simulated with `wsService._emit`, as in
+ * keyless-signin-status-test.
+ * @module unit-tests/pinboard-test
+ */
+
+import { assert } from '../utilities/test-helpers.js';
+import pinboardStore from '../../js/services/pinboard-store.js';
+import pinboardItemRegistry from '../../js/registries/pinboard-item-registry.js';
+import wsService from '../../js/services/websocket.js';
+import PinboardItemType from 'juggler/pinboard-item-type';
+
+/**
+ * @typedef {object} TestResult
+ * @property {number} passed - Number of passed tests.
+ * @property {number} failed - Number of failed tests.
+ * @property {string[]} errors - Error messages for failed tests.
+ */
+
+/**
+ * Stub `window.fetch`, recording every call. The handler decides the response.
+ * @param {(url: string, opts: any) => any} handler - Response factory.
+ * @returns {{calls: {url: string, opts: any}[], restore: () => void}} The
+ *   recorded calls and a restore function (call in a finally).
+ */
+function stubFetch(handler) {
+  const orig = window.fetch;
+  /** @type {{url: string, opts: any}[]} */
+  const calls = [];
+  window.fetch = /** @type {any} */ (async (/** @type {any} */ url, /** @type {any} */ opts) => {
+    calls.push({ url: String(url), opts });
+    return handler(String(url), opts);
+  });
+  return { calls, restore: () => { window.fetch = orig; } };
+}
+
+/**
+ * Seed the store with exactly `pins` by loading against a stubbed server.
+ * @param {any[]} pins - Raw entries the fake GET returns.
+ * @returns {Promise<void>}
+ */
+async function seed(pins) {
+  pinboardStore.reset();
+  const stub = stubFetch(() => ({ ok: true, json: async () => ({ pins }) }));
+  try {
+    await pinboardStore.load();
+  } finally {
+    stub.restore();
+  }
+}
+
+/**
+ * Render a board as its id order, which is what most assertions are about.
+ * @param {any[]} pins - The board.
+ * @returns {string} Comma-separated pin ids.
+ */
+const order = (pins) => pins.map((/** @type {any} */ p) => p.id).join(',');
+
+/**
+ * @param {object} _ctx - Test context (unused).
+ * @returns {Promise<TestResult>} Aggregated results.
+ */
+export async function runTests(_ctx) {
+  let passed = 0;
+  let failed = 0;
+  /** @type {string[]} */
+  const errors = [];
+
+  /**
+   * @param {string} label - Test label.
+   * @param {() => (void | Promise<void>)} fn - Test body.
+   */
+  const run = async (label, fn) => {
+    try {
+      await fn();
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push(`${label}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  await run('load() sanitizes malformed pins', async () => {
+    // The board is long-lived state written by many versions of many extensions,
+    // so nothing off the wire is trusted to have the shape it should.
+    await seed([
+      { id: 'pin_a', type: 'file', config: { path: 'a.go' }, addedAt: '2026-08-27T12:00:00Z' },
+      { id: 'pin_b', type: 'file' },                    // no config ⇒ {}
+      { id: 'pin_c', type: 'file', config: 'nope' },    // non-object config ⇒ {}
+      { type: 'file' },                                 // no id ⇒ dropped
+      { id: 'pin_d' },                                  // no type ⇒ dropped
+      { id: '', type: 'file' },                         // empty id ⇒ dropped
+      null,                                             // junk ⇒ dropped
+    ]);
+    const pins = pinboardStore.get();
+    assert(order(pins) === 'pin_a,pin_b,pin_c', `expected three sanitized pins, got ${order(pins)}`);
+    assert(pins[0].addedAt === '2026-08-27T12:00:00Z', 'addedAt round-trips');
+    assert(JSON.stringify(pins[1].config) === '{}', `missing config must become {}, got ${JSON.stringify(pins[1].config)}`);
+    assert(JSON.stringify(pins[2].config) === '{}', `non-object config must become {}, got ${JSON.stringify(pins[2].config)}`);
+  });
+
+  await run('load() with a non-array payload yields an empty board', async () => {
+    await seed(/** @type {any} */ ('not-an-array'));
+    assert(pinboardStore.get().length === 0, 'a non-array pins value must sanitize to []');
+  });
+
+  await run('add() posts one add op and adopts the returned board', async () => {
+    await seed([]);
+    const stub = stubFetch(() => ({
+      ok: true,
+      json: async () => ({ pins: [{ id: 'pin_srv', type: 'file', config: { path: 'a.go' } }] }),
+    }));
+    let pin;
+    try {
+      pin = await pinboardStore.add('file', { path: 'a.go' });
+    } finally {
+      stub.restore();
+    }
+    assert(stub.calls.length === 1, `expected exactly one request, got ${stub.calls.length}`);
+    // The board is named on every request: a project has several, and the docked
+    // panel is only the one this document happens to be reading.
+    assert(stub.calls[0].url === '/api/session/pinboard/operations?board=main',
+      `wrong endpoint: ${stub.calls[0].url}`);
+    assert(stub.calls[0].opts?.method === 'POST', 'edits are POSTed');
+    const body = JSON.parse(stub.calls[0].opts.body);
+    assert(Array.isArray(body.operations) && body.operations.length === 1,
+      `expected one operation, got ${stub.calls[0].opts.body}`);
+    const op = body.operations[0];
+    assert(op.op === 'add' && op.type === 'file' && op.config.path === 'a.go',
+      `malformed add op: ${JSON.stringify(op)}`);
+    // The id is minted client-side; that is what makes a retried add idempotent
+    // on the server rather than a second pin.
+    assert(typeof op.id === 'string' && op.id.startsWith('pin_'),
+      `add must mint a pin_ id, got ${op.id}`);
+    assert(!('index' in op), 'an add with no index must not send one');
+    // The server's board wins, not the optimistic guess — there is only one
+    // implementation of the merge semantics and it is not this one.
+    assert(order(pinboardStore.get()) === 'pin_srv',
+      `the response board must be adopted, got ${order(pinboardStore.get())}`);
+    assert(pin === null, 'add() returns null when the server board has no pin with that id');
+  });
+
+  await run('remove/move/updateConfig send their own op shapes', async () => {
+    await seed([{ id: 'pin_a', type: 'file' }, { id: 'pin_b', type: 'file' }]);
+    const stub = stubFetch(() => ({ ok: true, json: async () => ({ pins: [] }) }));
+    try {
+      await pinboardStore.remove('pin_a');
+      await pinboardStore.move('pin_b', 0);
+      await pinboardStore.updateConfig('pin_b', { path: 'z.go' });
+    } finally {
+      stub.restore();
+    }
+    const ops = stub.calls.map((c) => JSON.parse(c.opts.body).operations[0]);
+    assert(ops[0].op === 'remove' && ops[0].id === 'pin_a', `bad remove op: ${JSON.stringify(ops[0])}`);
+    assert(ops[1].op === 'move' && ops[1].id === 'pin_b' && ops[1].index === 0,
+      `bad move op: ${JSON.stringify(ops[1])}`);
+    assert(ops[2].op === 'update' && ops[2].config.path === 'z.go',
+      `bad update op: ${JSON.stringify(ops[2])}`);
+  });
+
+  await run('an empty batch sends nothing', async () => {
+    await seed([{ id: 'pin_a', type: 'file' }]);
+    const stub = stubFetch(() => ({ ok: true, json: async () => ({ pins: [] }) }));
+    try {
+      await pinboardStore.applyOperations([]);
+    } finally {
+      stub.restore();
+    }
+    assert(stub.calls.length === 0, 'an empty batch must not hit the network');
+    assert(order(pinboardStore.get()) === 'pin_a', 'an empty batch must not disturb the board');
+  });
+
+  await run('a failed edit rejects and leaves the board alone', async () => {
+    // An edit is a user action. Swallowing its failure would leave the user
+    // looking at a board that does not exist.
+    await seed([{ id: 'pin_a', type: 'file' }]);
+    const stub = stubFetch(() => ({ ok: false, status: 400, json: async () => ({ error: 'nope' }) }));
+    let threw = false;
+    try {
+      await pinboardStore.remove('pin_a');
+    } catch {
+      threw = true;
+    } finally {
+      stub.restore();
+    }
+    assert(threw, 'a rejected edit must reject, not resolve silently');
+    assert(order(pinboardStore.get()) === 'pin_a', 'a failed edit must not change the local board');
+  });
+
+  await run('a pinboard-changed push adopts another viewer\'s board', async () => {
+    await seed([{ id: 'pin_a', type: 'file' }]);
+    wsService._emit('pinboard-changed', { board: 'main', pins: [
+      { id: 'pin_b', type: 'file' },
+      { id: 'pin_a', type: 'file' },
+      { id: 'junk' },
+    ] });
+    assert(order(pinboardStore.get()) === 'pin_b,pin_a',
+      `a push must be adopted and sanitized, got ${order(pinboardStore.get())}`);
+  });
+
+  // A broadcast goes to every viewer of the project, because the server cannot
+  // know which board any of them is reading — which board it is about is in the
+  // frame, and ignoring the rest is this end's job. Without that, arranging a
+  // detached window would rearrange the docked panel.
+  await run('a push about another board is not this document\'s board', async () => {
+    await seed([{ id: 'pin_a', type: 'file' }]);
+    let notifications = 0;
+    const unsubscribe = pinboardStore.subscribe(() => { notifications++; });
+    try {
+      wsService._emit('pinboard-changed', {
+        board: 'board_elsewhere',
+        pins: [{ id: 'pin_z', type: 'file' }],
+      });
+      assert(order(pinboardStore.get()) === 'pin_a',
+        `another board's push must be ignored, board became ${order(pinboardStore.get())}`);
+      assert(notifications === 0, `and must notify nobody, got ${notifications}`);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  await run('subscribers fire on change and not on an identical board', async () => {
+    // Every edit is broadcast back to the viewer that made it. Re-notifying on an
+    // identical board would rebuild the tabs and lose the user's place.
+    await seed([{ id: 'pin_a', type: 'file' }]);
+    let notifications = 0;
+    const unsubscribe = pinboardStore.subscribe(() => { notifications++; });
+    try {
+      wsService._emit('pinboard-changed', { board: 'main', pins: [{ id: 'pin_a', type: 'file' }] });
+      assert(notifications === 0, 'an identical board must not notify');
+      wsService._emit('pinboard-changed', { board: 'main', pins: [{ id: 'pin_a', type: 'file' }, { id: 'pin_b', type: 'file' }] });
+      assert(notifications === 1, `a changed board must notify once, got ${notifications}`);
+      wsService._emit('pinboard-changed', { board: 'main', pins: [{ id: 'pin_b', type: 'file' }, { id: 'pin_a', type: 'file' }] });
+      assert(notifications === 2, `a reorder is a change, got ${notifications} notifications`);
+    } finally {
+      unsubscribe();
+    }
+    wsService._emit('pinboard-changed', { board: 'main', pins: [] });
+    assert(notifications === 2, 'unsubscribe must stop notifications');
+  });
+
+  await run('a throwing subscriber does not stop the others', async () => {
+    await seed([]);
+    let reached = false;
+    const off1 = pinboardStore.subscribe(() => { throw new Error('boom'); });
+    const off2 = pinboardStore.subscribe(() => { reached = true; });
+    try {
+      wsService._emit('pinboard-changed', { board: 'main', pins: [{ id: 'pin_a', type: 'file' }] });
+    } finally {
+      off1();
+      off2();
+    }
+    assert(reached, 'one broken subscriber must not deny the rest the update');
+  });
+
+  await run('registry resolves a source to the first type that accepts it', async () => {
+    class RefusingPin extends PinboardItemType {
+      static MANIFEST = {
+        id: 'test-refusing-pin',
+        name: 'Refusing',
+        version: '1.0.0',
+        description: 'Accepts nothing',
+      };
+      mount() {}
+    }
+    class FilePin extends PinboardItemType {
+      static MANIFEST = {
+        id: 'test-file-pin',
+        name: 'File',
+        version: '1.0.0',
+        description: 'Accepts files',
+        instances: 'multiple',
+      };
+      static canPinSource(source) { return source?.kind === 'file'; }
+      static configFromSource(source) { return { path: source.path }; }
+      mount() {}
+    }
+    class ThrowingPin extends PinboardItemType {
+      static MANIFEST = {
+        id: 'test-throwing-pin',
+        name: 'Throwing',
+        version: '1.0.0',
+        description: 'Explodes when asked',
+      };
+      static canPinSource() { throw new Error('boom'); }
+      mount() {}
+    }
+
+    // Start from an empty registry, so this case is asserting about the types it
+    // registered and not about whatever a lane happened to leave behind. The
+    // shipped `file` pin accepts a file source too, and it is registered before
+    // any probe — so without this the winner is decided by which suite ran first
+    // in this iframe.
+    pinboardItemRegistry.reset();
+
+    // Registration order decides who wins, so put the thrower first: one broken
+    // item type must not deny every other type its source.
+    const registrations = [
+      pinboardItemRegistry.registerClass(/** @type {any} */ (ThrowingPin), { modulePath: '(test)' }),
+      pinboardItemRegistry.registerClass(/** @type {any} */ (RefusingPin), { modulePath: '(test)' }),
+      pinboardItemRegistry.registerClass(/** @type {any} */ (FilePin), { modulePath: '(test)' }),
+    ];
+    try {
+      for (const reg of registrations) {
+        assert(reg.registered, `registerClass refused a probe: ${reg.reason}`);
+      }
+
+      const resolved = pinboardItemRegistry.resolveSource({ kind: 'file', path: '/tmp/a.go' });
+      if (!resolved) throw new Error('a file source must resolve to the file pin');
+      assert(resolved.typeId === 'test-file-pin', `wrong type won: ${resolved.typeId}`);
+      assert(resolved.config.path === '/tmp/a.go', `wrong config: ${JSON.stringify(resolved.config)}`);
+
+      assert(pinboardItemRegistry.resolveSource({ kind: 'nothing-pins-this' }) === null,
+        'an unpinnable source must resolve to null, not throw');
+
+      // The instance is a renderer shared by every pin of its type, so the
+      // registry must hand out the same one rather than build one per lookup.
+      const first = pinboardItemRegistry.getType('test-file-pin');
+      if (!first) throw new Error('the registered file pin must be gettable by id');
+      assert(first === pinboardItemRegistry.getType('test-file-pin'), 'instances must be reused');
+      assert(first.allowsMultiple === true, 'instances:multiple must be readable off the instance');
+      assert(first.describe({}, /** @type {any} */ ({})).title === 'File',
+        'describe() defaults to the manifest name');
+      // A pin whose extension is gone is an ordinary state, not an error: the
+      // board keeps it and renders a placeholder.
+      assert(pinboardItemRegistry.getType('no-such-type') === null,
+        'an unknown type id must be null, not a throw');
+    } finally {
+      pinboardItemRegistry.reset();
+    }
+  });
+
+  await run('PinboardItemType cannot be instantiated directly', async () => {
+    let threw = false;
+    try {
+      new /** @type {any} */ (PinboardItemType)();
+    } catch {
+      threw = true;
+    }
+    assert(threw, 'the abstract base class must refuse construction');
+  });
+
+  pinboardStore.reset();
+  return { passed, failed, errors };
+}

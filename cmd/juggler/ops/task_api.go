@@ -4,6 +4,8 @@
 
 package ops
 
+import "time"
+
 // Public read/stop accessors for background tasks, for consumers outside this
 // package (the worker's generic task-output delivery, cmd/juggler/worker). They
 // run in the same process as this registry but in another package, so they
@@ -66,6 +68,41 @@ func TaskState(taskID string) TaskSnapshot {
 		OutputTruncated: s.OutputTruncated,
 		Found:           true,
 	}
+}
+
+// StopBackgroundTasks stops every running background task under projectRoot, or
+// under every project when projectRoot is empty, and returns how many it
+// signalled. reason is recorded as each task's error text, so say what happened
+// in words the user will read on the tool action later.
+//
+// Background tasks run in their own process group precisely so that a cancelled
+// turn cannot take them with it, which also means process exit does not signal
+// them: without this they are reparented to init and keep running with no handle
+// anywhere. Every task therefore has to be stopped deliberately, at the two
+// moments the handle stops being reachable — a project switch and shutdown.
+//
+// Blocks for at most grace between the polite signal and taking the process
+// group, so a caller on the shutdown path pays a bounded, known cost.
+func StopBackgroundTasks(projectRoot, reason string, grace time.Duration) int {
+	resp := make(chan registryResp, 1)
+	registryCh <- registryOp{kind: "killMatching", projectRoot: projectRoot, errMsg: reason, resp: resp}
+	result := <-resp
+	cmds := result.cmds
+	if len(cmds) == 0 {
+		return result.stopped
+	}
+
+	// One grace for the batch rather than one each: they were all signalled
+	// together, so they are all equally far through it. Aliveness is deliberately
+	// not polled — cmd.ProcessState is written by the spawner's Wait, and reading
+	// it here would race that. Killing a group that has already gone is harmless.
+	if grace > 0 {
+		time.Sleep(grace)
+	}
+	for _, cmd := range cmds {
+		killProcessGroup(cmd)
+	}
+	return result.stopped
 }
 
 // KillTask terminates a running background task by id. Returns true if the task

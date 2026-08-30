@@ -33,11 +33,8 @@ export async function runTests(_ctx) {
   const errors = [];
 
   const { renderMarkdown } = await import('../../sdk/lib/markdown.js');
-  const { default: PlanContextItem } = await import(
-    '../../extensions/juggler-core/context-items/plan-context-item.js'
-  );
-  const { default: TodoContextItem } = await import(
-    '../../extensions/juggler-core/context-items/todo-context-item.js'
+  const { renderPlanMarkdown, renderTodoMarkdown } = await import(
+    '../../extensions/juggler-core/lib/task-lists.js'
   );
 
   /**
@@ -295,7 +292,7 @@ export async function runTests(_ctx) {
   );
   expectAligned(
     'wrapped lines align in a real rendered plan',
-    PlanContextItem._renderPlanMarkdown({
+    renderPlanMarkdown({
       title: 'Sort conversations',
       steps: [
         {
@@ -311,7 +308,7 @@ export async function runTests(_ctx) {
   // --- plan and todo write the markers --------------------------------------
 
   run('plan renders a marker for every status', () => {
-    const md = PlanContextItem._renderPlanMarkdown({
+    const md = renderPlanMarkdown({
       title: 'T',
       steps: [
         { content: 'a', status: 'completed' },
@@ -329,15 +326,15 @@ export async function runTests(_ctx) {
   run('plan says the status in words only for the model', () => {
     /** @type {{steps: Array<{content: string, status: string}>}} */
     const data = { steps: [{ content: 'a', status: 'in_progress' }] };
-    const forPanel = PlanContextItem._renderPlanMarkdown(data);
-    const forModel = PlanContextItem._renderPlanMarkdown(data, { statusWords: true });
+    const forPanel = renderPlanMarkdown(data);
+    const forModel = renderPlanMarkdown(data, { statusWords: true });
     assert(!forPanel.includes('in progress'), `panel copy should have no words:\n${forPanel}`);
     assert(forPanel.includes('[/]'), `panel copy should still mark the state:\n${forPanel}`);
     assert(forModel.includes('_(in progress)_'), `model copy needs the words:\n${forModel}`);
   });
 
   run('todo renders a marker for every status', () => {
-    const md = TodoContextItem._renderTodoMarkdown([
+    const md = renderTodoMarkdown([
       { content: 'a', status: 'completed' },
       { content: 'b', status: 'in_progress' },
       { content: 'c', status: 'pending' },
@@ -350,12 +347,12 @@ export async function runTests(_ctx) {
 
   run('todo says the status in words only for the model', () => {
     const todos = [{ content: 'a', status: 'in_progress' }];
-    const forModel = TodoContextItem._renderTodoMarkdown(todos, { statusWords: true });
+    const forModel = renderTodoMarkdown(todos, { statusWords: true });
     assert(forModel.includes('_(in progress)_'), `model copy needs the words:\n${forModel}`);
   });
 
   run('a plan step survives the round trip through the renderer', () => {
-    const md = PlanContextItem._renderPlanMarkdown({
+    const md = renderPlanMarkdown({
       steps: [
         { content: 'Add a `sortBy` field to the store', status: 'in_progress', result: null },
         { content: 'Wire the menu', status: 'completed', result: 'Landed in sidebar.js' },

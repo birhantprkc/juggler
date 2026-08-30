@@ -9,6 +9,7 @@ import { formatDisplayPath, normalizeFilePath, basename } from 'juggler/item-uti
 import { labeledSubsection } from 'juggler/ui';
 import { fileSourceFromText } from 'juggler/file-source';
 import { checkFileFreshness, recordWrittenHash, restageBaseline, acquirePathLock } from './read-history.js';
+import { absolutePathKey } from './path-approval.js';
 
 /** @type {Record<string, string>} */
 const LANG_MAP = {
@@ -432,13 +433,20 @@ class WriteFileContextItem extends EditBase {
   renderToolActionDetails(wrapper, ctx) {
     const { toolAction, input, helpers } = ctx;
     const filePath = input.file_path || input.path || '';
-    helpers.addFilePath(wrapper, filePath);
+
+    const rawResult = toolAction.get('result');
+    const result = rawResult?.toJSON ? rawResult.toJSON() : rawResult;
+    const wrote = !result?.isError && !result?.cancelled;
+
+    // Only a write that happened offers to pin what it wrote — and it pins the
+    // path, canonicalised, not the content below, which is what the model
+    // intended rather than what is on disk.
+    helpers.addFilePath(wrapper, filePath, undefined,
+      wrote ? { pin: absolutePathKey(ctx.session, filePath) } : {});
 
     // Show outcome (error/cancellation) first, then fall through to also show
     // what the LLM intended to write so the user can inspect it.
-    const rawResult = toolAction.get('result');
-    const result = rawResult?.toJSON ? rawResult.toJSON() : rawResult;
-    if (result?.isError || result?.cancelled) {
+    if (!wrote) {
       this._appendOutcomeBanner(wrapper, result);
     }
 

@@ -121,7 +121,7 @@ func wsPair(t *testing.T) (*WSClient, *websocket.Conn) {
 		t.Fatal("the upgrade never completed")
 	}
 
-	client := NewWSClient(conn, ClientRoleEngine, ClientInfo{}, nil)
+	client := NewWSClient(conn, ClientRoleEngine, "", ClientInfo{}, nil)
 	t.Cleanup(client.Close)
 	return client, peer
 }

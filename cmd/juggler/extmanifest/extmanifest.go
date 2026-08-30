@@ -36,6 +36,11 @@ type Provides struct {
 	Commands     []string `json:"commands,omitempty"`
 	InfoCards    []string `json:"infoCards,omitempty"`
 	FileViewers  []string `json:"fileViewers,omitempty"`
+	// PinboardItems declares the pinboard item types the extension contributes —
+	// the kinds of panel a user can pin to the board. Like info cards these are
+	// viewer-only capabilities: they render DOM and are never loaded in the engine
+	// worker.
+	PinboardItems []string `json:"pinboardItems,omitempty"`
 	// SystemPrompt is a single module path (not a glob) whose default export
 	// `({enabledPluginIds}) => string` contributes terse, durable guidance to
 	// the system prompt — the extension's voice on how to use its tools. It is
@@ -119,6 +124,7 @@ func Validate(m Manifest, engineVersion string) error {
 		len(m.Provides.Commands) == 0 &&
 		len(m.Provides.InfoCards) == 0 &&
 		len(m.Provides.FileViewers) == 0 &&
+		len(m.Provides.PinboardItems) == 0 &&
 		strings.TrimSpace(m.Provides.SystemPrompt) == "" {
 		return fmt.Errorf("manifest %q provides no capabilities", m.ID)
 	}

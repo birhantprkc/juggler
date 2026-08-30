@@ -49,6 +49,7 @@ import { fetchJson } from './http.js';
  * @property {string[]} commands - Served URLs of command modules
  * @property {string[]} infoCards - Served URLs of info-card modules
  * @property {string[]} fileViewers - Served URLs of file-viewer modules
+ * @property {string[]} pinboardItems - Served URLs of pinboard-item modules
  * @property {string} [systemPrompt] - Served URL of the extension's system-prompt contribution module (omitted when none declared)
  */
 
@@ -91,6 +92,7 @@ const TYPE_TO_KEY = /** @type {const} */ ({
   command: 'commands',
   'info-card': 'infoCards',
   'file-viewer': 'fileViewers',
+  'pinboard-item': 'pinboardItems',
 });
 
 /**
@@ -118,7 +120,7 @@ export async function fetchExtensions() {
  * can attribute the loaded class to its extension. Extensions whose manifest
  * failed to validate (`error` set) are skipped — their capabilities are not
  * served.
- * @param {'context-item'|'strategy'|'command'|'info-card'|'file-viewer'} type - Plugin type
+ * @param {'context-item'|'strategy'|'command'|'info-card'|'file-viewer'|'pinboard-item'} type - Plugin type
  * @returns {Promise<CapabilityRef[]>} Capability references in extension order
  */
 export async function getExtensionCapabilities(type) {

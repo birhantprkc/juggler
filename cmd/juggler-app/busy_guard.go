@@ -62,16 +62,44 @@ func serverBusy(serverURL string) int {
 
 // closeAllowed reports whether a WindowClosing event for e should be allowed to
 // proceed unguarded: the app is quitting (teardown shouldn't re-prompt per
-// window), the window is already gone, or the busy-work guard has already cleared
-// it (forceClose). Read through the registry goroutine, like the rest of the
-// shared window state.
+// window), the window is already gone, the busy-work guard has already cleared it
+// (forceClose), or the window is a detached board with another window still
+// behind it.
+//
+// A board is exempt because closing it usually discards nothing: it views a
+// window's server rather than one of its own, so the turn the guard would report
+// belongs to whatever else views that server — which stays open, keeps the
+// server alive (a server is stopped only when no surviving window views it) and
+// keeps running the turn. Asking would be a warning about work this close cannot
+// touch.
+//
+// The exemption ends where that does. A board outlives the window it was
+// detached from, so it can be the last window viewing its server — and then
+// closing it IS what stops the turn, which is exactly the case the guard exists
+// for.
+//
+// Read through the registry goroutine, like the rest of the shared window state.
 func (a *appState) closeAllowed(e *winEntry) bool {
 	var allow bool
 	a.reg(func(st *regState) {
 		w := st.windows[e.id]
-		allow = st.quitting || w == nil || w.forceClose
+		allow = st.quitting || w == nil || w.forceClose ||
+			(isBoardRole(w.role) && serverViewedElsewhere(st, w))
 	})
 	return allow
+}
+
+// serverViewedElsewhere reports whether any window other than w views w's
+// server, and so whether w's close is one the server survives.
+//
+// Must run on the registry goroutine.
+func serverViewedElsewhere(st *regState, w *winEntry) bool {
+	for _, other := range st.windows {
+		if other.id != w.id && other.serverURL == w.serverURL {
+			return true
+		}
+	}
+	return false
 }
 
 // confirmThenClose runs off the main thread after a window close was vetoed. It

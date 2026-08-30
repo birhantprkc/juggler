@@ -14,6 +14,8 @@
 import { revealLabel } from '../components/reveal-button.js';
 import { registerContextMenuProvider } from '../services/context-menu-service.js';
 import { osOpenPath, osRevealPath } from '../services/ops-api.js';
+import pinboardView from '../services/pinboard-view.js';
+import { PIN_SVG } from './icons.js';
 import { applyAnsi, stripAnsi } from '../../sdk/lib/ansi.js';
 import { copyToClipboard } from '../../sdk/lib/clipboard.js';
 import { createCopyButton } from '../../sdk/lib/copy-button.js';
@@ -120,11 +122,18 @@ export function addLlmDescription(wrapper, label, text) {
  * The path fills the full available width of its row, with the copy + reveal
  * buttons pinned to the right. If `info` is provided, it renders as a small
  * annotation (e.g. file size, line count) on its own line below the path row.
+ *
+ * `options.pin` adds a third button that pins the file to the Pinboard. It takes
+ * the absolute path rather than a flag, because the path shown in the row is
+ * often the one the model wrote — relative, and no use as a pin's identity. The
+ * button is omitted entirely when nothing enabled can pin a file, so it is never
+ * present and inert.
  * @param {HTMLElement} wrapper
  * @param {string} path
  * @param {string} [info] - Optional annotation (e.g. "1.2 KB | 42 lines")
+ * @param {{pin?: string}} [options] - `pin` is the absolute path to pin.
  */
-export function addFilePath(wrapper, path, info) {
+export function addFilePath(wrapper, path, info, options = {}) {
   const row = document.createElement('div');
   row.className = 'properties-panel-filepath-row';
 
@@ -146,6 +155,9 @@ export function addFilePath(wrapper, path, info) {
     reveal.setAttribute('path', path);
     actions.appendChild(reveal);
 
+    const pinButton = createPinButton(options.pin || '');
+    if (pinButton) actions.appendChild(pinButton);
+
     row.appendChild(actions);
   }
 
@@ -157,6 +169,29 @@ export function addFilePath(wrapper, path, info) {
     infoEl.textContent = info;
     wrapper.appendChild(infoEl);
   }
+}
+
+/**
+ * The button that puts a file on the Pinboard, or null when there is nothing to
+ * pin or nothing enabled to pin it with. Pinning is a view, not a context
+ * change: the file appears on the board and no conversation is any the wiser.
+ * @param {string} path - Absolute path to pin.
+ * @returns {HTMLElement|null} The button, or null to offer nothing.
+ */
+function createPinButton(path) {
+  if (!path) return null;
+  /** @type {import('juggler/pinboard-item-type').PinSource} */
+  const source = { kind: 'file', path, presentation: 'live' };
+  if (!pinboardView.canPin(source)) return null;
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'properties-panel-filepath-btn';
+  button.title = 'Pin to Pinboard';
+  button.setAttribute('aria-label', 'Pin to Pinboard');
+  button.innerHTML = PIN_SVG;
+  button.addEventListener('click', () => { void pinboardView.addSource(source); });
+  return button;
 }
 
 /**

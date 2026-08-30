@@ -1,0 +1,288 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+package server
+
+import (
+	"encoding/json"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+// relayFrame is a delivered relay as a viewer sees it.
+type relayFrame struct {
+	Type    string          `json:"type"`
+	From    string          `json:"from"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+// testViewerClient builds a joinable WSClient carrying a viewer id, with a
+// buffered send channel standing in for a connection.
+func testViewerClient(id, viewerID string) *WSClient {
+	return &WSClient{
+		ID:       id,
+		Role:     ClientRoleViewer,
+		viewerID: viewerID,
+		send:     make(chan wsMessage, 256),
+		closed:   make(chan struct{}),
+	}
+}
+
+// receivedAnything reports whether a client was sent anything within a short
+// window. Used for the negative cases, where the point is that nothing arrives.
+func receivedAnything(c *WSClient) bool {
+	select {
+	case <-c.send:
+		return true
+	case <-time.After(150 * time.Millisecond):
+		return false
+	}
+}
+
+// TestViewerRelay_ReachesOnlyTheNamedViewer is the whole contract: this
+// addresses one viewer, and the other viewers of the same project are not
+// merely uninterested in the message, they never see it.
+func TestViewerRelay_ReachesOnlyTheNamedViewer(t *testing.T) {
+	s := newTestServerState(t)
+
+	a := testViewerClient("c1", "v_a")
+	b := testViewerClient("c2", "v_b")
+	c := testViewerClient("c3", "v_c")
+	s.joinViewerGroup(a)
+	s.joinViewerGroup(b)
+	s.joinViewerGroup(c)
+
+	s.viewerSendToViewer("v_b", map[string]string{"type": "viewer-relay"})
+
+	select {
+	case msg := <-b.send:
+		if msg.json == nil {
+			t.Fatal("the addressed viewer got an empty message")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the addressed viewer received nothing")
+	}
+	if receivedAnything(a) {
+		t.Error("a viewer that was not addressed received the relay")
+	}
+	if receivedAnything(c) {
+		t.Error("a second unaddressed viewer received the relay")
+	}
+}
+
+// TestViewerRelay_EmptyIDReachesNobody: an unset recipient must not degenerate
+// into a broadcast. This is the failure that would quietly turn a private
+// message between two viewers into one every viewer of the project can read.
+func TestViewerRelay_EmptyIDReachesNobody(t *testing.T) {
+	s := newTestServerState(t)
+
+	a := testViewerClient("c1", "v_a")
+	b := testViewerClient("c2", "")
+	s.joinViewerGroup(a)
+	s.joinViewerGroup(b)
+
+	s.viewerSendToViewer("", map[string]string{"type": "viewer-relay"})
+
+	if receivedAnything(a) {
+		t.Error("an empty recipient id reached a viewer that has one")
+	}
+	if receivedAnything(b) {
+		t.Error("an empty recipient id reached the viewer with no id, which nothing can address")
+	}
+}
+
+// TestViewerRelay_UnknownIDIsDropped: there is no queue behind this. A viewer
+// that has gone never receives what was sent while it was away.
+func TestViewerRelay_UnknownIDIsDropped(t *testing.T) {
+	s := newTestServerState(t)
+
+	a := testViewerClient("c1", "v_a")
+	s.joinViewerGroup(a)
+
+	s.viewerSendToViewer("v_nobody", map[string]string{"type": "viewer-relay"})
+
+	if receivedAnything(a) {
+		t.Error("a relay addressed to an unknown viewer was delivered to someone else")
+	}
+}
+
+// TestViewerRelay_DuplicateIDsBothReceive pins the deliberate answer to a
+// duplicated tab carrying a copied id: both connections get it. Delivering to
+// one of them would mean choosing, and there is nothing to choose on.
+func TestViewerRelay_DuplicateIDsBothReceive(t *testing.T) {
+	s := newTestServerState(t)
+
+	first := testViewerClient("c1", "v_same")
+	second := testViewerClient("c2", "v_same")
+	s.joinViewerGroup(first)
+	s.joinViewerGroup(second)
+
+	s.viewerSendToViewer("v_same", map[string]string{"type": "viewer-relay"})
+
+	if !receivedAnything(first) {
+		t.Error("the first connection under the shared id received nothing")
+	}
+	if !receivedAnything(second) {
+		t.Error("the second connection under the shared id received nothing")
+	}
+}
+
+// TestViewerRelay_LeavingStopsDelivery: a viewer that has left the group is not
+// addressable, even under an id that was valid a moment ago.
+func TestViewerRelay_LeavingStopsDelivery(t *testing.T) {
+	s := newTestServerState(t)
+
+	a := testViewerClient("c1", "v_a")
+	b := testViewerClient("c2", "v_b")
+	s.joinViewerGroup(a)
+	s.joinViewerGroup(b)
+	s.leaveViewerGroup("c2")
+
+	s.viewerSendToViewer("v_b", map[string]string{"type": "viewer-relay"})
+
+	if receivedAnything(b) {
+		t.Error("a departed viewer was still delivered to")
+	}
+	if receivedAnything(a) {
+		t.Error("a relay to a departed viewer fell through to another one")
+	}
+}
+
+// --- Over a real socket, through the inbound dispatch ---
+
+// nextRelay reads frames until a viewer-relay arrives, or fails.
+func nextRelay(t *testing.T, conn *websocket.Conn) relayFrame {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for {
+		_, msgBytes, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("no relay reached the viewer: %v", err)
+		}
+		var frame relayFrame
+		if err := json.Unmarshal(msgBytes, &frame); err != nil {
+			continue
+		}
+		if frame.Type == "viewer-relay" {
+			return frame
+		}
+	}
+}
+
+// expectNoRelay reads for a short window and fails if a relay arrives. Other
+// frames (the connect seeds, heartbeats) are skipped: the assertion is about
+// this message type reaching this viewer, not about the link being silent.
+func expectNoRelay(t *testing.T, conn *websocket.Conn) {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(400 * time.Millisecond))
+	for {
+		_, msgBytes, err := conn.ReadMessage()
+		if err != nil {
+			return // the read deadline expiring is the pass
+		}
+		var frame relayFrame
+		if err := json.Unmarshal(msgBytes, &frame); err != nil {
+			continue
+		}
+		if frame.Type == "viewer-relay" {
+			t.Fatalf("a relay reached a viewer it was not addressed to, from %q", frame.From)
+		}
+	}
+}
+
+// dialRole opens a real socket in the given role with the given viewer id.
+func dialRole(t *testing.T, ts *httptest.Server, role, viewerID string) *websocket.Conn {
+	t.Helper()
+	dialURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?role=" + role + "&viewerId=" + viewerID
+	conn, resp, err := websocket.DefaultDialer.Dial(dialURL, nil)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("%s WS dial failed: %v", role, err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}
+
+// TestViewerRelay_PayloadTravelsVerbatim drives the whole path over two real
+// sockets. The server routes the message and reads nothing inside it, so what
+// arrives is byte-for-byte what was sent.
+func TestViewerRelay_PayloadTravelsVerbatim(t *testing.T) {
+	_, ts := newViewerSocketServer(t)
+
+	sender := dialRole(t, ts, "viewer", "v_sender")
+	recipient := dialRole(t, ts, "viewer", "v_recipient")
+
+	const payload = `{"kind":"active-context","conversation":{"id":"conv_1","title":"Auth \"refactor\""},"nested":[1,2,{"deep":null}]}`
+	if err := sender.WriteMessage(websocket.TextMessage,
+		[]byte(`{"type":"viewer-relay","to":"v_recipient","payload":`+payload+`}`)); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	frame := nextRelay(t, recipient)
+	if string(frame.Payload) != payload {
+		t.Errorf("payload arrived as %s, want %s", frame.Payload, payload)
+	}
+	if frame.From != "v_sender" {
+		t.Errorf("relay arrived from %q, want %q", frame.From, "v_sender")
+	}
+}
+
+// TestViewerRelay_FromCannotBeForged: the sender is taken from the connection,
+// never from the message, so a viewer cannot pass itself off as another one.
+func TestViewerRelay_FromCannotBeForged(t *testing.T) {
+	_, ts := newViewerSocketServer(t)
+
+	sender := dialRole(t, ts, "viewer", "v_sender")
+	recipient := dialRole(t, ts, "viewer", "v_recipient")
+
+	if err := sender.WriteMessage(websocket.TextMessage,
+		[]byte(`{"type":"viewer-relay","to":"v_recipient","from":"v_someone_else","payload":{}}`)); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	frame := nextRelay(t, recipient)
+	if frame.From != "v_sender" {
+		t.Errorf("a forged sender was believed: relay arrived from %q, want %q", frame.From, "v_sender")
+	}
+}
+
+// TestViewerRelay_EngineCannotRelay: the engine has nothing to say to a single
+// viewer that engine-bridge does not already carry, and it is not a viewer, so
+// the case is refused rather than routed.
+func TestViewerRelay_EngineCannotRelay(t *testing.T) {
+	_, ts := newViewerSocketServer(t)
+
+	recipient := dialRole(t, ts, "viewer", "v_recipient")
+	engine := dialRole(t, ts, "engine", "v_engine")
+
+	if err := engine.WriteMessage(websocket.TextMessage,
+		[]byte(`{"type":"viewer-relay","to":"v_recipient","payload":{}}`)); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	expectNoRelay(t, recipient)
+}
+
+// TestViewerRelay_UnknownRecipientOverTheSocket: the sender is told nothing and
+// nothing else is disturbed. Best-effort means exactly this.
+func TestViewerRelay_UnknownRecipientOverTheSocket(t *testing.T) {
+	_, ts := newViewerSocketServer(t)
+
+	sender := dialRole(t, ts, "viewer", "v_sender")
+	bystander := dialRole(t, ts, "viewer", "v_bystander")
+
+	if err := sender.WriteMessage(websocket.TextMessage,
+		[]byte(`{"type":"viewer-relay","to":"v_nobody","payload":{}}`)); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	expectNoRelay(t, bystander)
+	expectNoRelay(t, sender)
+}

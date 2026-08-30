@@ -7,6 +7,7 @@ import EditBase from './edit-base.js';
 import { editFile, readFile } from 'juggler/ops';
 import { normalizeFilePath, basename } from 'juggler/item-utils';
 import { checkFileFreshness, recordWrittenHash, restageBaseline, acquirePathLock } from './read-history.js';
+import { absolutePathKey } from './path-approval.js';
 
 /**
  * @typedef {object} ReplaceTextParams
@@ -470,12 +471,19 @@ class ReplaceTextContextItem extends EditBase {
   renderToolActionDetails(wrapper, ctx) {
     const { toolAction, input, helpers } = ctx;
     const filePath = input.file_path || input.path || '';
-    helpers.addFilePath(wrapper, filePath);
 
     const result = toolAction.get('result');
     const isError = result
       ? (result.get ? result.get('isError') : result?.isError)
       : false;
+    const cancelled = result
+      ? (result.get ? result.get('cancelled') : result?.cancelled)
+      : false;
+
+    // An edit that happened offers to pin the file it changed, at its
+    // canonical path. A failed or cancelled one changed nothing to look at.
+    helpers.addFilePath(wrapper, filePath, undefined,
+      (!isError && !cancelled) ? { pin: absolutePathKey(ctx.session, filePath) } : {});
 
     if (isError) {
       if (input.old_string !== undefined) {

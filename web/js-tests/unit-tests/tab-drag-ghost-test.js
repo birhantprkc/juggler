@@ -111,7 +111,7 @@ function dragBy(bar, tab) {
     tab
   );
   document.dispatchEvent(new PointerEvent('pointermove', {
-    pointerId: 1, pointerType: 'touch', clientX: 100, clientY: grabY + DRAG_DY, bubbles: true,
+    pointerId: 1, buttons: 1, pointerType: 'touch', clientX: 100, clientY: grabY + DRAG_DY, bubbles: true,
   }));
 
   const ghostEl = /** @type {HTMLElement|null} */ (bar.querySelector('.drag-ghost'));

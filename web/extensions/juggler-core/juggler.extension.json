@@ -17,6 +17,7 @@
     "strategies": ["strategies/*-strategy-type.js"],
     "commands": ["commands/*-command-type.js"],
     "infoCards": ["cards/*-card.js"],
+    "pinboardItems": ["pins/*-pin.js"],
     "fileViewers": ["viewers/*-file-viewer.js"],
     "systemPrompt": "system-prompt-contribution.js",
     "tests": ["_tests/*-test.js"]

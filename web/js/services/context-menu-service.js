@@ -275,6 +275,23 @@ export function resolveMenu(start, event) {
 }
 
 /**
+ * Open the shared popup menu at viewport coordinates, for a control whose whole
+ * job is to offer a menu — an overflow button, say — rather than for a
+ * right-click. It is the same menu the providers build: the same chrome, the same
+ * outside-pointer and Escape/Back dismissal, the same viewport clamping, and the
+ * same one-at-a-time rule.
+ * @param {ContextMenuItem[]} items - The rows to show.
+ * @param {number} x - Viewport x to open at, usually a button's left edge.
+ * @param {number} y - Viewport y to open at, usually a button's bottom edge.
+ * @returns {void}
+ */
+export function openMenuAt(items, x, y) {
+  const rows = (items || []).filter(Boolean);
+  if (!rows.length) return;
+  showMenu(rows, x, y);
+}
+
+/**
  * Align the Wails runtime's native-menu policy with juggler's runtime
  * dev-mode by seeding `window._wails.environment.Debug`. Idempotent.
  * @private

@@ -1126,7 +1126,8 @@ class ExecuteContextItem extends ContextItem {
       helpers,
       describeStatus: describeTaskStatus,
       initialState: persistedTask,
-      onStop: () => shellKill({ shell_id: taskId }),
+      convId: this.conversation.id,
+      onStop: () => shellKill({ shell_id: taskId, conv_id: this.conversation.id }),
       stopLabel: 'Stop task'
     });
 

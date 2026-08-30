@@ -71,16 +71,34 @@ func (a *appState) handleWindowControl(w http.ResponseWriter, r *http.Request) {
 	}
 	id, action := parts[0], parts[1]
 
-	// "new" doesn't need the originating window — it opens another one. If the
-	// caller includes theme/mode/zoom, pass them through so the child window's
-	// first paint and native chrome match the source window. theme is the concrete
-	// first-frame colour; mode is the opener's selected mode, carried so 'system'/
-	// 'auto' survives into the child instead of collapsing to a fixed theme (zoom
-	// only seeds a child project that has no saved size of its own; the page gives
-	// its session priority).
+	// "new" opens another window, carrying whatever the caller handed over so the
+	// child's first paint and native chrome match the source window (see
+	// windowOpts).
+	//
+	// An ordinary new window doesn't need the originating one — it is told which
+	// project to open. A detached pinboard does, twice over: it is a view of a
+	// conversation in the asking window's project, so it opens on that window's
+	// own spec, which is what puts the two on one server; and it is remembered as
+	// that window's board, which is what takes it with the window when it closes.
+	//
+	// Taken with it, not closed by it. A board's own arrangement outlives its
+	// window closing this way — one left open on a conversation with work running
+	// in it is the reason to detach a board at all — and comes back when the
+	// window it belonged to does.
 	if action == "new" {
-		zoom, _ := strconv.Atoi(r.URL.Query().Get("zoom"))
-		a.openWindowForProject(r.URL.Query().Get("project"), r.URL.Query().Get("theme"), r.URL.Query().Get("mode"), zoom)
+		opts := windowOptsFromQuery(r.URL.Query())
+		if opts.isPinboard() {
+			spec, ok := a.windowSpecOf(id)
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			opts.openedBy = id
+			a.openWindow(spec, opts)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		a.openWindowForProject(r.URL.Query().Get("project"), opts)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -178,6 +196,14 @@ func (a *appState) handleWindowControl(w http.ResponseWriter, r *http.Request) {
 				e.win.ToggleMaximise()
 			case "close":
 				e.win.Close()
+			case "raise":
+				// Something in another window pointed at this one — a detached
+				// pinboard revealing a thread, which is carried out here because
+				// this is where the columns are. Un-minimise first: the window
+				// the user is being sent to may be the one they put away.
+				e.win.Restore()
+				e.win.Show()
+				e.win.Focus()
 			}
 			done <- e.win.IsMaximised()
 		})

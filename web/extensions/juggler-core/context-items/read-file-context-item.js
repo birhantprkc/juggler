@@ -6,6 +6,7 @@
 import ContextItem from 'juggler/context-item';
 import { readFile } from 'juggler/ops';
 import { formatDisplayPath, formatFileSize, formatFileContentForLLM, normalizeFilePath, injectFileContentStyles, basename } from 'juggler/item-utils';
+import { addFilePath } from 'juggler/ui';
 import { fileSourceFromReadResult } from 'juggler/file-source';
 import { extractFileSource } from 'juggler/registry';
 import { toolInputPath, dirname, isPathAllowed, folderGrantSuggestions, stripInjectedApprovalFlags, absolutePathKey } from './path-approval.js';
@@ -358,16 +359,31 @@ class ReadFileContextItem extends ContextItem {
    */
   createPropertiesPanelElement() {
     const data = /** @type {ReadFileResult} */ (this.data);
+    const absolutePath = this.getAbsolutePath(data.path);
+
+    // The path row is the panel's own rather than the view's, so it can carry
+    // the Pinboard button beside copy and reveal. Pinning is a live path, not
+    // these bytes: the pin shows the file as it is now, which is a different
+    // thing from what this read recorded and is meant to be.
+    const container = document.createElement('div');
+    container.className = 'file-content-expanded';
+    const info = (data.exists !== false && data.size)
+      ? [formatFileSize(data.size), data.totalLines ? `${data.totalLines} lines` : ''].filter(Boolean).join(' | ')
+      : undefined;
+    addFilePath(container, absolutePath || data.path || 'No file', info, { pin: absolutePath });
+
     const view = /** @type {any} */ (document.createElement('file-view'));
+    view.showPath = false;
     // A persisted result does not record how its read was authorised, but a
     // recorded read of an out-of-root path is by construction one the user
     // approved — so the panel may re-read it on the same footing.
     const outOfRootApproved = !!this.messageThread && !isPathAllowed(this, data.path || '');
-    view.setSource(fileSourceFromReadResult(data, this.getAbsolutePath(data.path), {
+    view.setSource(fileSourceFromReadResult(data, absolutePath, {
       conversationId: this.conversation?.id,
       access: { outOfRootApproved },
     }));
-    return view;
+    container.appendChild(view);
+    return container;
   }
 
   /**

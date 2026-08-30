@@ -6,7 +6,7 @@
 import ContextItem from 'juggler/context-item';
 import { readFile, writeFile, stat } from 'juggler/ops';
 import { createElement, injectStylesOnce } from 'juggler/ui';
-import { parseMemory, appendEntry, removeMatching } from './memory/memory-format.js';
+import { parseMemory, appendEntry, removeMatching } from '../lib/memory-format.js';
 
 /**
  * Last-known-good memory content per path. A transient read failure on an

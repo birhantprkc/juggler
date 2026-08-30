@@ -69,8 +69,7 @@ When a conversation still outgrows the window — the estimate drifts low, or th
 provider rejects the turn with its own context-overflow error — Juggler recovers
 once instead of failing the turn:
 
-1. The status line shows *"Summarizing earlier conversation to fit the
-   context window"*.
+1. The status line shows *"Compacting"*.
 2. The oldest history is summarized into a compaction-summary item; the most
    recent items stay verbatim. Tool calls and their results fold atomically,
    so a pair is never split.

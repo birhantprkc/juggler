@@ -28,7 +28,7 @@
  * Because the format is strict, writers can reserialize the whole file
  * canonically on every write rather than attempt surgical line edits — the
  * round-trip is lossless by construction for anything that conforms.
- * @module juggler-core/context-items/memory/memory-format
+ * @module lib/memory-format
  */
 
 /**

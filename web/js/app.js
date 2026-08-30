@@ -35,6 +35,7 @@ import scheduledSendService from './services/scheduled-send-service.js';
 import { initViewportFit } from './utils/viewport-fit.js';
 import { reportDraftsFlushed } from '../sdk/lib/window-control.js';
 import { installLinkGuard } from './services/link-guard.js';
+import { isPinboardView } from './utils/view-mode.js';
 import './services/tooltip-manager.js'; // styled hover/focus tooltips (self-installs on import)
 import { MAX_CONVERSATIONS, CONVERSATION_LIMIT_MESSAGE } from './model/session.js';
 import { normalizeAttachments } from './utils/attachments.js';
@@ -233,16 +234,21 @@ class JugglerApp {
     // is the user's status quo, not news.
     lastFailedModules = collectFailedModules();
 
-    // Initialize strategy switcher (Shift+Tab keyboard shortcut)
-    this._strategySwitcher = new StrategySwitcher();
-    this._strategySwitcher.init();
+    // A detached board has no composer to switch a strategy, model or thinking
+    // level for. Everything skipped in this mode is skipped because the surface
+    // it acts on is not here — see utils/view-mode.js.
+    if (!isPinboardView()) {
+      // Initialize strategy switcher (Shift+Tab keyboard shortcut)
+      this._strategySwitcher = new StrategySwitcher();
+      this._strategySwitcher.init();
 
-    // Same hold-to-cycle gesture for models (⌥⌘M / Ctrl+Alt+M) and thinking
-    // levels (⌥⌘T / Ctrl+Alt+T)
-    this._modelCycler = new ModelCycler();
-    this._modelCycler.init();
-    this._thinkingCycler = new ThinkingCycler();
-    this._thinkingCycler.init();
+      // Same hold-to-cycle gesture for models (⌥⌘M / Ctrl+Alt+M) and thinking
+      // levels (⌥⌘T / Ctrl+Alt+T)
+      this._modelCycler = new ModelCycler();
+      this._modelCycler.init();
+      this._thinkingCycler = new ThinkingCycler();
+      this._thinkingCycler.init();
+    }
 
     // Listen for plugin file changes (hot reload). The reload itself is silent:
     // the user edited the file, so being told it changed is no news. Only a
@@ -275,48 +281,54 @@ class JugglerApp {
     // navigates the app's window off its own page. See services/link-guard.js.
     installLinkGuard(document);
 
-    document.addEventListener('duplicate-conversation', () => {
-      this._handleDuplicateConversation();
-    });
-
+    // The close handshake is answered in every mode. A detached board has no
+    // drafts to flush, but the native host waits four seconds for an answer
+    // either way, so silence here would be charged to every window close.
     window.addEventListener('juggler:window-close-requested', (e) => {
       const token = /** @type {CustomEvent} */ (e).detail?.ackToken;
       void this._flushDraftsForClose(token);
     });
 
-    // Rollback and branch handlers
-    document.addEventListener('rollback-from-item', (e) => {
-      const customEvent = /** @type {CustomEvent} */ (e);
-      this._handleRollbackFromItem(customEvent.detail.itemId);
-    });
+    if (!isPinboardView()) {
+      document.addEventListener('duplicate-conversation', () => {
+        this._handleDuplicateConversation();
+      });
 
-    document.addEventListener('branch-from-item', (e) => {
-      const customEvent = /** @type {CustomEvent} */ (e);
-      this._handleBranchFromItem(customEvent.detail.itemId);
-    });
+      // Rollback and branch handlers
+      document.addEventListener('rollback-from-item', (e) => {
+        const customEvent = /** @type {CustomEvent} */ (e);
+        this._handleRollbackFromItem(customEvent.detail.itemId);
+      });
 
+      document.addEventListener('branch-from-item', (e) => {
+        const customEvent = /** @type {CustomEvent} */ (e);
+        this._handleBranchFromItem(customEvent.detail.itemId);
+      });
 
-
-    // Save on page unload (page close, refresh, navigate away)
-    // This ensures UI state like activeConversationId is persisted
-    // Using pagehide (not visibilitychange) to avoid saving on browser tab switches
-    window.addEventListener('pagehide', () => {
-      const session = this._connectionManager?.getSession();
-      if (session) {
-        this.flushComposerDrafts();
-        // Save scroll positions for all conversations before page close
-        session.conversations.forEach((conversation) => {
-          const tab = conversation.getTabElement();
-          const conversationArea = tab?.getConversationArea();
-          if (conversationArea) {
-            // @ts-ignore - saveScrollPositionImmediately is a method on conversation-area
-            conversationArea.saveScrollPositionImmediately();
-          }
-        });
-        // Use saveImmediately to bypass debounce on page close
-        session.saveImmediately();
-      }
-    });
+      // Save on page unload (page close, refresh, navigate away)
+      // This ensures UI state like activeConversationId is persisted
+      // Using pagehide (not visibilitychange) to avoid saving on browser tab switches
+      // A detached board is excluded: it has no composer and no scroll position
+      // of its own, and the session state this writes — which conversation is
+      // active — belongs to the window the user actually works in.
+      window.addEventListener('pagehide', () => {
+        const session = this._connectionManager?.getSession();
+        if (session) {
+          this.flushComposerDrafts();
+          // Save scroll positions for all conversations before page close
+          session.conversations.forEach((conversation) => {
+            const tab = conversation.getTabElement();
+            const conversationArea = tab?.getConversationArea();
+            if (conversationArea) {
+              // @ts-ignore - saveScrollPositionImmediately is a method on conversation-area
+              conversationArea.saveScrollPositionImmediately();
+            }
+          });
+          // Use saveImmediately to bypass debounce on page close
+          session.saveImmediately();
+        }
+      });
+    }
 
     // Setup WebSocket connection and initialize session
     if (this._connectionManager) {
@@ -433,20 +445,26 @@ class JugglerApp {
       this._uiEventManager.setSession(session);
     }
 
-    // Alert (chime + tab flash + dock/tab notification) when a conversation needs
-    // attention while unwatched.
-    initAttention(session);
+    // A detached board is a second view of a window that is already doing all
+    // of this: alerting for the same conversations, holding the same claim on
+    // due scheduled sends, and answering the same conversation shortcuts. Doing
+    // it twice would be heard twice.
+    if (!isPinboardView()) {
+      // Alert (chime + tab flash + dock/tab notification) when a conversation needs
+      // attention while unwatched.
+      initAttention(session);
 
-    // Poll every conversation for a due scheduled send ("send after a delay")
-    // and fire it — regardless of which thread is currently on screen.
-    scheduledSendService.start(session);
+      // Poll every conversation for a due scheduled send ("send after a delay")
+      // and fire it — regardless of which thread is currently on screen.
+      scheduledSendService.start(session);
+
+      // Attach the conversation-level keyboard command handlers (new/bin/jump/
+      // toggle-file-editing) and install the global shortcut dispatcher.
+      registerConversationShortcuts(session);
+    }
 
     // Wire global header controls (undo/redo + project path)
     setupHeaderControls(session);
-
-    // Attach the conversation-level keyboard command handlers (new/bin/jump/
-    // toggle-file-editing) and install the global shortcut dispatcher.
-    registerConversationShortcuts(session);
 
     // Name the native OS window after the session's project so the macOS
     // "Window" menu and the Windows/Linux taskbar can tell windows apart
@@ -465,8 +483,18 @@ class JugglerApp {
       overlay.setSession(session);
     }
 
-    // First-run walkthrough — best-effort, never blocks startup.
-    void this._maybeShowOnboarding();
+    // Wire the pinboard shell to the session: it resolves the active context its
+    // pins render against, and fetches the project's board once there is one.
+    const pinboard = /** @type {any} */ (document.querySelector('pinboard-shell'));
+    if (pinboard && typeof pinboard.setSession === 'function') {
+      pinboard.setSession(session);
+    }
+
+    // First-run walkthrough — best-effort, never blocks startup. Not in a
+    // detached board: it is opened from a window that is already past it.
+    if (!isPinboardView()) {
+      void this._maybeShowOnboarding();
+    }
   }
 
   /**

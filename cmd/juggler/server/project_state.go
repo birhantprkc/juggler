@@ -13,8 +13,14 @@ import (
 
 	"juggler/cmd/juggler/core"
 	"juggler/cmd/juggler/mcp"
+	"juggler/cmd/juggler/ops"
 	"juggler/internal/jlog"
 )
+
+// taskStopGrace is how long a background task has to act on the polite stop
+// signal before its process group is taken. Short on purpose: it is paid on the
+// shutdown path, where the alternative to a brisk kill is a hang.
+const taskStopGrace = 250 * time.Millisecond
 
 // projectState holds the per-project resources that get swapped wholesale
 // when the user opens a different project at runtime. Reads are lock-free
@@ -173,6 +179,14 @@ func (s *Server) SwitchProject(newPath string) error {
 	if old != nil {
 		go func(prev *projectState) {
 			time.Sleep(250 * time.Millisecond)
+			// A background task runs in the project it was started in and is
+			// addressed through that project's session. Once the switch is done
+			// nothing can reach it — not to read it, not to stop it — so leaving
+			// it running would leave a process nobody can see doing work in a
+			// directory nobody is looking at.
+			if stopped := ops.StopBackgroundTasks(prev.projectPath, "Stopped when the project changed", taskStopGrace); stopped > 0 {
+				jlog.Info("⏹️  Stopped %d background task(s) from the previous project", stopped)
+			}
 			if prev.fileWatcher != nil {
 				prev.fileWatcher.Stop()
 			}

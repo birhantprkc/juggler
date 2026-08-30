@@ -57,6 +57,21 @@ type ShellCancelRequest struct {
 	ShellID string `json:"shellId"` // ID of shell to cancel
 }
 
+// ViewerRelay is one viewer addressing another by viewer id.
+//
+// The server routes it and reads nothing inside it: the payload is opaque and
+// travels verbatim, so what two viewers say to each other stays between them and
+// needs no server-side release to change. What the server does supply is the
+// sender — the relay it delivers carries the sending connection's own viewer id
+// as `from`, never a value taken from the message, so a viewer cannot claim to
+// be another one. Nothing is persisted and nothing is queued for a viewer that
+// is not connected; a relay to an absent or unknown id is dropped.
+type ViewerRelay struct {
+	Type    string          `json:"type"`    // "viewer-relay"
+	To      string          `json:"to"`      // Viewer id to deliver to
+	Payload json.RawMessage `json:"payload"` // Opaque to the server
+}
+
 // GenericWSMessage is used to determine message type before parsing
 type GenericWSMessage struct {
 	Type string `json:"type,omitempty"`

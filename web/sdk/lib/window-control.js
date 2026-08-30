@@ -53,6 +53,30 @@ export function postWindowControl(endpoint, query = '') {
 }
 
 /**
+ * Bring this window to the front. Used when something in another window points
+ * at this one — a detached pinboard revealing a thread in the conversation,
+ * which happens in the window that owns the board, not the one that was clicked.
+ *
+ * The native host raises the real window; a browser tab can only ask, and a
+ * browser that declines to raise a window nobody clicked on is within its
+ * rights. Best-effort in both directions, because the reveal itself has already
+ * happened either way.
+ * @returns {void}
+ */
+export function raiseThisWindow() {
+  const url = windowControlURL('control', '?action=raise');
+  if (url) {
+    void fetch(url, { method: 'POST' }).catch(() => {});
+    return;
+  }
+  try {
+    window.focus();
+  } catch {
+    // Nothing to recover: the window stays where it is.
+  }
+}
+
+/**
  * Tell the native host that this page has finished flushing its drafts, so the
  * close/quit it announced may proceed. The host is blocked waiting for this —
  * unlike the other control signals it is a reply, not a command, and the token

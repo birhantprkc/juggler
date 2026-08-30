@@ -127,6 +127,7 @@ const (
 type WSClient struct {
 	ID        string     // Unique identifier for this client connection
 	Role      ClientRole // Role: engine or viewer
+	viewerID  string     // Caller-supplied viewer identity, or empty (see sanitiseViewerID)
 	info      ClientInfo // Display metadata captured at connect (see clientInfoFromRequest)
 	conn      *websocket.Conn
 	send      chan wsMessage // Channel for outgoing messages
@@ -153,18 +154,20 @@ func generateClientID() string {
 	return fmt.Sprintf("client_%s", hex.EncodeToString(b))
 }
 
-// NewWSClient creates a new WSClient and starts its writer goroutine. info is
-// display metadata for the connected-clients UI; stats may be nil (accounting
+// NewWSClient creates a new WSClient and starts its writer goroutine. viewerID
+// is the caller's own stable identity, already sanitised, and may be empty; info
+// is display metadata for the connected-clients UI; stats may be nil (accounting
 // disabled).
-func NewWSClient(conn *websocket.Conn, role ClientRole, info ClientInfo, stats *wsStats) *WSClient {
+func NewWSClient(conn *websocket.Conn, role ClientRole, viewerID string, info ClientInfo, stats *wsStats) *WSClient {
 	client := &WSClient{
-		ID:     generateClientID(),
-		Role:   role,
-		info:   info,
-		conn:   conn,
-		send:   make(chan wsMessage, 256), // Buffered to prevent blocking senders
-		closed: make(chan struct{}),
-		stats:  stats,
+		ID:       generateClientID(),
+		Role:     role,
+		viewerID: viewerID,
+		info:     info,
+		conn:     conn,
+		send:     make(chan wsMessage, 256), // Buffered to prevent blocking senders
+		closed:   make(chan struct{}),
+		stats:    stats,
 	}
 	// The upgrade response is itself something this connection has just carried,
 	// so the link starts idle from now rather than from the zero time.
@@ -389,6 +392,7 @@ func (c *WSClient) IdleOutbound() time.Duration {
 func (c *WSClient) ClientID() string       { return c.ID }
 func (c *WSClient) ClientRole() ClientRole { return c.Role }
 func (c *WSClient) ClientInfo() ClientInfo { return c.info }
+func (c *WSClient) ViewerID() string       { return c.viewerID }
 
 // Sender is the interface for broadcasting messages to a WebSocket client.
 // WSClient satisfies this interface.

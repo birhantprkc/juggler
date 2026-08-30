@@ -72,6 +72,25 @@ type winEntry struct {
 	spec      windowSpec // what this window views (project or URL) — its workspace identity
 	serverURL string     // the server this window posts/reads its geometry to (immutable)
 
+	// role is what this window is for — roleMain for the app, or this board's own
+	// rolePinboardFor slot. It keys the geometry this window reads and writes,
+	// and it is what keeps a board out of the restored workspace file (a board is
+	// restored from its project's session instead). Immutable.
+	role string
+
+	// board is the pinboard composition this window is, for a detached board, and
+	// empty for the app. It is what a board's own state is looked up by when the
+	// window is closed for good.
+	board string
+
+	// openedBy is the id of the window a detached board was opened from, and
+	// empty for everything else. It is how the app knows which boards to take
+	// with a window when it closes: a board's own server cannot say, because two
+	// main windows on one project share it. A window whose opener has already
+	// gone keeps a dangling id, which matches nothing and is exactly right —
+	// there is nobody left to be closed alongside.
+	openedBy string
+
 	// currentTheme is the last page-reported theme for this native window. It is
 	// used to paint chrome immediately on show and as the inherited theme for
 	// Session ▸ New Window.
@@ -93,6 +112,13 @@ type winEntry struct {
 	// real close proceed instead of vetoing and re-prompting. Owned by the
 	// registry goroutine like the rest of winEntry's shared fields.
 	forceClose bool
+
+	// retainBoard is set (via the registry goroutine) when this board window is
+	// being taken down with the window that opened it, rather than closed on its
+	// own. The difference is the whole of what the board keeps: a window put away
+	// with its owner comes back with it, and one closed on its own is finished
+	// with. Owned by the registry goroutine, like forceClose beside it.
+	retainBoard bool
 
 	// closing is set once this window's teardown has been claimed, so only the
 	// first WindowClosing for it runs one. Owned by the registry goroutine, and
@@ -207,6 +233,21 @@ func (a *appState) window(id string) *winEntry {
 	return e
 }
 
+// windowSpecOf reports what a window views, read on the registry goroutine
+// because the spec is mutable — the page reports its project as it switches, so
+// reading the field off the entry afterwards would race that write. Used to open
+// a detached board onto exactly the project the window asking for it has open.
+func (a *appState) windowSpecOf(id string) (windowSpec, bool) {
+	var spec windowSpec
+	var ok bool
+	a.reg(func(st *regState) {
+		if e := st.windows[id]; e != nil {
+			spec, ok = e.spec, true
+		}
+	})
+	return spec, ok
+}
+
 // singleInstanceID is the unique key for the single-instance lock. A second
 // `juggler-app` launch fails to acquire it, hands its argv to the first
 // instance (onSecondInstance), and exits — so one process owns all windows.
@@ -250,6 +291,11 @@ func (a *appState) initApplication() {
 		// synchronously, so the real decision happens asynchronously and a
 		// confirmed quit re-issues app.Quit() with the quitting flag set.
 		ShouldQuit: a.shouldQuit,
+		// The same snapshot the macOS terminate hook takes, on the platforms that
+		// have no such hook. Wails runs this first in its own teardown, before it
+		// closes the windows — which is the last moment the open set is still the
+		// set the user left.
+		OnShutdown: a.onShutdown,
 		Linux:      application.LinuxOptions{ProgramName: "Juggler"},
 		Windows: application.WindowsOptions{
 			AdditionalBrowserArgs: []string{"--disable-logging"},
@@ -303,8 +349,8 @@ func (a *appState) run(specs []windowSpec) error {
 		if err != nil {
 			return fmt.Errorf("start initial window: %w", err)
 		}
-		saved, hasSaved := fetchWindowState(serverURL)
-		initial = a.buildWindow(windowSpec{}, serverURL, proc, saved, hasSaved, "", "", 0)
+		saved, hasSaved := fetchWindowState(serverURL, roleMain)
+		initial = a.buildWindow(windowSpec{}, serverURL, proc, saved, hasSaved, windowOpts{})
 	}
 
 	// Crash loudly if the initial window never becomes visible (e.g. the webview
@@ -335,7 +381,7 @@ func (a *appState) run(specs []windowSpec) error {
 			})
 		}
 		for _, s := range rest {
-			a.openWindow(s, "", "", 0)
+			a.openWindow(s, windowOpts{})
 		}
 	})
 
@@ -367,8 +413,8 @@ func (a *appState) tryBuildInitial(spec windowSpec) *winEntry {
 		logf("restore: skipping %+v: %v", spec.entry(), err)
 		return nil
 	}
-	saved, hasSaved := fetchWindowState(serverURL)
-	return a.buildWindow(spec, serverURL, proc, saved, hasSaved, "", "", 0)
+	saved, hasSaved := fetchWindowState(serverURL, roleMain)
+	return a.buildWindow(spec, serverURL, proc, saved, hasSaved, windowOpts{})
 }
 
 // startupSpecs decides which windows to open at launch. An explicit --url or
@@ -420,7 +466,7 @@ func (a *appState) onSecondInstance(data application.SecondInstanceData) {
 			return
 		}
 		logf("second instance: no window open, opening a fresh one (bare relaunch)")
-		a.openWindow(windowSpec{}, "", "", 0)
+		a.openWindow(windowSpec{}, windowOpts{})
 		return
 	}
 
@@ -438,7 +484,7 @@ func (a *appState) onSecondInstance(data application.SecondInstanceData) {
 		return
 	}
 	logf("second instance: opening new window for %+v", spec.entry())
-	a.openWindow(spec, "", "", 0)
+	a.openWindow(spec, windowOpts{})
 }
 
 // focusAnyWindow raises and focuses the most-recently-opened window, returning
@@ -449,6 +495,11 @@ func (a *appState) focusAnyWindow() bool {
 	a.reg(func(st *regState) {
 		best := -1
 		for _, w := range st.windows {
+			// A relaunch wants Juggler, not a board belonging to one of its
+			// windows.
+			if isBoardRole(w.role) {
+				continue
+			}
 			if n := winNum(w.id); n > best {
 				best, match = n, w
 			}
@@ -464,6 +515,11 @@ func (a *appState) focusWindowBySpec(spec windowSpec) bool {
 	var match *winEntry
 	a.reg(func(st *regState) {
 		for _, w := range st.windows {
+			// A board shares its owner's identity but is not a window onto that
+			// project in the sense a second launch means.
+			if isBoardRole(w.role) {
+				continue
+			}
 			if w.spec == spec {
 				match = w
 				break
@@ -492,9 +548,9 @@ func focusEntry(e *winEntry) bool {
 // or connecting to a URL), reads that session's saved geometry, and opens a new
 // in-process window onto it. The blocking resolve + geometry fetch run off the
 // main thread; the window is then created on the main thread.
-func (a *appState) openWindow(spec windowSpec, inheritedTheme, inheritedMode string, inheritedZoom int) {
-	inheritedTheme = normaliseTheme(inheritedTheme)
-	inheritedMode = normaliseMode(inheritedMode)
+func (a *appState) openWindow(spec windowSpec, opts windowOpts) {
+	opts.theme = normaliseTheme(opts.theme)
+	opts.mode = normaliseMode(opts.mode)
 	go func() {
 		serverURL, proc, err := spec.resolve()
 		if err != nil {
@@ -503,7 +559,7 @@ func (a *appState) openWindow(spec windowSpec, inheritedTheme, inheritedMode str
 					// A locked window shows a static recovery page, not the app —
 					// there is no root font-size to scale, so zoom is not threaded,
 					// and the static page has no theme mode to seed either.
-					e := a.buildLockedProjectWindow(spec, locked.message(), inheritedTheme)
+					e := a.buildLockedProjectWindow(spec, locked.message(), opts.theme)
 					a.showWindow(e)
 					go a.warnIfWindowNeverVisible(e, "opened locked project")
 				})
@@ -520,9 +576,9 @@ func (a *appState) openWindow(spec windowSpec, inheritedTheme, inheritedMode str
 		if spec.project != "" {
 			a.rememberRecentProject(spec.project)
 		}
-		saved, hasSaved := fetchWindowState(serverURL)
+		saved, hasSaved := fetchWindowState(serverURL, opts.role())
 		application.InvokeAsync(func() {
-			e := a.buildWindow(spec, serverURL, proc, saved, hasSaved, inheritedTheme, inheritedMode, inheritedZoom)
+			e := a.buildWindow(spec, serverURL, proc, saved, hasSaved, opts)
 			a.showWindow(e)
 			// Don't let a dynamically-opened window fail to appear silently.
 			go a.warnIfWindowNeverVisible(e, "opened dynamically")
@@ -532,8 +588,8 @@ func (a *appState) openWindow(spec windowSpec, inheritedTheme, inheritedMode str
 
 // openWindowForProject opens a window onto a project. Used by "New Window" and
 // the page's "open in new window" (via the loopback control endpoint).
-func (a *appState) openWindowForProject(project, inheritedTheme, inheritedMode string, inheritedZoom int) {
-	a.openWindow(windowSpec{project: project}, inheritedTheme, inheritedMode, inheritedZoom)
+func (a *appState) openWindowForProject(project string, opts windowOpts) {
+	a.openWindow(windowSpec{project: project}, opts)
 }
 
 func normaliseTheme(theme string) string {
@@ -736,7 +792,7 @@ func (a *appState) buildLockedProjectWindow(spec windowSpec, message, inheritedT
 	if win == nil {
 		fatalf("Window.NewWithOptions returned nil for locked project %s", id)
 	}
-	e := &winEntry{id: id, win: win, spec: spec, currentTheme: startupTheme, geom: windowgeom.NewTracker(core.WindowState{}), saves: windowgeom.NewDebouncer(), stopSave: make(chan struct{})}
+	e := &winEntry{id: id, win: win, spec: spec, role: roleMain, currentTheme: startupTheme, geom: windowgeom.NewTracker(core.WindowState{}), saves: windowgeom.NewDebouncer(), stopSave: make(chan struct{})}
 	a.reg(func(st *regState) { st.windows[id] = e })
 	a.persistWorkspace()
 	win.OnWindowEvent(events.Common.WindowClosing, func(_ *application.WindowEvent) { a.handleWindowClosed(e) })
@@ -748,7 +804,7 @@ func (a *appState) buildLockedProjectWindow(spec windowSpec, message, inheritedT
 // main thread, after it (dynamic windows). serverProc is the server this app
 // spawned for the window, or nil for a shared/remote server. Show it with
 // showWindow once the app has launched.
-func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *exec.Cmd, saved core.WindowState, hasSaved bool, inheritedTheme, inheritedMode string, inheritedZoom int) *winEntry {
+func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *exec.Cmd, saved core.WindowState, hasSaved bool, opts windowOpts) *winEntry {
 	id := <-a.ids
 	nativeCtl := fmt.Sprintf("http://127.0.0.1:%d/win/%s", a.ctlPort, id)
 
@@ -758,7 +814,7 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 	// Only send a real hint (inherited from the source window or persisted from a
 	// previous launch); don't send the dark fallback, because a first-ever launch
 	// with no explicit choice should still let the page follow the OS preference.
-	startupTheme := normaliseTheme(inheritedTheme)
+	startupTheme := normaliseTheme(opts.theme)
 	if startupTheme == "" {
 		a.reg(func(st *regState) { startupTheme = st.lastTheme })
 	}
@@ -766,7 +822,7 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 	// URL as ?mode= so an 'auto' (system) parent hands 'auto' to the child instead
 	// of the child collapsing to the concrete ?theme= colour. Empty for a launch
 	// with no opener (Finder/restore); the page then follows its own precedence.
-	startupMode := normaliseMode(inheritedMode)
+	startupMode := normaliseMode(opts.mode)
 	// Resolve the startup zoom hint the same way: the page uses ?zoom= to paint
 	// at the last-active size before its own preference is read, but only when
 	// the project session has no saved zoom of its own (the page gives that
@@ -774,20 +830,13 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 	// from a source window), else the freshest zoom any window reported this
 	// session or a previous launch; send nothing when we have neither, so a
 	// first-ever launch just uses the default.
-	startupZoom := inheritedZoom
+	startupZoom := opts.zoom
 	if startupZoom <= 0 {
 		a.reg(func(st *regState) { startupZoom = st.lastZoom })
 	}
-	fullURL := strings.TrimRight(serverURL, "/") + "/?window=1&nativeCtl=" + url.QueryEscape(nativeCtl)
-	if startupTheme != "" {
-		fullURL += "&theme=" + url.QueryEscape(startupTheme)
-	}
-	if startupMode != "" {
-		fullURL += "&mode=" + url.QueryEscape(startupMode)
-	}
-	if startupZoom > 0 {
-		fullURL += "&zoom=" + strconv.Itoa(startupZoom)
-	}
+	resolved := opts
+	resolved.theme, resolved.mode, resolved.zoom = startupTheme, startupMode, startupZoom
+	fullURL := windowPageURL(serverURL, nativeCtl, resolved)
 
 	// Resolve the native background colour to paint before the page's first
 	// frame. On Windows the window is created visible (platformWindowHidden is
@@ -890,6 +939,9 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 		win:          win,
 		spec:         spec,
 		serverURL:    serverURL,
+		role:         opts.role(),
+		board:        opts.board,
+		openedBy:     opts.openedBy,
 		geom:         windowgeom.NewTracker(frame),
 		saves:        windowgeom.NewDebouncer(),
 		stopSave:     make(chan struct{}),
@@ -943,7 +995,7 @@ func (e *winEntry) triggerSave() {
 func (a *appState) saveLoop(e *winEntry) {
 	e.saves.Run(e.stopSave, func() {
 		if s, ok := a.currentWindowState(e); ok {
-			putWindowState(e.serverURL, s)
+			putWindowState(e.serverURL, e.role, s)
 		}
 	})
 }
@@ -998,6 +1050,62 @@ func (a *appState) claimClose(e *winEntry) bool {
 	return first
 }
 
+// onShutdown records the workspace and stops the spawned servers as the app
+// goes down. Wails runs it first in its own teardown, before it closes the
+// windows — which is the last moment the open set is still the set the user
+// left, and the last moment a window's own teardown could still be racing the
+// process.
+//
+// It does the same work as the macOS terminate hook, and both are registered
+// because neither covers the other: [NSApp terminate:] does not reliably return
+// through Wails' teardown, and Linux and Windows have no terminate event at all.
+// Running twice costs a second snapshot of a set that has not changed.
+func (a *appState) onShutdown() {
+	a.reg(func(st *regState) { st.quitting = true })
+	a.persistWorkspaceSync()
+	a.signalAllServers()
+}
+
+// markBoardsClosingWith works out what a window closing means for the boards
+// around it, and marks them. Runs on the registry goroutine, which owns every
+// field it reads and writes.
+//
+// It answers two things. `retained` is whether the window closing is itself a
+// board being taken down with its owner rather than closed on its own — the
+// difference between a board that comes back and one that is finished with.
+// `boards` are the board windows this one opened, which go down with it: a board
+// is a view of a conversation, and one whose window has gone has nothing left to
+// reveal into.
+//
+// Ownership is by opener, never by server. Two main windows on one project share
+// a server URL, so a server match cannot tell one window's boards from the
+// other's — it would take both down and leave the surviving window without the
+// board it was using.
+//
+// Nothing happens while the app is quitting: at quit the boards are going anyway,
+// and the window teardowns race the process, so a board taken down by the window
+// that happened to close first would be indistinguishable from one closed on
+// purpose.
+func markBoardsClosingWith(st *regState, e *winEntry) (retained bool, boards []*winEntry) {
+	retained = e.retainBoard
+	if st.quitting {
+		return retained, nil
+	}
+	for _, w := range st.windows {
+		if w.openedBy != e.id || w.board == "" {
+			continue
+		}
+		w.retainBoard = true
+		// The close guard for this server was satisfied a moment ago by the
+		// window that owned these, so they are not made to ask about it again.
+		w.forceClose = true
+		boards = append(boards, w)
+	}
+	// A settled order, so a test and a user get the same one.
+	sort.Slice(boards, func(i, j int) bool { return boards[i].id < boards[j].id })
+	return retained, boards
+}
+
 // handleWindowClosed removes the closed window, stops its server when no other
 // window still views it, and quits the app when no windows remain. Runs on the
 // Wails WindowClosing goroutine.
@@ -1018,7 +1126,7 @@ func (a *appState) handleWindowClosed(e *winEntry) {
 	// loop. currentWindowState no-ops if the window is already gone, leaving the
 	// last good write intact.
 	if s, ok := a.currentWindowState(e); ok {
-		putWindowState(e.serverURL, s)
+		putWindowState(e.serverURL, e.role, s)
 	}
 	// Give the page its chance to rescue composer drafts and confirm they reached
 	// disk. Must complete before the entry leaves the registry below, since that
@@ -1029,9 +1137,15 @@ func (a *appState) handleWindowClosed(e *winEntry) {
 
 	var orphanServer *exec.Cmd
 	remaining := -1
+	quitting := false
+	retained := false
+	// The boards this window opened, which go with it.
+	var boards []*winEntry
 	a.reg(func(st *regState) {
 		delete(st.windows, e.id)
 		remaining = len(st.windows)
+		quitting = st.quitting
+		retained, boards = markBoardsClosingWith(st, e)
 		// If no surviving window views this server, hand back the spawned proc
 		// (if any) so we can stop it.
 		stillViewed := false
@@ -1046,6 +1160,17 @@ func (a *appState) handleWindowClosed(e *winEntry) {
 			delete(st.servers, e.serverURL)
 		}
 	})
+	// A board closed on its own is a board the user is finished with, so its tabs
+	// and its frame go with it. Every other way a board window ends — the window
+	// it came from closing, the app quitting — keeps them, which is what makes it
+	// a window that comes back rather than one that has to be set up again.
+	if !quitting && e.board != "" && !retained {
+		go forgetBoard(e.serverURL, e.board)
+	}
+	for _, b := range boards {
+		win := b.win
+		application.InvokeAsync(func() { win.Close() })
+	}
 	if orphanServer != nil {
 		go stopServer(orphanServer)
 	}
@@ -1184,22 +1309,35 @@ func (a *appState) persistWorkspace() { a.persistWorkspaceTo(false) }
 // persistWorkspaceSync records it and waits for the write (used at quit).
 func (a *appState) persistWorkspaceSync() { a.persistWorkspaceTo(true) }
 
+// restorableSpecs is the open windows, in open order, that a next launch should
+// bring back.
+//
+// Two kinds are left out. A URL window points at an externally-supplied or
+// ephemeral address that won't be valid next launch (load() ignores them too).
+// And a window is remembered as the project it views, which is not what a
+// detached board is: two boards on two conversations of one project are one
+// entry, and neither of them is the pin it was opened on. There is nothing here
+// to restore a board from, rather than a preference not to.
+//
+// Must run on the registry goroutine.
+func restorableSpecs(st *regState) []windowSpec {
+	var specs []windowSpec
+	for _, w := range sortedWindows(st) {
+		if isBoardRole(w.role) || w.spec.isURL() {
+			continue
+		}
+		specs = append(specs, w.spec)
+	}
+	return specs
+}
+
 // persistWorkspaceTo snapshots the open windows (in open order) and writes them
 // as the workspace set. An empty set is never written — that keeps the last
 // non-empty set on disk so closing the final window (which quits the app) still
 // restores it next launch.
 func (a *appState) persistWorkspaceTo(sync bool) {
 	var specs []windowSpec
-	a.reg(func(st *regState) {
-		for _, w := range sortedWindows(st) {
-			// Only project windows are restorable; a URL window points at an
-			// externally-supplied/ephemeral address that won't be valid next
-			// launch, so never persist it (load() ignores them too).
-			if s := w.spec; !s.isURL() {
-				specs = append(specs, s)
-			}
-		}
-	})
+	a.reg(func(st *regState) { specs = restorableSpecs(st) })
 	if len(specs) == 0 {
 		return
 	}

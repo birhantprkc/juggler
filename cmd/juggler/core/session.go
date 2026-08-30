@@ -50,14 +50,32 @@ func GetRuntimeInfo(projectPath string) RuntimeInfo {
 	}
 }
 
-// WindowState is the native-window geometry for this project's window. It is a
-// session global (persisted in .juggler/session.json) rather than a single
-// machine-global file: every juggler process opens exactly one project (the
-// per-project instance lock guarantees one live window per project), so keying
-// geometry by project gives each window its own slot with no cross-process
-// write race — and reopening a project restores its window where you left it.
-// Process-local geometry; deliberately NOT part of Metadata, so it is never
-// sent to viewers or surfaced as a frontend flag.
+// Window roles. Geometry is kept per role, because a project's windows are not
+// all the same shape: WindowRoleMain is Juggler itself, and WindowRolePinboard
+// is a board detached into a window of its own. One shared frame would have each
+// kind overwriting the other's every time one of them closed.
+const (
+	WindowRoleMain     = "main"
+	WindowRolePinboard = "pinboard"
+)
+
+// WindowRolePinboardFor names the geometry slot of one detached board's window.
+//
+// Each board gets its own slot rather than every board sharing the "pinboard"
+// one. Two boards are two windows the user placed somewhere on purpose, and a
+// single slot had the second one opened land on top of the first and the last
+// one closed decide where all of them opened next time.
+func WindowRolePinboardFor(boardID string) string {
+	return WindowRolePinboard + ":" + boardID
+}
+
+// WindowState is the native-window geometry for one of this project's windows.
+// It is session state (persisted in .juggler/session.json) rather than a single
+// machine-global file: keying geometry by project gives each project's windows
+// their own slots with no cross-process write race, and reopening a project
+// restores its window where you left it. Process-local geometry; deliberately
+// NOT part of Metadata, so it is never sent to viewers or surfaced as a frontend
+// flag.
 type WindowState struct {
 	X          int  `json:"x"`
 	Y          int  `json:"y"`
@@ -75,15 +93,18 @@ type WindowState struct {
 // the on-disk folder name (.juggler/<sanitized-name>--<id>/) is the source of
 // truth, parsed by ScanConvDirs at load time.
 type Session struct {
-	Version              int               `json:"version"`               // Schema version
-	ConversationOrder    []string          `json:"conversationOrder"`     // Ordered list of conversation IDs (for tab ordering)
-	Conversations        []json.RawMessage `json:"-"`                     // In-memory only, not serialized to session.json
-	ActiveConversationID string            `json:"activeConversationId"`  // Currently selected conversation tab (persisted for refresh)
-	MessageHistory       []json.RawMessage `json:"messageHistory"`        // Session-level history of user messages for input navigation. Opaque JSON entries: the server stores and forwards them verbatim (the client owns the shape).
-	Metadata             map[string]any    `json:"metadata,omitempty"`    // General-purpose key-value store for frontend flags
-	WindowState          *WindowState      `json:"windowState,omitempty"` // Native-window geometry for this project (nil until first save)
-	UIZoom               int               `json:"uiZoom,omitempty"`      // UI zoom (root font-size %) for this project's window; 0 until first set
-	UITheme              string            `json:"uiTheme,omitempty"`     // UI theme mode (system|light|dark) for this project's window; "" until first set
+	Version              int                    `json:"version"`                // Schema version
+	ConversationOrder    []string               `json:"conversationOrder"`      // Ordered list of conversation IDs (for tab ordering)
+	Conversations        []json.RawMessage      `json:"-"`                      // In-memory only, not serialized to session.json
+	ActiveConversationID string                 `json:"activeConversationId"`   // Currently selected conversation tab (persisted for refresh)
+	MessageHistory       []json.RawMessage      `json:"messageHistory"`         // Session-level history of user messages for input navigation. Opaque JSON entries: the server stores and forwards them verbatim (the client owns the shape).
+	Metadata             map[string]any         `json:"metadata,omitempty"`     // General-purpose key-value store for frontend flags
+	WindowState          *WindowState           `json:"windowState,omitempty"`  // Geometry written by a Juggler that had one window slot; folded into WindowStates["main"] on first use (see migrateWindowStates)
+	WindowStates         map[string]WindowState `json:"windowStates,omitempty"` // Native-window geometry for this project, per window role (nil until first save)
+	UIZoom               int                    `json:"uiZoom,omitempty"`       // UI zoom (root font-size %) for this project's window; 0 until first set
+	UITheme              string                 `json:"uiTheme,omitempty"`      // UI theme mode (system|light|dark) for this project's window; "" until first set
+	Pinboard             []Pin                  `json:"pinboard,omitempty"`     // Board written by a Juggler that had one; folded into Boards["main"] on first use (see migrateBoards)
+	Boards               map[string]Board       `json:"boards,omitempty"`       // Pinboard compositions by board id: "main" is the docked panel, the rest are detached windows (see pinboard.go)
 }
 
 // NewSession creates a new session with initial state
@@ -98,7 +119,7 @@ func NewSession() *Session {
 
 // Clone returns a private copy of the session that the caller may read or
 // mutate freely without ever touching the original. Every container the rest of
-// the code mutates — the three slices, the metadata map, the WindowState
+// the code mutates — the four slices, the metadata map, the WindowState
 // pointer — is duplicated, so a snapshot handed out by
 // SessionManager.GetSession can never race the actor goroutine that owns the
 // live session. (RawMessage payloads and metadata values are shared by
@@ -111,6 +132,13 @@ func (s *Session) Clone() *Session {
 	c.ConversationOrder = append([]string(nil), s.ConversationOrder...)
 	c.Conversations = append([]json.RawMessage(nil), s.Conversations...)
 	c.MessageHistory = append([]json.RawMessage(nil), s.MessageHistory...)
+	c.Pinboard = append([]Pin(nil), s.Pinboard...)
+	if s.Boards != nil {
+		c.Boards = make(map[string]Board, len(s.Boards))
+		for id, board := range s.Boards {
+			c.Boards[id] = board.Clone()
+		}
+	}
 	if s.Metadata != nil {
 		c.Metadata = make(map[string]any, len(s.Metadata))
 		for k, v := range s.Metadata {
@@ -121,7 +149,77 @@ func (s *Session) Clone() *Session {
 		ws := *s.WindowState
 		c.WindowState = &ws
 	}
+	if s.WindowStates != nil {
+		c.WindowStates = make(map[string]WindowState, len(s.WindowStates))
+		for role, ws := range s.WindowStates {
+			c.WindowStates[role] = ws
+		}
+	}
 	return &c
+}
+
+// migrateWindowStates folds a single-slot geometry written by an earlier Juggler
+// into the role map, as the main window's — which is the only window that
+// version could have been describing.
+//
+// Run before every read and write of geometry rather than at load: geometry is
+// touched by exactly those two paths, so this is where the old value is
+// certainly seen, and the next save writes the migrated shape out. An existing
+// main entry always wins; the old field is only ever a fallback.
+func (s *Session) migrateWindowStates() {
+	if s.WindowState == nil {
+		return
+	}
+	if s.WindowStates == nil {
+		s.WindowStates = map[string]WindowState{}
+	}
+	if _, ok := s.WindowStates[WindowRoleMain]; !ok {
+		s.WindowStates[WindowRoleMain] = *s.WindowState
+	}
+	s.WindowState = nil
+}
+
+// migrateBoards folds the single board written by an earlier Juggler into the
+// board map, as the main one — which is the only board that version could have
+// had, since it had no way to detach a second.
+//
+// Run before every read and write of a board, on migrateWindowStates' pattern
+// and for the same reason: those are the paths that certainly see the old value,
+// and the next save writes the migrated shape out. An existing main board always
+// wins; the old field is only ever a fallback.
+//
+// A session with nothing pinned migrates to nothing rather than to an empty main
+// board. The board map is the arrangement the user made, and a project they
+// never opened the panel in has not made one.
+func (s *Session) migrateBoards() {
+	if len(s.Pinboard) == 0 {
+		s.Pinboard = nil
+		return
+	}
+	if s.Boards == nil {
+		s.Boards = map[string]Board{}
+	}
+	if _, ok := s.Boards[MainBoardID]; !ok {
+		s.Boards[MainBoardID] = Board{ID: MainBoardID, Pins: s.Pinboard}
+	}
+	s.Pinboard = nil
+}
+
+// setBoard stores a board, or drops it when there is nothing left worth keeping.
+//
+// An empty main board is not stored: it is indistinguishable from never having
+// pinned anything, and leaving the key behind would put an empty arrangement in
+// every project's session.json. An empty *detached* board is stored, because the
+// window it belongs to is still open and still has to come back.
+func (s *Session) setBoard(board Board) {
+	if len(board.Pins) == 0 && !board.IsDetached() {
+		delete(s.Boards, board.ID)
+		return
+	}
+	if s.Boards == nil {
+		s.Boards = map[string]Board{}
+	}
+	s.Boards[board.ID] = board
 }
 
 // SetConversations replaces the in-memory per-conversation metadata

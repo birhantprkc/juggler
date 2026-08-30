@@ -853,6 +853,9 @@ export async function shellStartBackground(params) {
  * Parameters for getting task output
  * @typedef {object} ShellGetOutputParams
  * @property {string} task_id - The task ID to get output from
+ * @property {string} [conv_id] - The conversation the task belongs to. When given,
+ *   the server refuses an id belonging to a different conversation; the project the
+ *   task was started in is always checked whether this is given or not.
  * @property {boolean} [block] - Whether to wait for completion (not yet implemented)
  * @property {number} [timeout] - Max wait time in ms (not yet implemented)
  */
@@ -899,6 +902,9 @@ export async function shellGetOutputDelta(params) {
  * Parameters for killing a shell
  * @typedef {object} ShellKillParams
  * @property {string} shell_id - The shell ID to kill
+ * @property {string} [conv_id] - The conversation the task belongs to. When given,
+ *   the server refuses an id belonging to a different conversation; the project the
+ *   task was started in is always checked whether this is given or not.
  */
 
 /**
@@ -919,6 +925,39 @@ export async function shellKill(params) {
     throw new TypeError('shell_id is required');
   }
   return callOp('shell', 'kill', params);
+}
+
+/**
+ * Parameters for a task liveness probe
+ * @typedef {object} ShellTaskStatusParams
+ * @property {string} conv_id - The conversation whose tasks these are. Required:
+ *   there is no way to ask what tasks exist, only whether these ones are alive.
+ * @property {string[]} task_ids - The task IDs to ask about
+ */
+
+/**
+ * One task's liveness
+ * @typedef {object} ShellTaskLiveness
+ * @property {string} task_id - The task ID that was asked about
+ * @property {string} status - "running" | "completed" | "failed" | "not_found"
+ * @property {boolean} running - Whether it is still running
+ */
+
+/**
+ * Ask which of these tasks are still running.
+ *
+ * Deliberately not an inventory: it answers only about ids the caller already
+ * holds, and carries no output, command or exit code. A task belonging to
+ * another conversation or another project answers exactly as an unknown id does,
+ * so it can neither be enumerated nor confirmed to exist.
+ * @param {ShellTaskStatusParams} params
+ * @returns {Promise<{tasks: ShellTaskLiveness[]}>} One answer per requested ID
+ */
+export async function shellTaskStatus(params) {
+  if (!params.conv_id) {
+    throw new TypeError('conv_id is required');
+  }
+  return callOp('shell', 'taskStatus', params);
 }
 
 // ============================================================================

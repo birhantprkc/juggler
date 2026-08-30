@@ -14,7 +14,7 @@ high-level so it doesn't drift from the code.
 
 ## Capabilities
 
-An extension bundles any mix of five capability types — each a class you
+An extension bundles any mix of six capability types — each a class you
 `export default`, extending an SDK base class and declaring a `static MANIFEST`:
 
 | Capability | What it does | Base class (SDK module) | Built-in examples |
@@ -23,6 +23,7 @@ An extension bundles any mix of five capability types — each a class you
 | **Strategy** | Controls how the agentic loop runs — turns, tools, stopping | `juggler/strategy-type` | `default`, `read-only`, `yolo` |
 | **Command** | A user-invoked slash command (`/clear`, `/compact`) | `juggler/command-type` | `clear`, `compact`, `thread` |
 | **Info Card** | An ambient tile in the sidebar's spare space | `juggler/info-card-type` | `tips`, `usage`, `git-status` |
+| **Pinboard Item** | A tab on the Pinboard, the workspace behind the right edge | `juggler/pinboard-item-type` | `file` |
 | **File Viewer** | How a file type is shown to you and extracted for the model | `juggler/file-viewer` | `text`, `pdf`, `image` |
 
 An extension may **also** contribute a **system-prompt contribution** — not a
@@ -93,6 +94,7 @@ the manifest globs find it:
 | Strategy | `strategies/` | `*-strategy-type.js` |
 | Command | `commands/` | `*-command-type.js` |
 | Info Card | `cards/` | `*-card.js` |
+| Pinboard Item | `pins/` | `*-pin.js` |
 | File Viewer | `viewers/` | `*-file-viewer.js` |
 
 The directories are convention, not law — the globs in your manifest are what
@@ -124,6 +126,7 @@ core extension does (`context-items/edit/`, `context-items/execute/`).
     "strategies":   ["strategies/*-strategy-type.js"],
     "commands":     ["commands/*-command-type.js"],
     "infoCards":    ["cards/*-card.js"],
+    "pinboardItems": ["pins/*-pin.js"],
     "fileViewers":  ["viewers/*-file-viewer.js"],
     "systemPrompt": "system-prompt-contribution.js",  // optional; single module path
     "tests":        ["_tests/*-test.js"]              // optional; test-only, never served
@@ -135,7 +138,7 @@ core extension does (`context-items/edit/`, `context-items/execute/`).
 |-------|----------|-------|
 | `id` | Yes | Scoped, e.g. `@you/name`. The unit of enable/disable. |
 | `name`, `version` | Yes | Display name and semver. |
-| `provides` | Yes | At least one capability. `contextItems`/`strategies`/`commands`/`infoCards`/`fileViewers` are root-relative globs; `systemPrompt` is a single module path (see [System-prompt contribution](#system-prompt-contribution)); `tests` is test-only (see [Testing your extension](#testing-your-extension)) and does not count as a capability. None may escape the extension root. |
+| `provides` | Yes | At least one capability. `contextItems`/`strategies`/`commands`/`infoCards`/`pinboardItems`/`fileViewers` are root-relative globs; `systemPrompt` is a single module path (see [System-prompt contribution](#system-prompt-contribution)); `tests` is test-only (see [Testing your extension](#testing-your-extension)) and does not count as a capability. None may escape the extension root. |
 | `engineApi` | Recommended | Semver range (`^1.0.0`, `1.2.3`, or `*`). Omitting it disables the compat check and earns a validation warning. The host SDK version lives in `web/sdk/version.js`. |
 | `permissions` | As needed | **Declares** the host access this extension's code uses. Surfaced to the user in the catalog and the install prompt — a disclosure, not a sandbox (see [Trust model](#trust-model)). See the vocabulary below. |
 | `settings` | As needed | User-configurable values, rendered in the extensions catalog. See [Settings and secrets](#settings-and-secrets). |
@@ -209,6 +212,7 @@ import ContextItem from 'juggler/context-item';
 import StrategyType, { APPROVAL_POLICY } from 'juggler/strategy-type';
 import CommandType from 'juggler/command-type';
 import InfoCardType from 'juggler/info-card-type';
+import PinboardItemType from 'juggler/pinboard-item-type';
 import FileViewer from 'juggler/file-viewer';
 import { readFile, writeFile, glob, grep, shell, webFetch } from 'juggler/ops';
 import { smartTruncate, createElement } from 'juggler/ui';
@@ -222,6 +226,7 @@ The full set of specifiers, and what each is for:
 | `juggler/strategy-type` | `StrategyType`, `APPROVAL_POLICY` |
 | `juggler/command-type` | `CommandType` |
 | `juggler/info-card-type` | `InfoCardType` |
+| `juggler/pinboard-item-type` | `PinboardItemType` |
 | `juggler/file-viewer` | `FileViewer` |
 | `juggler/file-source` | `FileSource`/`FileAccess` types, `toDescriptor`, `fetchFileBytes` — what a file viewer is handed |
 | `juggler/ops` | The privileged host operations (below) |
@@ -611,6 +616,147 @@ observers), or a resize will leak one per drop. Full reference:
 **`web/sdk/info-card-type.js`**. Templates: `cards/tips-card.js` (uses
 `hasContent()` and `onEnabled()`), `cards/git-status-card.js` (polls the host).
 
+### Pinboard Item — a tab on the Pinboard
+
+The Pinboard is the tabbed workspace behind the right edge of the window. Each
+tab is one **pin**: a configured instance of an item type, kept in server-backed
+session state so every viewer of the project sees the same board. You supply the
+body of the tab; the host owns the tabs, the toolbar, drag, remove, and the
+loading and error shells.
+
+Pinboard items are **viewer-only**, like info cards — they touch the DOM and
+never run in the engine, so there is no worker twin to think about.
+
+Know which of the three you actually want:
+
+- An **info card** is an ambient tile the sidebar may *drop* when it runs out of
+  room. A pin is guaranteed workspace the user asked for by name.
+- A **context item** belongs to a conversation and is visible to the model.
+  A pin is a view: pinning a file *shows* it, it does not put it in anyone's
+  context, and the model never learns it exists.
+
+```javascript
+import PinboardItemType from 'juggler/pinboard-item-type';
+
+class ClockPin extends PinboardItemType {
+  static MANIFEST = {
+    id: 'clock',
+    name: 'Clock',
+    version: '1.0.0',
+    description: 'Shows the time, which is rarely what you wanted to know',
+    instances: 'multiple',   // 'single' (default) makes the type a singleton
+    order: 0,                // add-picker sort key, ascending; ties keep registration order
+    addLabel: 'Add a clock…',// what the add picker calls it, where that differs from name
+    addable: true            // default; false for a type only ever pinned from a source
+  };
+
+  describe(config) {
+    return { title: config.zone || 'Local', subtitle: 'clock' };
+  }
+
+  mount(container, { signal }) {
+    const tick = () => { container.textContent = new Date().toLocaleTimeString(); };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return {
+      teardown: () => clearInterval(timer),
+      getActions: () => [{ id: 'now', label: 'Now', primary: true, run: tick }],
+    };
+  }
+}
+
+export default ClockPin;
+```
+
+**Config is the only thing that persists**, so keep it small, JSON-serializable,
+and meaningful without the machine that produced it: a path, not file bytes.
+Board state is shared and long-lived, and it outlives your class — a pin whose
+extension has been disabled keeps its config until the user removes it, and
+`normalizeConfig()` is what you get called with when it comes back.
+
+**Hold no authoritative state on the instance.** One instance serves every pin of
+its type, mount and teardown happen for reasons you do not control, and the same
+board is open in windows you cannot see. `mount()` may return a bare teardown
+function, or a controller with `update()` (apply a new active-context snapshot in
+place instead of being rebuilt), `focus()`, and `getActions()`.
+
+**`getActions()` puts controls in the toolbar the host draws above you.** Mark at
+most one `primary`; everything else waits behind the overflow. The host asks
+after `mount()` and after every `update()` and at no other time, so return the
+same set each call and use `disabled` for an action that cannot run yet.
+
+`mount()` receives a `PinContext`: the `pin` itself, an immutable `active`
+snapshot (project, conversation, thread), `services` for data that snapshot does
+not carry, a `signal` aborted on teardown, and `updateConfig()` — your only way to
+write anything down. Anything you throw is caught and shown in the pin's place
+with the error text intact, so let a real failure throw rather than rendering your
+own apology.
+
+**Services are read-only, and added one at a time** as the provider that needs one
+lands — so write against what is there rather than what you expect to be. Five
+exist:
+
+| Service | What it gives you |
+|---------|-------------------|
+| `services.files` | `onChange(listener)` — files changing on disk, absolute paths. Only inside the open project, and never dot-files: the watcher is rooted at the project and skips them. Offer a way to re-read rather than trusting it to be complete, and never poll for what it does not tell you. |
+| `services.contextItems` | `find(type, from?)` — the nearest context item of a type, as a copy, with the thread it came from; `onChange(listener)` — the items or the focused thread moved, call `find` again; `reveal(threadId)` — bring that thread's column into view. |
+| `services.git` | `status()` — every repository under the project with its branch, upstream divergence, counts and bounded file list, or null before the first read; `error()` — the last read's failure, shown beside the last good status rather than instead of it; `onChange(listener)`; `refresh()`. |
+| `services.fileEdits` | `list({tools, limit})` — the file edits this conversation's transcript records for the tools you name, newest first; `onChange(listener)`; `reveal(itemId)` — select the tool action that made one. You supply the tool names: which tools mutate a file is your knowledge, not the host's. |
+| `services.tasks` | `list()` — the background tasks this conversation has running, newest first, or null before the first check; `error()`; `onChange(listener)`; `reveal(itemId)` — select the tool action that started one; `stop(taskId)`. |
+
+`contextItems.find()` resolves the way the columns do: the thread the user is
+reading first, then its ancestors, nearest first, ending at the root. That is why
+the result carries a `source` — say whose it is when `source.inherited` is true,
+because a list belonging to a thread the user is not in is a different claim from
+one belonging to the thread they are.
+
+Pass `from` to start that walk somewhere other than the thread being read — a
+thread id, or `null` for the conversation root. That is how a pin stops following
+the reader and stays on one thread. The resolution is identical either way, so
+the `source` you get back is still whichever thread actually owns the item; a pin
+that watches one thread should say both which thread it is watching and whose
+list it ended up with, because they are different questions.
+
+**A reveal happens in the window that has the columns.** A board detached into a
+window of its own has none, so its reveal is relayed back to the window that
+opened it and carried out there, which then brings itself forward. Nothing about
+your pin changes — that is the point — but it does mean a reveal is best-effort
+and one-way: it returns nothing, and once the window that owns the board has gone
+there is nowhere left to point.
+
+`services.git` is a **poll, not a watch**: nothing under `.git` reaches the file
+watcher, so the host asks git on a timer while the window is focused, and
+`onChange` means a fresh answer arrived rather than that the repository changed
+when it did. Give the user a way to ask again, and never poll yourself — every
+surface shares the one poll, and a second would run git twice.
+
+`services.fileEdits` is derived from the transcript, not from the filesystem, so
+it is exactly as durable as the conversation and no broader than it. It lists
+what these tools did — never what changed. A shell command or another editor
+writing a file is not here and cannot be, because nothing attributes a bare
+filesystem write to anyone. Say which of the two you are showing.
+
+`services.tasks` is a **live inventory, not a history**: a task leaves the list
+the moment it ends, however it ended, and nothing survives a server restart. That
+is not a gap to paper over — the history is on the tool action that started the
+task, with its output and its exit code, which is where `reveal` goes. Two things
+follow. `list()` returning null means the host has not checked yet and is not the
+same as an empty list, so say you are still looking rather than that nothing is
+running. And there is no way to ask what tasks *exist*: the host builds the list
+from the ids in this conversation's own transcript and asks the server only which
+of those are alive, so nothing here can show you another conversation's work.
+
+`tasks.stop` is the one thing any service does rather than reports, and it is a
+deliberate exception rather than a precedent: it acts on a process, at the user's
+request, on a surface the conversation already offers a Stop button for. It
+rejects if the task could not be asked to stop — show what came back.
+
+Full reference: **`web/sdk/pinboard-item-type.js`**. Templates:
+`pins/file-pin.js` (multiple instances, a picker in `configure()`, a live file
+watched through `services.files`, and four toolbar actions) and `pins/plan-pin.js`
+(a singleton reading the conversation through `services.contextItems`, with a
+shared body in `lib/task-list-pin.js`).
+
 ### File Viewer — how a file type is shown and extracted
 
 A file viewer owns one file type end to end: what **you** see in the panel, and
@@ -892,8 +1038,8 @@ id disables everything it bundles:
   extension end to end, if you would rather follow a worked example than a
   reference.
 - **API source of truth** — `web/sdk/`: `context-item.js`, `strategy-type.js`,
-  `command-type.js`, `info-card-type.js`, `file-viewer.js`, `ops.js`, `ui.js`,
-  `version.js`. Read the JSDoc headers.
+  `command-type.js`, `info-card-type.js`, `pinboard-item-type.js`,
+  `file-viewer.js`, `ops.js`, `ui.js`, `version.js`. Read the JSDoc headers.
 - **Conversation API** — `web/js/model/message-thread.js` (grep `@plugin-api`).
 - **Worked examples** — `examples/extensions/` (small extensions covering every
   capability type) and `web/extensions/juggler-core/` (the built-in extension —

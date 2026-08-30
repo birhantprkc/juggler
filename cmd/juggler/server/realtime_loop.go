@@ -32,6 +32,11 @@ type RealtimeClient interface {
 	ClientID() string
 	ClientRole() ClientRole
 	ClientInfo() ClientInfo
+	// ViewerID is the identity the viewer chose for itself and kept across
+	// reloads, as opposed to ClientID, which the server mints per connection.
+	// Empty when the client did not supply one, and an empty id addresses
+	// nothing (see viewerSendToViewer).
+	ViewerID() string
 }
 
 // runRealtimeClientLoop runs the WS message protocol on top of any
@@ -75,7 +80,15 @@ func (s *Server) runRealtimeClientLoop(ctx context.Context, client RealtimeClien
 	// client that reconnects can tell a link blip (same id — catch up with a Yjs
 	// state-vector resync) from a restarted server (different id — the page's
 	// token and asset URLs belong to a process that is gone, so it must reload).
-	client.Send(map[string]string{"type": "session", "clientId": client.ClientID(), "bootId": s.bootID})
+	// The viewer id is echoed back as the server accepted it, which is empty when
+	// the client sent nothing usable — so a viewer can tell whether anything can
+	// address it before it hands its id to another viewer.
+	client.Send(map[string]string{
+		"type":     "session",
+		"clientId": client.ClientID(),
+		"viewerId": client.ViewerID(),
+		"bootId":   s.bootID,
+	})
 
 	// Register with server state for broadcasts. Done AFTER the session send so
 	// the client already knows its own id before the first clients-changed
@@ -207,6 +220,26 @@ func (s *Server) runRealtimeClientLoop(ctx context.Context, client RealtimeClien
 					continue
 				}
 				s.viewerSendRawToAll(msgBytes)
+
+			case "viewer-relay":
+				// Viewer-only, and the mirror image of engine-bridge: that one is the
+				// engine speaking to every viewer, this one is a viewer speaking to a
+				// named viewer. The engine is excluded because it has nothing to say
+				// to a single viewer that the bridge does not already carry.
+				if role != ClientRoleViewer {
+					continue
+				}
+				relay, ok := unmarshalWS[ViewerRelay](msgBytes, "viewer-relay")
+				if !ok {
+					continue
+				}
+				// `from` is the sending connection's own id rather than anything in
+				// the message, so a relay always says truthfully who sent it.
+				s.viewerSendToViewer(relay.To, map[string]any{
+					"type":    "viewer-relay",
+					"from":    client.ViewerID(),
+					"payload": relay.Payload,
+				})
 
 			case "one-shot-result":
 				// Engine-only, like engine-bridge: a viewer answering a run the

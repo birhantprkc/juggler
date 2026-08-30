@@ -180,6 +180,20 @@ func (s *Server) setupSessionRoutes(sessionAPI *handlers.SessionAPI) {
 	// value at load and PUTs changes here. The write is local-only: a remote
 	// viewer starts from this value but keeps its own in localStorage, so one
 	// device can't resize another's window (see localViewerOnly).
+	// The pinboard is shared project state, not a per-device preference, so
+	// unlike ui-zoom/ui-theme it is not gated to the local viewer.
+	// Which board a request is about is a `?board=` query parameter, defaulting
+	// to the docked panel — so a project's boards are one resource with several
+	// names rather than several routes.
+	api.HandleFunc("/session/pinboard", sessionAPI.HandleGetPinboard).Methods("GET")
+	api.HandleFunc("/session/pinboard/operations", sessionAPI.HandlePinboardOperations).Methods("POST")
+	// A board of its own is what a detached window has. Creating one is a window
+	// opening, deleting one is a window being closed for good, and `restore` is a
+	// window asking which boards outlived the last run — answered once, since the
+	// answer is an instruction to open them.
+	api.HandleFunc("/session/pinboard/boards", sessionAPI.HandleCreateBoard).Methods("POST")
+	api.HandleFunc("/session/pinboard/boards", sessionAPI.HandleDeleteBoard).Methods("DELETE")
+	api.HandleFunc("/session/pinboard/boards/restore", sessionAPI.HandleRestoreBoards).Methods("POST")
 	api.HandleFunc("/session/ui-zoom", sessionAPI.HandleGetUIZoom).Methods("GET")
 	api.Handle("/session/ui-zoom", localViewerOnly(sessionAPI.HandleSetUIZoom)).Methods("PUT")
 	// UI theme (light/dark/system mode) also lives with the session (per

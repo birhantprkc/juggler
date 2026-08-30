@@ -4,21 +4,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import ContextItem from 'juggler/context-item';
-import { createElement, taskMarker, taskStatusWord } from 'juggler/ui';
+import { createElement } from 'juggler/ui';
 import {
-  createEmptyState,
-  createTextBlock
+  createEmptyState
 } from 'juggler/item-utils';
-
-/**
- * Indent every line after the first to the width of a numbered list marker, so
- * multi-line step text stays inside its own list item when rendered.
- * @param {string} text - Step content or result summary
- * @returns {string} The text with continuation lines indented
- */
-function indentContinuation(text) {
-  return String(text || '').replace(/\n/g, '\n   ');
-}
+import { createPlanBlock, renderPlanMarkdown } from '../lib/task-lists.js';
 
 /**
  * Plan step with status and thread tracking
@@ -319,7 +309,7 @@ class PlanContextItem extends ContextItem {
     }
 
     const section = document.createElement('properties-panel-subsection');
-    section.appendChild(PlanContextItem._createPlanBlock(this.data));
+    section.appendChild(createPlanBlock(this.data));
     container.appendChild(section);
 
     return container;
@@ -336,7 +326,7 @@ class PlanContextItem extends ContextItem {
   createContextText(contextParams) {
     const { helpers } = contextParams;
 
-    const content = PlanContextItem._renderPlanMarkdown(this.data, {
+    const content = renderPlanMarkdown(this.data, {
       includeThreadIds: true,
       statusWords: true,
     });
@@ -942,7 +932,7 @@ class PlanContextItem extends ContextItem {
    * @private
    */
   static _renderPlanEcho(snapshot) {
-    const content = PlanContextItem._renderPlanMarkdown(snapshot, { statusWords: true });
+    const content = renderPlanMarkdown(snapshot, { statusWords: true });
     return content ? `Current plan state:\n${content}` : '';
   }
 
@@ -1050,65 +1040,6 @@ class PlanContextItem extends ContextItem {
   // ============================================================================
 
   /**
-   * Render a plan as markdown: a title heading, a status/progress line, and a
-   * numbered task list — each step a tick box carrying its status, with any
-   * result summary beneath it.
-   *
-   * One rendering serves both audiences: the viewer shows it through the
-   * standard markdown block, and the LLM reads it in the context block and in
-   * each step action's tool_result echo, so the plan the user reads and the
-   * plan the model reads cannot drift apart. The options add to the model's
-   * copy only, where it needs what the viewer conveys by other means — a step's
-   * executing thread, which the transcript shows, and its status in words,
-   * which the viewer draws as a distinct box.
-   * @private
-   * @param {{title?: string, status?: string, steps?: PlanStep[]}} planData - Plan data to render
-   * @param {object} [opts] - Rendering options
-   * @param {boolean} [opts.includeThreadIds] - Append the executing sub-thread's id to a step (LLM text only)
-   * @param {boolean} [opts.statusWords] - Append the status in words to a step (LLM text only)
-   * @returns {string} Markdown, or '' when the plan has no steps
-   */
-  static _renderPlanMarkdown(planData, opts = {}) {
-    /** @type {any[]} */
-    const steps = planData?.steps || [];
-    if (steps.length === 0) return '';
-
-    const completed = steps.filter((/** @type {any} */ s) => s.status === 'completed').length;
-    const lines = [
-      `# Plan${planData.title ? ': ' + planData.title : ''}`,
-      `Status: ${planData.status || 'planning'} | Progress: ${completed}/${steps.length} completed`,
-      ''
-    ];
-
-    for (const [i, step] of steps.entries()) {
-      let line = `${i + 1}. ${taskMarker(step.status)} ${indentContinuation(step.content)}`;
-      const words = opts.statusWords ? taskStatusWord(step.status) : '';
-      if (words) {
-        line += ` _(${words})_`;
-      }
-      if (opts.includeThreadIds && step.threadItemId) {
-        line += ` (thread: ${step.threadItemId})`;
-      }
-      lines.push(line);
-      if (step.result) {
-        lines.push(`   Result: ${indentContinuation(step.result)}`);
-      }
-    }
-
-    return lines.join('\n') + '\n';
-  }
-
-  /**
-   * Build the panel body: the plan's markdown in the standard markdown block.
-   * @private
-   * @param {{title?: string, status?: string, steps?: PlanStep[]}} planData - Plan data to render
-   * @returns {HTMLElement} Rendered markdown element
-   */
-  static _createPlanBlock(planData) {
-    return createTextBlock(PlanContextItem._renderPlanMarkdown(planData));
-  }
-
-  /**
    * Count steps by status
    * @private
    * @param {'pending'|'in_progress'|'completed'|'failed'|'skipped'} status - Status to count
@@ -1182,7 +1113,7 @@ class PlanContextItem extends ContextItem {
       // content takes its natural height and the enclosing section scrolls as a
       // single unit — matching how every other tool-action panel behaves.
       const planSection = document.createElement('properties-panel-subsection');
-      planSection.appendChild(PlanContextItem._createPlanBlock(planData));
+      planSection.appendChild(createPlanBlock(planData));
       wrapper.appendChild(planSection);
       return { skipResultSection: true };
     } else if (action !== 'submit') {

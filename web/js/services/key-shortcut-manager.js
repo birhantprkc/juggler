@@ -378,6 +378,24 @@ const SHORTCUT_DEFS = [
     allowInInput: true,
   },
   {
+    id: 'toggle-pinboard',
+    label: 'Toggle Pinboard',
+    description: 'Open or close the pinboard \u2014 the tabbed panel of pinned items '
+      + 'behind the right edge of the window.',
+    category: 'View',
+    // ⌥⌘P / Ctrl+Alt+P — P for pinboard, in the same ⌥⌘ family as the other
+    // panel/mode toggles (⌥⌘G, ⌥⌘M, ⌥⌘T). Bare ⌘P is Print in every browser and
+    // ⇧⌘P is Firefox's private window, so the Option is load-bearing. Fires from
+    // the composer: the command modifier means it never lands as typed text.
+    defaultBinding: { mod: true, alt: true, key: 'p' },
+    allowInInput: true,
+    // Dispatched by the pinboard shell rather than the loop below, because the
+    // board holds a popup token while it is open and this command has to fire
+    // over its OWN overlay to close it — which the blanket overlay suppression
+    // here cannot express.
+    external: true,
+  },
+  {
     id: 'show-shortcuts',
     label: 'Show keyboard shortcuts',
     description: 'Open Settings to this Keyboard shortcuts tab.',

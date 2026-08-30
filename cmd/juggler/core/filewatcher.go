@@ -6,7 +6,9 @@ package core
 
 import (
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +35,26 @@ type ChangeNotification struct {
 // before rebuilding the watch/index. It coalesces a burst (a branch switch
 // rewrites many ignore files) into one rebuild.
 const gitignoreRebuildDebounce = time.Second
+
+// watchedHiddenFiles are the project-relative paths inside a dot-directory that
+// are still reported to the frontend. Everything else under a dot-directory is
+// skipped — three times over in the walk, and once more in handleEvent — and
+// that stays true: `.juggler/` is written continuously by Juggler itself
+// (conversation directories, transaction blobs, the session manifest), so
+// un-skipping it would be a flood rather than a fix.
+//
+// The project memory file is the one thing in there a user edits by hand and
+// expects the UI to notice. It is allowlisted exactly, never indexed, and its
+// directory is watched on its own — so the only extra traffic is events on
+// `.juggler/`'s immediate children, all of which are dropped here.
+//
+// Keep in sync with MemoryContextItem.DEFAULT_PATH in
+// web/extensions/juggler-core/context-items/memory-context-item.js. A memory
+// file configured somewhere outside a dot-directory needs nothing from this: the
+// ordinary watch already covers it.
+var watchedHiddenFiles = map[string]bool{
+	".juggler/MEMORY.md": true,
+}
 
 // FileWatcher watches a directory for file changes and sends immediate notifications
 type FileWatcher struct {
@@ -115,6 +137,17 @@ func (w *FileWatcher) buildWatchesAndIndex(root string) (paths []string, partial
 
 	_ = w.watcher.Add(root)
 	watched++
+
+	// The directories holding the allowlisted hidden files, which the walk below
+	// will never reach. Watched here rather than queued, so nothing under them is
+	// indexed or descended into.
+	for _, dir := range watchedHiddenDirs() {
+		if _, err := os.Stat(filepath.Join(root, dir)); err != nil {
+			continue
+		}
+		_ = w.watcher.Add(filepath.Join(root, dir))
+		watched++
+	}
 
 	type queued struct{ abs, rel string }
 	queue := []queued{{abs: root, rel: ""}}
@@ -323,6 +356,53 @@ func (w *FileWatcher) watchLoop() {
 	}
 }
 
+// watchedHiddenDirs lists each allowlisted hidden file's parent, deduplicated —
+// fsnotify watches directories, not files.
+func watchedHiddenDirs() []string {
+	seen := map[string]bool{}
+	var dirs []string
+	for rel := range watchedHiddenFiles {
+		dir := path.Dir(rel)
+		if dir == "." || seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	return dirs
+}
+
+// hasHiddenSegment reports whether any part of a project-relative path is
+// hidden, so a file is skipped for living in a dot-directory as well as for
+// being one.
+func hasHiddenSegment(relPath string) bool {
+	for _, segment := range strings.Split(filepath.ToSlash(relPath), "/") {
+		if strings.HasPrefix(segment, ".") && segment != "." && segment != ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// eventKind names the change an fsnotify event describes, or "" for one this
+// watcher does not report. Pure, so the allowlist below can classify an event
+// before deciding whether it is one to index.
+func eventKind(event fsnotify.Event) string {
+	switch {
+	case event.Op&fsnotify.Write == fsnotify.Write:
+		return "write"
+	case event.Op&fsnotify.Create == fsnotify.Create:
+		return "create"
+	case event.Op&fsnotify.Remove == fsnotify.Remove:
+		return "remove"
+	case event.Op&fsnotify.Rename == fsnotify.Rename:
+		return "rename"
+	default:
+		return ""
+	}
+}
+
 // isIgnoreFile reports whether an absolute path is a git ignore-rule file whose
 // edit should trigger an index rebuild.
 func isIgnoreFile(absPath string) bool {
@@ -372,39 +452,51 @@ func (w *FileWatcher) handleEvent(event fsnotify.Event) {
 		relPath = event.Name
 	}
 
-	// Skip hidden files
-	if strings.HasPrefix(filepath.Base(relPath), ".") {
+	eventType := eventKind(event)
+	if eventType == "" {
+		return // an operation this watcher does not report
+	}
+
+	// An allowlisted file inside a dot-directory — the project memory file — is
+	// reported and nothing more. It is deliberately never indexed: the index is
+	// what `@`-mention completion searches, and a hidden file has no business
+	// appearing there just because the UI wants to know when it changes.
+	if watchedHiddenFiles[filepath.ToSlash(relPath)] {
+		w.emitChange(relPath, eventType)
 		return
 	}
 
-	// Map fsnotify operations to our event types
-	eventType := ""
-	switch {
-	case event.Op&fsnotify.Write == fsnotify.Write:
-		eventType = "write"
-	case event.Op&fsnotify.Create == fsnotify.Create:
-		eventType = "create"
+	// Skip hidden files, and anything inside a hidden directory.
+	//
+	// The whole path is examined, not just the name: watching the allowlisted
+	// file's directory means events from inside a dot-directory now arrive here
+	// for the first time, and a basename check would pass every one of
+	// `.juggler/`'s own writes — the session manifest, the instance file, the
+	// lock — straight through to every viewer.
+	if hasHiddenSegment(relPath) {
+		return
+	}
+
+	switch eventType {
+	case "create":
 		// If a new directory was created, add it to the watcher
 		_ = w.watcher.Add(event.Name) // Ignore errors for dynamic directory watching
 		w.indexCreated(event.Name)
-	case event.Op&fsnotify.Remove == fsnotify.Remove:
-		eventType = "remove"
+	case "remove", "rename":
 		w.indexRemoved(event.Name)
-	case event.Op&fsnotify.Rename == fsnotify.Rename:
-		eventType = "rename"
-		w.indexRemoved(event.Name)
-	default:
-		return // Ignore other operations
 	}
 
-	// Send immediately - no batching, no debouncing
-	// Context items will handle their own debouncing via _scheduleRefresh()
+	w.emitChange(relPath, eventType)
+}
+
+// emitChange sends one change to the frontend. Immediate — no batching, no
+// debouncing; context items debounce their own refreshes. Non-blocking: a full
+// channel drops the event and says so rather than stalling the watch loop.
+func (w *FileWatcher) emitChange(relPath, eventType string) {
 	change := FileChange{
 		Path:  relPath,
 		Event: eventType,
 	}
-
-	// Send notification (non-blocking)
 	select {
 	case w.changeChan <- ChangeNotification{Changes: []FileChange{change}}:
 	default:

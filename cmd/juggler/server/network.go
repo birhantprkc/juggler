@@ -267,6 +267,30 @@ func clientInfoFromRequest(r *http.Request) ClientInfo {
 	return info
 }
 
+// maxViewerIDLen bounds a caller-supplied viewer id. The ids Juggler mints are
+// 34 characters; the cap is what keeps an arbitrary client from parking a large
+// string in every other viewer's clients-changed payload.
+const maxViewerIDLen = 64
+
+// sanitiseViewerID accepts a viewer's own identity, or returns empty. The id is
+// chosen by the client and relayed verbatim to the other viewers sharing the
+// session, so it is held to an unambiguous alphabet rather than trusted: nothing
+// here may need escaping downstream, and an id that arrives malformed addresses
+// nothing rather than addressing something else.
+func sanitiseViewerID(id string) string {
+	if id == "" || len(id) > maxViewerIDLen {
+		return ""
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+		default:
+			return ""
+		}
+	}
+	return id
+}
+
 // remoteTransportLabel turns a remote-ingress kind (see MarkRemoteIngress) into a
 // short human label: the WebRTC data channel, or a registered tunnel mode's
 // title, falling back to the raw kind for anything unrecognised.

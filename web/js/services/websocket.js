@@ -6,6 +6,7 @@ import { recordTape } from '../utils/event-tape.js';
 import { isEngine } from '../../sdk/lib/client-role.js';
 import { fetchJson } from './http.js';
 import { WSChunkReassembler, WS_CHUNK_KIND_TEXT } from '../utils/ws-chunk.js';
+import { viewerId } from '../utils/viewer-id.js';
 
 const WEBRTC_CHUNK_TYPE = '__juggler_dc_chunk';
 const WEBRTC_CHUNK_SIZE = 16 * 1024;
@@ -77,7 +78,7 @@ const RECONNECT_FIRST_DELAY_MS = 300;
 const RECONNECT_JITTER = 0.25;
 
 /**
- * @typedef {'open'|'close'|'error'|'message'|'session'|'file-change'|'project-changed'|'plugin-changed'|'retry'|'streaming-error'|'providers-update'|'providers-ready'|'shell-output'|'reconnect-attempt'|'engine-bridge'|'update-status'|'clients-changed'} WSEventType
+ * @typedef {'open'|'close'|'error'|'message'|'session'|'file-change'|'project-changed'|'plugin-changed'|'retry'|'streaming-error'|'providers-update'|'providers-ready'|'shell-output'|'reconnect-attempt'|'engine-bridge'|'update-status'|'clients-changed'|'pinboard-changed'|'viewer-relay'} WSEventType
  */
 
 /**
@@ -116,6 +117,8 @@ class WebSocketService {
     this.connected = false;
     /** @type {string|null} - This client's server-assigned id, from the session message. Used to exclude self from the connected-clients list. */
     this.clientId = null;
+    /** @type {string} - This viewer's own id as the server accepted it; '' when nothing can address this viewer. */
+    this.viewerId = '';
     /**
      * The server instance this page belongs to, taken from the session message's
      * boot id. Recorded on the first session message and compared on every
@@ -239,7 +242,9 @@ class WebSocketService {
       'reconnect-attempt': [],
       'engine-bridge': [],
       'update-status': [],
-      'clients-changed': []
+      'clients-changed': [],
+      'pinboard-changed': [],
+      'viewer-relay': []
     };
   }
 
@@ -350,7 +355,11 @@ class WebSocketService {
     // omits the param.
     const token = /** @type {{__jugglerToken?: string}} */ (globalThis).__jugglerToken;
     const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
-    const wsUrl = `${protocol}//${loc.host}/api/ws?role=${role}${tokenParam}`;
+    // A viewer names itself so another viewer can address it (see utils/viewer-id).
+    // The engine needs no identity and sends none.
+    const id = role === 'viewer' ? viewerId() : '';
+    const viewerParam = id ? `&viewerId=${encodeURIComponent(id)}` : '';
+    const wsUrl = `${protocol}//${loc.host}/api/ws?role=${role}${tokenParam}${viewerParam}`;
     this._transport = new WebSocket(wsUrl);
     this._configureTransport(this._transport, 'WebSocket');
   }
@@ -649,6 +658,24 @@ class WebSocketService {
       ws._emit('plugin-changed', data.path);
     },
 
+    // One board's composition after a viewer edited it. The whole board rides
+    // the event, so viewers converge without replaying ops — and the board it is
+    // about rides with it, because a project has several and the server has no
+    // way to know which one any viewer is reading.
+    'pinboard-changed': (ws, data) => {
+      ws._emit('pinboard-changed', {
+        board: typeof data.board === 'string' ? data.board : '',
+        pins: Array.isArray(data.pins) ? data.pins : [],
+      });
+    },
+
+    // A message another viewer addressed to this one. `from` is the sending
+    // viewer's id as the server saw it, so it can be trusted and answered; the
+    // payload is whatever the two viewers agreed between themselves.
+    'viewer-relay': (ws, data) => {
+      ws._emit('viewer-relay', { from: data.from || '', payload: data.payload });
+    },
+
     'providers-update': (ws, data) => {
       ws._emit('providers-update', data.providers);
       // Whether this snapshot is the settled, post-compute list (true) or the
@@ -792,6 +819,9 @@ class WebSocketService {
         // Remember our own server-assigned id so the connected-clients UI can
         // exclude this window from the list of other clients.
         if (data.clientId) this.clientId = data.clientId;
+        // Our own id as the server took it: empty means this viewer sent none, or
+        // sent one the server would not accept, and so cannot be addressed.
+        this.viewerId = data.viewerId || '';
         // The boot id rides the same message, and on a reconnect it decides
         // whether this page carries on or reloads. A page on its way out has
         // nothing worth handing to listeners.
@@ -1164,6 +1194,24 @@ class WebSocketService {
    */
   sendEngineBridge(channel, payload) {
     return this._sendJson({ type: 'engine-bridge', channel, payload }, 'engine-bridge', { silent: true });
+  }
+
+  /**
+   * Send a message to one other viewer of this project, addressed by the viewer
+   * id it named itself by (see utils/viewer-id). The server routes it and reads
+   * nothing inside the payload; the recipient sees it as a `viewer-relay` event
+   * carrying this viewer's id as `from`.
+   *
+   * Delivery is best-effort and unqueued: a viewer that is not connected right
+   * now never receives it, and nothing reports that. Anything two viewers must
+   * agree on durably belongs in server state, not here.
+   * @param {string} to - Recipient's viewer id
+   * @param {unknown} payload - Opaque payload for the recipient
+   * @returns {boolean} True if handed to the transport
+   */
+  relayTo(to, payload) {
+    if (!to) return false;
+    return this._sendJson({ type: 'viewer-relay', to, payload }, 'viewer-relay', { silent: true });
   }
 
   /**

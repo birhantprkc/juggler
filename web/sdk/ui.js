@@ -74,3 +74,9 @@ export { openImageLightbox, createImageThumb } from '../js/utils/image-lightbox.
 
 // Project-picker panel (used by file/path-selecting items)
 export { buildPickerPanel } from '../js/components/project-picker.js';
+
+// Clipboard, for a control that copies something without being a copy button
+export { copyToClipboard } from './lib/clipboard.js';
+
+// What "reveal" is called on this platform (Finder, Explorer, file manager)
+export { revealLabel } from '../js/components/reveal-button.js';

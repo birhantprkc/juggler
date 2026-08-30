@@ -24,6 +24,14 @@ import { handleEscapeKey } from '../services/escape-behaviour.js';
 import './conversation-area.js';
 import './properties-panel.js';
 
+/**
+ * Fired on `document` when the thread the user is reading changes, carrying
+ * `{threadItemId}` (null for a root column). Column selection lives in the tab
+ * and not in session state, so this is the only notice a surface outside the
+ * conversation gets that the focused thread has moved.
+ */
+export const THREAD_FOCUS_CHANGED = 'juggler:thread-focus-changed';
+
 /** Properties-panel content render debounce, once selections are churning. */
 const PROPS_RENDER_DEBOUNCE_MS = 150;
 
@@ -70,6 +78,15 @@ class ConversationTab extends JugglerElement {
 
     /** @type {boolean} @private - Tripwire: detects re-entrant _rebuildColumns (Yjs mutation during render) */
     this._isRebuilding = false;
+
+    /**
+     * The thread id last announced as focused, so THREAD_FOCUS_CHANGED fires on
+     * a real move rather than on every rebuild. `undefined` until the first
+     * announcement, which is how a genuine null (the root column) is told apart
+     * from having said nothing yet.
+     * @type {string|null|undefined} @private
+     */
+    this._announcedThreadItemId = undefined;
 
     // Hidden tabs defer the heavy rendering path (_rebuildColumns →
     // renderFromItems → markdown parsing per assistant message) until they
@@ -427,6 +444,47 @@ class ConversationTab extends JugglerElement {
     );
   }
 
+  /**
+   * The thread the user is reading: the nearest conversation-area column at or
+   * to the left of the active one. A root column has no thread item of its own,
+   * which is what null means here.
+   *
+   * Scanning leftwards is what distinguishes this from {@link
+   * getActiveConversationColumn}, whose fallback is the FIRST conversation-area
+   * in the row. That fallback answers Find's question — which column's messages
+   * to search — but not this one: selecting an item inside a sub-thread opens a
+   * properties panel to its right and makes that panel active, and the first
+   * conversation-area is the root. The column immediately left of the panel is
+   * the thread the item actually belongs to.
+   * @returns {string|null} The focused thread item's id, or null for the root.
+   */
+  getFocusedThreadItemId() {
+    for (let i = Math.min(this._selection.activeColumnIndex, this._columns.length - 1); i >= 0; i--) {
+      const col = /** @type {any} */ (this._columns[i]);
+      if (col?.tagName === 'CONVERSATION-AREA') {
+        return col.getMessageThread?.()?.threadItemId ?? null;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Announce the focused thread, but only when it has actually moved. Surfaces
+   * outside the conversation — the pinboard's Plan and Todo pins — follow the
+   * thread the user is reading, and this is the only notice they get: column
+   * selection is not session state, so nothing else reports it.
+   * @private
+   */
+  _announceThreadFocus() {
+    // A hidden tab still rebuilds columns; the thread it happens to have
+    // selected is not the one anybody is reading.
+    if (this._isHidden) return;
+    const threadItemId = this.getFocusedThreadItemId();
+    if (threadItemId === this._announcedThreadItemId) return;
+    this._announcedThreadItemId = threadItemId;
+    document.dispatchEvent(new CustomEvent(THREAD_FOCUS_CHANGED, { detail: { threadItemId } }));
+  }
+
   // ── Focus management ──────────────────────────────────────────────
   //
   // Two focus modes: TYPING (textarea focused) and NAVIGATING (textarea
@@ -681,6 +739,9 @@ class ConversationTab extends JugglerElement {
         this._flushDeferredInsertions();
         this._ensureThreadColumnSelections();
       });
+      // A cheap activation need not have rebuilt anything, and the tab being
+      // switched away from cleared what was last announced.
+      this._announceThreadFocus();
       return;
     }
     this._needsResync = false;
@@ -837,6 +898,9 @@ class ConversationTab extends JugglerElement {
     this.classList.remove('active');
     this.classList.add('hidden');
     this._isHidden = true;
+    // Whatever this tab last announced is no longer what anyone is reading, so
+    // its next activation must announce again even if the thread is the same.
+    this._announcedThreadItemId = undefined;
 
     // A transcript can contain thousands of rich message nodes. Keeping one full
     // tree for every hidden tab makes renderer memory scale with the entire
@@ -1113,6 +1177,11 @@ class ConversationTab extends JugglerElement {
       /** @type {HTMLElement} */ (this._columns[i]).classList.toggle('active-column', i === activeIndex);
     }
 
+    // Every path that moves the focus passes through here — a rebuild, the arrow
+    // keys, opening a thread, following one the assistant started — which is why
+    // the announcement belongs here rather than beside any one of them.
+    this._announceThreadFocus();
+
     if (scroll) {
       this._scrollToActiveColumn();
     }
@@ -1183,6 +1252,52 @@ class ConversationTab extends JugglerElement {
     // doesn't scroll items (most rebuilds are data-driven).  This is
     // a genuinely new selection, so scroll the thread item into view
     // in its parent column.
+    this._scrollSelectionsIntoView();
+  }
+
+  /**
+   * Bring a thread's column into view and make it the active one, for a surface
+   * outside the conversation that wants to point at it.
+   *
+   * The root column is already on screen and already holds the chain the user
+   * built, so revealing it moves the focus and scrolls, and deliberately does not
+   * clear the selection: collapsing the columns would be a destructive answer to
+   * "show me where this came from".
+   * @param {string|null} threadItemId - The thread to reveal, or null for the root.
+   */
+  revealThread(threadItemId) {
+    if (threadItemId) {
+      this.openThread(threadItemId);
+      return;
+    }
+    this._selection.activeColumnIndex = 0;
+    this._selection.markManualInteraction();
+    this._updateActiveColumnVisuals(true);
+  }
+
+  /**
+   * Select one item wherever it lives, opening whatever columns it takes to get
+   * there, for a surface outside the conversation pointing at something it found.
+   *
+   * This is {@link openThread} for an item that is not a thread: the chain
+   * resolver matches an item id before it asks whether the item is a thread, so
+   * the same walk finds a tool action several threads deep. The difference is
+   * where it stops — a thread gets a column of its own and becomes active, while
+   * an ordinary item is selected *in* the column that holds it.
+   * @param {string} itemId - The item to select.
+   */
+  revealItem(itemId) {
+    if (!this._conversation || !itemId) return;
+    const chain = this._selection.resolveThreadChain(
+      [...this._conversation.rootItems],
+      itemId,
+      isThreadMessage
+    );
+    if (chain.length === 0) return;
+    this._selection.selections = chain;
+    this._selection.activeColumnIndex = chain.length - 1;
+    this._selection.markManualInteraction();
+    this._rebuildColumns(true);
     this._scrollSelectionsIntoView();
   }
 

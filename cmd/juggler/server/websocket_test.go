@@ -258,7 +258,7 @@ func TestGorillaLatchesTheFirstWriteError(t *testing.T) {
 // paid by the client, whose reconnect cannot begin until the socket goes.
 func TestWriteErrorClosesTheClientAtOnce(t *testing.T) {
 	conn, socket := poisonedWSConn(t)
-	client := NewWSClient(conn, ClientRoleViewer, ClientInfo{}, nil)
+	client := NewWSClient(conn, ClientRoleViewer, "", ClientInfo{}, nil)
 	t.Cleanup(client.Close)
 
 	idleAtStart := client.lastSendAt.Load()

@@ -25,10 +25,12 @@ import { UNTITLED_BASE } from '../model/conversation-naming.js';
 import { MAX_CONVERSATION_NAME_LENGTH } from '../utils/constants.js';
 import { hasPendingApprovalInTree } from '../model/thread-navigation.js';
 import { setupColumnResize, applyColumnWidthPx } from '../utils/column-resize.js';
+import { startReorderDrag } from '../utils/reorder-drag.js';
 import { formatBytes } from '../utils/format.js';
 import { registerContextMenuProvider } from '../services/context-menu-service.js';
 import scheduledSendService, { SCHEDULED_SEND_ARMED_EVENT } from '../services/scheduled-send-service.js';
 import { CLOCK_SVG } from '../utils/icons.js';
+import { isPinboardView } from '../utils/view-mode.js';
 import keyShortcutManager from '../services/key-shortcut-manager.js';
 import { isAutoNameEnabled, refreshAutoNameSetting } from '../services/auto-name-setting.js';
 import { isTabHighlightEnabled, ATTENTION_PREFS_EVENT } from '../utils/attention-manager.js';
@@ -89,11 +91,8 @@ class ConversationBar extends JugglerElement {
     /** @type {HTMLElement|null} @private */
     this._tabsContainer = null;
 
-    /** @type {{tab: HTMLElement, startY: number, startOrder: string[], startIdx: number, dropIdx: number, pointerId: number, active: boolean, ghost: HTMLElement|null}|null} @private */
-    this._drag = null;
-
-    /** @type {number|null} @private Auto-scroll rAF handle while dragging near edges */
-    this._autoScrollRaf = null;
+    /** @type {boolean} @private Whether a reorder drag is arranging the strip */
+    this._dragging = false;
 
     /** @type {boolean} @private Track if a drag just occurred to prevent click/dblclick */
     this._dragJustOccurred = false;
@@ -187,6 +186,14 @@ class ConversationBar extends JugglerElement {
    * @private
    */
   _findTabsContainer() {
+    // A detached board draws no transcript, so it builds no conversation tabs:
+    // it is a view of the one conversation its URL names, and a tab here would
+    // be a second, invisible answer to which one that is. Every path that
+    // creates a tab already declines to when there is nowhere to put one.
+    if (isPinboardView()) {
+      this._tabsContainer = null;
+      return;
+    }
     this._tabsContainer = document.querySelector('conversation-tabs-container');
     if (!this._tabsContainer) {
       console.error('[ConversationBar] Could not find conversation-tabs-container');
@@ -752,14 +759,21 @@ class ConversationBar extends JugglerElement {
     // Reorder tabs to match Map order, but only move tabs that are out of
     // place — re-inserting a node restarts CSS animations on it (used by the
     // tab status bar pulse), so we skip moves that don't change position.
-    let expected = addButton.nextSibling;
-    for (const conv of conversations) {
-      const tab = this._cachedElements.get(conv.id);
-      if (!tab) continue;
-      if (tab !== expected) {
-        tabsMenu.insertBefore(tab, expected);
+    //
+    // A drag has the strip arranged as the drop would leave it, and is holding
+    // one tab under the pointer. Reconciling against Map order mid-gesture
+    // would snatch them back, so the arrangement is left to the drag until it
+    // lets go — which ends by committing that order, or restoring this one.
+    if (!this._dragging) {
+      let expected = addButton.nextSibling;
+      for (const conv of conversations) {
+        const tab = this._cachedElements.get(conv.id);
+        if (!tab) continue;
+        if (tab !== expected) {
+          tabsMenu.insertBefore(tab, expected);
+        }
+        expected = tab.nextSibling;
       }
-      expected = tab.nextSibling;
     }
 
     // Remove tabs for deleted conversations
@@ -1481,222 +1495,60 @@ class ConversationBar extends JugglerElement {
 
 
   /**
-   * Start drag operation
-   * @param {PointerEvent} e
-   * @param {HTMLElement} tab
+   * Drag a tab to reorder it, on the shared gesture (utils/reorder-drag.js).
+   *
+   * The strip is one column that scrolls rather than wraps, so the drag is read
+   * along the Y axis and the clone keeps the tab's column. The clone is parked
+   * on the bar itself rather than in the list, so it escapes the list's
+   * `overflow: auto` clip and can travel the full height of the sidebar.
+   *
+   * What lands is decided here, because the order is the session's: the module
+   * reports a position and this turns it into the move that persists it.
+   * @param {PointerEvent} e - The pointerdown that started it.
+   * @param {HTMLElement} tab - The tab being dragged.
    * @private
    */
   _startDrag(e, tab) {
-    const order = Array.from(this.querySelectorAll('.conversation-tab:not(.drag-ghost)'))
-      .map(t => /** @type {HTMLElement} */ (t).dataset.conversationId || '');
-    const startIdx = order.indexOf(tab.dataset.conversationId || '');
-
-    this._drag = { tab, startY: e.clientY, startOrder: order, startIdx, dropIdx: startIdx, pointerId: e.pointerId, active: false, ghost: null };
-    tab.setPointerCapture(e.pointerId);
-
-    /** @type {HTMLElement|null} */
     const scrollContainer = /** @type {HTMLElement|null} */ (this.querySelector('.conversation-tabs'));
+    // The floating clone lives on the host yet still carries the tab class, so
+    // it has to be kept out of every list the drag measures.
+    const listTabs = () => /** @type {HTMLElement[]} */ (
+      Array.from(this.querySelectorAll('.conversation-tab:not(.drag-ghost)'))
+    );
+    const startOrder = listTabs().map((t) => t.dataset.conversationId || '');
 
-    /** @type {number} Track latest pointer Y for auto-scroll loop */
-    let lastClientY = e.clientY;
-    const EDGE_HOTZONE = 30;
-    const MAX_SCROLL_STEP = 18;
-    // Only auto-scroll a genuinely overflowing list. A hair of sub-pixel overflow
-    // (the menu's bottom padding + rounding) must not make a fully-fitting list
-    // creep upward while you drag near its bottom edge.
-    const SCROLL_OVERFLOW_MIN = 4;
-
-    // Tabs in the list, excluding the floating ghost clone — it lives on the host
-    // rather than the scroll container, yet still carries the .conversation-tab class.
-    const listTabs = () =>
-      /** @type {HTMLElement[]} */ (Array.from(this.querySelectorAll('.conversation-tab:not(.drag-ghost)')));
-
-    const recomputeDropAndShift = (/** @type {number} */ clientY) => {
-      const d = this._drag;
-      if (!d) return;
-      const tabs = listTabs();
-      const draggedId = d.tab.dataset.conversationId;
-      let dropIdx = 0;
-      for (const t of tabs) {
-        if (t.dataset.conversationId === draggedId) continue;
-        const rect = t.getBoundingClientRect();
-        const mid = rect.top + rect.height / 2;
-        if (clientY > mid) dropIdx++;
-      }
-      d.dropIdx = dropIdx;
-
-      // Animate siblings along the Y axis to open a gap at the drop position. The
-      // dragged tab keeps its own slot (as an invisible placeholder), so the
-      // siblings shift around it.
-      const tabHeight = d.tab.getBoundingClientRect().height + 8;
-      for (const el of tabs) {
-        if (el.dataset.conversationId === draggedId) continue;
-        const origIdx = d.startOrder.indexOf(el.dataset.conversationId || '');
-        let shift = 0;
-        if (d.startIdx < dropIdx && origIdx > d.startIdx && origIdx <= dropIdx) shift = -tabHeight;
-        if (d.startIdx > dropIdx && origIdx >= dropIdx && origIdx < d.startIdx) shift = tabHeight;
-        el.style.transform = shift ? `translateY(${shift}px)` : '';
-      }
-    };
-
-    const updateAutoScroll = () => {
-      if (!this._drag || !scrollContainer) {
-        this._stopAutoScroll();
-        return;
-      }
-      const rect = scrollContainer.getBoundingClientRect();
-      const overflow = scrollContainer.scrollHeight - scrollContainer.clientHeight;
-      const dyTop = lastClientY - rect.top;
-      const dyBot = rect.bottom - lastClientY;
-      let delta = 0;
-      if (overflow > SCROLL_OVERFLOW_MIN) {
-        if (dyTop < EDGE_HOTZONE && scrollContainer.scrollTop > 0) {
-          delta = -Math.ceil(MAX_SCROLL_STEP * (1 - Math.max(0, dyTop) / EDGE_HOTZONE));
-        } else if (dyBot < EDGE_HOTZONE &&
-                   scrollContainer.scrollTop + scrollContainer.clientHeight < scrollContainer.scrollHeight) {
-          delta = Math.ceil(MAX_SCROLL_STEP * (1 - Math.max(0, dyBot) / EDGE_HOTZONE));
-        }
-      }
-      if (delta !== 0) {
-        scrollContainer.scrollTop += delta;
-        // The drop index can change when content moves under the (stationary)
-        // pointer. The ghost sits outside the scroll container, so it naturally
-        // stays under the pointer as the list scrolls beneath it — nothing to
-        // reposition here.
-        recomputeDropAndShift(lastClientY);
-        this._autoScrollRaf = requestAnimationFrame(updateAutoScroll);
-      } else {
-        this._autoScrollRaf = null;
-      }
-    };
-
-    const maybeStartAutoScroll = () => {
-      if (this._autoScrollRaf === null) {
-        this._autoScrollRaf = requestAnimationFrame(updateAutoScroll);
-      }
-    };
-
-    // Build the floating drag ghost: a clone of the tab positioned `fixed` on the
-    // host, so it escapes the tab list's overflow:auto clip and is free to travel
-    // the full height of the sidebar. Its anchor is the tab's resting rect
-    // (captured at grab time), so translating it by the pointer delta keeps it
-    // under the finger exactly. The real tab stays in place as an invisible
-    // placeholder (.drag-source) that the siblings shift around, so render()
-    // reconciliation still finds it where it belongs.
-    //
-    // `left`/`top` on a fixed element resolve against the viewport only while no
-    // ancestor establishes a containing block for fixed positioning. In drawer
-    // mode the host itself is one: the phone sidebar slides in under a
-    // `transform` (styles.css, `@media (width <= 36rem)`), and a transform makes
-    // the element the containing block for its fixed descendants. Feeding it
-    // viewport coordinates there drops the ghost a whole header's height below
-    // the finger. So place the ghost at the origin, measure where that origin
-    // actually landed, and offset from there — correct under either regime, and
-    // it stays correct for any future transform/filter/containment on the path.
-    const createGhost = () => {
-      const d = this._drag;
-      if (!d) return;
-      const rect = d.tab.getBoundingClientRect();
-      const ghost = /** @type {HTMLElement} */ (d.tab.cloneNode(true));
-      ghost.classList.add('drag-ghost');
-      ghost.classList.remove('is-renaming');
-      ghost.removeAttribute('data-conversation-id');
-      ghost.setAttribute('aria-hidden', 'true');
-      ghost.style.transform = 'none';
-      ghost.style.left = '0';
-      ghost.style.top = '0';
-      ghost.style.width = `${rect.width}px`;
-      ghost.style.height = `${rect.height}px`;
-      this.appendChild(ghost);
-      const origin = ghost.getBoundingClientRect();
-      ghost.style.left = `${rect.left - origin.left}px`;
-      ghost.style.top = `${rect.top - origin.top}px`;
-      d.ghost = ghost;
-      d.tab.classList.add('drag-source');
-    };
-
-    const onMove = /** @param {PointerEvent} ev */ (ev) => {
-      const d = this._drag;
-      if (!d) return;
-
-      const delta = ev.clientY - d.startY;
-      if (!d.active && Math.abs(delta) < 5) return;
-
-      // Activate drag mode on the first meaningful movement.
-      if (!d.active) {
-        d.active = true;
-        scrollContainer?.classList.add('is-dragging');
-        createGhost();
-      }
-
-      lastClientY = ev.clientY;
-      if (d.ghost) d.ghost.style.transform = `translateY(${delta}px) scale(1.02)`;
-
-      recomputeDropAndShift(ev.clientY);
-      maybeStartAutoScroll();
-    };
-
-    const onUp = /** @param {PointerEvent} ev */ (ev) => {
-      document.removeEventListener('pointermove', onMove);
-      document.removeEventListener('pointerup', onUp);
-      document.removeEventListener('pointercancel', onUp);
-      this._stopAutoScroll();
-
-      const d = this._drag;
-      if (!d) return;
-
-      // Whether an actual drag occurred (not just a click)
-      const wasDragging = d.active;
-
-      // Commit if position changed
-      if (wasDragging && d.dropIdx !== d.startIdx && this._session) {
-        const draggedId = d.tab.dataset.conversationId;
-        const filtered = d.startOrder.filter(id => id !== draggedId);
-        if (draggedId) {
-          if (d.dropIdx >= filtered.length) {
-            this._session.moveConversationToEnd(draggedId);
-          } else {
-            this._session.reorderConversation(draggedId, /** @type {string} */ (filtered[d.dropIdx])); // bounded: dropIdx < filtered.length checked above
-          }
-        }
-      }
-
-      // Cleanup
-      if (d.ghost) {
-        d.ghost.remove();
-        d.ghost = null;
-      }
-      d.tab.classList.remove('drag-source');
-      d.tab.style.transform = '';
-      d.tab.releasePointerCapture(ev.pointerId);
-      scrollContainer?.classList.remove('is-dragging');
-      this.querySelectorAll('.conversation-tab:not(.drag-ghost)').forEach(t => {
-        /** @type {HTMLElement} */ (t).style.transform = '';
-      });
-      this._drag = null;
-
-      // Prevent click/dblclick events if an actual drag occurred
-      if (wasDragging) {
+    startReorderDrag(e, {
+      item: tab,
+      items: listTabs,
+      ghostHost: this,
+      scrollContainer,
+      axis: 'y',
+      prepareGhost: (clone) => {
+        // A copy of a tab is not a tab: render()'s reconciliation and the
+        // element cache both key on the conversation id, and a tab caught
+        // mid-rename would clone its overlay along with it.
+        clone.classList.remove('is-renaming');
+        clone.removeAttribute('data-conversation-id');
+      },
+      onDragStart: () => { this._dragging = true; },
+      onDragEnd: ({ dragged }) => {
+        this._dragging = false;
+        if (!dragged) return;
+        // The release that ends a drag also produces a click, which would
+        // otherwise switch to whatever the tab landed on.
         this._dragJustOccurred = true;
-        // Clear the flag after a short delay to allow future clicks
-        setTimeout(() => {
-          this._dragJustOccurred = false;
-        }, 100);
-      }
-    };
-
-    document.addEventListener('pointermove', onMove);
-    document.addEventListener('pointerup', onUp);
-    document.addEventListener('pointercancel', onUp);
+        setTimeout(() => { this._dragJustOccurred = false; }, 100);
+      },
+      onCommit: ({ toIndex }) => {
+        const draggedId = tab.dataset.conversationId;
+        if (!draggedId || !this._session) return;
+        const filtered = startOrder.filter((id) => id !== draggedId);
+        if (toIndex >= filtered.length) this._session.moveConversationToEnd(draggedId);
+        else this._session.reorderConversation(draggedId, /** @type {string} */ (filtered[toIndex]));
+      },
+    });
   }
 
-  /** @private */
-  _stopAutoScroll() {
-    if (this._autoScrollRaf !== null) {
-      cancelAnimationFrame(this._autoScrollRaf);
-      this._autoScrollRaf = null;
-    }
-  }
 
   /**
    * Auto-fit sidebar width to the widest tab (deterministic — measures every

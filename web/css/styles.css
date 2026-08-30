@@ -795,7 +795,9 @@ app-container {
 }
 
 /* Persistent chrome. `conversation-bar` covers the sidebar tabs, the Bin and
-   the ambient info rail (Tips / Usage / Git status cards) in one go. */
+   the ambient info rail (Tips / Usage / Git status cards) in one go, and
+   `.pinboard-panel` covers the board's own bands — its toolbar, tab strip, item
+   title and status line — leaving only what an item type renders selectable. */
 .app-header,
 conversation-bar,
 conversation-footer,
@@ -806,13 +808,16 @@ update-notice,
 .disconnection-overlay,
 .bin-panel,
 .properties-panel-header,
+.pinboard-panel,
 .conversation-tab-loading-overlay {
     -webkit-user-select: none;
     user-select: none;
 }
 
-/* Carve-outs: fields the user types into, plus the update notice's status line,
-   which is where a failed update reports the error worth pasting into a report.
+/* Carve-outs: fields the user types into, plus the two places an error worth
+   pasting into a report is reported — the update notice's status line, and a
+   pin whose item type threw. `.pinboard-content__body` is the board's content
+   half: file previews, transcripts and everything else a pin is for.
    (The About dialog is deliberately absent from the chrome list above: it is
    prose and links, so it stays selectable like any other content.) */
 .dropdown-menu input,
@@ -821,6 +826,10 @@ update-notice,
 .pp-panel textarea,
 conversation-bar input,
 .find-bar input,
+.pinboard-panel input,
+.pinboard-panel textarea,
+.pinboard-content__body,
+.pinboard-placeholder__error,
 .update-notice__status-text {
     -webkit-user-select: text;
     user-select: text;
@@ -2097,7 +2106,16 @@ a:hover {
         transition: opacity 200ms ease;
     }
 
+    /* Above everything the drawer is covering, and below the drawer itself. At
+       --z-controls the scrim ties with <pinboard-shell>, which is a later
+       sibling and therefore paints over it — so with the board open the drawer
+       hung over an undimmed workspace, and every tap "outside" the drawer landed
+       on the board instead of on the one element that dismisses it. On a phone
+       the board is the full width of .app-main, so there was nothing left to
+       tap. Raised only while the drawer is open: the rest of the time the scrim
+       is inert and must not sit over the board at all. */
     body.sidebar-open .sidebar-backdrop {
+        z-index: calc(var(--z-dropdown) - 1);
         opacity: 1;
         pointer-events: auto;
     }

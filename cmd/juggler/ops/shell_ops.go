@@ -89,6 +89,13 @@ type BackgroundShell struct {
 	StartTime time.Time
 	cancel    context.CancelFunc
 
+	// ProjectRoot is the project this shell was spawned under — the directory it
+	// runs in. The registry is process-global and outlives a project switch, so
+	// without this a task started in one project stays readable and killable from
+	// the next. Every lookup that acts on a caller-supplied id compares it against
+	// the caller's current scope root, which is the boundary the id itself is not.
+	ProjectRoot string
+
 	// Mutable fields (owned by registry goroutine only)
 	status   string
 	output   strings.Builder
@@ -127,11 +134,12 @@ func (shell *BackgroundShell) snapshot() shellStateSnapshot {
 
 // registryOp is a request sent to the global registry goroutine
 type registryOp struct {
-	kind     string // "register", "get", "remove", "list", "cleanup", "getState", "getDelta", "updateCmd", "appendOutput", "updateStatus", "kill", "setObserver", "persistenceState"
-	id       string
-	shell    *BackgroundShell
-	convID   string
-	observer BackgroundTaskObserver
+	kind        string // "register", "get", "remove", "list", "cleanup", "getState", "getDelta", "updateCmd", "appendOutput", "updateStatus", "kill", "killMatching", "setObserver", "persistenceState"
+	id          string
+	shell       *BackgroundShell
+	convID      string
+	projectRoot string
+	observer    BackgroundTaskObserver
 	// updateCmd/updateStatus fields
 	cmd      *exec.Cmd
 	status   string
@@ -153,6 +161,11 @@ type registryResp struct {
 	snapshot shellStateSnapshot
 	observer BackgroundTaskObserver
 	current  bool
+	stopped  int
+	// cmds are processes that have been signalled and still need their process
+	// group taken if they ignore it. Handed out so the escalation runs off the
+	// registry goroutine.
+	cmds []*exec.Cmd
 }
 
 var registryCh = make(chan registryOp, 16)
@@ -200,9 +213,14 @@ func runShellRegistry() {
 			delete(shells, op.id)
 
 		case "list":
+			// Scoped to one conversation within one project by the caller, which
+			// both callers enforce before sending. Output is deliberately absent:
+			// a listing says what is running, and a caller that wants a task's
+			// output asks for that task by id through getOutput, where the same
+			// ownership check applies and the request is explicit.
 			var result []map[string]any
 			for _, shell := range shells {
-				if op.convID != "" && shell.ConvID != op.convID {
+				if shell.ConvID != op.convID || !sameProject(shell.ProjectRoot, op.projectRoot) {
 					continue
 				}
 				result = append(result, map[string]any{
@@ -210,21 +228,42 @@ func runShellRegistry() {
 					"tool_use_id": shell.ToolUseID,
 					"command":     shell.Command,
 					"status":      shell.status,
-					"output":      shell.output.String(),
 					"exit_code":   shell.exitCode,
 					"error":       shell.errMsg,
 				})
 			}
 			op.resp <- registryResp{shells: result}
 
-		case "cleanup":
-			for shellID, shell := range shells {
-				if shell.cancel != nil {
-					shell.cancel()
+		case "killMatching":
+			// Stop every running task under a project, or under all of them when
+			// no root is named. The records stay in the map: a task that was
+			// stopped is a task that ended, and its terminal state is what the
+			// snapshot observer and any later read should see.
+			var cmds []*exec.Cmd
+			stopped := 0
+			for _, shell := range shells {
+				if shell.status != "running" {
+					continue
 				}
-				delete(shells, shellID)
+				if op.projectRoot != "" && !sameProject(shell.ProjectRoot, op.projectRoot) {
+					continue
+				}
+				// A task registered a moment ago may not have reached cmd.Start
+				// yet, so there is nothing to signal — but its context is
+				// cancelled here and the command is built with CommandContext, so
+				// it dies at Start rather than escaping. It counts as stopped:
+				// what was stopped is the task, not necessarily a process.
+				if cmd := signalShellStop(shell); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+				shell.status = "failed"
+				shell.errMsg = op.errMsg
+				shell.exitCode = -1
+				stopped++
 			}
-			clear(latestByOwner)
+			// Escalation is the caller's: it happens off the actor so a slow
+			// process group cannot stall every other task's reads behind it.
+			op.resp <- registryResp{cmds: cmds, stopped: stopped}
 
 		case "getState":
 			shell := shells[op.id]
@@ -287,21 +326,11 @@ func runShellRegistry() {
 				continue
 			}
 
-			// Cancel the context
-			if shell.cancel != nil {
-				shell.cancel()
-			}
-
 			// Signal the process to stop, then schedule a force-kill of the
-			// process group if it doesn't exit promptly. We must NOT call
-			// cmd.Wait() here: the startBackground goroutine is the sole owner of
-			// Wait (and reaps the process there). Reaping it here too would be a
-			// concurrent Wait on the same *exec.Cmd — a data race. The AfterFunc
-			// escalation is non-blocking, so the registry goroutine stays
-			// responsive to other ops. (Mirrors executeStreaming's cancel path.)
-			if shell.cmd != nil && shell.cmd.Process != nil {
-				cmd := shell.cmd
-				_ = cmd.Process.Signal(syscall.SIGTERM)
+			// process group if it doesn't exit promptly. The AfterFunc escalation
+			// is non-blocking, so the registry goroutine stays responsive to other
+			// ops. (Mirrors executeStreaming's cancel path.)
+			if cmd := signalShellStop(shell); cmd != nil {
 				time.AfterFunc(2*time.Second, func() {
 					killProcessGroup(cmd)
 				})
@@ -314,6 +343,25 @@ func runShellRegistry() {
 			op.resp <- registryResp{snapshot: shell.snapshot()}
 		}
 	}
+}
+
+// signalShellStop cancels a running shell's context and asks its process to
+// stop, returning the command so the caller can escalate to the process group.
+// Only call from the registry goroutine.
+//
+// It must NOT call cmd.Wait(): the startBackground goroutine is the sole owner
+// of Wait (and reaps the process there), so a second Wait on the same *exec.Cmd
+// would be a data race. Signalling is safe from here; reaping is not.
+func signalShellStop(shell *BackgroundShell) *exec.Cmd {
+	if shell.cancel != nil {
+		shell.cancel()
+	}
+	if shell.cmd == nil || shell.cmd.Process == nil {
+		return nil
+	}
+	cmd := shell.cmd
+	_ = cmd.Process.Signal(syscall.SIGTERM)
+	return cmd
 }
 
 // getBackgroundShell retrieves a background shell by ID
@@ -521,9 +569,57 @@ func (ops *ShellOperations) Execute(ctx context.Context, operation string, param
 		return ops.kill(params)
 	case "listBackgroundShells":
 		return ops.listBackgroundShells(params)
+	case "taskStatus":
+		return ops.taskStatus(params)
 	default:
 		return nil, fmt.Errorf("unknown operation: %s", operation)
 	}
+}
+
+// sameProject reports whether two project roots name the same directory. Both
+// come from the same stored project path in practice, so this is equality — with
+// trailing separators trimmed, because a trailing slash is not a difference and
+// reading it as one would make every task in the project unreachable at once.
+func sameProject(a, b string) bool {
+	trim := func(p string) string {
+		if len(p) > 1 {
+			return strings.TrimRight(p, `/\`)
+		}
+		return p
+	}
+	return trim(a) == trim(b)
+}
+
+// ownedTask resolves a caller-supplied task id to a shell the caller is entitled
+// to act on, or nil. Two checks, and they are not the same kind of thing:
+//
+//   - Project. The registry is process-global and survives a project switch, so a
+//     bare id would otherwise reach a task belonging to a project this caller is
+//     no longer (or was never) in. Comparing the spawn-time root against the
+//     caller's current scope root is a genuine boundary between sessions.
+//   - Conversation. Optional, and enforced only when the caller names one. This
+//     is scoping rather than privilege: /api/ops/call authenticates with a single
+//     per-instance token and there is no per-conversation identity behind it, so
+//     conv_id is a statement of which conversation the caller is acting for, not
+//     proof of anything. It still earns its place — a surface that knows about one
+//     conversation should not be able to reach into another's tasks by id — but do
+//     not read it as an access-control decision.
+//
+// A rejected lookup is indistinguishable from an unknown id on purpose: callers
+// report "not found", which neither confirms nor denies that the task exists
+// somewhere the caller cannot see.
+func (ops *ShellOperations) ownedTask(taskID string, params map[string]any) *BackgroundShell {
+	shell := getBackgroundShell(taskID)
+	if shell == nil {
+		return nil
+	}
+	if !sameProject(shell.ProjectRoot, ops.scope.Root()) {
+		return nil
+	}
+	if convID, _ := params["conv_id"].(string); convID != "" && shell.ConvID != convID {
+		return nil
+	}
+	return shell
 }
 
 // getOutput retrieves output from a background shell
@@ -533,7 +629,7 @@ func (ops *ShellOperations) getOutput(params map[string]any) (any, error) {
 		return nil, fmt.Errorf("missing task_id parameter")
 	}
 
-	shell := getBackgroundShell(taskID)
+	shell := ops.ownedTask(taskID, params)
 	if shell == nil {
 		return map[string]any{
 			"task_id": taskID,
@@ -577,7 +673,7 @@ func (ops *ShellOperations) getOutputDelta(params map[string]any) (any, error) {
 		return nil, fmt.Errorf("missing task_id parameter")
 	}
 
-	shell := getBackgroundShell(taskID)
+	shell := ops.ownedTask(taskID, params)
 	if shell == nil {
 		return map[string]any{
 			"task_id": taskID,
@@ -617,7 +713,7 @@ func (ops *ShellOperations) kill(params map[string]any) (any, error) {
 		return nil, fmt.Errorf("missing shell_id parameter")
 	}
 
-	shell := getBackgroundShell(shellID)
+	shell := ops.ownedTask(shellID, params)
 	if shell == nil {
 		return map[string]any{
 			"shell_id": shellID,
@@ -642,19 +738,78 @@ func (ops *ShellOperations) kill(params map[string]any) (any, error) {
 	}, nil
 }
 
-// listBackgroundShells returns all background shells for a conversation
+// listBackgroundShells returns one conversation's background shells, within the
+// caller's current project. conv_id is required rather than optional: an omitted
+// filter used to mean "every task in the process", which is a listing of other
+// conversations' commands and is never what a caller wants.
 func (ops *ShellOperations) listBackgroundShells(params map[string]any) (any, error) {
-	convID, _ := params["conv_id"].(string)
+	convID, ok := params["conv_id"].(string)
+	if !ok || convID == "" {
+		return nil, fmt.Errorf("missing conv_id parameter")
+	}
 
+	return map[string]any{"shells": ops.shellsFor(convID)}, nil
+}
+
+// shellsFor returns the registry's entries for one conversation in the caller's
+// current project. The registry applies both filters; nothing here can widen them.
+func (ops *ShellOperations) shellsFor(convID string) []map[string]any {
 	resp := make(chan registryResp, 1)
 	registryCh <- registryOp{
-		kind:   "list",
-		convID: convID,
-		resp:   resp,
+		kind:        "list",
+		convID:      convID,
+		projectRoot: ops.scope.Root(),
+		resp:        resp,
 	}
-	result := <-resp
+	return (<-resp).shells
+}
 
-	return map[string]any{"shells": result.shells}, nil
+// taskStatus answers one question about tasks the caller already knows the ids
+// of: which of them are still running. It is deliberately not an inventory —
+// there is no way to ask it what exists — so the caller must already hold the
+// ids, which in practice means reading them out of a conversation transcript it
+// is already displaying. That bound is structural, and worth keeping: it is why
+// the board can show running tasks without any endpoint that enumerates them.
+//
+// It carries no output, no command and no exit code. A task the caller does not
+// own reports the same "not running, not found" as one that never existed.
+func (ops *ShellOperations) taskStatus(params map[string]any) (any, error) {
+	convID, ok := params["conv_id"].(string)
+	if !ok || convID == "" {
+		return nil, fmt.Errorf("missing conv_id parameter")
+	}
+	raw, ok := params["task_ids"].([]any)
+	if !ok {
+		return nil, fmt.Errorf("missing task_ids parameter")
+	}
+
+	// One registry pass for the whole batch: a board polling a dozen tasks should
+	// not cost a dozen round trips through the actor.
+	statusByID := make(map[string]string)
+	for _, entry := range ops.shellsFor(convID) {
+		id, _ := entry["task_id"].(string)
+		status, _ := entry["status"].(string)
+		statusByID[id] = status
+	}
+
+	tasks := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		id, _ := item.(string)
+		if id == "" {
+			continue
+		}
+		status, found := statusByID[id]
+		if !found {
+			status = "not_found"
+		}
+		tasks = append(tasks, map[string]any{
+			"task_id": id,
+			"status":  status,
+			"running": status == "running",
+		})
+	}
+
+	return map[string]any{"tasks": tasks}, nil
 }
 
 // startBackground starts a command in the background and returns immediately
@@ -687,13 +842,14 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 	// Create background shell entry (mutable state initialized here,
 	// owned by registry goroutine once registered)
 	shell := &BackgroundShell{
-		ID:        shellID,
-		ConvID:    convID,
-		ToolUseID: toolUseID,
-		Command:   command,
-		StartTime: time.Now(),
-		cancel:    cancel,
-		status:    "running",
+		ID:          shellID,
+		ConvID:      convID,
+		ToolUseID:   toolUseID,
+		Command:     command,
+		StartTime:   time.Now(),
+		ProjectRoot: ops.scope.Root(),
+		cancel:      cancel,
+		status:      "running",
 	}
 
 	// Register the shell (registry goroutine now owns mutable state)

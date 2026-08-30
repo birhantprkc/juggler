@@ -144,6 +144,7 @@ import { runTests as runComposerSendLatchTests } from '../unit-tests/composer-se
 import { runTests as runScheduledSendTests } from '../unit-tests/scheduled-send-test.js';
 import { runTests as runSidebarSwipeTests } from '../unit-tests/sidebar-swipe-test.js';
 import { runTests as runTabDragGhostTests } from '../unit-tests/tab-drag-ghost-test.js';
+import { runTests as runReorderDragTests } from '../unit-tests/reorder-drag-test.js';
 import { runTests as runSlashCompletionTests } from '../unit-tests/slash-completion-test.js';
 import { runTests as runSkillCompletionTests } from '../unit-tests/skill-completion-test.js';
 import { runTests as runUnclaimedConversationsTests } from '../unit-tests/unclaimed-conversations-test.js';
@@ -151,6 +152,10 @@ import { runTests as runThreadColumnSelectionTests } from '../unit-tests/thread-
 import { runTests as runThreadSelectionPinTests } from '../unit-tests/thread-selection-pin-test.js';
 import { runTests as runThreadPinSurvivesRevealTests } from '../unit-tests/thread-pin-survives-reveal-test.js';
 import { runTests as runParallelThreadSelectionTests } from '../unit-tests/parallel-thread-selection-test.js';
+import { runTests as runPinboardThreadSourceTests } from '../unit-tests/pinboard-thread-source-test.js';
+import { runTests as runPinboardFileEditsTests } from '../unit-tests/pinboard-file-edits-test.js';
+import { runTests as runPinboardTasksTests } from '../unit-tests/pinboard-tasks-test.js';
+import { runTests as runPinboardSatelliteTests } from '../unit-tests/pinboard-satellite-test.js';
 import { runTests as runScrollAwayAutofollowTests } from '../unit-tests/scroll-away-autofollow-test.js';
 import { runTests as runScrollToTopTests } from '../unit-tests/scroll-to-top-test.js';
 import { runTests as runAutoFollowHoldsTheEndTests } from '../unit-tests/auto-follow-holds-the-end-test.js';
@@ -175,6 +180,8 @@ import { runTests as runKeyShortcutManagerTests } from '../unit-tests/key-shortc
 import { runTests as runEscapeBehaviourTests } from '../unit-tests/escape-behaviour-test.js';
 import { runTests as runHoldToCycleTests } from '../unit-tests/hold-to-cycle-test.js';
 import { runTests as runRecentModelsTests } from '../unit-tests/recent-models-test.js';
+import { runTests as runPinboardTests } from '../unit-tests/pinboard-test.js';
+import { runTests as runPinboardShellTests } from '../unit-tests/pinboard-shell-test.js';
 import { runTests as runUsageStatsCacheTests } from '../unit-tests/usage-stats-cache-test.js';
 import { runTests as runThinkingCyclerTests } from '../unit-tests/thinking-cycler-test.js';
 import { runTests as runThinkingChipTests } from '../unit-tests/thinking-chip-test.js';
@@ -336,6 +343,10 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:escape-behaviour', run: runEscapeBehaviourTests, needsExclusiveRun: true },
   { name: 'unit:hold-to-cycle', run: runHoldToCycleTests },
   { name: 'unit:recent-models', run: runRecentModelsTests },
+  { name: 'unit:pinboard', run: runPinboardTests },
+  // Exclusive: it asserts where focus lands when the board opens and closes, and
+  // a sibling lane calling focus() takes frame focus away mid-assertion.
+  { name: 'unit:pinboard-shell', run: runPinboardShellTests, needsExclusiveRun: true },
   { name: 'unit:usage-stats-cache', run: runUsageStatsCacheTests },
   { name: 'unit:thinking-cycler', run: runThinkingCyclerTests },
   { name: 'unit:thinking-chip', run: runThinkingChipTests },
@@ -389,6 +400,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:scheduled-send', run: runScheduledSendTests },
   { name: 'unit:sidebar-swipe', run: runSidebarSwipeTests },
   { name: 'unit:tab-drag-ghost', run: runTabDragGhostTests },
+  { name: 'unit:reorder-drag', run: runReorderDragTests },
   { name: 'unit:slash-completion', run: runSlashCompletionTests },
   { name: 'unit:skill-completion', run: runSkillCompletionTests },
   { name: 'unit:search-action', run: runSearchActionTests },
@@ -437,6 +449,12 @@ const UNIT_TEST_SUITES = [
   // shared origin can move.
   { name: 'unit:thread-pin-survives-reveal', run: runThreadPinSurvivesRevealTests, needsExclusiveRun: true },
   { name: 'unit:parallel-thread-selection', run: runParallelThreadSelectionTests },
+  { name: 'unit:pinboard-thread-source', run: runPinboardThreadSourceTests },
+  { name: 'unit:pinboard-file-edits', run: runPinboardFileEditsTests },
+  { name: 'unit:pinboard-tasks', run: runPinboardTasksTests },
+  // Exclusive: it puts the whole document into pinboard mode for the length of
+  // a case, and a suite sharing the lane would boot into the wrong shell.
+  { name: 'unit:pinboard-satellite', run: runPinboardSatelliteTests, needsExclusiveRun: true },
   { name: 'unit:scroll-away-autofollow', run: runScrollAwayAutofollowTests },
   { name: 'unit:scroll-to-top', run: runScrollToTopTests },
   { name: 'unit:auto-follow-holds-the-end', run: runAutoFollowHoldsTheEndTests },

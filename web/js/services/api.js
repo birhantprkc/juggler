@@ -58,16 +58,47 @@ import { fetchJson } from './http.js';
  */
 
 /**
+ * @typedef {object} GitFileStatus
+ * @property {string} path - File path relative to its repository.
+ * @property {string} index - Staged status letter ("M", "A", "D", …), "." when unmodified.
+ * @property {string} worktree - Working-tree status letter, "?" for untracked, "." when unmodified.
+ */
+
+/**
  * @typedef {object} GitRepoStatus
  * @property {string} path - Repo location relative to the project root ("" for the root repo).
  * @property {number} changed - Count of files with working-tree changes (incl. untracked).
  * @property {number} staged - Count of files with staged (index) changes.
+ * @property {number} total - Count of files git reported, listed in `files` or not.
+ * @property {string} branch - Current branch, "" on a detached head.
+ * @property {string} upstream - Tracking branch, "" when there is none.
+ * @property {number} ahead - Commits this branch has that its upstream does not.
+ * @property {number} behind - Commits its upstream has that this branch does not.
+ * @property {boolean} detached - Whether HEAD is detached rather than on a branch.
+ * @property {GitFileStatus[]} files - The changed files, bounded server-side.
+ * @property {boolean} truncated - Whether the tree holds more files than `files` lists.
  */
 
 /**
  * REST API service for Juggler backend
  * @class
  */
+/**
+ * The seeds every new native window is opened with. `mode` is what the child
+ * adopts (so 'system'/'auto' survives into it instead of collapsing to whatever
+ * it currently resolves to), `theme` is the concrete colour it paints on its
+ * first frame to avoid a flash, and `zoom` only seeds a child whose session has
+ * no saved size of its own.
+ * @returns {URLSearchParams} The theme, mode and zoom hand-off.
+ */
+function newWindowParams() {
+  return new URLSearchParams({
+    theme: getPaintedTheme(),
+    mode: getMode(),
+    zoom: String(getCurrentZoom()),
+  });
+}
+
 class APIService {
   constructor() {
     /** @type {string} @private */
@@ -465,19 +496,36 @@ class APIService {
    * @returns {Promise<void>} Resolves once the launch was requested.
    */
   async newWindow(path = '') {
-    // Hand off both the selected mode and the resolved theme: `mode` is what the
-    // child adopts (so 'system'/'auto' survives into the new window instead of
-    // collapsing to whatever it currently resolves to), while `theme` is the
-    // concrete colour the child paints on its first frame to avoid a flash.
-    const params = new URLSearchParams({
-      theme: getPaintedTheme(),
-      mode: getMode(),
-      zoom: String(getCurrentZoom()),
-    });
+    const params = newWindowParams();
     if (path) params.set('project', path);
     const url = windowControlURL('new', `?${params.toString()}`);
     if (!url) return; // no native host (browser tab) — nothing to open
     await fetchJson(url, { method: 'POST', errorPrefix: 'Could not open a new window' });
+  }
+
+  /**
+   * Open a detached pinboard in a native window of its own. Desktop only, like
+   * {@link APIService#newWindow} — a browser tab opens the same URL itself.
+   *
+   * No project is named: the app puts the new window on the same server as the
+   * one that asked, which is what puts the board and the conversation it is a
+   * view of on one project.
+   * @param {string} owner - The viewer id the board sends its reveals to.
+   * @param {string} board - The board this window is a view of.
+   * @param {string} [pin] - The pin it opens on.
+   * @param {string} [conversation] - The conversation it is a view of.
+   * @returns {Promise<void>} Resolves once the launch was requested.
+   */
+  async openPinboardWindow(owner, board, pin = '', conversation = '') {
+    const params = newWindowParams();
+    params.set('view', 'pinboard');
+    params.set('owner', owner);
+    params.set('board', board);
+    if (pin) params.set('pin', pin);
+    if (conversation) params.set('conversation', conversation);
+    const url = windowControlURL('new', `?${params.toString()}`);
+    if (!url) return; // no native host (browser tab) — nothing to open
+    await fetchJson(url, { method: 'POST', errorPrefix: 'Could not open the board' });
   }
 
   /**

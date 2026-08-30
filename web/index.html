@@ -22,6 +22,7 @@
             "juggler/strategy-type": "/v{{.StaticVersion}}/sdk/strategy-type.js",
             "juggler/command-type": "/v{{.StaticVersion}}/sdk/command-type.js",
             "juggler/info-card-type": "/v{{.StaticVersion}}/sdk/info-card-type.js",
+            "juggler/pinboard-item-type": "/v{{.StaticVersion}}/sdk/pinboard-item-type.js",
             "juggler/file-viewer": "/v{{.StaticVersion}}/sdk/file-viewer.js",
             "juggler/file-source": "/v{{.StaticVersion}}/sdk/file-source.js",
             "juggler/ops": "/v{{.StaticVersion}}/sdk/ops.js",
@@ -150,6 +151,14 @@
                     /Windows/.test(ua) ? 'windows' :
                     /Macintosh|Mac OS X/.test(ua) ? 'mac' : 'linux';
             }
+            // A pinboard view shows one thing and none of the conversation
+            // shell around it. Recorded synchronously so the reduced layout
+            // applies on first paint rather than after the board mounts; the
+            // logic half re-reads the query in utils/view-mode.js, exactly as
+            // theme and zoom are painted here and re-read by their managers.
+            if (params.get('view') === 'pinboard') {
+                document.documentElement.dataset.view = 'pinboard';
+            }
         })();
     </script>
 
@@ -252,6 +261,12 @@
             </button>
 
             <section class="logo"></section>
+
+            <!-- What a detached board is: its conversation and the pin that is
+                 up, standing where the project chip stands. CSS-hidden outside a
+                 board window; the board fills it in, since it is the only thing
+                 that knows either. -->
+            <div class="app-header__board-title" id="board-title"></div>
 
             <!-- Project control: a chip showing the current project (click to
                  change it) + an inline "open new window" button. The chip is
@@ -364,6 +379,18 @@
 
                 <!-- Settings Button -->
                 <button class="u-btn-ghost u-btn-icon-header settings-button" id="settings-button" title="Settings" aria-label="Settings"></button>
+
+                <!-- Pinboard toggle. The board's only way in, at every width, so
+                     it sits in the same place on a phone as on a desktop. Last
+                     in the row: the board opens beside it, on the same edge. -->
+                <button class="u-btn-ghost u-btn-icon-header pinboard-header-button" id="pinboard-header-button"
+                        title="Toggle Pinboard" aria-label="Toggle Pinboard"
+                        data-shortcut-id="toggle-pinboard" aria-controls="pinboard-panel"
+                        aria-expanded="false" hidden>
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" aria-hidden="true">
+                        <path d="M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H200Zm0-80h360v-560H200v560Z"/>
+                    </svg>
+                </button>
                 </div>
             </header-actions>
 
@@ -389,6 +416,11 @@
             <!-- Scrim behind the off-canvas sidebar drawer (narrow viewports
                  only; CSS-hidden otherwise). Tapping it closes the drawer. -->
             <div class="sidebar-backdrop" id="sidebar-backdrop" aria-hidden="true"></div>
+
+            <!-- Pinboard: the right-edge button, and the tabbed panel it opens
+                 over the workspace. Hidden until a project is loaded — the board
+                 belongs to the project session. -->
+            <pinboard-shell hidden></pinboard-shell>
         </main>
     </app-container>
 
@@ -444,6 +476,7 @@
     <script type="module" src="/v{{.StaticVersion}}/js/components/properties-panel.js"></script>
     <script type="module" src="/v{{.StaticVersion}}/js/components/conversation-area.js"></script>
     <script type="module" src="/v{{.StaticVersion}}/js/components/plugin-catalog.js"></script>
+    <script type="module" src="/v{{.StaticVersion}}/js/components/pinboard-shell.js"></script>
 
     <!-- Plugin base class -->
     <script type="module" src="/v{{.StaticVersion}}/sdk/context-item.js"></script>
