@@ -70,6 +70,7 @@ var (
 	colors       bool  = true
 	fileLogger   *log.Logger
 	fileSink     *rotatingWriter
+	filePath     string
 )
 
 // ansiRe strips ANSI escape codes for file output.
@@ -100,6 +101,7 @@ func Init(opts Options) {
 		}
 		fileSink = w
 		fileLogger = log.New(w, "", log.LstdFlags)
+		filePath = opts.LogFilePath
 		writeHeader(opts)
 	}
 }
@@ -228,6 +230,18 @@ func writeToFile(lg *log.Logger, level, msg string) {
 // per-conversation sink (jlog.NewLogger) should gate on this so they don't
 // create files when the user has logging disabled or no file sink exists.
 func FileLoggingEnabled() bool { return fileLogger != nil }
+
+// FilePath returns the process-wide log file's path, or "" when on-disk logging
+// is off or its file could not be opened. It is the anchor for diagnostic
+// artifacts that belong beside the log rather than in it — a crash dump, a
+// thread sample — so they land in the same folder a bug report already collects,
+// and so "logging is disabled" suppresses them too.
+func FilePath() string {
+	if fileLogger == nil {
+		return ""
+	}
+	return filePath
+}
 
 // Logger is a per-conversation log handle. Every line it emits goes to the
 // process-wide sink and console exactly as the package-level functions do — so

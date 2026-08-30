@@ -140,6 +140,9 @@ func startMainThreadWatchdog(addr string, allowRelaunch bool) {
 		lastProgress := time.Now()
 		postWakeIgnoreUntil := time.Now()
 		warned := false
+		// The sample started by the current stall, if any. Only ever touched
+		// from this goroutine, so it needs no synchronisation of its own.
+		var sample *stallSample
 
 		ticker := time.NewTicker(pingInterval)
 		defer ticker.Stop()
@@ -170,6 +173,11 @@ func startMainThreadWatchdog(addr string, allowRelaunch bool) {
 				if warned {
 					jlog.Info("Main thread recovered.")
 					warned = false
+					// Let the sample finish and keep its file. A stall that
+					// came back on its own is the more informative of the two
+					// outcomes: it says the deadlock has a way out, and the
+					// stacks are the only record of what it was waiting on.
+					sample = nil
 				}
 				continue
 			}
@@ -190,12 +198,23 @@ func startMainThreadWatchdog(addr string, allowRelaunch bool) {
 				jlog.Error("Main thread unresponsive for %v (likely WebKit DisplayLink deadlock). Will %s at %v.",
 					stalled.Round(time.Second), action, hangThreshold)
 				warned = true
+				// Capture native stacks while the stall is still on. Only in
+				// the real app: under the test pool a stall is a result the
+				// harness reports, and sampling would spend CPU on the loaded
+				// machine that caused it.
+				if allowRelaunch {
+					sample = captureStallSample(jlog.FilePath(), os.Getpid(), now)
+				}
 			}
 			if stalled >= hangThreshold {
 				// Bypass deferred cleanups (they'd try to use the wedged
 				// main thread). Write directly to stderr — jlog might be
 				// blocked behind something.
 				if allowRelaunch {
+					if !sample.settle(stallSampleGrace) {
+						jlog.Error("Main-thread sample didn't finish within %v; killed it rather than let it sample the replacement server.",
+							stallSampleGrace)
+					}
 					// Re-exec a fresh image in place; does not return on
 					// success. Falls through to os.Exit only if exec fails or
 					// the crash-loop guard refuses.
