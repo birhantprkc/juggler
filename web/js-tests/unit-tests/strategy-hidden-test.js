@@ -123,7 +123,11 @@ export async function runTests(_ctx) {
       // the Shift+Tab ring as a user-selectable mode, which is what it is not.
       const ids = strategyRegistry.getAllManifests().map(m => m.id);
       for (const id of ['subagent-explore', 'subagent-research']) {
-        assert(strategyRegistry.has(id), `${id} must be registered for its tool to pin it`);
+        // The registry is a realm-wide singleton, so an id missing here is as
+        // likely to be someone else's doing as this test's — name what IS
+        // registered, which tells the two apart at a glance.
+        assert(strategyRegistry.has(id),
+          `${id} must be registered for its tool to pin it; registered: [${strategyRegistry.getIds().join(', ')}]`);
         assert(!ids.includes(id), `${id} must not appear in the strategy list`);
       }
     });

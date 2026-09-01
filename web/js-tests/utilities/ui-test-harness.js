@@ -153,8 +153,10 @@ export class UITestHarness {
     };
     document.addEventListener('send-message', this._sendMessageHandler);
 
-    // 6. Create UIDriver
-    this._driver = new UIDriver(this._container);
+    // 6. Create UIDriver. It gets the per-test deadline for the same reason the
+    // inner harness does: its DOM waits are bounded by the budget the runner
+    // will actually fail on, not by their own nominal sub-timeouts.
+    this._driver = new UIDriver(this._container, { deadlineMs: this._perTestDeadlineMs || 0 });
 
     // 7. Wait for initial DOM to settle.
     // setTimeout (a macrotask) — not requestAnimationFrame, because hidden

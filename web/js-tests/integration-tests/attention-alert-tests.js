@@ -31,8 +31,14 @@
  *  - `window.__attention.setFocusedForTest(false|true)` forces "not looking" /
  *    "looking"; cleanup restores real detection with `setFocusedForTest(null)`.
  *  - The out-of-app notification is disabled for the duration so the shared
- *    document-title badge isn't mutated; `alertCount` and the always-on tab flash
- *    are unaffected.
+ *    document-title badge isn't mutated; the alert tallies and the always-on tab
+ *    flash are unaffected.
+ *
+ * Every count here is `__attention.alertsFor(convId)`, never the window-wide
+ * `alertCount`. The manager is wired to the SESSION and alerts for any
+ * conversation in it, and the lanes of a test subprocess share one session — so
+ * the total also counts a sibling lane's turn reaching an awaiting or turn-end
+ * edge, which has nothing to do with what these tests assert.
  * @module integration-tests/attention-alert-tests
  */
 
@@ -56,17 +62,19 @@ const ATTENTION_TOOL_ID = 'call_attention_1';
  * @param {{harness: any}} ctx
  * @param {boolean} looking - true → user IS watching this conversation (alert
  *   suppressed); false → user is elsewhere (alert should fire).
- * @returns {Promise<{delta: number, lastAlert: any, convId: string}>} Alert
- *   delta, last alert, and conversation id observed across the turn.
+ * @returns {Promise<{delta: number, flagged: boolean, convId: string}>} Alerts
+ *   raised for THIS conversation across the turn, whether it is left flagged,
+ *   and its id.
  */
 async function runAwaitingTurn(conversation, { harness }, looking) {
   const session = harness.innerHarness.session;
   const prevNotify = getAttentionPrefs().notify;
 
   // Disable the out-of-app signal so the shared document-title badge isn't
-  // mutated; alertCount and the (always-on) tab flash are unaffected.
+  // mutated; the alert tallies and the (always-on) tab flash are unaffected.
   setNotifyEnabled(false);
   __attention.setFocusedForTest(looking);
+  const convId = conversation.id;
 
   try {
     // "Looking" is two things: the window is focused AND this is the
@@ -76,12 +84,12 @@ async function runAwaitingTurn(conversation, { harness }, looking) {
     // premise of the suppressed case, and a visible id that is anything else
     // reads as "the user is elsewhere" — which alerts. Synchronous, so it costs
     // no awaited timer.
-    if (looking) session.switchConversation(conversation.id);
+    if (looking) session.switchConversation(convId);
 
     // Wire the observer while idle so its first status fire (start/preparing,
     // awaiting=false) seeds the per-conversation baseline without alerting.
     initAttention(session);
-    const baseline = __attention.alertCount;
+    const baseline = __attention.alertsFor(convId);
 
     // Trigger a tool_use that requires approval, through the real composer.
     await harness.driver.typeAndSend('Run the attention echo');
@@ -94,9 +102,9 @@ async function runAwaitingTurn(conversation, { harness }, looking) {
     await harness.waitForApproval(ATTENTION_TOOL_ID, 3000);
 
     const result = {
-      delta: __attention.alertCount - baseline,
-      lastAlert: __attention.lastAlert,
-      convId: conversation.id
+      delta: __attention.alertsFor(convId) - baseline,
+      flagged: __attention.isFlagged(convId),
+      convId
     };
 
     // Let the turn finish so teardown is clean (approve → text reply → idle).
@@ -142,12 +150,14 @@ export const attentionFiresWhenNotLookingTest = {
    * @param {{harness: any}} ctx
    */
   customAssertions: async (conversation, ctx) => {
-    const { delta, lastAlert, convId } = await runAwaitingTurn(conversation, ctx, false);
+    const { delta, flagged, convId } = await runAwaitingTurn(conversation, ctx, false);
     if (delta !== 1) {
-      throw new Error(`expected exactly 1 attention alert while not looking, got ${delta}`);
+      throw new Error(`expected exactly 1 attention alert for ${convId} while not looking, got ${delta}`);
     }
-    if (!lastAlert || lastAlert.convId !== convId) {
-      throw new Error(`lastAlert.convId should be ${convId}, got ${lastAlert && lastAlert.convId}`);
+    // The alert is what marks the conversation; an alert counted for it that
+    // left it unflagged would be an alert raised against something else.
+    if (!flagged) {
+      throw new Error(`${convId} alerted but was not left flagged`);
     }
   }
 };
@@ -182,14 +192,15 @@ export const attentionSuppressedWhenLookingTest = {
   customAssertions: async (conversation, ctx) => {
     // Focus is forced and this conversation is made the visible one, so the
     // manager treats it as "being looked at".
-    const { delta, lastAlert, convId } = await runAwaitingTurn(conversation, ctx, true);
+    const { delta, convId } = await runAwaitingTurn(conversation, ctx, true);
     if (delta !== 0) {
-      // Name what alerted: an alert for another conversation in this window
-      // and a genuine suppression failure both land here, and they are
-      // different bugs.
+      // Only this conversation's alerts are counted, so reaching here is a
+      // genuine suppression failure. Name the visible conversation anyway: the
+      // two halves of "looking" are focus and visibility, and this is the half
+      // a test can lose.
       const visible = ctx.harness.innerHarness.session.visibleConversationId;
       throw new Error(`expected no attention alert while looking, got ${delta}`
-        + ` (this ${convId}, visible ${visible}, last alert for ${lastAlert && lastAlert.convId})`);
+        + ` (this ${convId}, visible ${visible})`);
     }
   }
 };
@@ -233,19 +244,16 @@ export const attentionFiresOnTurnEndTest = {
     try {
       // Wire while idle so the first observation seeds the baseline silently.
       initAttention(session);
-      const baseline = __attention.alertCount;
+      const baseline = __attention.alertsFor(convId);
 
       await harness.driver.typeAndSend('Say something and stop');
       harness.consumeResponse();
       await harness.awaitPendingSend();
       await harness.waitForTurnComplete();
 
-      const delta = __attention.alertCount - baseline;
+      const delta = __attention.alertsFor(convId) - baseline;
       if (delta !== 1) {
-        throw new Error(`expected exactly 1 attention alert for the completed turn, got ${delta}`);
-      }
-      if (__attention.lastAlert?.convId !== convId) {
-        throw new Error(`lastAlert.convId should be ${convId}, got ${__attention.lastAlert?.convId}`);
+        throw new Error(`expected exactly 1 attention alert for ${convId}'s completed turn, got ${delta}`);
       }
       if (!__attention.isFlagged(convId)) {
         throw new Error('the conversation must stay flagged after the turn-end alert');

@@ -758,7 +758,16 @@ export async function runIntegrationTest(testDef, ctx) {
   };
 
   const harness = new UITestHarness(harnessOptions);
-  const perTestTimeoutMs = testDef.timeoutMs || 10000;
+  // The default budget for one test, and through `_perTestDeadlineMs` below the
+  // bound on every wait inside it. It buys nothing on a passing test and is
+  // spent only by a failing one, so the number to pick is the largest that
+  // still leaves the failure reported HERE, with its operation trace and event
+  // tapes, rather than as the Go harness's bare 60s result-poll timeout: 25s of
+  // test plus the 5s diagnostics build. The nine lanes of the pool share one
+  // machine and now genuinely run at once, so the work a lane is waiting on can
+  // be sitting behind eight siblings' — a budget tight enough to notice that is
+  // measuring the pool, not the code.
+  const perTestTimeoutMs = testDef.timeoutMs || 25000;
   const ac = new AbortController();
   // In-test condition waits stay patient up to this deadline instead of
   // pre-empting it with their own shorter sub-timeouts. The per-test hard

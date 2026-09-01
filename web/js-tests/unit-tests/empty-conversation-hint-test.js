@@ -92,8 +92,32 @@ export async function runTests() {
 
     const inner = /** @type {HTMLElement} */ (rootCol.querySelector('#message-list-inner'));
     const scroller = /** @type {HTMLElement} */ (rootCol.querySelector('#message-list'));
-    const bandTop = inner.getBoundingClientRect().bottom;
-    const bandBottom = scroller.getBoundingClientRect().bottom;
+
+    /** @returns {{top: number, bottom: number}} The clear band, in viewport coordinates. */
+    const band = () => ({
+      top: inner.getBoundingClientRect().bottom,
+      bottom: scroller.getBoundingClientRect().bottom
+    });
+    /** @returns {boolean} Whether the hint is inside the band and centred in it. */
+    const centredInBand = () => {
+      const { top, bottom } = band();
+      const r = hint.getBoundingClientRect();
+      return r.top >= top - 1 && r.bottom <= bottom + 1
+        && Math.abs((r.top + r.bottom) / 2 - (top + bottom) / 2) <= 1;
+    };
+
+    // The placement above is the FIRST one, and the band moves under it: each
+    // standing context item that renders pushes the content's bottom down, and
+    // the hint is repositioned after. So a placement centred in the band as it
+    // was is exactly what a lane sharing a machine with eight others reads —
+    // the geometry is right, just one render behind. Wait for the two to agree
+    // instead. Non-throwing on the deadline, so a hint that genuinely never
+    // settles is reported by the assertions below, with the numbers.
+    try {
+      await waitFor(centredInBand, { description: 'the starting hint to settle in the clear band' });
+    } catch { /* fall through — the assertions report the exact geometry */ }
+
+    const { top: bandTop, bottom: bandBottom } = band();
     assert(hint.classList.contains('no-room') === false,
       'the 800px-tall test column should have room for the hint, but it is marked no-room');
     const hintTop = hint.getBoundingClientRect().top;

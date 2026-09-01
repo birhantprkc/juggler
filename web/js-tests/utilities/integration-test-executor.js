@@ -12,6 +12,7 @@
 
 import { runIntegrationTests } from './integration-test-runner.js';
 import { destroyTrackedTestSessions } from './test-helpers.js';
+import { whenRegistriesSettled } from '../../js/registries/reload-registries.js';
 import { tests as readFileTests } from '../integration-tests/read-file-tests.js';
 import { tests as writeFileTests } from '../integration-tests/write-file-tests.js';
 import { tests as approvalFlowTests } from '../integration-tests/approval-flow-tests.js';
@@ -640,6 +641,15 @@ async function runUnitSuiteWithConvCleanup(suite, ctx) {
     return await suite.run(ctx);
   } finally {
     neutralizeStrayModals();
+    // A suite that saved a command, a skill or a plugin toggle left a registry
+    // rebuild running behind it — those call sites deliberately don't await one
+    // (see whenRegistriesSettled). The suites of a lane share one realm and
+    // therefore one set of registries, so an outstanding rebuild is the next
+    // suite's problem: it would find the registries reset and read an empty
+    // one. Wait it out here, where the ownership boundary is. Best-effort — a
+    // rebuild that rejects (a plugin whose init throws) must not mask the
+    // suite's own result.
+    await whenRegistriesSettled().catch(() => {});
     await deleteOwnConversationsCreatedSince(before, `unit-cleanup:${suite.name}`);
     // Client-side counterpart of the delete above: that frees the server's
     // copy, this frees ours. A Session the suite left alive holds a Yjs doc

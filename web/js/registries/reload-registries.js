@@ -155,6 +155,24 @@ export function registerItemOwnedStrategies() {
 }
 
 /**
+ * The registry rebuild currently in flight, if any.
+ *
+ * Mutating callers (the command editor, the skills tab) start a rebuild without
+ * awaiting it on purpose: it defers to local quiescence, so blocking on it would
+ * hold a dialog open across a whole turn. That leaves a window in which the
+ * registries have been reset and not yet rebuilt. Nothing in the app needs to
+ * hold there — every reader is either awaiting the registries-ready gate or
+ * repaints on {@link REGISTRIES_RELOADED}. A test harness running suite after
+ * suite in one realm does need to: the window would otherwise stretch into the
+ * next suite, which would find capabilities that were registered a moment ago
+ * simply absent.
+ * @returns {Promise<void>} Resolves once no rebuild is outstanding.
+ */
+export function whenRegistriesSettled() {
+  return reloadInFlight || Promise.resolve();
+}
+
+/**
  * Snapshot every capability module that failed to import, across the registries,
  * keyed by served URL. A capability that throws on import is dropped silently —
  * it simply isn't in the registry afterwards — so this is the only way to see

@@ -67,8 +67,16 @@ const DEF = {
  */
 
 /**
- * Record `fetch` rather than sending it, and stand a provider list in for the
- * server-pushed one.
+ * Record the command writes rather than sending them, and stand a provider list
+ * in for the server-pushed one.
+ *
+ * Only `/api/user-commands` is answered here; everything else is passed to the
+ * real fetch. Saving a command rebuilds the capability registries, and that
+ * rebuild refetches the extension catalog: handed this stub's canned command
+ * response instead, it caches an EMPTY catalog, and every registry in the lane's
+ * shared realm is left empty and marked initialized for the suites that follow.
+ * (The rebuild also outlives the save that started it — the suite runner waits
+ * it out; see `whenRegistriesSettled`.)
  * @returns {{calls: Call[], restore: () => void}} The harness.
  */
 function stubEnvironment() {
@@ -77,6 +85,7 @@ function stubEnvironment() {
   const originalFetch = window.fetch;
   window.fetch = /** @type {any} */ (async (/** @type {string} */ url, /** @type {any} */ init = {}) => {
     calls.push({ url, method: init.method || 'GET', body: init.body ? JSON.parse(init.body) : null });
+    if (!String(url).startsWith('/api/user-commands')) return originalFetch.call(window, url, init);
     return { ok: true, status: 200, json: async () => ({ name: DEF.name, scope: DEF.scope, path: DEF.path }) };
   });
 

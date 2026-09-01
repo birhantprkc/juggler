@@ -413,6 +413,17 @@ const prevAwaiting = new Map();
  */
 const prevTurns = new Map();
 /**
+ * Alerts raised, counted per conversation.
+ *
+ * A window observes every conversation in its session, so the window-wide
+ * `alertCount` below is a total over all of them. That is the right number for
+ * "has this window alerted at all", and the wrong one for anything that has to
+ * be true of one conversation — hence this tally, read through
+ * `__attention.alertsFor`.
+ * @type {Map<string, number>}
+ */
+const alertsByConversation = new Map();
+/**
  * Test seam: overrides the focus check when set.
  * @type {boolean|null}
  */
@@ -449,6 +460,7 @@ function raiseAttention(convId) {
   // handled reactively in syncBrowserTitleBadge): only when the user opted in.
   if (prefs.notify) requestDockBounce();
   __attention.alertCount++;
+  alertsByConversation.set(convId, (alertsByConversation.get(convId) || 0) + 1);
   __attention.lastAlert = { convId, t: __attention.alertCount };
 }
 
@@ -581,11 +593,16 @@ export function initAttention(sess) {
 
 /**
  * Test/debug seam. Not part of the supported API.
- * @type {{alertCount: number, lastAlert: any, setFocusedForTest: (v: boolean|null) => void, isFlagged: (convId: string) => boolean, flashForTest: (convId: string) => void, clearForTest: (convId: string) => void}}
+ * @type {{alertCount: number, lastAlert: any, alertsFor: (convId: string) => number, setFocusedForTest: (v: boolean|null) => void, isFlagged: (convId: string) => boolean, flashForTest: (convId: string) => void, clearForTest: (convId: string) => void}}
  */
 export const __attention = {
   alertCount: 0,
   lastAlert: null,
+  // Alerts raised for ONE conversation. The window-wide alertCount above counts
+  // every conversation in the session, so it is only safe to assert on where
+  // the test owns every conversation the window can see — which a test sharing
+  // a session with other tests does not.
+  alertsFor(/** @type {string} */ convId) { return alertsByConversation.get(convId) || 0; },
   setFocusedForTest(v) { focusOverride = v; },
   isFlagged(/** @type {string} */ convId) { return flagged.has(convId); },
   flashForTest(/** @type {string} */ convId) { flashConversation(convId); },

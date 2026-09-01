@@ -533,6 +533,18 @@ export class IntegrationTestHarness {
     }
 
     const { default: actionExecutor } = await import('../../js/services/action-executor.js');
+
+    // Which branch the flow takes is decided from two things that arrive here
+    // independently: the action executor's own view, and the worker's activity
+    // as it syncs into the doc. A caller that has seen the tool produce output
+    // knows it is running — it does not know either of those has reached this
+    // page yet, and sampling them a moment early sends the worker nothing at
+    // all, leaving a cancel the quiescence wait below can never observe at any
+    // budget. So wait for something cancellable to be visible first.
+    await this._waitForCondition(
+      (_items, ps) => actionExecutor.hasRunningActions() || ps?.activity === 'awaiting_llm',
+      { timeoutMs, label: 'cancellable work visible to the UI cancel flow' });
+
     const wasRunningActions = actionExecutor.hasRunningActions();
     const isAwaitingLLM = this._conversation.processingState?.activity === 'awaiting_llm';
     this._conversation.cancelAllPendingApprovals();

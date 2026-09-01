@@ -25,10 +25,37 @@ import { getMessageSelector } from './test-assertions.js';
 class UIDriver {
   /**
    * @param {HTMLElement} container - DOM element containing the conversation-tab
+   * @param {{deadlineMs?: number}} [opts] - Per-test deadline the waits ride
    */
-  constructor(container) {
+  constructor(container, { deadlineMs = 0 } = {}) {
     /** @type {HTMLElement} @private */
     this._container = container;
+
+    /**
+     * Absolute time the runner will fail this test at, or 0 when unknown.
+     * @type {number}
+     * @private
+     */
+    this._perTestDeadlineMs = deadlineMs;
+  }
+
+  /**
+   * How long a wait may run for.
+   *
+   * The per-test deadline is the one real bound (the same rule turn-sync.js
+   * applies to the model-level waits): stay patient right up to it, so a lane
+   * competing with eight others for one machine isn't cut off by a nominal
+   * sub-timeout chosen when a lane had the pool to itself, and never past it, so
+   * a wait started late can't overrun the budget. The +1s lets the runner's own
+   * hard timeout fire first, which reports the operation trace rather than the
+   * bare wait. `fallbackMs` applies only when no deadline was supplied.
+   * @param {number} fallbackMs - Nominal timeout to use with no deadline set
+   * @returns {number} Milliseconds this wait may take
+   * @private
+   */
+  _budget(fallbackMs) {
+    if (!this._perTestDeadlineMs) return fallbackMs;
+    return Math.max(0, this._perTestDeadlineMs - Date.now() + 1000);
   }
 
   // =========================================================================
@@ -196,11 +223,17 @@ class UIDriver {
 
   /**
    * Wait for the DOM subtree to stabilize (no mutations for stabilityMs).
+   *
+   * "The DOM is still moving" is never a fault on its own — a lane whose renders
+   * are being interleaved with eight siblings' simply takes longer to go quiet —
+   * so the overall bound is the per-test deadline rather than `timeoutMs`, which
+   * stands in only when no deadline is set.
    * @param {number} [stabilityMs=50] - Required quiet period
-   * @param {number} [timeoutMs=3000] - Overall timeout
+   * @param {number} [timeoutMs=3000] - Overall timeout when no deadline is set
    * @returns {Promise<void>}
    */
   async waitForDOMStable(stabilityMs = 50, timeoutMs = 3000) {
+    const budgetMs = this._budget(timeoutMs);
     const conversationArea = this.getConversationArea();
     const target = conversationArea || this._container;
 
@@ -233,8 +266,8 @@ class UIDriver {
       overallTimer = setTimeout(() => {
         observer.disconnect();
         if (stableTimer) clearTimeout(stableTimer);
-        reject(new Error(`waitForDOMStable: DOM did not stabilize within ${timeoutMs}ms`));
-      }, timeoutMs);
+        reject(new Error(`waitForDOMStable: DOM did not stabilize within ${budgetMs}ms`));
+      }, budgetMs);
     });
   }
 
@@ -368,12 +401,13 @@ class UIDriver {
    * Observe the container's subtree for mutations and check a condition after each.
    * @template T
    * @param {() => T|null} check - Function that returns a truthy value when condition is met
-   * @param {number} timeoutMs - Timeout
+   * @param {number} timeoutMs - Timeout to use when no per-test deadline is set
    * @param {string} errorMessage - Error message on timeout
    * @returns {Promise<T>} Resolved value from check function
    * @private
    */
   _observeUntil(check, timeoutMs, errorMessage) {
+    const budgetMs = this._budget(timeoutMs);
     return new Promise((resolve, reject) => {
       // Check immediately before observing
       const immediate = check();
@@ -407,7 +441,7 @@ class UIDriver {
       const timer = setTimeout(() => {
         observer.disconnect();
         reject(new Error(errorMessage));
-      }, timeoutMs);
+      }, budgetMs);
     });
   }
 }

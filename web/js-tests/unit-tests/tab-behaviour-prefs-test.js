@@ -344,11 +344,13 @@ export async function runTests() {
       __attention.setFocusedForTest(true);
       try {
         tick();
-        const alerts = __attention.alertCount;
+        // This conversation's own tally, not the window-wide count: the manager
+        // alerts for every conversation in a session, and lanes share one.
+        const alerts = __attention.alertsFor(convId);
         conv.completedTurns = 1;
         tick();
         assert(sess.bumps.join() === convId, `the watched conversation’s tab must float too — got [${sess.bumps.join()}]`);
-        assert(__attention.alertCount === alerts, 'the conversation being watched must not raise an alert');
+        assert(__attention.alertsFor(convId) === alerts, 'the conversation being watched must not raise an alert');
       } finally {
         __attention.setFocusedForTest(null);
       }
