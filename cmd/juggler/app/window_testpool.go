@@ -373,16 +373,12 @@ func runTestPoolWindowApp(srv *server.Server, devMode bool, headless bool, testI
 		// to the test pool: production's main UI window *should* yield CPU when
 		// hidden — its hidden engine window does the background work.
 		// KeepRunningWhenHidden gets the lanes scheduled; it does not decide how
-		// coarsely their timers fire once they are. A hidden page also aligns
-		// its DOM timers to a ~1s cadence, so every `setTimeout(fn, 0)` a test
-		// or the code under test schedules costs a full second — a suite is
-		// then priced in awaited timers rather than in work, and one that
-		// awaits fifty of them takes a minute to do a second of asserting.
-		// Nobody is looking at this window, so nothing is saved by coarsening
-		// it: switch the alignment off and let the lanes run at wall speed.
+		// coarsely their timers fire once they are. That second half is the
+		// hidden-page timer alignment, switched off separately once the window
+		// exists — see unthrottleHiddenPageTimers, called from the startup hook
+		// below, and note it buys macOS only.
 		macWindow.WebviewPreferences = application.MacWebviewPreferences{
-			KeepRunningWhenHidden:               application.Enabled,
-			DisableHiddenPageDOMTimerThrottling: application.Enabled,
+			KeepRunningWhenHidden: application.Enabled,
 		}
 		// Windows: the same hazard as WebView2 "efficiency mode" — a hidden
 		// window's controller is dropped to IsVisible=false and its JS timers
@@ -474,6 +470,13 @@ func runTestPoolWindowApp(srv *server.Server, devMode bool, headless bool, testI
 	// after the application has finished launching.
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(_ *application.ApplicationEvent) {
 		application.InvokeAsync(func() { applyWindowChrome(win, themeColours[themeDark]) })
+		if isTestPoolHost {
+			// Only the pool host: this window's lanes do timed work nobody is
+			// watching, so there is nothing to save by coarsening their timers.
+			// A production window that goes idle when hidden is behaving
+			// correctly and must keep doing so.
+			application.InvokeAsync(func() { unthrottleHiddenPageTimers(win) })
+		}
 		wa.startup()
 	})
 

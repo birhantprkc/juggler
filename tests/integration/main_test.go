@@ -128,9 +128,15 @@ var testSkillsDir string
 //     windows-only topologies hide.
 //
 // Total parallel-test slots = WINDOWS × IFRAMES. The defaults give 9 slots,
-// which benchmarking put at the knee of the curve: the full suite averaged
-// ~57s at 4 lanes, ~39s at 8, ~39s at 16 — enough lanes to saturate an engine,
-// and more buys nothing.
+// which benchmarking puts at the knee of the curve: TestBrowser measured ~58s
+// at 9 lanes, ~59s at 12 (as 4x3 and as 3x4 alike) and ~61s at 15, so more
+// lanes buy nothing and eventually cost. What saturates has changed, though,
+// and the distinction matters to anyone re-tuning this: lanes used to sit idle
+// on 1s-aligned timers, so the ceiling was how much a single engine could be
+// made to do at once. With that alignment switched off (see the test pool's
+// DisableHiddenPageDOMTimerThrottling) the lanes run flat out and the ceiling
+// is the host's CPU — 10 cores here. So this is a knee for THIS machine, not a
+// universal one, and a box with many more cores may well want more lanes.
 //
 // How those 9 are SHAPED matters as much as how many there are, and 3×3 beats
 // 1×9 on the same slot count: 46s and clean against 141–214s and 5–34 arbitrary

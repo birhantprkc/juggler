@@ -63,6 +63,14 @@ const listDiscoveryTimeout = 60 * time.Second
 //
 // Each test acquires an isolated Wails subprocess+fixture from testServerPool so
 // concurrent tests cannot interfere with each other's session state.
+//
+// Reading the timings: `--- PASS: TestBrowser (20s)` is NOT what this test
+// costs. Go stops a parent's clock before it waits on its parallel subtests, so
+// that figure covers only discovery, the fixture resets and the sequential
+// phase below — the parallel phase, usually the larger half, is invisible in it
+// and shows up only as the package total. Profile against `ok
+// juggler/tests/integration <total>` and treat the parent's number as the
+// sequential phase alone, or the phase that actually needs the work looks free.
 func TestBrowser(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping browser tests in short mode")
