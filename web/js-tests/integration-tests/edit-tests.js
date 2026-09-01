@@ -750,6 +750,21 @@ export const editDisplayDataTest = {
     if (dd.diffData.oldContent === dd.diffData.newContent) {
       throw new Error('diffData.oldContent === newContent — diff would be empty');
     }
+
+    // …and stored exactly once. A diff holds the whole file twice over, so the
+    // document must not also keep the copy that arrives nested in the result
+    // blob. completeToolAction moves it onto the item rather than copying it;
+    // everything renders from the item-level field asserted above.
+    for (const item of items) {
+      if (!isToolActionMessage(/** @type {any} */ (item))) continue;
+      const rawResult = /** @type {any} */ (item).get('result');
+      const stored = rawResult?.toJSON ? rawResult.toJSON() : rawResult;
+      if (stored?.fullResult?.displayData) {
+        throw new Error(
+          `${/** @type {any} */ (item).get('toolName')} stored displayData inside result.fullResult as well as on the item — the diff is in the document twice`
+        );
+      }
+    }
   }
 };
 

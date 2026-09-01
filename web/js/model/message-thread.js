@@ -907,6 +907,19 @@ export default class MessageThread {
       // treat them identically — and keep them out of the stored `result` blob
       // to avoid duplicating the refs.
       const { attachments, ...resultRest } = result || {};
+      // displayData is by far the largest thing a tool-action carries: an edit's
+      // diff holds the whole file both before and after. It reaches here twice —
+      // once on the item, set by the approval flow, and again nested inside
+      // fullResult — so it is MOVED out of the result blob rather than copied
+      // alongside it, leaving the document one copy however the action was
+      // approved. Everything reads the item-level field; nothing reads the
+      // stored fullResult.displayData.
+      const { displayData: promotedDisplayData, ...fullResultRest } = resultRest.fullResult || {};
+      if (promotedDisplayData) {
+        resultRest.fullResult = /** @type {import('../../sdk/lib/message.js').ActionFullResult} */ (
+          fullResultRest
+        );
+      }
       // Set state and result atomically so the observer (and the Go worker)
       // never see state=completed/cancelled without a result, or vice versa.
       doc.transact(() => {
@@ -917,11 +930,12 @@ export default class MessageThread {
           if (Array.isArray(attachments) && attachments.length) {
             ymap.set('attachments', convertToYType(attachments));
           }
-          // Promote displayData from fullResult onto the YMap so the properties
-          // panel can render diffs for auto-approved actions (where the approval
-          // flow never sets displayData on the YMap directly).
-          if (result.fullResult?.displayData && !ymap.get('displayData')) {
-            ymap.set('displayData', convertToYType(result.fullResult.displayData));
+          // Promote it onto the YMap so the properties panel can render diffs for
+          // auto-approved actions, where the approval flow never set the
+          // item-level field. When that field is already set the promoted copy is
+          // simply dropped — it is the same diff.
+          if (promotedDisplayData && !ymap.get('displayData')) {
+            ymap.set('displayData', convertToYType(promotedDisplayData));
           }
         }
       }, this.conversation._doc.authorId);

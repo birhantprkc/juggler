@@ -1031,6 +1031,17 @@ func (w *ConversationWorker) handleEngineTrace(payload json.RawMessage) {
 	if decoded && probe.ToolUseID != "" {
 		w.tools.recordTrace(probe.ToolUseID, probe.Reason, now)
 	}
+	if decoded && probe.Reason == engineReasonConvNotLoaded {
+		// The engine says it holds no copy of this conversation, so the ops the
+		// worker believes it has, it does not — every later delta would build on a
+		// base that is gone. This is the only signal that the engine released a
+		// conversation, since it releases one without dropping its socket and tells
+		// the server nothing directly. Forget the vector and the next push re-seeds
+		// full state. Deliberately NOT routed through recordTrace, which ignores
+		// any toolUseId not currently under command: a decline for a tool the
+		// worker has stopped driving still proves the document is gone.
+		w.engineDocVector = nil
+	}
 	if decoded && probe.Event == engineTraceToolOverdue {
 		// The one engine-trace that is not merely part of a lifecycle: the engine's
 		// watchdog reporting an execution that has outlived every deadline a tool

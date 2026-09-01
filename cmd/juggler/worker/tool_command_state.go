@@ -161,10 +161,17 @@ func (t *toolCommandTracker) recordDispatch(id, state string, now time.Time) int
 // and fails if a reason appears there that this table has never heard of, so a
 // new no-act exit cannot silently default to "the tool's fault".
 var engineUnreachableReasons = map[string]bool{
-	"conv-not-loaded": true,
-	"no-thread":       true,
-	"no-ymap":         true,
+	engineReasonConvNotLoaded: true,
+	"no-thread":               true,
+	"no-ymap":                 true,
 }
+
+// engineReasonConvNotLoaded is the one no-act reason that is about the
+// CONVERSATION rather than the tool: the engine holds no loaded copy of it. The
+// other unreachable reasons say the engine has the document but could not find
+// the tool within it, so only this one invalidates what the worker believes the
+// engine's document contains (handleEngineTrace → engineDocVector).
+const engineReasonConvNotLoaded = "conv-not-loaded"
 
 // recordTrace stamps the arrival of an engine-trace naming id, classifying it by
 // the trace's `reason` field ("" for the acting traces, which carry none). Only

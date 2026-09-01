@@ -345,6 +345,26 @@ type ConversationWorker struct {
 	// Whether handleInit has been called at least once (first-init vs reconnect)
 	initialized bool
 
+	// engineDocVector is the Yjs state vector pushStateToEngine believes the
+	// attached engine holds, and so the point its next push encodes a delta
+	// from. Nil means "the engine holds nothing we can build on", which is the
+	// only case that sends full state.
+	//
+	// It is advanced to the doc's own vector after each push rather than learnt
+	// from the engine, because the engine never reports one unprompted. That is
+	// safe in both directions: the push carries every op up to that vector
+	// through the engine's ordered mailbox, and ops the doc gains afterwards
+	// reach the engine on the ordinary broadcast path, so a vector that lags the
+	// engine's true one only re-sends a few ops it can already integrate.
+	//
+	// Two things invalidate it, and both must, because a delta is worthless to a
+	// peer without the base it builds on: a different engine attaching
+	// (SetEngineClientID) and the engine itself reporting it does not hold this
+	// conversation (a conv-not-loaded trace — the engine can release a loaded
+	// conversation without dropping its socket, so attachment alone is not
+	// evidence it still has the document). Run goroutine only.
+	engineDocVector []byte
+
 	// activityAsserted tracks whether this worker is currently holding an
 	// osactivity assertion (App Nap defeat). Set on the first non-idle
 	// sendStatus; cleared on the idle transition. Per-worker bool because
@@ -661,11 +681,15 @@ func (w *ConversationWorker) RemoveCallback(clientID string) {
 // SetEngineClientID tells this worker which client is the engine (the single
 // tool executor), so pushStateToEngine can target it. "" detaches.
 func (w *ConversationWorker) SetEngineClientID(clientID string) {
+	// The incoming engine has observed none of this conversation's ops, so the
+	// vector describing what the previous one held describes nothing now. Drop it
+	// and let the next push re-seed full state.
+	w.engineDocVector = nil
 	w.callbacks.setEngine(clientID)
 }
 
-// pushStateToEngine sends the full Yjs document state directly to the attached
-// engine, guaranteeing the engine becomes a loaded peer of THIS conversation.
+// pushStateToEngine sends Yjs document state directly to the attached engine,
+// guaranteeing the engine becomes a loaded peer of THIS conversation.
 //
 // The engine is the single place that executes tool-actions (via its reactive
 // reducer), which requires the conversation to be loaded there. Relying on the
@@ -673,18 +697,46 @@ func (w *ConversationWorker) SetEngineClientID(clientID string) {
 // dependent: a conversation that gains tool work while the engine is up but
 // hasn't loaded it leaves the approved tool-action unobserved forever — the
 // "tools stuck" wedge. So the worker (the authority) drives the load: whenever a
-// turn produces tool-actions, it pushes full state to the engine. Idempotent —
-// if the engine already has the conversation the update merges as a no-op. No-op
-// when no engine is attached or the doc isn't loaded yet.
+// turn produces tool-actions, it pushes state to the engine. Idempotent — if the
+// engine already has the conversation the update merges as a no-op. No-op when
+// no engine is attached or the doc isn't loaded yet.
+//
+// Only the FIRST push to a given engine is the whole document; the rest are
+// deltas against engineDocVector. Seeding a peer that holds nothing takes full
+// state, but repeating it does not, and this fires once per tool-action
+// dispatched plus once per redrive interval per unanswered tool — so on a
+// conversation with large tool results the full-document form re-encoded,
+// base64'd and shipped megabytes down a loopback socket (where permessage-
+// deflate is off) to communicate a few dozen bytes of change, several times a
+// turn.
+//
+// A push always goes out, even when the delta is empty, because the message is
+// also the ordering barrier its caller relies on: the command that follows it
+// rides the same engine mailbox, and the engine flushes pending syncs before
+// acting. Skipping the send on "nothing new" would let a command overtake a
+// sync still queued behind a setTimeout in the engine, which is the ordering the
+// caller in driveToolActionsExcept exists to guarantee.
 func (w *ConversationWorker) pushStateToEngine() {
 	if !w.initialized {
 		return
 	}
-	state := w.doc.ToState()
-	if len(state) == 0 {
+	if w.engineDocVector == nil {
+		state := w.doc.ToState()
+		if len(state) == 0 {
+			// Nothing to seed from yet, so claim nothing: the next push retries
+			// full state rather than sending a delta against a base the engine
+			// was never given.
+			return
+		}
+		w.callbacks.sendToEngine(marshalYjsSync(state, false))
+		w.engineDocVector = w.doc.GetStateVector()
 		return
 	}
-	w.callbacks.sendToEngine(marshalYjsSync(state, false))
+	// Both doc reads happen on the run goroutine, which is also the only goroutine
+	// that mutates the doc, so the vector recorded is exactly the one the delta
+	// brings the engine to.
+	w.callbacks.sendToEngine(marshalYjsSync(w.doc.GetStateUpdate(w.engineDocVector), false))
+	w.engineDocVector = w.doc.GetStateVector()
 }
 
 // SetLLMCaller sets the function used to call the LLM provider directly.
