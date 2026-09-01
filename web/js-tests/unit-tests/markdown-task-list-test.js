@@ -372,5 +372,57 @@ export async function runTests(_ctx) {
     );
   });
 
+  // --- continuation lines stay inside their own item ------------------------
+
+  run('the continuation indent follows the marker width', () => {
+    /** @type {Array<Record<string, any>>} */
+    const steps = Array.from({ length: 10 }, (_, i) => ({
+      content: `Step ${i + 1}`, status: 'completed', result: 'Done.',
+    }));
+    const md = renderPlanMarkdown({ steps });
+    assert(md.includes('\n   Result: Done.'), `a single-digit step indents three:\n${md}`);
+    assert(md.includes('\n    Result: Done.'), `step ten indents four:\n${md}`);
+  });
+
+  run('a step past nine keeps its blank-line paragraphs, and the steps after it', () => {
+    /** @type {Array<Record<string, any>>} */
+    const steps = Array.from({ length: 11 }, (_, i) => ({
+      content: i === 9
+        ? 'Ten opens.\n\nA second paragraph inside step ten.'
+        : `Step ${i + 1}`,
+      status: 'completed',
+      result: i === 9 ? 'Landed.\n\nAnd a second result paragraph.' : null,
+    }));
+    const md = renderPlanMarkdown({ title: 'Eleven steps', steps });
+    assert(!/\n[ \t]+\n/.test(md), `blank continuation lines carry no padding:\n${md}`);
+
+    const el = render(md);
+    const items = el.querySelectorAll('li.task-list-item');
+    assert(items.length === 11, `expected 11 rendered steps, got ${items.length}:\n${el.innerHTML}`);
+    assert(
+      (items[9].textContent || '').includes('And a second result paragraph.'),
+      `step ten's later paragraphs escaped it: ${el.innerHTML}`
+    );
+    assert(
+      (items[10].textContent || '').includes('Step 11'),
+      `the step after it stopped being a list item: ${el.innerHTML}`
+    );
+  });
+
+  run('a todo item past nine keeps its blank-line paragraphs', () => {
+    /** @type {Array<Record<string, any>>} */
+    const todos = Array.from({ length: 10 }, (_, i) => ({
+      content: i === 9 ? 'Ten opens.\n\nA second paragraph.' : `Item ${i + 1}`,
+      status: 'pending',
+    }));
+    const el = render(renderTodoMarkdown(todos));
+    const items = el.querySelectorAll('li.task-list-item');
+    assert(items.length === 10, `expected 10 rendered items, got ${items.length}:\n${el.innerHTML}`);
+    assert(
+      (items[9].textContent || '').includes('A second paragraph.'),
+      `item ten's second paragraph escaped it: ${el.innerHTML}`
+    );
+  });
+
   return { passed, failed, errors };
 }

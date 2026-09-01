@@ -27,13 +27,37 @@ import { taskMarker, taskStatusWord } from 'juggler/ui';
 import { createTextBlock } from 'juggler/item-utils';
 
 /**
- * Indent every line after the first to the width of a numbered list marker, so
+ * The indent a continuation line needs to stay inside item `n` of a numbered
+ * list: the width of the marker `n. ` that opens it.
+ *
+ * It is the item's own width, never a constant — `9. ` is three characters
+ * wide and `10. ` is four. A continuation line short of its marker's width
+ * ends the list, and because an ordered list cannot interrupt a paragraph
+ * unless it starts at 1, the escaped text then swallows every later item as
+ * prose.
+ * @param {number} n - The item's 1-based number.
+ * @returns {string} Spaces matching the marker's width.
+ */
+function markerIndent(n) {
+  return ' '.repeat(String(n).length + 2);
+}
+
+/**
+ * Indent every line after the first to the width of its list marker, so
  * multi-line step or item text stays inside its own list item when rendered.
+ *
+ * Blank lines are emitted empty rather than padded: the indent is there to
+ * hold a line inside its item, and a line with nothing on it holds nothing —
+ * padding it only writes trailing whitespace.
  * @param {string} text - Step content, item content, or result summary.
+ * @param {string} indent - The item's continuation indent, from {@link markerIndent}.
  * @returns {string} The text with continuation lines indented.
  */
-function indentContinuation(text) {
-  return String(text || '').replace(/\n/g, '\n   ');
+function indentContinuation(text, indent) {
+  return String(text || '')
+    .split('\n')
+    .map((line, i) => (i === 0 ? line : (line.trim() ? indent + line : '')))
+    .join('\n');
 }
 
 /**
@@ -72,7 +96,8 @@ export function renderPlanMarkdown(planData, opts = {}) {
   ];
 
   for (const [i, step] of steps.entries()) {
-    let line = `${i + 1}. ${taskMarker(step.status)} ${indentContinuation(step.content)}`;
+    const indent = markerIndent(i + 1);
+    let line = `${i + 1}. ${taskMarker(step.status)} ${indentContinuation(step.content, indent)}`;
     const words = opts.statusWords ? taskStatusWord(step.status) : '';
     if (words) {
       line += ` _(${words})_`;
@@ -82,7 +107,7 @@ export function renderPlanMarkdown(planData, opts = {}) {
     }
     lines.push(line);
     if (step.result) {
-      lines.push(`   Result: ${indentContinuation(step.result)}`);
+      lines.push(`${indent}Result: ${indentContinuation(step.result, indent)}`);
     }
   }
 
@@ -111,7 +136,8 @@ export function renderTodoMarkdown(todos, opts = {}) {
   for (const [i, todo] of list.entries()) {
     const words = opts.statusWords ? taskStatusWord(todo.status) : '';
     const note = words ? ` _(${words})_` : '';
-    lines.push(`${i + 1}. ${taskMarker(todo.status)} ${indentContinuation(todo.content)}${note}`);
+    const indent = markerIndent(i + 1);
+    lines.push(`${i + 1}. ${taskMarker(todo.status)} ${indentContinuation(todo.content, indent)}${note}`);
   }
 
   return lines.join('\n') + '\n';
