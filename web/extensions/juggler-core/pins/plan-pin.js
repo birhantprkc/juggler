@@ -57,7 +57,7 @@ class PlanPin extends PinboardItemType {
       itemType: 'plan',
       itemsOf: (data) => data?.steps || [],
       render: (data) => createPlanBlock(data),
-      empty: 'Plans put up for approval appear here, and their progress after that.',
+      empty: 'If the conversation contains a plan, this shows its current state',
     });
   }
 }

@@ -47,21 +47,25 @@ const OP_ENDPOINT = '/api/ops/call';
  * app issues its own requests (a plugin-watcher refresh, a settings read), and
  * a stub that counts the first request of ANY kind as "the op is in flight"
  * releases the test before the action has registered, leaving it to assert
- * against an executor that is still empty. Everything but {@link OP_ENDPOINT}
- * goes through to the real fetch untouched, so `started` means this action's op.
- * @param {{honourSignal?: boolean}} [opts] - honourSignal false ignores the
- *   abort signal entirely: a non-cooperative tool whose op cannot be
- *   interrupted, which the executor must still settle.
+ * against an executor that is still empty. The endpoint alone is not enough of a
+ * filter either — the page calls it too, to read a file a pin is watching or to
+ * complete a path — so the tool the request names has to match as well. Anything
+ * else goes through to the real fetch untouched, so `started` means this
+ * action's op and nothing else's.
+ * @param {{honourSignal?: boolean, toolId?: string}} [opts] - honourSignal false
+ *   ignores the abort signal entirely: a non-cooperative tool whose op cannot be
+ *   interrupted, which the executor must still settle. toolId is the tool whose
+ *   ops are held (every case here runs grep, and batch_grep fans out to it).
  * @returns {{started: Promise<void>, restore: () => void}} A promise that resolves
  *   once an op fetch is in flight, and the call that puts the real fetch back.
  */
-function stubOpFetch({ honourSignal = true } = {}) {
+function stubOpFetch({ honourSignal = true, toolId = 'grep' } = {}) {
   const realFetch = window.fetch;
   /** @type {() => void} */
   let resolveStarted;
   const started = /** @type {Promise<void>} */ (new Promise((r) => { resolveStarted = r; }));
   window.fetch = (/** @type {any} */ url, /** @type {any} */ opts = {}) => {
-    if (String(url) !== OP_ENDPOINT) return realFetch.call(window, url, opts);
+    if (String(url) !== OP_ENDPOINT || opRequestToolId(opts) !== toolId) return realFetch.call(window, url, opts);
     return new Promise((_resolve, reject) => {
       resolveStarted();
       const signal = honourSignal ? opts.signal : null;
@@ -72,6 +76,21 @@ function stubOpFetch({ honourSignal = true } = {}) {
     });
   };
   return { started, restore: () => { window.fetch = realFetch; } };
+}
+
+/**
+ * Which tool an op request belongs to, read from the body ops-api sends
+ * (`{toolId, operation, params}`). A request with no readable body belongs to
+ * nobody here and is left alone.
+ * @param {any} opts - The fetch init the caller passed.
+ * @returns {string} The tool id, or '' when there is none to read.
+ */
+function opRequestToolId(opts) {
+  try {
+    return JSON.parse(String(opts?.body || '{}')).toolId || '';
+  } catch {
+    return '';
+  }
 }
 
 /**

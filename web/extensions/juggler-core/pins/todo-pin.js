@@ -52,7 +52,7 @@ class TodoPin extends PinboardItemType {
       itemType: 'todo',
       itemsOf: (data) => data?.todos || [],
       render: (data) => createTodoBlock(data?.todos || []),
-      empty: 'The checklist for the task in hand appears here.',
+      empty: 'If the conversation contains a TODO list, this shows its current state',
     });
   }
 }

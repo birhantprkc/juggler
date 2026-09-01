@@ -236,6 +236,14 @@ export async function runTests(ctx) {
       `expected the resolved path, got "${described.path}"`);
   });
 
+  await test('a path that names its own location is never joined onto the project', () => {
+    const active = /** @type {any} */ ({ project: { path: '/proj' } });
+    assert(pin.describe({ path: 'C:\\src\\main.go' }, active).path === 'C:\\src\\main.go',
+      'a Windows drive path is absolute, and the backend reports native paths');
+    assert(pin.describe({ path: '\\\\server\\share\\main.go' }, active).path === '\\\\server\\share\\main.go',
+      'so is a UNC share');
+  });
+
   await test('a pin needs a project to resolve against', () => {
     assert(pin.canAdd(/** @type {any} */ ({ project: { path: '/x' } })) === true, 'with a project, addable');
     assert(pin.canAdd(/** @type {any} */ ({ project: { path: '' } })) === 'No project',
@@ -456,7 +464,9 @@ export async function runTests(ctx) {
     // outside the root for as long as it exists. So a pin keeps reading until it
     // is removed, and removing it is how you stop. A pin above the project root
     // is the cheapest honest proof: it needs no grant and there is none.
-    const outside = ctx.fixtureDir.replace(/\/[^/]+$/, '');
+    // Either separator: the fixture path is whatever the backend calls native,
+    // which on Windows is `C:\…\browser-test-x`.
+    const outside = ctx.fixtureDir.replace(/[\\/][^\\/]+$/, '');
     assert(outside && outside !== ctx.fixtureDir, 'the fixture must have a parent to point at');
     const mounted = mount({ path: outside, isDirectory: true });
     try {

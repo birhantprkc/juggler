@@ -199,14 +199,14 @@ export async function runTests(_ctx) {
 
   await test('no plan anywhere says so, briefly', () => {
     const m = mount(null);
-    assert((m.body.textContent || '').trim() === 'Plans put up for approval appear here, and their progress after that.',
+    assert((m.body.textContent || '').trim() === 'If the conversation contains a plan, this shows its current state',
       `expected the plan empty state, got ${JSON.stringify(m.body.textContent)}`);
     m.teardown();
   });
 
   await test('a plan with no steps is no plan', () => {
     const m = mount(planFound([]));
-    assert((m.body.textContent || '').trim() === 'Plans put up for approval appear here, and their progress after that.',
+    assert((m.body.textContent || '').trim() === 'If the conversation contains a plan, this shows its current state',
       `an empty step list is not a plan: ${JSON.stringify(m.body.textContent)}`);
     m.teardown();
   });
@@ -294,7 +294,7 @@ export async function runTests(_ctx) {
 
   await test('a plan appearing where there was none replaces the empty state', () => {
     const m = mount(null);
-    assert((m.body.textContent || '').trim() === 'Plans put up for approval appear here, and their progress after that.', 'expected the empty state first');
+    assert((m.body.textContent || '').trim() === 'If the conversation contains a plan, this shows its current state', 'expected the empty state first');
     m.setFound(planFound(twoSteps));
     m.fireChange();
     assert((m.body.textContent || '').includes('First step'), 'the new plan did not appear');
@@ -305,7 +305,7 @@ export async function runTests(_ctx) {
     const m = mount(planFound(twoSteps));
     m.setFound(null);
     m.fireChange();
-    assert((m.body.textContent || '').trim() === 'Plans put up for approval appear here, and their progress after that.',
+    assert((m.body.textContent || '').trim() === 'If the conversation contains a plan, this shows its current state',
       `expected the empty state back, got ${JSON.stringify(m.body.textContent)}`);
     m.teardown();
   });

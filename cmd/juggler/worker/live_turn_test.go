@@ -605,12 +605,17 @@ func TestParentWaitsForEveryDelegatedSibling(t *testing.T) {
 
 	sendUserMessage(t, w, "research a and b")
 
-	// Both children in flight.
+	// Both children in flight and each parked on its own scripted response. A
+	// run is live from the moment its goroutine starts, which is before its turn
+	// reaches the mock, so the run count alone would let the second child pop
+	// after the release below — leaving a response in the queue that reads
+	// exactly like a parent that never resumed at all.
 	deadline := time.After(15 * time.Second)
-	for len(w.liveRuns()) < 2 {
+	for len(w.liveRuns()) < 2 || w.mock.remaining() > 1 {
 		select {
 		case <-deadline:
-			t.Fatalf("the two delegated children never ran together; runs=%v", w.readProcessingState()["runs"])
+			t.Fatalf("the two delegated children never ran together; runs=%v scripted responses left=%d",
+				w.readProcessingState()["runs"], w.mock.remaining())
 		case <-time.After(5 * time.Millisecond):
 		}
 	}

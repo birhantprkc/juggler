@@ -36,6 +36,19 @@ const PREVIEW_LINES = 500;
 const REFRESH_DEBOUNCE_MS = 150;
 
 /**
+ * Does this path already name a location on its own? A leading `/` everywhere,
+ * and on Windows a drive path (`C:\…`, `C:/…`) or a UNC share (`\\server\share`)
+ * — the backend reports native OS paths, so a pin made on Windows holds one, and
+ * treating it as relative would glue it onto the project root and name a place
+ * that does not exist.
+ * @param {string} path - The path to judge.
+ * @returns {boolean} True when the path names its own location.
+ */
+function isAbsolutePath(path) {
+  return path.startsWith('/') || path.startsWith('\\\\') || /^[A-Za-z]:([\\/]|$)/.test(path);
+}
+
+/**
  * Collapse a path to one spelling: no repeated separators, no `.` segments, `..`
  * resolved where it can be, no trailing separator. Purely textual — there is no
  * project root in scope here, so a relative path stays relative.
@@ -94,7 +107,7 @@ function normalizeFileConfig(config) {
  */
 function absolutePath(config, active) {
   const path = config?.path || '';
-  if (!path || path.startsWith('/')) return path;
+  if (!path || isAbsolutePath(path)) return path;
   const root = (active?.project?.path || '').replace(/\/+$/, '');
   return root ? `${root}/${path}` : path;
 }
