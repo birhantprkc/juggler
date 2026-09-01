@@ -252,15 +252,14 @@ class TasksPin extends PinboardItemType {
   }
 
   /**
-   * The conversation's name goes in the subtitle: these are one conversation's
-   * tasks, and a tab that did not say so would be read as the machine's. Reading
-   * the active snapshot is not work, which is all `describe` forbids.
-   * @param {Record<string, any>} config - The pin's config.
-   * @param {import('juggler/pinboard-item-type').PinActiveContext} active - The active context.
+   * The name, and nothing else. Which conversation these tasks belong to is the
+   * board's business rather than this pin's: every pin on a board reads the same
+   * conversation, so naming it here would be one tab's answer to a question the
+   * whole board shares.
    * @returns {import('juggler/pinboard-item-type').PinDescription} The tab's words.
    */
-  describe(config, active) {
-    return { title: this.name, subtitle: active?.conversation?.title || '' };
+  describe() {
+    return { title: this.name };
   }
 
   /**

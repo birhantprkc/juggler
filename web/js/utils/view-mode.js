@@ -40,6 +40,18 @@ export const VIEW_PINBOARD = 'pinboard';
 export const MAIN_BOARD_ID = 'main';
 
 /**
+ * The window role of the Juggler shell. Mirrors WindowRoleMain in
+ * cmd/juggler/core/session.go.
+ */
+export const WINDOW_ROLE_MAIN = 'main';
+
+/**
+ * The window role of a detached board, before its board id is appended. Mirrors
+ * WindowRolePinboard in cmd/juggler/core/session.go.
+ */
+export const WINDOW_ROLE_PINBOARD = 'pinboard';
+
+/**
  * The alphabet the server accepts for a viewer id (see sanitiseViewerID in
  * cmd/juggler/server/network.go). Applied to the ids in the URL too, so a junk
  * one yields nothing rather than something nothing can reach.
@@ -134,6 +146,26 @@ export function initialPinId() {
  */
 export function boardId() {
   return mode === VIEW_PINBOARD && board ? board : MAIN_BOARD_ID;
+}
+
+/**
+ * Which of this project's windows this document is.
+ *
+ * The Juggler shell is 'main'; a detached board is 'pinboard:<board>', or plain
+ * 'pinboard' when the URL named no usable board. This is the name a window's own
+ * geometry, theme and zoom are kept under, so it has to be the same string the
+ * two Go sides compute: WindowRoleForView in cmd/juggler/core/session.go, which
+ * the server uses to inject this window's theme pre-paint, and role() in
+ * cmd/juggler-app/window_opts.go, which the desktop app opens the window with.
+ *
+ * Note this reads the board straight out of the URL rather than through
+ * boardId(), which answers with the shared board when none was named — a window
+ * that named no board is not the docked panel's window.
+ * @returns {string} The window role.
+ */
+export function windowRole() {
+  if (mode !== VIEW_PINBOARD) return WINDOW_ROLE_MAIN;
+  return board ? `${WINDOW_ROLE_PINBOARD}:${board}` : WINDOW_ROLE_PINBOARD;
 }
 
 /**

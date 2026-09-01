@@ -6968,12 +6968,8 @@ settings-panel .settings-btn.icon svg {
 }
 
 settings-panel .settings-btn.icon.spinning svg {
-    animation: provider-refresh-spin 0.8s linear infinite;
+    animation: u-spin 0.8s linear infinite;
     transform-origin: center;
-}
-
-@keyframes provider-refresh-spin {
-    to { transform: rotate(360deg); }
 }
 
 /* Toggle switch for keyless providers */
@@ -10910,6 +10906,32 @@ pinboard-content:focus {
     font-size: var(--font-size-md);
 }
 
+/* A pin that names a file is titled by the path itself. Only the directories
+   ellipse: a narrow board should lose where the file is buried, never the name
+   of the thing on screen. Two elements rather than one clipped string, because
+   `direction: rtl` clips the right end but carries the leading separator round
+   to the other side with it. */
+.pinboard-item-toolbar__title--path {
+    display: flex;
+    align-items: baseline;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+}
+
+.pinboard-item-toolbar__dir {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--text-tertiary);
+}
+
+.pinboard-item-toolbar__name {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
 .pinboard-item-toolbar__subtitle {
     color: var(--text-tertiary);
     font-size: var(--font-size-sm);
@@ -10935,6 +10957,25 @@ pinboard-content:focus {
     font-family: var(--font-ui);
     font-size: var(--font-size-sm);
     line-height: 1;
+}
+
+/* An action shown as its icon: square, and the same 1.75rem tall as the words
+   beside it. It turns while it is working, which for a refresh is the only
+   answer to "did that do anything" a card that looks unchanged can give. */
+.pinboard-item-toolbar__action--icon {
+    width: 1.75rem;
+    padding: 0;
+}
+
+.pinboard-item-toolbar__action--icon svg {
+    display: block;
+    width: 1rem;
+    height: 1rem;
+}
+
+.pinboard-item-toolbar__action--icon.is-spinning svg {
+    animation: u-spin 0.8s linear infinite;
+    transform-origin: center;
 }
 
 .pinboard-item-toolbar__action:disabled {
@@ -11124,46 +11165,64 @@ pinboard-content:focus {
 [data-view="pinboard"] .app-header__board-title {
     display: flex;
     align-items: baseline;
-    gap: var(--spacing-sm);
+    gap: var(--spacing-lg);
     flex: 1 1 auto;
     min-width: 0;
     margin-right: auto;
     overflow: hidden;
     font-family: var(--font-ui);
-    font-size: 0.8125rem;
-    font-weight: 500;
     white-space: nowrap;
 }
 
-/* What the window is, in the treatment the board's own toolbar band used to
-   wear — it says this once now, and says it here. */
-.app-header__board-kind {
-    flex-shrink: 0;
-    color: var(--text-secondary);
-    font-size: var(--font-size-xs);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-}
-
-/* Which conversation the window is a view of. The one thing about a board that
-   never changes, and the one thing nothing else on screen says — so it leads the
-   two names and takes the room. */
+/* Which conversation the window is a view of. It follows the logo and reads as
+   the window's name: the one thing about a board that never changes, and the one
+   thing nothing else on screen says. As wide as the words and no wider — it is a
+   control, and the room left over belongs to the window's drag region — but free
+   to give way to the ellipsis when there is not enough of it. */
 .app-header__board-conversation {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     color: var(--text-primary);
+    font-size: var(--font-size-base);
+    font-weight: 500;
     text-overflow: ellipsis;
 }
 
-/* Which pin is up. Quieter, and the first of the two to be cut: the selected tab
-   directly below says the same thing. */
-.app-header__board-name {
-    flex: 0 3 auto;
-    min-width: 0;
-    overflow: hidden;
+/* The same words, as the control that takes you to the conversation itself. It
+   is drawn as a button only where there is a window to send it to, so it keeps
+   the type it had as text and takes none of a button's chrome — what marks it as
+   a control is that it answers the pointer. */
+button.app-header__board-conversation {
+    padding: 0;
+    border: 0;
+    background: none;
+    font-family: inherit;
+    line-height: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+button.app-header__board-conversation:hover {
+    text-decoration: underline;
+}
+
+button.app-header__board-conversation:focus-visible {
+    outline: 0.125rem solid var(--accent-blue);
+    outline-offset: 0.125rem;
+}
+
+/* What the window is, in the treatment the board's own toolbar band used to
+   wear — it says this once now, and says it here. Held at the far end, away from
+   the name: a label read at a glance and then not again. */
+.app-header__board-kind {
+    flex-shrink: 0;
+    margin-left: auto;
     color: var(--text-secondary);
-    text-overflow: ellipsis;
+    font-size: var(--font-size-xs);
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
 }
 
 [data-view="pinboard"] pinboard-shell {

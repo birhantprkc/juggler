@@ -107,9 +107,17 @@ func putWindowState(serverURL, role string, ws core.WindowState) {
 // down with the window that opened it, or with the app, keeps everything: it is
 // a window that will be opened again, and what it held is what it opens with.
 //
-// Best-effort, like the geometry writes it sits beside. A board that outlives a
-// close it should not have costs the user one stale window next launch, which is
-// a great deal better than a race here losing an arrangement they still wanted.
+// Best-effort in what it does about a failure, like the geometry writes it sits
+// beside: a board that outlives a close it should not have costs the user one
+// stale window next launch, which is a great deal better than a race here losing
+// an arrangement they still wanted.
+//
+// Not silent about one, though. This app holds no API token — the token is
+// minted in the server and handed only to the page it serves — so the route is
+// one the token gate lets through unauthenticated, on the same grounds as the
+// geometry writes (see apiAuthExempt). That is a condition on the other side of
+// a process boundary, and nothing here would notice it lapsing, so a refusal is
+// reported rather than dropped.
 func forgetBoard(serverURL, boardID string) {
 	if boardID == "" {
 		return
@@ -122,7 +130,11 @@ func forgetBoard(serverURL, boardID string) {
 	}
 	resp, err := windowStateHTTP.Do(req)
 	if err != nil {
+		logf("could not forget board %s: %v", boardID, err)
 		return
 	}
-	_ = resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		logf("could not forget board %s: the server answered %s", boardID, resp.Status)
+	}
 }

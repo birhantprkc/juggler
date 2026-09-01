@@ -16,7 +16,7 @@ import apiService from '../services/api.js';
 import { extractUserMessage } from '../../sdk/lib/error-utils.js';
 import { presentPopup } from '../utils/popup-surface.js';
 import { closePopupById } from '../utils/popup-manager.js';
-import { hasNativeHost, pickDirectory } from '../../sdk/lib/window-control.js';
+import { hasNativeHost, pickDirectory, pickFile } from '../../sdk/lib/window-control.js';
 import { focusWhenShown } from '../utils/focus.js';
 import { showAlert, showConfirm } from './modal-dialog.js';
 
@@ -79,7 +79,7 @@ export function buildPickerPanel({
     <div class="pp-body">
       <div class="pp-input-row">
         <path-input ${dirsOnly ? 'dirs-only ' : ''}placeholder="${placeholder}"${currentPath ? ` value="${currentPath.replace(/"/g, '&quot;')}"` : ''} class="pp-path-input"></path-input>
-        ${dirsOnly && hasNativeHost() ? '<button class="pp-btn pp-btn-browse" type="button">Browse…</button>' : ''}
+        ${hasNativeHost() ? '<button class="pp-btn pp-btn-browse" type="button">Browse…</button>' : ''}
       </div>
       <div class="pp-status" aria-live="polite"${validate ? '' : ' hidden'}></div>
       <div class="pp-recents" hidden></div>
@@ -245,12 +245,14 @@ export function buildPickerPanel({
   });
 
   // Native "Browse…" button (desktop app only; absent in a browser tab). Opens
-  // the OS folder chooser and feeds the result through the same value+validate
-  // path a recents click uses, so the rest of the flow is identical.
+  // the OS chooser — folders only for the project picker, either for a picker
+  // asking about a file — and feeds the result through the same value+validate
+  // path a recents click uses, so the rest of the flow is identical. The panel's
+  // own title is reused as the chooser's, so the sheet says what was asked.
   const browseBtn = /** @type {HTMLButtonElement|null} */ (panel.querySelector('.pp-btn-browse'));
   if (browseBtn) {
     browseBtn.addEventListener('click', async () => {
-      const chosen = await pickDirectory();
+      const chosen = dirsOnly ? await pickDirectory() : await pickFile(title);
       if (!chosen) return;
       pathInputEl.value = chosen;
       if (validate) {

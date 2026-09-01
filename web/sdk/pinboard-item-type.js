@@ -326,6 +326,11 @@
  * @typedef {object} PinDescription
  * @property {string} title - Short tab label and toolbar title, e.g. 'main.go'
  * @property {string} [subtitle] - Secondary line, e.g. the containing directory
+ * @property {string} [path] - The absolute path this pin is showing. The toolbar
+ *   then names the file rather than the pin: it shows the path in place of the
+ *   title, and offers the same open/copy/reveal controls a path gets anywhere
+ *   else in the app, so a pin need not supply those actions itself. `title` is
+ *   still what the tab says, because a full path across a tab strip is unreadable.
  * @property {string} [badge] - Compact status shown on the tab, e.g. '3/5'. Not a second title.
  */
 
@@ -339,6 +344,10 @@
  * @property {boolean} [primary] - Put it in the toolbar as a button of its own.
  *   Everything else goes in the overflow menu, which is where most actions belong:
  *   a toolbar of five buttons is a toolbar nobody reads.
+ * @property {string} [icon] - Draw it as a glyph the host knows by this name,
+ *   rather than as its label. Currently only `'refresh'`. An icon action is always
+ *   a button of its own and never joins the overflow menu, where a picture has
+ *   nothing to say; a name the host does not know falls back to the label.
  * @property {boolean} [disabled] - Show it, greyed, rather than hiding it. Prefer
  *   this to omitting an action that is temporarily unavailable — a control that
  *   comes and goes is harder to find than one that is briefly dim.

@@ -32,9 +32,10 @@ import { THREAD_FOCUS_CHANGED } from './conversation-tab.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { openAddPicker } from './pinboard-add-picker.js';
 import { describePin, revealInConversation } from './pinboard-content.js';
-import { raiseThisWindow } from '../../sdk/lib/window-control.js';
+import { raiseThisWindow, closeThisWindow, isDesktopWindow } from '../../sdk/lib/window-control.js';
 import { ownerLink, satelliteLink, canLinkBoards, onLinkAvailability } from '../services/pinboard-link.js';
-import { isPinboardView, boardConversationId } from '../utils/view-mode.js';
+import { isPinboardView, boardConversationId, ownerViewerId } from '../utils/view-mode.js';
+import { dragGuard } from '../utils/drag-guard.js';
 import './pinboard-tabbar.js';
 import './pinboard-content.js';
 
@@ -120,8 +121,18 @@ class PinboardPanel extends JugglerElement {
      * @type {'opening'|'ready'|'missing'} @private
      */
     this._boardState = 'opening';
+    /**
+     * What the conversation this board is a view of was called, kept from the
+     * last time there was one to ask. A deleted conversation cannot be asked its
+     * name, and which one has gone is the whole of what the window can still
+     * usefully say.
+     * @type {string} @private
+     */
+    this._boardTitle = '';
     /** @type {HTMLButtonElement|null} @private Shown once this viewer has an address. */
     this._popOutButton = null;
+    /** @type {string} @private What the window header was last told to say. */
+    this._namedAs = '';
   }
 
   connectedCallback() {
@@ -137,8 +148,16 @@ class PinboardPanel extends JugglerElement {
     // A board has no columns, so pointing at a thread is something it asks the
     // window it was detached from to do. That is all the link is for now, and it
     // is why a board with no owner left is a board that still works.
-    if (isPinboardView()) satelliteLink.start();
-    else this._restoreBoards();
+    if (isPinboardView()) {
+      satelliteLink.start();
+      // Whether this window can ask its owner anything is not known while the
+      // page is being parsed — the id arrives on the session frame — and it is
+      // what decides whether the conversation in the header is a control. So the
+      // header is written again once the answer is in.
+      this.addCleanup(onLinkAvailability(() => this._nameWindow(this._boardTitle)));
+    } else {
+      this._restoreBoards();
+    }
     this._render();
   }
 
@@ -198,6 +217,22 @@ class PinboardPanel extends JugglerElement {
     this._render();
   }
 
+  /**
+   * Give up the conversation this board was a view of.
+   *
+   * A board is a window onto one conversation, so a conversation that has been
+   * deleted leaves this window nothing to show and nothing to become: it says
+   * which one has gone and asks to be closed. The order matters — a window that
+   * cannot be closed from script, a browser tab the user opened themselves,
+   * keeps that message rather than a transcript that is no longer anywhere.
+   * @private
+   */
+  _loseConversation() {
+    this._boardState = 'missing';
+    this._render();
+    closeThisWindow();
+  }
+
   disconnectedCallback() {
     super.disconnectedCallback();
     this._closePicker?.();
@@ -226,7 +261,18 @@ class PinboardPanel extends JugglerElement {
           case 'conversation:switched':
           case 'conversation:renamed':
           case 'conversation:created':
+            this._render();
+            break;
           case 'conversation:deleted':
+            // The session is asked rather than the event: deleting and binning
+            // both arrive as this, and both have already taken the conversation
+            // out of the session by the time they do. A board still opening, or
+            // one that never found its conversation, has nothing to lose.
+            if (isPinboardView() && this._boardState === 'ready'
+              && !session.getConversation(boardConversationId())) {
+              this._loseConversation();
+              break;
+            }
             this._render();
             break;
           default:
@@ -309,36 +355,57 @@ class PinboardPanel extends JugglerElement {
     // viewer's own board is open — a board has to keep working while the window
     // it was detached from has the overlay shut.
     if (!isPinboardView()) {
-      ownerLink.serve({ onReveal: (target) => { void this._revealForBoard(target); } });
+      ownerLink.serve({
+        onReveal: (target) => { void this._revealForBoard(target); },
+        onSelect: (conversationId) => { void this._showConversationForBoard(conversationId); },
+      });
     }
   }
 
   /**
-   * Carry out one board's reveal in this window's columns.
+   * Bring this window forward on the conversation a board named.
    *
    * A board stays on the conversation it was opened for while this window goes
    * wherever the user goes, so the two disagreeing is the ordinary case and not
-   * a mistake to refuse. Being pointed at something is a request to go and look
-   * at it: switch to the conversation the board names, then point.
-   * @param {{kind: string, id: string|null, conversation: string}} target - What to reveal.
-   * @returns {Promise<void>}
+   * a mistake to refuse.
+   *
+   * This is the one place a board may set which conversation is active, and it
+   * is set here for the reason the rest of the file avoids doing it: the user
+   * asked for this conversation, so recording it as the one they are on is what
+   * they meant, not a side effect of a board having been opened.
+   * @param {string} conversationId - The conversation the board is a view of.
+   * @returns {Promise<boolean>} False when a switch was called for and did not
+   *   happen, so there is no point going on to point at anything. A conversation
+   *   this viewer does not have is not a failure — there was nothing to switch to.
    * @private
    */
-  async _revealForBoard(target) {
+  async _showConversationForBoard(conversationId) {
     // Raised first, and not at the end. A window nobody is looking at has its
     // timers throttled, so the wait below can take a second there — and a window
     // that comes forward a second after the click looks like a window that
     // ignored it.
     raiseThisWindow();
     const session = /** @type {any} */ (this._session);
-    const wanted = target.conversation;
-    if (wanted && session?.getConversation?.(wanted) && session.getVisibleConversation?.()?.id !== wanted) {
-      // Hydrate before switching: a column built from an unloaded conversation
-      // has no thread to point at yet, and the reveal would land on nothing.
-      await session.ensureConversationLoaded?.(wanted);
-      if (!session.switchConversation?.(wanted)) return;
-      await waitForTab(wanted);
-    }
+    if (!conversationId || !session?.getConversation?.(conversationId)) return true;
+    if (session.getVisibleConversation?.()?.id === conversationId) return true;
+    // Hydrate before switching: a column built from an unloaded conversation has
+    // no thread to point at yet, and a reveal after this would land on nothing.
+    await session.ensureConversationLoaded?.(conversationId);
+    if (!session.switchConversation?.(conversationId)) return false;
+    await waitForTab(conversationId);
+    return true;
+  }
+
+  /**
+   * Carry out one board's reveal in this window's columns. Being pointed at
+   * something is a request to go and look at it: show the conversation the board
+   * names, then point.
+   * @param {{kind: string, id: string|null, conversation: string}} target - What to reveal.
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _revealForBoard(target) {
+    if (!(await this._showConversationForBoard(target.conversation))) return;
     revealInConversation(target);
   }
 
@@ -401,37 +468,70 @@ class PinboardPanel extends JugglerElement {
    * board, and the board is the only thing that knows which conversation and
    * which pin are up.
    *
-   * Three parts, answering three questions: what this window is, which
-   * conversation it is stuck to, and which pin is showing. The conversation
-   * leads the two names because it is the one thing about the window that never
-   * changes — and the one thing nothing else on screen says. Either name is
-   * dropped when there is none.
+   * Two parts, at the two ends. The conversation follows the logo, because it is
+   * what this window is a view of and the one thing nothing else on screen says;
+   * what kind of window it is sits away at the far end, where it is available to
+   * be read and not in the way of the name. The selected tab is not named here —
+   * the tab strip below is already showing which one is up.
+   *
+   * The name is a control when there is a window to send it to and that window
+   * can be brought forward: this board is a view of that conversation, and the
+   * whole of the conversation is one window away. Where there is no owner to ask
+   * — a board restored after the window that opened it closed, or a viewer
+   * nothing can address — or where these are browser tabs, which cannot raise
+   * one another, it is the plain text it has always been, rather than a control
+   * that quietly does nothing.
    * @param {string} conversationTitle - The conversation's name, or '' for none.
-   * @param {string} pinTitle - The pin's name, or '' for a board on no pin.
    * @private
    */
-  _nameWindow(conversationTitle, pinTitle) {
+  _nameWindow(conversationTitle) {
     if (!isPinboardView()) return;
     const slot = document.getElementById('board-title');
     if (!slot) return;
 
+    // Every render says what the window is showing, and nearly every render says
+    // the same thing. Rebuilding regardless would throw away a control the user
+    // may have keyboard focus on, to replace it with one exactly like it.
+    // The desktop app raises the window it is pointed at; a browser tab can only
+    // ask, and a browser declining to raise a tab nobody clicked on is within its
+    // rights. So in a tab the ask lands somewhere the user cannot see it happen,
+    // which is a control that does nothing as far as they are concerned.
+    const linked = isDesktopWindow() && !!ownerViewerId() && canLinkBoards();
+    const state = `${linked}\u0000${conversationTitle}`;
+    if (state === this._namedAs) return;
+    this._namedAs = state;
+
+    /** @type {HTMLElement[]} */
+    const parts = [];
+    if (conversationTitle) {
+      const conversation = document.createElement(linked ? 'button' : 'span');
+      conversation.className = 'app-header__board-conversation';
+      conversation.textContent = conversationTitle;
+      if (linked) {
+        const button = /** @type {HTMLButtonElement} */ (conversation);
+        button.type = 'button';
+        button.title = 'Show this conversation in the main window';
+        button.setAttribute('aria-label', 'Show this conversation in the main window');
+        // Listeners rather than `this.on`: the node is replaced whenever the name
+        // changes, and a per-render cleanup entry for a node already discarded
+        // would be a list that only grows.
+        //
+        // The name sits in the window's drag region, so it is one of the places
+        // the window gets picked up by — and the release that ends that drag is
+        // delivered here as a click.
+        const drag = dragGuard();
+        button.addEventListener('pointerdown', drag.watch);
+        button.addEventListener('click', () => {
+          if (drag.dragged()) return;
+          satelliteLink.selectConversation(boardConversationId());
+        });
+      }
+      parts.push(conversation);
+    }
     const kind = document.createElement('span');
     kind.className = 'app-header__board-kind';
     kind.textContent = 'Pinboard';
-    /** @type {HTMLElement[]} */
-    const parts = [kind];
-    if (conversationTitle) {
-      const conversation = document.createElement('span');
-      conversation.className = 'app-header__board-conversation';
-      conversation.textContent = conversationTitle;
-      parts.push(conversation);
-    }
-    if (pinTitle) {
-      const name = document.createElement('span');
-      name.className = 'app-header__board-name';
-      name.textContent = pinTitle;
-      parts.push(name);
-    }
+    parts.push(kind);
     slot.replaceChildren(...parts);
   }
 
@@ -480,6 +580,9 @@ class PinboardPanel extends JugglerElement {
     if (this._renderBoardState()) return;
     const pins = pinboardStore.get();
     const active = this._activeContext();
+    // Kept while there is one to keep: this is the only place the name of the
+    // conversation a board is a view of is ever in hand.
+    if (isPinboardView()) this._boardTitle = active.conversation?.title || this._boardTitle;
     const json = JSON.stringify(active);
     const contextChanged = json !== this._contextJson;
     this._contextJson = json;
@@ -494,7 +597,7 @@ class PinboardPanel extends JugglerElement {
     );
 
     const activePin = pins.find((pin) => pin.id === activeId) || null;
-    this._nameWindow(active.conversation?.title || '', activePin ? describePin(activePin, active).title : '');
+    this._nameWindow(active.conversation?.title || '');
     const mounted = this._content.setPin(activePin, active);
     // A pin that was already mounted takes the new snapshot in place; one that
     // has just been mounted was given it already.
@@ -514,6 +617,11 @@ class PinboardPanel extends JugglerElement {
    * this project, is not an empty board — it is a board with nothing to be a
    * view of. Both say so rather than drawing tabs against a transcript nobody
    * can read.
+   *
+   * A board that has lost its conversation names it, when it was around long
+   * enough to learn the name: this window is one of several, all of them called
+   * Pinboard, and which one has stopped working is the question its user is
+   * actually asking.
    * @returns {boolean} True when the board itself was not drawn.
    * @private
    */
@@ -532,23 +640,17 @@ class PinboardPanel extends JugglerElement {
     this._contextJson = '';
     this._tabbar.setTabs([], null);
     this._content.setPin(null, this._activeContext());
-    // The pin is named by the URL that opened this window, so the header can say
-    // what the board is for before the conversation has been read at all.
-    const pending = pinboardStore.get().find((pin) => pin.id === pinboardView.getActivePinId()) || null;
-    this._nameWindow('', pending ? describePin(pending, null).title : '');
+    // A board that cannot name its conversation yet says only what it is, so the
+    // header holds no name from a conversation this window has stopped showing.
+    this._nameWindow('');
 
+    const gone = this._boardState === 'missing';
     const line = document.createElement('p');
     line.className = 'pinboard-placeholder__line';
-    line.textContent = this._boardState === 'missing'
-      ? 'That conversation has gone.'
-      : 'Opening the conversation.';
+    if (!gone) line.textContent = 'Opening the conversation.';
+    else if (this._boardTitle) line.textContent = `“${this._boardTitle}” has gone.`;
+    else line.textContent = 'This conversation is no longer available';
     placeholder.replaceChildren(line);
-    if (this._boardState === 'missing') {
-      const note = document.createElement('p');
-      note.className = 'pinboard-placeholder__note';
-      note.textContent = 'A board stays on the one conversation it was opened for.';
-      placeholder.appendChild(note);
-    }
     return true;
   }
 

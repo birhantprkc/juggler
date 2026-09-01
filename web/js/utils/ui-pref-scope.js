@@ -25,8 +25,11 @@
  * @module utils/ui-pref-scope
  */
 
+import { windowRole, WINDOW_ROLE_MAIN } from './view-mode.js';
+
 /**
- * Namespace a localStorage key by the loaded project.
+ * Namespace a localStorage key by the loaded project, and by this window when it
+ * is not the ordinary one.
  *
  * The page origin identifies a *port*, not a project: the next project's server
  * reuses the port, one process can switch project in place, and a viewer
@@ -34,12 +37,21 @@
  * machine it connects to. Unnamespaced, this project would read whatever the
  * last one left behind. The server injects the key pre-paint; a no-project
  * window has none and falls back to the bare key, which is all it needs.
+ *
+ * A detached board is its own window with its own appearance, but localStorage
+ * is shared by every document on the origin — so a board gets its role appended
+ * and the Juggler shell keeps the plain key. Desktop windows read the session
+ * ahead of this store anyway; what this covers is a board opened as a browser
+ * tab, which has no session to write to and would otherwise share one cell with
+ * the tab that opened it.
  * @param {string} base - The unscoped key, e.g. 'juggler-zoom'.
  * @returns {string} The key to read and write.
  */
 export function scopedKey(base) {
   const projectKey = typeof window === 'undefined' ? null : window.__projectKey;
-  return projectKey ? `${base}:${projectKey}` : base;
+  const scoped = projectKey ? `${base}:${projectKey}` : base;
+  const role = windowRole();
+  return role === WINDOW_ROLE_MAIN ? scoped : `${scoped}@${role}`;
 }
 
 /**

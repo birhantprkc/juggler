@@ -327,6 +327,8 @@ export async function runTests(_ctx) {
     assert(actions.length === 1, `expected one action, got ${actions.map((/** @type {any} */ a) => a.id).join(', ')}`);
     assert(actions[0].id === 'refresh' && actions[0].primary === true,
       'Refresh is the whole point of a pin over a poll, so it is the primary action');
+    assert(actions[0].icon === 'refresh',
+      'and it is the same glyph a refresh wears everywhere else');
     const before = m.refreshes();
     await actions[0].run();
     assert(m.refreshes() === before + 1, 'Refresh should ask the service again');

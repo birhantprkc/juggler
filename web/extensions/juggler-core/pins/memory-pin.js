@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import PinboardItemType from 'juggler/pinboard-item-type';
-import { openPath, readFile } from 'juggler/ops';
+import { readFile } from 'juggler/ops';
 import { createElement, injectStylesOnce } from 'juggler/ui';
 import { parseMemory } from '../lib/memory-format.js';
 
@@ -85,11 +85,15 @@ class MemoryPin extends PinboardItemType {
   }
 
   /**
+   * The toolbar is the memory file's path, which the host draws along with the
+   * controls that act on it; the tab stays the one word, because a tab strip is
+   * no place for a path.
    * @param {Record<string, any>} config - The pin's config.
-   * @returns {import('juggler/pinboard-item-type').PinDescription} The tab's words.
+   * @param {import('juggler/pinboard-item-type').PinActiveContext} active - The active context.
+   * @returns {import('juggler/pinboard-item-type').PinDescription} The tab's word and the file.
    */
-  describe(config) {
-    return { title: this.name, subtitle: memoryPath(config) };
+  describe(config, active) {
+    return { title: this.name, path: absoluteMemoryPath(config, active) };
   }
 
   /**
@@ -112,7 +116,7 @@ class MemoryPin extends PinboardItemType {
     let drawn = /** @type {string|null} */ (null);
 
     /** The file this pin is reading, so a context change that does not move it is not news. */
-    let target = absoluteMemoryPath(context);
+    let target = absoluteMemoryPath(context.pin.config, context.active);
 
     const render = async () => {
       const mine = ++generation;
@@ -160,7 +164,7 @@ class MemoryPin extends PinboardItemType {
 
     return {
       update: (next) => {
-        const nextTarget = absoluteMemoryPath(next);
+        const nextTarget = absoluteMemoryPath(next.pin.config, next.active);
         // Another conversation may have written the file since this one was last
         // looked at, so moving between them is a reason to read it again; moving
         // between threads of one conversation is not.
@@ -174,28 +178,26 @@ class MemoryPin extends PinboardItemType {
         clearTimeout(pending);
         stopWatching();
       },
+      // Opening, copying and revealing the file are the host's, offered for any
+      // pin that names a path — so this one is left with the read itself.
       getActions: () => [
-        {
-          id: 'open',
-          label: 'Open',
-          primary: true,
-          run: async () => { await openPath({ path: absoluteMemoryPath(context) }); },
-        },
-        { id: 'refresh', label: 'Refresh', run: () => render() },
+        { id: 'refresh', label: 'Refresh', icon: 'refresh', primary: true, run: () => render() },
       ],
     };
   }
 }
 
 /**
- * The memory file's absolute path, for handing to something outside the app.
- * @param {import('juggler/pinboard-item-type').PinContext} context - The pin's context.
+ * The memory file's absolute path, for showing and for handing to something
+ * outside the app.
+ * @param {Record<string, any>} config - The pin's config.
+ * @param {import('juggler/pinboard-item-type').PinActiveContext} active - The active context.
  * @returns {string} An absolute path, or the relative one when no project is open.
  */
-function absoluteMemoryPath(context) {
-  const path = memoryPath(context.pin.config);
+function absoluteMemoryPath(config, active) {
+  const path = memoryPath(config);
   if (path.startsWith('/')) return path;
-  const root = (context.active?.project?.path || '').replace(/\/+$/, '');
+  const root = (active?.project?.path || '').replace(/\/+$/, '');
   return root ? `${root}/${path}` : path;
 }
 

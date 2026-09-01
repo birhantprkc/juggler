@@ -64,8 +64,18 @@
             // so a bare key would hand this project whatever the last one left
             // behind. Empty for a no-project window, which uses the bare key.
             window.__projectKey = "{{.ProjectKey}}";
+            // Which of this project's windows this is: 'main' for Juggler,
+            // 'pinboard:<board>' for a detached board (mirrors windowRole() in
+            // js/utils/view-mode.js, and the two Go sides it names). A board is
+            // its own window with its own appearance, but every document on the
+            // origin shares one localStorage — so a board's stored values hang
+            // off its role and the ordinary window keeps the plain key.
+            var boardParam = params.get('board') || '';
+            var windowRole = params.get('view') !== 'pinboard' ? 'main'
+                : (/^[A-Za-z0-9_-]{1,64}$/.test(boardParam) ? 'pinboard:' + boardParam : 'pinboard');
             var storeKey = function(base) {
-                return window.__projectKey ? base + ':' + window.__projectKey : base;
+                var scoped = window.__projectKey ? base + ':' + window.__projectKey : base;
+                return windowRole === 'main' ? scoped : scoped + '@' + windowRole;
             };
             // The first candidate this window accepts, in precedence order.
             var pick = function(candidates, accepts) {

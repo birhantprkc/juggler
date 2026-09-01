@@ -38,6 +38,10 @@ func mintAPIToken() string {
 //     (core/lockfile.go, cmd/juggler-app/busy_guard.go);
 //   - native desktop window geometry, read/written by cmd/juggler-app before the
 //     viewer page (and its embedded token) has loaded;
+//   - forgetting the board a window held (DELETE /api/session/pinboard/boards),
+//     which cmd/juggler-app posts as that window closes. It is the other half of
+//     the geometry above — the same call drops the same window's frame — and the
+//     app has no page and so no token to quote;
 //   - the SDP exchange that bootstraps a WebRTC DataChannel;
 //   - the loopback engine's own endpoints (/api/engine/*), served from a page
 //     that carries no token and already gated to the in-process WebView;
@@ -45,12 +49,21 @@ func mintAPIToken() string {
 //
 // None of these execute tools or expose credentials, so leaving them open does
 // not reopen the RCE vector the token closes.
-func apiAuthExempt(path string) bool {
+//
+// The board delete is the only one that destroys anything, so it is admitted on
+// the narrowest terms available: that path for that method, and nothing else on
+// it. A caller has to name a board to remove one, board ids are opaque and
+// random, and every route that would reveal one — the boards themselves, the
+// session — stays gated. Reading is what the token is really protecting, and
+// none of it is opened here.
+func apiAuthExempt(method, path string) bool {
 	switch path {
 	case "/api/health", "/api/health/active", "/api/health/instance",
 		"/api/session/window-state",
 		"/api/shutdown", "/api/webrtc/signal", "/api/ws":
 		return true
+	case "/api/session/pinboard/boards":
+		return method == http.MethodDelete
 	}
 	return strings.HasPrefix(path, "/api/engine/") || strings.HasPrefix(path, "/api/test/")
 }
@@ -127,7 +140,7 @@ func isAssetGetRequest(r *http.Request) bool {
 func (s *Server) apiAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
-		if s.testMode || !strings.HasPrefix(path, "/api/") || apiAuthExempt(path) {
+		if s.testMode || !strings.HasPrefix(path, "/api/") || apiAuthExempt(r.Method, path) {
 			next.ServeHTTP(w, r)
 			return
 		}

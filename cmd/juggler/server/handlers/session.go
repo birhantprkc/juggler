@@ -160,10 +160,12 @@ func NewSessionAPI(
 // manager returns the current SessionManager.
 func (api *SessionAPI) manager() *core.SessionManager { return api.managerProvider() }
 
-// windowRole is which of this project's windows a geometry request is about,
-// defaulting to the main window — which is what every request meant before a
-// project could have a second kind of window, and what a caller naming no role
-// still means.
+// windowRole is which of this project's windows a request is about, defaulting
+// to the main window — which is what every request meant before a project could
+// have a second kind of window, and what a caller naming no role still means.
+//
+// Geometry and appearance both use it: a detached board keeps its own frame, its
+// own theme and its own zoom, all in the one slot named by this role.
 func windowRole(r *http.Request) string {
 	if role := r.URL.Query().Get("role"); role != "" {
 		return role
@@ -315,21 +317,24 @@ func (api *SessionAPI) HandleRestoreBoards(w http.ResponseWriter, r *http.Reques
 	WriteJSON(w, r, http.StatusOK, map[string]any{"boards": api.manager().ClaimDetachedBoards()})
 }
 
-// HandleGetUIZoom returns the UI zoom (root font-size %) saved in this project's
-// session, so a reopened window paints at the size the user left it. `hasZoom`
-// is false when this project has never saved one (first open, or a no-project
-// window), letting the client fall back to an inherited seed or the default.
+// HandleGetUIZoom returns the UI zoom (root font-size %) saved for the window
+// making the request, so a reopened window paints at the size the user left it.
+// A window that has never been zoomed itself is answered with the project's
+// zoom, and `hasZoom` is false only when neither exists (first open, or a
+// no-project window), letting the client fall back to an inherited seed or the
+// default.
 func (api *SessionAPI) HandleGetUIZoom(w http.ResponseWriter, r *http.Request) {
-	zoom, ok := api.manager().GetUIZoom()
+	zoom, ok := api.manager().GetWindowUIZoom(windowRole(r))
 	WriteJSON(w, r, 0, map[string]any{"uiZoom": zoom, "hasZoom": ok})
 }
 
-// HandleSetUIZoom persists the UI zoom into this project's session. A desktop
-// window PUTs it when the user zooms (and when a brand-new window inherits a
-// size), so the project remembers it across relaunches. A no-project session
-// no-ops (see SessionManager.SetUIZoom). The route is wrapped in
-// localViewerOnly: a remote viewer reads this value as its starting point but
-// keeps its own size on its own device, so it never reaches here.
+// HandleSetUIZoom persists the UI zoom of one window into this project's
+// session. A desktop window PUTs it when the user zooms (and when a brand-new
+// window inherits a size), naming itself with ?role= so two windows of the same
+// project keep two sizes. A no-project session no-ops (see
+// SessionManager.SetWindowUIZoom). The route is wrapped in localViewerOnly: a
+// remote viewer reads this value as its starting point but keeps its own size on
+// its own device, so it never reaches here.
 func (api *SessionAPI) HandleSetUIZoom(w http.ResponseWriter, r *http.Request) {
 	body, ok := DecodeJSON[struct {
 		UIZoom int `json:"uiZoom"`
@@ -337,29 +342,31 @@ func (api *SessionAPI) HandleSetUIZoom(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := api.manager().SetUIZoom(body.UIZoom); err != nil {
+	if err := api.manager().SetWindowUIZoom(windowRole(r), body.UIZoom); err != nil {
 		WriteError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
 	WriteJSON(w, r, http.StatusOK, map[string]any{"ok": true})
 }
 
-// HandleGetUITheme returns the UI theme mode (system|light|dark) saved in this
-// project's session, so a reopened window paints in the theme the user left it.
-// `hasTheme` is false when this project has never saved one (first open, or a
-// no-project window), letting the client fall back to an inherited seed or the
-// default.
+// HandleGetUITheme returns the UI theme mode (system|light|dark) saved for the
+// window making the request, so a reopened window paints in the theme the user
+// left it. A window that has never been restyled itself is answered with the
+// project's theme, and `hasTheme` is false only when neither exists (first open,
+// or a no-project window), letting the client fall back to an inherited seed or
+// the default.
 func (api *SessionAPI) HandleGetUITheme(w http.ResponseWriter, r *http.Request) {
-	mode, ok := api.manager().GetUITheme()
+	mode, ok := api.manager().GetWindowUITheme(windowRole(r))
 	WriteJSON(w, r, 0, map[string]any{"uiTheme": mode, "hasTheme": ok})
 }
 
-// HandleSetUITheme persists the UI theme mode into this project's session. A
-// desktop window PUTs it when the user changes theme (and when a brand-new
-// window inherits one), so the project remembers it across relaunches instead of
-// reading whichever theme another project left in the origin-shared
-// localStorage. A no-project session no-ops (see SessionManager.SetUITheme), and
-// the route is wrapped in localViewerOnly exactly as the zoom route is.
+// HandleSetUITheme persists one window's UI theme mode into this project's
+// session. A desktop window PUTs it when the user changes theme (and when a
+// brand-new window inherits one), naming itself with ?role= so two boards
+// detached from the same project can wear two different themes and each come
+// back the way it was left. A no-project session no-ops (see
+// SessionManager.SetWindowUITheme), and the route is wrapped in localViewerOnly
+// exactly as the zoom route is.
 func (api *SessionAPI) HandleSetUITheme(w http.ResponseWriter, r *http.Request) {
 	body, ok := DecodeJSON[struct {
 		UITheme string `json:"uiTheme"`
@@ -367,7 +374,7 @@ func (api *SessionAPI) HandleSetUITheme(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	if err := api.manager().SetUITheme(body.UITheme); err != nil {
+	if err := api.manager().SetWindowUITheme(windowRole(r), body.UITheme); err != nil {
 		WriteError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}

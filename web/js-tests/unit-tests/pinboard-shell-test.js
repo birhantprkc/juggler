@@ -111,6 +111,49 @@ class ActionsPin extends PinboardItemType {
   }
 }
 
+/**
+ * The PathPin's refresh, and the hook the test settles it by. The refresh is
+ * deliberately left in flight, because what happens while it is in flight is the
+ * thing being pinned.
+ */
+const pathCalls = { refreshes: 0, finish: /** @type {null|(() => void)} */ (null) };
+
+/** A type that names a file: the toolbar is then a path and the host's controls. */
+class PathPin extends PinboardItemType {
+  static MANIFEST = {
+    id: 'path',
+    name: 'Path',
+    version: '1.0.0',
+    description: 'A pin that shows a file',
+    instances: 'multiple',
+  };
+
+  describe(config) {
+    // A subtitle as well, to pin that a path supersedes it rather than joining it.
+    return { title: 'main.go', subtitle: 'never shown', path: config.path || '' };
+  }
+
+  mount(container) {
+    container.textContent = 'path body';
+    return {
+      teardown: () => {},
+      getActions: () => [
+        {
+          id: 'refresh',
+          label: 'Refresh',
+          icon: 'refresh',
+          primary: true,
+          run: () => {
+            pathCalls.refreshes++;
+            return new Promise((resolve) => { pathCalls.finish = () => resolve(undefined); });
+          },
+        },
+        { id: 'later', label: 'Later', run: () => {} },
+      ],
+    };
+  }
+}
+
 /** What the WatcherPin was told about files changing, and how it was mounted. */
 const watcherCalls = { changes: /** @type {any[]} */ ([]), unsubscribes: 0 };
 
@@ -207,11 +250,25 @@ function applyOp(board, op) {
   }
 }
 
+/**
+ * The listeners the fake session is holding, so a case can move the session the
+ * way the app does. The shell drops its own on the way out of the document.
+ * @type {Set<(event: any) => void>}
+ */
+const sessionListeners = new Set();
+
 /** A session with just enough of one for the active-context snapshot. */
 const fakeSession = {
   projectPath: '/tmp/probe-project',
-  subscribe: () => () => {},
+  subscribe: (/** @type {(event: any) => void} */ fn) => {
+    sessionListeners.add(fn);
+    return () => sessionListeners.delete(fn);
+  },
+  emit: (/** @type {string} */ type) => {
+    for (const fn of [...sessionListeners]) fn({ type });
+  },
   getVisibleConversation: () => null,
+  getConversation: () => null,
 };
 
 /**
@@ -324,6 +381,7 @@ export async function runTests(_ctx) {
   pinboardItemRegistry.registerClass(ProbePin, { extensionId: 'test' });
   pinboardItemRegistry.registerClass(BrokenPin, { extensionId: 'test' });
   pinboardItemRegistry.registerClass(ActionsPin, { extensionId: 'test' });
+  pinboardItemRegistry.registerClass(PathPin, { extensionId: 'test' });
   pinboardItemRegistry.registerClass(WatcherPin, { extensionId: 'test' });
 
   try {
@@ -712,10 +770,8 @@ export async function runTests(_ctx) {
         shell.querySelector('.pinboard-tabbar__add').click();
         const picker = /** @type {any} */ (document.querySelector('.pinboard-add-picker'));
         const headings = [...picker.querySelectorAll('.category-header')];
-        assert(headings.length === 1,
-          `one heading, saying what the menu does: a short list broken into stretches is furniture, not navigation, got ${headings.length}`);
-        assert(headings[0].textContent === 'Add new pinned item',
-          `and it says what picking a row will do, got ${JSON.stringify(headings[0].textContent)}`);
+        assert(headings.length === 0,
+          `nothing is written over the list: it is short, it hangs from the + that opened it, and a heading there is furniture, got ${headings.length}`);
 
         const rows = [...picker.querySelectorAll('.pinboard-add-picker__item')];
         assert(rows[0]?.dataset.typeId === 'watcher',
@@ -726,6 +782,24 @@ export async function runTests(_ctx) {
           `the rest keep registration order, got ${rows.map((/** @type {any} */ r) => r.dataset.typeId).join(',')}`);
       } finally {
         document.querySelector('.pinboard-add-picker')?.remove();
+        teardown();
+      }
+    });
+
+    // A board in a window of its own goes when the conversation it is a view of
+    // goes. The docked panel is not that: it is a guest in the main window and
+    // follows whatever conversation is up, so the same event must leave it alone
+    // — asking that window to close would take the whole app with it.
+    await run('the docked panel outlives the conversation it was showing', async () => {
+      const { teardown } = await mountShell([]);
+      const originalClose = window.close;
+      let closes = 0;
+      window.close = () => { closes += 1; };
+      try {
+        fakeSession.emit('conversation:deleted');
+        assert(closes === 0, 'the window the docked panel is in is the app, and it stays');
+      } finally {
+        window.close = originalClose;
         teardown();
       }
     });
@@ -849,6 +923,79 @@ export async function runTests(_ctx) {
           `an action that throws is led into, got "${status.textContent}"`);
         assert(status.textContent.includes('clipboard said no'),
           'and the underlying error survives the lead');
+      } finally {
+        document.querySelector('.juggler-context-menu')?.remove();
+        teardown();
+      }
+    });
+
+    await run('a pin that names a file is titled by the path, with the file controls beside it', async () => {
+      const { shell, teardown } = await mountShell([
+        { id: 'pin_path', type: 'path', config: { path: '/proj/src/main.go' } },
+      ]);
+      try {
+        pinboardView.open();
+        const title = shell.querySelector('.pinboard-item-toolbar__title');
+        assert(title.textContent === '/proj/src/main.go',
+          `the toolbar says the file, not a name above it, got "${title.textContent}"`);
+        assert(title.classList.contains('pinboard-item-toolbar__title--path'),
+          'and says it in the treatment a path gets');
+        assert(title.querySelector('.pinboard-item-toolbar__name').textContent === 'main.go',
+          'the name is its own element, so a narrow board ellipses the directories and not it');
+        assert(title.querySelector('.pinboard-item-toolbar__dir').textContent === '/proj/src/',
+          'and the directories are the part that may go');
+        assert(title.dataset.filePath === '/proj/src/main.go',
+          'the path is exposed for the app-wide right-click Open/Reveal/Copy menu');
+        assert(shell.querySelector('.pinboard-item-toolbar__subtitle').hidden,
+          'a described subtitle gives way to the path rather than sitting under it');
+
+        // The same three controls, in the same order, as any path row elsewhere:
+        // a pin that names a file should not have its own way of opening one.
+        const group = shell.querySelector('.pinboard-item-toolbar__actions .properties-panel-filepath-actions');
+        assert(!!group, 'the shared file controls are offered for a pin that names a path');
+        const hasThree = group.querySelectorAll('.properties-panel-filepath-btn').length === 2
+          && !!group.querySelector('reveal-button');
+        assert(hasThree, `expected open, copy and reveal, got "${group.innerHTML}"`);
+        assert(group.firstElementChild.getAttribute('aria-label') === 'Open file',
+          `opening the file comes first, got "${group.firstElementChild.getAttribute('aria-label')}"`);
+      } finally {
+        teardown();
+      }
+    });
+
+    await run('an icon action is a button of its own, and turns while it works', async () => {
+      pathCalls.refreshes = 0;
+      pathCalls.finish = null;
+      const { shell, teardown } = await mountShell([
+        { id: 'pin_path', type: 'path', config: { path: '/proj/src/main.go' } },
+      ]);
+      try {
+        pinboardView.open();
+        const button = shell.querySelector('.pinboard-item-toolbar__action--icon');
+        assert(!!button, 'an action naming an icon is drawn as one');
+        assert(button.textContent === '' && !!button.querySelector('svg'),
+          `a glyph replaces the words rather than joining them, got "${button.textContent}"`);
+        assert(button.getAttribute('aria-label') === 'Refresh' && button.title === 'Refresh',
+          'the label stays, as the tooltip and to a screen reader');
+
+        button.click();
+        assert(pathCalls.refreshes === 1, 'the icon button runs its action');
+        assert(button.classList.contains('is-spinning'),
+          'and turns while it is running, since a card that has not changed yet looks identical');
+        button.click();
+        assert(pathCalls.refreshes === 1,
+          'a second press while it is still working is ignored rather than queued');
+
+        pathCalls.finish();
+        await settle();
+        assert(!button.classList.contains('is-spinning'), 'and it stops when the work does');
+
+        // A picture in a menu of words says nothing, so an icon action is never
+        // put behind the overflow — whatever it says about `primary`.
+        shell.querySelector('.pinboard-item-toolbar__more').click();
+        const rows = [...document.querySelectorAll('.juggler-context-menu-item')].map((r) => r.textContent);
+        assert(rows.join(',') === 'Later',
+          `the overflow holds only what has no picture, got "${rows.join(',')}"`);
       } finally {
         document.querySelector('.juggler-context-menu')?.remove();
         teardown();

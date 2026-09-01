@@ -181,10 +181,13 @@ export async function runTests(ctx) {
   });
 
   await test('describe names the file it reads', () => {
-    assert(pin.describe({}).subtitle === '.juggler/MEMORY.md',
-      `expected the default path, got ${JSON.stringify(pin.describe({}).subtitle)}`);
-    assert(pin.describe({ path: 'elsewhere/M.md' }).subtitle === 'elsewhere/M.md',
+    const active = /** @type {any} */ ({ project: { path: '/proj' } });
+    assert(pin.describe({}, active).path === '/proj/.juggler/MEMORY.md',
+      `expected the default path, got ${JSON.stringify(pin.describe({}, active).path)}`);
+    assert(pin.describe({ path: 'elsewhere/M.md' }, active).path === '/proj/elsewhere/M.md',
       'an overridden path should be the one shown');
+    assert(pin.describe({}, /** @type {any} */ ({})).path === '.juggler/MEMORY.md',
+      'with no project open there is nothing to resolve against, and the path stands as written');
   });
 
   // --- reading the real file ------------------------------------------------
@@ -289,15 +292,15 @@ export async function runTests(ctx) {
 
   // --- what it offers -------------------------------------------------------
 
-  await test('Open is the primary action, Refresh is not', async () => {
+  await test('Refresh is the only action, because the rest belong to the host', async () => {
     const path = await writeMemory('actions', TWO_FACTS);
     const m = mount(path);
     await settled(m.body);
     const actions = m.controller.getActions();
-    const open = actions.find((/** @type {any} */ a) => a.id === 'open');
-    const refresh = actions.find((/** @type {any} */ a) => a.id === 'refresh');
-    assert(open?.primary === true, 'editing the file by hand is the thing to offer first');
-    assert(!refresh?.primary, 'Refresh belongs behind the overflow');
+    assert(actions.map((/** @type {any} */ a) => a.id).join(',') === 'refresh',
+      `expected Refresh alone, got ${JSON.stringify(actions.map((/** @type {any} */ a) => a.id))}`);
+    assert(actions[0].primary === true && actions[0].icon === 'refresh',
+      'it is drawn as the refresh glyph, beside the file controls the host offers');
     m.teardown();
   });
 

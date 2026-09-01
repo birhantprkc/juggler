@@ -29,6 +29,9 @@ import gitStatusCache from '../services/git-status-cache.js';
 import { shellKill, shellTaskStatus } from '../services/ops-api.js';
 import { openMenuAt } from '../services/context-menu-service.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
+import { formatDisplayPath } from '../../sdk/lib/context-item-utils.js';
+import { createFileActions } from '../utils/properties-panel-helpers.js';
+import { REFRESH_SVG } from '../utils/icons.js';
 import { PINBOARD_BODY_ID } from './pinboard-tabbar.js';
 import { THREAD_FOCUS_CHANGED } from './conversation-tab.js';
 import { itemGoal } from '../model/thread-alias.js';
@@ -40,6 +43,14 @@ import { isPinboardView } from '../utils/view-mode.js';
 /** @typedef {import('juggler/pinboard-item-type').PinAction} PinAction */
 /** @typedef {import('juggler/pinboard-item-type').PinContextItemSnapshot} PinContextItemSnapshot */
 /** @typedef {import('juggler/pinboard-item-type').PinTask} PinTask */
+
+/**
+ * The glyphs an item type may ask for by name in a `PinAction`. An action naming
+ * anything else is drawn as words, so a pin from an extension written against a
+ * later Juggler loses its picture rather than its control.
+ * @type {Record<string, string>}
+ */
+const ACTION_ICONS = { refresh: REFRESH_SVG };
 
 /**
  * How often to ask the server which tasks are still running. The answer is a
@@ -423,6 +434,11 @@ class PinboardContent extends JugglerElement {
   /**
    * Say what the active pin is. The board toolbar above establishes the surface,
    * so this names the thing, not the board.
+   *
+   * A pin that names a path is titled by the path alone, in monospace: the name
+   * above the path it came from said the same thing twice, and the half worth
+   * reading was the one underneath. The path is stamped on the element for the
+   * app-wide right-click menu, which is why nothing here builds one.
    * @private
    */
   _renderToolbar() {
@@ -438,15 +454,47 @@ class PinboardContent extends JugglerElement {
     this.setAttribute('role', 'tabpanel');
     this.setAttribute('aria-labelledby', `pinboard-tab-${pin.id}`);
     const description = describePin(pin, this._active);
-    this._title.textContent = description.title;
-    this._subtitle.textContent = description.subtitle || '';
-    this._subtitle.hidden = !description.subtitle;
+    const path = description.path || '';
+    this._title.classList.toggle('pinboard-item-toolbar__title--path', !!path);
+    if (path) {
+      this._title.dataset.filePath = path;
+      this._writePathTitle(formatDisplayPath(path));
+    } else {
+      delete this._title.dataset.filePath;
+      this._title.textContent = description.title;
+    }
+    const subtitle = path ? '' : (description.subtitle || '');
+    this._subtitle.textContent = subtitle;
+    this._subtitle.hidden = !subtitle;
+  }
+
+  /**
+   * Write a path as its directories and its name, so the two can be treated
+   * differently: only the directories ellipse when the board is narrow, and the
+   * name keeps the foreground colour. `textContent` still reads as the whole
+   * path, which is what a copy or a test asks for.
+   * @param {string} path - The path to show, as the user should read it.
+   * @private
+   */
+  _writePathTitle(path) {
+    if (!this._title) return;
+    const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1;
+    const dir = document.createElement('span');
+    dir.className = 'pinboard-item-toolbar__dir';
+    dir.textContent = path.slice(0, cut);
+    const name = document.createElement('span');
+    name.className = 'pinboard-item-toolbar__name';
+    name.textContent = path.slice(cut);
+    this._title.replaceChildren(dir, name);
   }
 
   /**
    * Draw the toolbar's controls from whatever the mounted item type offers. A
-   * `primary` action gets a button of its own; the rest wait behind the `⋯`, which
-   * is not drawn at all when there is nothing to put in it.
+   * pin that names a path gets the app's file controls first, so open, copy and
+   * reveal are the same three buttons in the same order here as anywhere else a
+   * path is shown. Then each action: one with a `primary` flag or an icon gets a
+   * button of its own; the rest wait behind the `⋯`, which is not drawn at all
+   * when there is nothing to put in it.
    * @private
    */
   _renderActions() {
@@ -454,21 +502,24 @@ class PinboardContent extends JugglerElement {
     if (!host) return;
 
     const actions = this._pinActions();
+    const path = this._pin ? (describePin(this._pin, this._active).path || '') : '';
     // What the toolbar can be asked to do changes far less often than what the
     // pin is showing — most of the time, never. Every notification used to
     // throw away every button and build it again, which is a rebuild of the
     // whole toolbar for every pin on every transaction of every conversation.
     // The list itself is always kept, because the buttons dispatch through it.
-    const signature = actions
-      .map((action) => `${action.label}\u0000${action.disabled === true}\u0000${!!action.primary}`)
-      .join('\u0001');
+    const signature = [path, ...actions.map((action) => [
+      action.label, action.disabled === true, !!action.primary, action.icon || '',
+    ].join('\u0000'))].join('\u0001');
     this._actionList = actions;
     if (signature === this._actionSignature) return;
     this._actionSignature = signature;
 
     host.replaceChildren();
+    const fileActions = createFileActions(path);
+    if (fileActions) host.appendChild(fileActions);
     if (!actions.length) {
-      host.hidden = true;
+      host.hidden = !fileActions;
       return;
     }
     host.hidden = false;
@@ -476,16 +527,26 @@ class PinboardContent extends JugglerElement {
     /** @type {number[]} */
     const overflow = [];
     actions.forEach((action, index) => {
-      if (!action.primary) {
+      const icon = ACTION_ICONS[action.icon || ''] || '';
+      if (!icon && !action.primary) {
         overflow.push(index);
         return;
       }
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'u-btn-ghost pinboard-item-toolbar__action';
-      button.textContent = action.label;
+      if (icon) {
+        // The label is what the control is called, whether it is drawn as words
+        // or as a picture — so it stays, as the tooltip and to a screen reader.
+        button.classList.add('pinboard-item-toolbar__action--icon');
+        button.innerHTML = icon;
+        button.title = action.label;
+        button.setAttribute('aria-label', action.label);
+      } else {
+        button.textContent = action.label;
+      }
       button.disabled = action.disabled === true;
-      button.addEventListener('click', () => this._runActionAt(index));
+      button.addEventListener('click', () => this._runActionAt(index, button));
       host.appendChild(button);
     });
     if (!overflow.length) return;
@@ -513,12 +574,22 @@ class PinboardContent extends JugglerElement {
    * so what it stands for has to be looked up when it is pressed rather than
    * held from when it was drawn — the words are the same, but the closure behind
    * them was assembled against whatever the pin had read at the time.
+   * An icon button turns while its action is in flight and ignores a second
+   * press until it settles: a picture that stays exactly as it was is otherwise
+   * the whole of the feedback for a refresh that found nothing changed.
    * @param {number} index - The action's place in the list last returned.
+   * @param {HTMLButtonElement} [button] - The control pressed, when there is one.
    * @private
    */
-  _runActionAt(index) {
+  _runActionAt(index, button) {
     const action = this._actionList[index];
-    if (action) this._runAction(action);
+    if (!action) return;
+    const spins = !!button?.classList.contains('pinboard-item-toolbar__action--icon');
+    if (spins && button?.classList.contains('is-spinning')) return;
+    const settled = this._runAction(action);
+    if (!spins || !button || !settled) return;
+    button.classList.add('is-spinning');
+    void settled.then(() => button.classList.remove('is-spinning'));
   }
 
   /**
@@ -645,22 +716,26 @@ class PinboardContent extends JugglerElement {
    * Run one toolbar action. What it does is the item type's business; that it
    * failed is the board's, and the status line says so with the error intact.
    * @param {PinAction} action - The action the user chose.
+   * @returns {Promise<void>|null} When the action is asynchronous, a promise that
+   *   fulfils once it has finished either way — the failure has been reported by
+   *   then, so a caller waiting on it only has to know that the waiting is over.
+   *   Null when the action was done and dusted before it returned.
    * @private
    */
   _runAction(action) {
     const lead = `Couldn't ${action.label.charAt(0).toLowerCase()}${action.label.slice(1)}.`;
-    try {
-      const result = action.run();
-      if (result && typeof result.then === 'function') {
-        result.then(undefined, (err) => {
-          console.error('[Pinboard] Item action failed:', err);
-          pinboardView.setStatus(`${lead} ${extractErrorMessage(err)}`);
-        });
-      }
-    } catch (err) {
+    /** @param {any} err - What the action threw or rejected with. */
+    const failed = (err) => {
       console.error('[Pinboard] Item action failed:', err);
       pinboardView.setStatus(`${lead} ${extractErrorMessage(err)}`);
+    };
+    try {
+      const result = action.run();
+      if (result && typeof result.then === 'function') return result.then(() => {}, failed);
+    } catch (err) {
+      failed(err);
     }
+    return null;
   }
 
   /**

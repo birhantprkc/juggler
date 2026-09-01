@@ -304,6 +304,12 @@ func TestPinboardDeleteBoard(t *testing.T) {
 // have it — every main window of a project asks, and there can be several.
 func TestPinboardRestoreIsClaimedOnce(t *testing.T) {
 	s, _ := newPinboardTestServer(t)
+	// A real conversation, because a board with none left to be a view of is
+	// dropped by the claim rather than handed out.
+	if rec := pinboardRequest(t, s, http.MethodPost, "/api/conversations",
+		`{"name":"One","id":"conv_1"}`); rec.Code != http.StatusCreated {
+		t.Fatalf("create conversation: got %d (%s), want 201", rec.Code, rec.Body.String())
+	}
 	pinboardRequest(t, s, http.MethodPost, "/api/session/pinboard/boards",
 		`{"id":"board_one","conversation":"conv_1","pins":[{"id":"pin_a","type":"file"}]}`)
 

@@ -60,11 +60,10 @@ func serverBusy(serverURL string) int {
 	return len(body.ConversationIDs)
 }
 
-// closeAllowed reports whether a WindowClosing event for e should be allowed to
-// proceed unguarded: the app is quitting (teardown shouldn't re-prompt per
-// window), the window is already gone, the busy-work guard has already cleared it
-// (forceClose), or the window is a detached board with another window still
-// behind it.
+// closeAllowed reports whether closing e may skip the busy-work prompt: the app
+// is quitting (teardown shouldn't re-prompt per window), the window is already
+// gone, the guard has already cleared it (forceClose), or the window is a
+// detached board with another window still behind it.
 //
 // A board is exempt because closing it usually discards nothing: it views a
 // window's server rather than one of its own, so the turn the guard would report
@@ -100,25 +99,6 @@ func serverViewedElsewhere(st *regState, w *winEntry) bool {
 		}
 	}
 	return false
-}
-
-// confirmThenClose runs off the main thread after a window close was vetoed. It
-// asks the window's server whether it is busy and, if so, confirms the discard;
-// on approval it marks the window forceClose and re-issues Close(), which now
-// falls through the guard.
-func (a *appState) confirmThenClose(e *winEntry) {
-	if n := serverBusy(e.serverURL); n > 0 {
-		msg := busyMessage(n, "Closing this window")
-		if !a.confirmDiscard(e.win, "Close window?", msg, "Close anyway") {
-			return // user chose to keep working
-		}
-	}
-	a.reg(func(st *regState) {
-		if w := st.windows[e.id]; w != nil {
-			w.forceClose = true
-		}
-	})
-	application.InvokeAsync(func() { e.win.Close() })
 }
 
 // shouldQuit is the application ShouldQuit hook (Cmd+Q / Quit menu). It must

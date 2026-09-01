@@ -450,12 +450,14 @@ func mergeConversationOrder(current, desired []string) []string {
 	return result
 }
 
-// DeleteConversation removes the conversation's folder and session manifest entry.
+// DeleteConversation removes the conversation's folder and session manifest entry,
+// along with the detached boards that were views of it.
 // Set permanent=true for test teardown (permanent delete); false for user-initiated
 // deletion (moves to OS trash so the user can recover if needed).
 func (m *SessionManager) DeleteConversation(convID string, permanent bool) error {
 	_, err := runWrite(m, func(s *sessionState) (struct{}, error) {
 		removeConvIDFromSession(s.session, convID)
+		s.session.removeBoardsForConversation(convID)
 		if err := s.store.removeConversationFiles(convID, permanent); err != nil {
 			return struct{}{}, err
 		}
@@ -513,10 +515,14 @@ func (m *SessionManager) ResolveAutoName(base, excludeID string) string {
 }
 
 // BinConversation moves a conversation's folder to .juggler/bin/ and removes
-// it from the active conversation order.
+// it from the active conversation order. The detached boards that were views of
+// it are forgotten as they are on a delete: the bin holds the conversation, not
+// the windows that were watching it, and a board window left open over a
+// conversation the user has put away has nothing to show.
 func (m *SessionManager) BinConversation(convID string) error {
 	_, err := runWrite(m, func(s *sessionState) (struct{}, error) {
 		removeConvIDFromSession(s.session, convID)
+		s.session.removeBoardsForConversation(convID)
 		if err := s.store.BinConversation(convID); err != nil {
 			return struct{}{}, err
 		}
@@ -670,6 +676,11 @@ func (m *SessionManager) GetWindowState(role string) (WindowState, bool) {
 // Roles are separate slots on purpose: a detached board and the window it came
 // from are different shapes, and one shared slot had each writing over the
 // other's frame every time one of them closed.
+//
+// This is a geometry write. The frame comes from the live native window and so
+// carries no appearance, and it arrives on every drag and resize — so the
+// window's stored theme and zoom are kept, not overwritten with the blanks the
+// caller could not have filled in. SetWindowUITheme/SetWindowUIZoom own those.
 func (m *SessionManager) SetWindowState(role string, ws WindowState) error {
 	_, err := runWrite(m, func(s *sessionState) (struct{}, error) {
 		// No session loaded (e.g. a no-project window still at the picker) —
@@ -681,10 +692,30 @@ func (m *SessionManager) SetWindowState(role string, ws WindowState) error {
 		if s.session.WindowStates == nil {
 			s.session.WindowStates = map[string]WindowState{}
 		}
+		prev := s.session.WindowStates[role]
+		ws.Theme, ws.Zoom = prev.Theme, prev.Zoom
 		s.session.WindowStates[role] = ws
 		return struct{}{}, s.store.Save(s.session)
 	})
 	return err
+}
+
+// setWindowPref applies one change to a window role's slot, creating the slot if
+// this is the first thing ever stored about that window. A slot holding only an
+// appearance is fine: Place() reads a frameless one as "no saved geometry" and
+// centres the window, exactly as a missing slot does.
+func setWindowPref(s *sessionState, role string, apply func(*WindowState)) error {
+	if s.session == nil {
+		return nil
+	}
+	s.session.migrateWindowStates()
+	if s.session.WindowStates == nil {
+		s.session.WindowStates = map[string]WindowState{}
+	}
+	ws := s.session.WindowStates[role]
+	apply(&ws)
+	s.session.WindowStates[role] = ws
+	return s.store.Save(s.session)
 }
 
 // GetUIZoom returns the persisted UI zoom (root font-size %) for this project,
@@ -765,6 +796,96 @@ func (m *SessionManager) SetUITheme(mode string) error {
 		}
 		s.session.UITheme = mode
 		return struct{}{}, s.store.Save(s.session)
+	})
+	return err
+}
+
+// GetWindowUITheme returns the UI theme mode one window role should paint in:
+// its own if it has been given one, else the project's, else ("", false).
+//
+// The fallback is what keeps a project coherent. A window only stops following
+// the project when the user changes the theme in that window, so opening a
+// second board does not produce a window in some other colour than the one it
+// was opened from.
+func (m *SessionManager) GetWindowUITheme(role string) (string, bool) {
+	type result struct {
+		mode string
+		ok   bool
+	}
+	r, _ := runRead(m, func(s *sessionState) (result, error) {
+		if s.session == nil {
+			return result{}, nil
+		}
+		s.session.migrateWindowStates()
+		if mode := s.session.WindowStates[role].Theme; validUIThemeMode(mode) {
+			return result{mode, true}, nil
+		}
+		if validUIThemeMode(s.session.UITheme) {
+			return result{s.session.UITheme, true}, nil
+		}
+		return result{}, nil
+	})
+	return r.mode, r.ok
+}
+
+// SetWindowUITheme records the theme mode one window is wearing. The main
+// window also sets the project's, so a window opened later — a board detached
+// tomorrow, a project reopened from Finder — starts out matching Juggler itself
+// rather than the theme of whichever board was restyled last.
+func (m *SessionManager) SetWindowUITheme(role, mode string) error {
+	if !validUIThemeMode(mode) {
+		return nil
+	}
+	_, err := runWrite(m, func(s *sessionState) (struct{}, error) {
+		if s.session == nil {
+			return struct{}{}, nil
+		}
+		if role == WindowRoleMain {
+			s.session.UITheme = mode
+		}
+		return struct{}{}, setWindowPref(s, role, func(ws *WindowState) { ws.Theme = mode })
+	})
+	return err
+}
+
+// GetWindowUIZoom returns the UI zoom one window role should paint at: its own
+// if it has been given one, else the project's, else (0, false). Mirrors
+// GetWindowUITheme, including why it falls back.
+func (m *SessionManager) GetWindowUIZoom(role string) (int, bool) {
+	type result struct {
+		zoom int
+		ok   bool
+	}
+	r, _ := runRead(m, func(s *sessionState) (result, error) {
+		if s.session == nil {
+			return result{}, nil
+		}
+		s.session.migrateWindowStates()
+		if zoom := s.session.WindowStates[role].Zoom; zoom > 0 {
+			return result{zoom, true}, nil
+		}
+		if s.session.UIZoom > 0 {
+			return result{s.session.UIZoom, true}, nil
+		}
+		return result{}, nil
+	})
+	return r.zoom, r.ok
+}
+
+// SetWindowUIZoom records the zoom one window is at, and the project's too when
+// that window is the main one — mirroring SetWindowUITheme.
+func (m *SessionManager) SetWindowUIZoom(role string, zoom int) error {
+	if zoom <= 0 {
+		return nil
+	}
+	_, err := runWrite(m, func(s *sessionState) (struct{}, error) {
+		if s.session == nil {
+			return struct{}{}, nil
+		}
+		if role == WindowRoleMain {
+			s.session.UIZoom = zoom
+		}
+		return struct{}{}, setWindowPref(s, role, func(ws *WindowState) { ws.Zoom = zoom })
 	})
 	return err
 }
@@ -895,21 +1016,43 @@ func (m *SessionManager) DeleteBoard(boardID string) error {
 // told nothing rather than open a second copy of every board. The claim is
 // deliberately not persisted: it is about this process, and a board stays
 // restorable for as long as it exists.
+//
+// A board whose conversation has gone is dropped here rather than handed out,
+// along with the geometry of the window that held it. Forgetting boards as a
+// conversation is deleted or binned covers the ways a conversation goes through
+// this server, and it is where a board should be forgotten. It cannot cover a
+// conversation removed from the project folder by hand. This is the last point
+// at which such a board can be caught, and the only one that is asked before a
+// window is opened onto it — so it is checked here as well, and a board that
+// answers for nothing is finished with.
 func (m *SessionManager) ClaimDetachedBoards() []Board {
-	boards, _ := runRead(m, func(s *sessionState) ([]Board, error) {
+	boards, _ := runWrite(m, func(s *sessionState) ([]Board, error) {
 		if s.session == nil || s.boardsClaimed {
 			return []Board{}, nil
 		}
 		s.boardsClaimed = true
 		s.session.migrateBoards()
 		detached := []Board{}
-		for _, board := range s.session.Boards {
-			if board.IsDetached() {
-				detached = append(detached, board.Clone())
+		dropped := false
+		for id, board := range s.session.Boards {
+			if !board.IsDetached() {
+				continue
 			}
+			if !s.session.hasConversation(board.Conversation) {
+				delete(s.session.Boards, id)
+				delete(s.session.WindowStates, WindowRolePinboardFor(id))
+				dropped = true
+				continue
+			}
+			detached = append(detached, board.Clone())
 		}
 		sort.Slice(detached, func(i, j int) bool { return detached[i].ID < detached[j].ID })
-		return detached, nil
+		// Only a claim that dropped something has anything to write, so the
+		// ordinary one still costs no disk.
+		if !dropped {
+			return detached, nil
+		}
+		return detached, s.store.Save(s.session)
 	})
 	return boards
 }

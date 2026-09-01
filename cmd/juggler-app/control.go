@@ -234,20 +234,27 @@ func (a *appState) handleWindowControl(w http.ResponseWriter, r *http.Request) {
 		// waiter times out on its own.
 		a.releaseFlushWait(e, r.URL.Query().Get("token"))
 		w.WriteHeader(http.StatusNoContent)
-	case "pick-directory":
-		// Native folder chooser for the in-page project picker. Runs as a sheet on
-		// the requesting window and returns the chosen absolute path (empty string
-		// on cancel). Browser clients have no native host and never reach here —
-		// they keep using the text path input.
+	case "pick-directory", "pick-file":
+		// Native chooser for the in-page path pickers. Runs as a sheet on the
+		// requesting window and returns the chosen absolute path (empty string on
+		// cancel). Browser clients have no native host and never reach here — they
+		// keep using the text path input.
+		//
+		// The project picker wants a folder and nothing else. Everything else that
+		// asks for a path — pinning a file, adding one to the context — accepts a
+		// directory just as readily, so pick-file takes either rather than refusing
+		// half of what the typed path allows. The title is the caller's, since it
+		// is the same sentence the panel above it is already saying.
+		files, title := pickerOptions(action, r.URL.Query().Get("title"))
 		path, err := a.app.Dialog.OpenFile().
 			CanChooseDirectories(true).
-			CanChooseFiles(false).
-			CanCreateDirectories(true).
-			SetTitle("Open project folder").
+			CanChooseFiles(files).
+			CanCreateDirectories(!files).
+			SetTitle(title).
 			AttachToWindow(e.win).
 			PromptForSingleSelection()
 		if err != nil {
-			logf("directory picker failed: %v", err)
+			logf("%s picker failed: %v", action, err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -258,6 +265,24 @@ func (a *appState) handleWindowControl(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
+}
+
+// pickerOptions decides what a path chooser offers, from the action that asked
+// for it and the title the page supplied.
+//
+// The project picker takes a folder and nothing else, and is the one chooser
+// that creates directories — you open a project by making a folder for it. A
+// chooser asked for a file takes either: a file pin and a file context item both
+// accept a directory, so Browse must reach everything the typed path does or it
+// is a lesser way of answering the same question. An untitled request gets the
+// project picker's wording, which is what every request meant before there was a
+// second kind.
+func pickerOptions(action, rawTitle string) (files bool, title string) {
+	title = strings.TrimSpace(rawTitle)
+	if title == "" {
+		title = "Open project folder"
+	}
+	return action == "pick-file", title
 }
 
 // updaterStateResponse is the JSON the page reads from op=state: the global

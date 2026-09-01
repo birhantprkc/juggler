@@ -77,25 +77,48 @@ func TestFlushHandshakeIgnoresWrongToken(t *testing.T) {
 	}
 }
 
-// A quit and an updater restart both announce a close, so a reply to the first
-// announcement must not satisfy the second — that would hand back an instant
-// "drafts are safe" for a flush that never ran.
-func TestFlushHandshakeIgnoresStaleTokenAfterReArming(t *testing.T) {
+// The gate closing one window and a quit sweeping every window can both want the
+// same page flushed at once. They want the identical guarantee, and the page can
+// only answer what it was last told, so the second joins the reply already on its
+// way instead of raising the sequence number under it — which would get that
+// reply refused as stale and leave the first waiter to burn its whole deadline.
+func TestFlushHandshakeJoinsAnAnnouncementAwaitingAReply(t *testing.T) {
+	a := newTestAppState(t)
+	e := registerTestWindow(a, "w1")
+
+	first, waiting := a.armFlushWait(e)
+	joined, alsoWaiting := a.armFlushWait(e)
+	if joined != first {
+		t.Fatalf("joining must quote the announced token, got %q for an announcement of %q", joined, first)
+	}
+
+	a.releaseFlushWait(e, first)
+	if !closed(waiting) || !closed(alsoWaiting) {
+		t.Fatal("the page's one reply must release everyone waiting on that announcement")
+	}
+}
+
+// Sharing lasts only as long as the reply is outstanding. Once a handshake has
+// been answered the next announcement is a new question — a repeat of the old
+// reply must not answer it, or a flush that never ran reports drafts safe.
+func TestFlushHandshakeIgnoresStaleTokenAfterANewAnnouncement(t *testing.T) {
 	a := newTestAppState(t)
 	e := registerTestWindow(a, "w1")
 
 	stale, first := a.armFlushWait(e)
+	a.releaseFlushWait(e, stale)
+	if !closed(first) {
+		t.Fatal("the announced token must release its own waiter")
+	}
+
 	fresh, second := a.armFlushWait(e)
-	if stale == fresh {
-		t.Fatal("re-arming must mint a new token, or a stale reply satisfies the new wait")
+	if fresh == stale {
+		t.Fatal("an announcement made after a reply must mint a new token")
 	}
 
 	a.releaseFlushWait(e, stale)
 	if closed(second) {
-		t.Fatal("a reply to the previous announcement must not release the current one")
-	}
-	if closed(first) {
-		t.Fatal("the abandoned handshake must not be completed by its own stale token")
+		t.Fatal("a repeat of the previous reply must not release the current waiter")
 	}
 
 	a.releaseFlushWait(e, fresh)

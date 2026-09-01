@@ -6,6 +6,7 @@ import { markPopupOpen } from '../utils/popup-manager.js';
 import { focusWhenShown } from '../utils/focus.js';
 import { fetchJson } from '../services/http.js';
 import { LOGO_WITH_NAME_SVG } from '../utils/juggler-logo.js';
+import { dragGuard } from '../utils/drag-guard.js';
 import JugglerElement from './juggler-element.js';
 
 /**
@@ -37,21 +38,11 @@ class AboutModal extends JugglerElement {
   _setupLogoClick() {
     const logo = /** @type {HTMLElement|null} */ (document.querySelector('.logo'));
     if (logo) {
-      let dragged = false;
-      const onPointerDown = (/** @type {Event} */ e) => {
-        dragged = false;
-        const startX = /** @type {PointerEvent} */ (e).screenX;
-        const startY = /** @type {PointerEvent} */ (e).screenY;
-        const onMove = (/** @type {Event} */ m) => {
-          const mm = /** @type {PointerEvent} */ (m);
-          if (Math.abs(mm.screenX - startX) > 4 || Math.abs(mm.screenY - startY) > 4) dragged = true;
-        };
-        document.addEventListener('pointermove', onMove);
-        document.addEventListener('pointerup', () => document.removeEventListener('pointermove', onMove), { once: true });
-      };
-      const onClick = () => { if (!dragged) this.open(); };
-      this.on(logo, 'pointerdown', onPointerDown);
-      this.on(logo, 'click', onClick);
+      // The logo sits in the window's drag region, and the release that ends a
+      // window drag arrives here as a click.
+      const drag = dragGuard();
+      this.on(logo, 'pointerdown', drag.watch);
+      this.on(logo, 'click', () => { if (!drag.dragged()) this.open(); });
     }
   }
 

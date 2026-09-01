@@ -37,6 +37,7 @@ import { windowControlURL, isDesktopWindow } from '../../sdk/lib/window-control.
 import { onDocumentReady } from './document-ready.js';
 import { fetchJson } from '../services/http.js';
 import { scopedKey, resolvePref } from './ui-pref-scope.js';
+import { windowRole } from './view-mode.js';
 
 const THEME_KEY_BASE = 'juggler-theme';
 
@@ -224,12 +225,17 @@ function rememberWindowMode(mode) {
  * project left in the origin-shared localStorage. Only a desktop window may call
  * this — the server refuses the write from a remote viewer, whose theme is its
  * own device's business.
+ *
+ * The window names itself, so a detached board set to light does not restyle
+ * every other window of the project at the next launch. The ordinary window's
+ * mode is also the project's, which is what a window opened later inherits.
  * @param {string} mode - One of MODES.
  * @private
  */
 function persistThemeToSession(mode) {
   // Best-effort — a missing/blocked fetch just skips session persistence.
-  void fetchJson('/api/session/ui-theme', { method: 'PUT', body: { uiTheme: mode }, fallback: null });
+  const url = `/api/session/ui-theme?role=${encodeURIComponent(windowRole())}`;
+  void fetchJson(url, { method: 'PUT', body: { uiTheme: mode }, fallback: null });
 }
 
 /**

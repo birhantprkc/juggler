@@ -16,17 +16,19 @@
  * other viewer of that project would, and survives a reload of itself for the
  * same reason.
  *
- * What is left to say between the two ends is one thing, and it goes one way:
+ * What is left to say between the two ends is little, and all of it goes one way:
  *
- * - `hello` satellite → owner. "I am here." Registers the board, so a reveal
- *   from it can be told apart from a message any other viewer of this session
- *   might send.
+ * - `hello` satellite → owner. "I am here." Registers the board, so anything
+ *   else from it can be told apart from a message any other viewer of this
+ *   session might send.
  * - `reveal` satellite → owner. Point at a thread or an item, in this board's
  *   conversation — which the owner switches to first, since a board on a
  *   conversation its owner has left is the ordinary case now rather than a
  *   mistake.
+ * - `select` satellite → owner. Show this board's conversation, with nothing
+ *   singled out in it. A reveal without anything to point at.
  *
- * Both travel over the addressed viewer relay ({@link module:services/websocket}'s
+ * All of them travel over the addressed viewer relay ({@link module:services/websocket}'s
  * `relayTo`), which is best-effort and unqueued: a viewer that is not connected
  * never receives a message and nothing reports that. Nothing durable is agreed
  * here, and nothing needs to be — the board itself is server state and both ends
@@ -50,6 +52,9 @@ const HELLO = 'hello';
 
 /** Satellite → owner: point at this, in this conversation. */
 const REVEAL = 'reveal';
+
+/** Satellite → owner: make this conversation the one you are showing. */
+const SELECT = 'select';
 
 /**
  * Whether this document can take part at all. A viewer the server could not
@@ -94,7 +99,7 @@ function parse(event) {
 /**
  * Send one message to a viewer.
  * @param {string} to - The recipient's viewer id.
- * @param {string} kind - One of the two kinds above.
+ * @param {string} kind - One of the kinds above.
  * @param {any} [body] - The message's payload.
  * @returns {boolean} True when the transport took it.
  */
@@ -146,19 +151,25 @@ export const ownerLink = {
   /** @type {((reveal: {kind: string, id: string|null, conversation: string}) => void)|null} @private */
   _onReveal: null,
 
+  /** @type {((conversationId: string) => void)|null} @private */
+  _onSelect: null,
+
   /** @type {((event: any) => void)|null} @private */
   _handler: null,
 
   /**
-   * Start answering boards. Idempotent — the second call replaces the handler
+   * Start answering boards. Idempotent — the second call replaces the handlers
    * rather than subscribing twice.
    * @param {object} handlers - What the owner can do.
    * @param {(reveal: {kind: string, id: string|null, conversation: string}) => void} handlers.onReveal -
    *   Carry out a board's reveal in this window, in the conversation it names.
+   * @param {(conversationId: string) => void} [handlers.onSelect] - Show the
+   *   conversation a board names, without pointing at anything inside it.
    * @returns {void}
    */
-  serve({ onReveal }) {
+  serve({ onReveal, onSelect }) {
     this._onReveal = onReveal;
+    this._onSelect = onSelect || null;
     if (this._handler) return;
     this._handler = (event) => {
       const message = parse(event);
@@ -178,6 +189,14 @@ export const ownerLink = {
             conversation: String(message.body?.conversation || ''),
           });
           break;
+        case SELECT: {
+          // Same guard as a reveal, and for the same reason: this moves the
+          // window a person is working in.
+          if (!this._satellites.has(message.from)) return;
+          const conversation = String(message.body?.conversation || '');
+          if (conversation) this._onSelect?.(conversation);
+          break;
+        }
         default:
           break;
       }
@@ -289,6 +308,7 @@ export const ownerLink = {
     if (this._handler) wsService.off('viewer-relay', this._handler);
     this._handler = null;
     this._onReveal = null;
+    this._onSelect = null;
     this._satellites.clear();
   },
 };
@@ -397,6 +417,19 @@ export const satelliteLink = {
   revealItem(itemId, conversationId) {
     if (!this._owner || !itemId) return;
     send(this._owner, REVEAL, { kind: 'item', id: itemId, conversation: conversationId });
+  },
+
+  /**
+   * Ask the owner to show this board's conversation — the whole of it, with
+   * nothing singled out inside it. What a board window's header offers when its
+   * conversation is named there: the board is a view of that conversation, and
+   * this is how the user gets to the rest of it.
+   * @param {string} conversationId - The conversation to show.
+   * @returns {void}
+   */
+  selectConversation(conversationId) {
+    if (!this._owner || !conversationId) return;
+    send(this._owner, SELECT, { conversation: conversationId });
   },
 
   /**

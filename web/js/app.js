@@ -217,6 +217,20 @@ class JugglerApp {
 
   /** @private */
   async setup() {
+    // First thing, ahead of the component lookup and the registry boot below:
+    // the host announces a close as soon as the user asks for one, which can be
+    // before either has finished, and it waits on the answer. A window closed
+    // while booting still has drafts worth rescuing, and _flushDraftsForClose
+    // reaches for the composers and the worker only when it runs.
+    //
+    // Answered in every mode. A detached board has no drafts to flush, but the
+    // host waits for an answer either way, so silence here would be charged to
+    // every window close.
+    window.addEventListener('juggler:window-close-requested', (e) => {
+      const token = /** @type {CustomEvent} */ (e).detail?.ackToken;
+      void this._flushDraftsForClose(token);
+    });
+
     // Get component references. contextPanel, conversationArea, and
     // conversationControls are per-tab, not global.
     this.conversationBar = document.querySelector('conversation-bar');
@@ -280,14 +294,6 @@ class JugglerApp {
     // Safety net for anchors in rendered markdown: without it a click on one
     // navigates the app's window off its own page. See services/link-guard.js.
     installLinkGuard(document);
-
-    // The close handshake is answered in every mode. A detached board has no
-    // drafts to flush, but the native host waits four seconds for an answer
-    // either way, so silence here would be charged to every window close.
-    window.addEventListener('juggler:window-close-requested', (e) => {
-      const token = /** @type {CustomEvent} */ (e).detail?.ackToken;
-      void this._flushDraftsForClose(token);
-    });
 
     if (!isPinboardView()) {
       document.addEventListener('duplicate-conversation', () => {

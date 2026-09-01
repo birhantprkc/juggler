@@ -34,8 +34,9 @@ import { isMac } from '../../js/services/key-shortcut-manager.js';
 import { __resetPopupManagerForTests, isAnyPopupOpen } from '../../js/utils/popup-manager.js';
 import {
   __setViewModeForTests, isPinboardView, ownerViewerId, initialPinId, boardConversationId,
-  viewMode, VIEW_MAIN, VIEW_PINBOARD,
+  viewMode, windowRole, VIEW_MAIN, VIEW_PINBOARD,
 } from '../../js/utils/view-mode.js';
+import { scopedKey } from '../../js/utils/ui-pref-scope.js';
 import PinboardItemType from 'juggler/pinboard-item-type';
 import '../../js/components/pinboard-shell.js';
 import '../../js/components/conversation-bar.js';
@@ -280,6 +281,18 @@ function stubRelay() {
 function announceViewerId(id) {
   wsService.viewerId = id;
   wsService._emit('session', { type: 'session', clientId: 'c_self', viewerId: id });
+}
+
+/**
+ * Say whether this page is a native desktop-app window, the way the host does —
+ * the flag it bakes onto <html> before the page paints. A test lane is a browser
+ * tab, so anything gated on the desktop has to be told otherwise.
+ * @param {boolean} on - Whether to be a desktop window.
+ * @returns {void}
+ */
+function asDesktopWindow(on) {
+  if (on) document.documentElement.dataset.windowMode = '1';
+  else delete document.documentElement.dataset.windowMode;
 }
 
 /**
@@ -582,6 +595,58 @@ export async function runTests() {
       }
     });
 
+    // A window's theme and zoom are kept under its role, so this string has to be
+    // the one both Go sides compute (core.WindowRoleForView, which the server uses
+    // to inject the theme pre-paint, and windowOpts.role() in the desktop app).
+    // Get it wrong and a board writes its theme into one slot and reads another
+    // back, which is invisible until the next launch.
+    await run('a window knows which window it is', () => {
+      try {
+        __setViewModeForTests('');
+        assert(windowRole() === 'main', `the ordinary window is ${windowRole()}`);
+
+        __setViewModeForTests('?view=pinboard&board=board_a');
+        assert(windowRole() === 'pinboard:board_a', `a board is ${windowRole()}`);
+
+        __setViewModeForTests('?view=pinboard&board=board_b');
+        assert(windowRole() === 'pinboard:board_b', 'two boards are two windows');
+
+        __setViewModeForTests('?view=pinboard');
+        assert(windowRole() === 'pinboard',
+          'a board with no id named falls back to the shared slot rather than claiming the docked panel\u2019s');
+
+        __setViewModeForTests('?view=pinboard&board=../etc');
+        assert(windowRole() === 'pinboard', 'and so does one whose id is not an id');
+      } finally {
+        __setViewModeForTests();
+      }
+    });
+
+    // Every document on the origin shares one localStorage, so a board that read
+    // the same cell as the window it was opened from would keep being restyled by
+    // it. Desktop windows read the session first; this is what covers a board
+    // opened as a browser tab, which has no session to write to.
+    await run('a board stores its own theme, not the window\u2019s', () => {
+      const previousProjectKey = window.__projectKey;
+      try {
+        window.__projectKey = 'proj1';
+        __setViewModeForTests('');
+        const main = scopedKey('juggler-theme');
+        assert(main === 'juggler-theme:proj1',
+          `the ordinary window keeps the plain key, got ${main}`);
+
+        __setViewModeForTests('?view=pinboard&board=board_a');
+        const boardA = scopedKey('juggler-theme');
+        __setViewModeForTests('?view=pinboard&board=board_b');
+        const boardB = scopedKey('juggler-theme');
+        assert(boardA !== main, 'a board must not share the window\u2019s cell');
+        assert(boardA !== boardB, `two boards shared one cell (${boardA})`);
+      } finally {
+        window.__projectKey = previousProjectKey;
+        __setViewModeForTests();
+      }
+    });
+
     await run('a detached board is the panel and nothing else', async () => {
       const { shell, teardown } = await mountDetached([]);
       try {
@@ -662,7 +727,10 @@ export async function runTests() {
           + '<div class="pinboard-scrim"></div>'
           + '<header class="app-header">'
           + '<button class="sidebar-toggle-button"></button>'
-          + '<div class="app-header__board-title"></div>'
+          + '<div class="app-header__board-title">'
+          + '<button class="app-header__board-conversation">Short</button>'
+          + '<span class="app-header__board-kind">Pinboard</span>'
+          + '</div>'
           + '<project-path-display></project-path-display>'
           + '<header-actions><update-button></update-button>'
           + '<div class="header-actions-controls">'
@@ -692,6 +760,16 @@ export async function runTests() {
           'but the header itself stays: it is the window’s drag region, and on Windows and Linux it carries the only close button');
         assert(styleOf('.app-header__board-title').display === 'flex',
           'and what is left says what the window is and what it is showing, side by side');
+
+        // The name is a control, and everything either side of it is the window's
+        // drag region — so a short name must not leave a press of the empty
+        // header landing on it.
+        const boxOf = (/** @type {string} */ sel) =>
+          /** @type {HTMLElement} */ (host.querySelector(sel)).getBoundingClientRect();
+        const strip = boxOf('.app-header__board-title');
+        const named = boxOf('.app-header__board-conversation');
+        assert(named.width < strip.width / 2,
+          `the name is as wide as the words, not as wide as the room: got ${Math.round(named.width)}px of ${Math.round(strip.width)}px`);
         assert(styleOf('conversation-tabs-container').display === 'none',
           'nor are its columns');
         assert(styleOf('.pinboard-scrim').display === 'none', 'nor the scrim');
@@ -759,37 +837,96 @@ export async function runTests() {
       }
     });
 
-    await run('a board window says what it is, which conversation, and which pin', async () => {
+    await run('a board window says which conversation, and what kind of window it is', async () => {
       const slot = document.createElement('div');
       slot.id = 'board-title';
       document.body.appendChild(slot);
-      /** @returns {string} What the header says the board is showing. */
-      const shownName = () => slot.querySelector('.app-header__board-name')?.textContent || '';
       /** @returns {string} The conversation the header names. */
       const shownConversation = () => slot.querySelector('.app-header__board-conversation')?.textContent || '';
-      const { teardown } = await mountShell({
+      /** @returns {string} The tag the header names it with. */
+      const nameTag = () => slot.querySelector('.app-header__board-conversation')?.tagName || '';
+      asDesktopWindow(true);
+      const { teardown, relay } = await mountShell({
         pins: PROBE_BOARD,
         search: `${BOARD_SEARCH}&pin=pin_a`,
       });
       try {
         // The board's own toolbar band does not say "Pinboard", so the header is
-        // the one place saying what this window is — in front of what it is
-        // showing, rather than instead of it.
+        // the one place saying what this window is — held at the far end, out of
+        // the way of the name.
         assert(slot.querySelector('.app-header__board-kind')?.textContent === 'Pinboard',
           `the header must say what the window is, got ${JSON.stringify(slot.textContent)}`);
         await waitFor(() => shownConversation() === 'Board conversation',
           'the header to name the conversation this window is stuck to');
-        assert(shownName() === `alpha@${BOARD_CONVERSATION}`,
-          `and the pin it is showing, got ${JSON.stringify(shownName())}`);
+        assert(slot.firstElementChild?.className === 'app-header__board-conversation',
+          'the conversation follows the logo: it is the window’s name, not a note beside a label');
+        assert(slot.lastElementChild?.className === 'app-header__board-kind',
+          'and what kind of window it is goes to the far end');
+
+        // And it is the way back to that conversation: this window is a view of
+        // it, and the whole of it is one window away.
+        const name = /** @type {any} */ (slot.querySelector('.app-header__board-conversation'));
+        assert(name.tagName === 'BUTTON',
+          `the name is a control where there is an owner to ask, got <${name.tagName.toLowerCase()}>`);
+        assert(name.getAttribute('aria-label') === 'Show this conversation in the main window',
+          `whose label says which window it acts on, got ${JSON.stringify(name.getAttribute('aria-label'))}`);
+        name.click();
+        const sent = relay.sent.find((/** @type {any} */ m) => m.kind === 'select');
+        assert(!!sent && sent.to === 'v_owner',
+          `the ask goes to the window that opened this board, got ${JSON.stringify(relay.sent)}`);
+        assert(sent.body?.conversation === BOARD_CONVERSATION,
+          `naming this board's conversation, not whatever that window is showing, got ${JSON.stringify(sent.body)}`);
+
+        // The name sits in the window's drag region, so it is one of the places
+        // the window gets picked up by, and that drag ends in a click on it.
+        /** @returns {number} How many asks have been sent. */
+        const asks = () => relay.sent.filter((/** @type {any} */ m) => m.kind === 'select').length;
+        name.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, screenX: 200, screenY: 40 }));
+        document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, screenX: 340, screenY: 96 }));
+        document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, screenX: 340, screenY: 96 }));
+        name.click();
+        assert(asks() === 1,
+          `a window dragged across the screen by its name is not a press of it, got ${asks()} asks`);
+        name.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, screenX: 200, screenY: 40 }));
+        document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, screenX: 200, screenY: 40 }));
+        name.click();
+        assert(asks() === 2,
+          `and the press after it, which stayed where it was, still is, got ${asks()} asks`);
+
+        // Whether there is anywhere to send it is not known while the page is
+        // parsing — the id arrives on the session frame — so the header is
+        // written again when the answer comes, and a board that cannot be
+        // addressed says the name rather than offering a control that would do
+        // nothing.
+        announceViewerId('');
+        assert(nameTag() === 'SPAN',
+          'a board that cannot be addressed says the name rather than offering a control that would do nothing');
+        announceViewerId('v_self');
+        assert(nameTag() === 'BUTTON',
+          `and it is a control again when the address comes back, got <${nameTag().toLowerCase()}>`);
+
+        // A board in a browser tab is addressable and gets nowhere: the ask
+        // arrives in a tab the browser will not bring forward, so the user sees
+        // nothing happen.
+        asDesktopWindow(false);
+        announceViewerId('v_self');
+        assert(nameTag() === 'SPAN',
+          `a board in a browser tab says the name: one tab cannot raise another, got <${nameTag().toLowerCase()}>`);
+        asDesktopWindow(true);
+        announceViewerId('v_self');
 
         pinboardView.setActivePin('pin_b');
-        await waitFor(() => shownName() === `beta@${BOARD_CONVERSATION}`,
-          'the header to follow the board from one pin to the next');
+        await settle();
+        assert(!slot.querySelector('.app-header__board-name'),
+          'the selected tab is not named up here — the tab strip below is already showing which one is up');
         assert(shownConversation() === 'Board conversation',
-          'while the conversation stays exactly where it was: it is the one thing about this window that does not move');
+          'and the conversation stays exactly where it was: it is the one thing about this window that does not move');
       } finally {
         teardown();
         slot.remove();
+        // The lane is a browser tab, and every suite after this one is entitled
+        // to find it that way.
+        asDesktopWindow(false);
       }
     });
 
@@ -924,11 +1061,45 @@ export async function runTests() {
         session: makeSession(),
       });
       try {
-        await waitFor(() => shell.querySelector('.pinboard-placeholder')?.textContent?.startsWith('That conversation has gone.'),
+        await waitFor(() => shell.querySelector('.pinboard-placeholder')?.textContent?.startsWith('This conversation is no longer available'),
           'the board to say what is missing');
         assert(tabLabels(shell).length === 0,
           'a board with no conversation to be a view of draws no tabs against one');
       } finally {
+        teardown();
+      }
+    });
+
+    // Deleting the conversation is meant to take its windows with it, and the
+    // window it is meant to take is this one. It cannot be told to go: the app
+    // that owns the frame hears nothing from the server, so the page in the
+    // window is the only thing that knows both that the conversation has gone
+    // and which window it is in.
+    await run('a board whose conversation is deleted says which one and closes the window', async () => {
+      const session = makeBoardSession();
+      const { shell, teardown } = await mountShell({ pins: PROBE_BOARD, session });
+      const originalClose = window.close;
+      let closes = 0;
+      window.close = () => { closes += 1; };
+      try {
+        await waitFor(() => tabLabels(shell).includes(`alpha@${BOARD_CONVERSATION}`), 'the board to open');
+
+        // What a delete and a bin both look like from here: the conversation is
+        // out of the session before the event announcing it arrives. The board
+        // answers in the same turn, so nothing is waited for — a lane page is
+        // hidden, where a browser clamps even a zero timer to a full second.
+        session.known.delete(BOARD_CONVERSATION);
+        session.emit('conversation:deleted');
+
+        const placeholder = shell.querySelector('.pinboard-placeholder:not([hidden])');
+        assert(placeholder?.textContent?.startsWith('\u201CBoard conversation\u201D has gone.'),
+          `every board window is called Pinboard, so the one that has stopped working has to name the conversation it was a view of, got ${JSON.stringify(placeholder?.textContent)}`);
+        assert(tabLabels(shell).length === 0,
+          'and it stops showing a board over a transcript that is not there any more');
+        assert(closes === 1,
+          'and asks the window it is in to go: a board is a window onto one conversation, and that one has gone');
+      } finally {
+        window.close = originalClose;
         teardown();
       }
     });
@@ -1028,14 +1199,27 @@ export async function runTests() {
       });
       const { teardown, relay } = await mountShell({ search: '', session });
       try {
+        // A select first: the same journey with nothing to point at when it
+        // arrives, which is what a board's header asks for.
+        relay.deliver('v_stranger', 'select', { conversation: 'conv_other' });
+        assert(session.switched.length === 0,
+          'a viewer that never said hello cannot move the window a person is working in');
+
         relay.deliver('v_sat', 'hello');
+        relay.deliver('v_sat', 'select', { conversation: 'conv_other' });
+        await waitFor(() => session.switched.includes('conv_other'), 'the window to come to the conversation');
+        assert(session.loaded.includes('conv_other'),
+          'hydrated on the way, exactly as a reveal hydrates it');
+        assert(tab.threads.length === 0 && tab.items.length === 0,
+          `and nothing singled out, because nothing was named, got ${JSON.stringify(tab.threads)} and ${JSON.stringify(tab.items)}`);
+
+        // Then a reveal, from the conversation the select left this window on.
+        session.visible = { id: 'conv_main', name: 'Main' };
         relay.deliver('v_sat', 'reveal', { kind: 'thread', id: 'thread_7', conversation: 'conv_other' });
         await waitFor(() => tab.threads.length === 1, 'the reveal to be carried out');
 
-        assert(session.switched.includes('conv_other'),
+        assert(session.switched.filter((/** @type {string} */ id) => id === 'conv_other').length === 2,
           'a board stays on its conversation while this window goes elsewhere, so being pointed at one of its threads is a request to come back to it');
-        assert(session.loaded.includes('conv_other'),
-          'and it is hydrated first: a column built from an unloaded conversation has no thread to point at');
         assert(tab.threads[0] === 'thread_7',
           `then the thread is revealed, got ${JSON.stringify(tab.threads)}`);
       } finally {

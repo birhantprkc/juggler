@@ -29,6 +29,7 @@ import { onDocumentReady } from './document-ready.js';
 import { postWindowControl, isDesktopWindow } from '../../sdk/lib/window-control.js';
 import { fetchJson } from '../services/http.js';
 import { scopedKey, resolvePref } from './ui-pref-scope.js';
+import { windowRole } from './view-mode.js';
 
 const ZOOM_KEY_BASE = 'juggler-zoom';
 const ZOOM_STEP = 10;
@@ -110,12 +111,17 @@ function applyZoom(level) {
  * fetch shim authorises the request; the server no-ops for a no-project window.
  * Only a desktop window may call this — the server refuses the write from a
  * remote viewer, whose zoom is its own device's business.
+ *
+ * The window names itself, exactly as the theme does: a detached board is its
+ * own window and keeps its own size, and the ordinary window's size is also the
+ * project's, which is what a window opened later inherits.
  * @param {number} level - Zoom percentage.
  * @private
  */
 function persistToSession(level) {
   // Best-effort — a missing/blocked fetch just skips session persistence.
-  void fetchJson('/api/session/ui-zoom', { method: 'PUT', body: { uiZoom: level }, fallback: null });
+  const url = `/api/session/ui-zoom?role=${encodeURIComponent(windowRole())}`;
+  void fetchJson(url, { method: 'PUT', body: { uiZoom: level }, fallback: null });
 }
 
 /**

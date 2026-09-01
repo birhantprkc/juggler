@@ -166,18 +166,14 @@ export async function runTests(_ctx) {
     assert(reason === 'No active conversation', `expected the reason, got ${JSON.stringify(reason)}`);
   });
 
-  await test('the tab names the conversation it belongs to', () => {
+  await test('the tab says what the pin is, and leaves the conversation to the board', () => {
     const described = pin.describe({}, /** @type {any} */ ({ conversation: { id: 'c1', title: 'Fix the parser' } }));
     assert(described.title === 'Changed files', `expected 'Changed files', got ${described.title}`);
-    // This list is one conversation's, and a tab that did not say so would be
-    // read as the project's.
-    assert(described.subtitle === 'Fix the parser',
-      `expected the conversation named, got ${JSON.stringify(described.subtitle)}`);
-  });
-
-  await test('with no conversation the subtitle is empty rather than wrong', () => {
-    const described = pin.describe({}, /** @type {any} */ ({ conversation: null }));
-    assert(described.subtitle === '', `expected '', got ${JSON.stringify(described.subtitle)}`);
+    // Every pin on a board reads the same conversation, so naming it on this tab
+    // would be one tab answering for all of them — and the badge is sized for a
+    // tally, so a name in it crowds out the label that says which tab this is.
+    assert(!described.badge && !described.subtitle,
+      `the conversation belongs to the board, not the tab, got ${JSON.stringify(described)}`);
   });
 
   // --- what it claims -------------------------------------------------------

@@ -69,21 +69,57 @@ func WindowRolePinboardFor(boardID string) string {
 	return WindowRolePinboard + ":" + boardID
 }
 
-// WindowState is the native-window geometry for one of this project's windows.
-// It is session state (persisted in .juggler/session.json) rather than a single
-// machine-global file: keying geometry by project gives each project's windows
-// their own slots with no cross-process write race, and reopening a project
-// restores its window where you left it. Process-local geometry; deliberately
-// NOT part of Metadata, so it is never sent to viewers or surfaced as a frontend
-// flag.
+// WindowViewPinboard is the "view" a detached board's page URL carries. The
+// desktop app puts it there when it opens the window, and it comes back on every
+// request for that page — which is what lets the server tell one window's role
+// from another's without the page having to say so.
+const WindowViewPinboard = "pinboard"
+
+// WindowRoleForView names the window role a page URL describes, from the view
+// and board parameters the desktop app baked into it.
+//
+// Anything that is not a board is the main window, and a board whose id did not
+// survive the round trip falls back to the shared "pinboard" slot rather than
+// inventing a role named after a malformed id. This mirrors the desktop app's
+// own role(), so the app and the server always name the same window the same way.
+func WindowRoleForView(view, boardID string) string {
+	if view != WindowViewPinboard {
+		return WindowRoleMain
+	}
+	if !ValidBoardID(boardID) {
+		return WindowRolePinboard
+	}
+	return WindowRolePinboardFor(boardID)
+}
+
+// WindowState is one of this project's windows: the native geometry it was left
+// in, and the look it was left wearing. It is session state (persisted in
+// .juggler/session.json) rather than a single machine-global file: keying it by
+// project gives each project's windows their own slots with no cross-process
+// write race, and reopening a project restores its windows as they were.
+// Process-local; deliberately NOT part of Metadata, so it is never sent to
+// viewers or surfaced as a frontend flag.
+//
+// Theme and Zoom sit beside the frame because they are the same kind of fact
+// about the same window: a board detached onto a second display is a window the
+// user set up on purpose, and its appearance belongs to it rather than to
+// whichever window last touched the project. Both are unset ("" / 0) until that
+// window is told otherwise, and an unset one falls back to the project-wide
+// UITheme/UIZoom — so a board nobody has restyled still follows the main window.
+//
+// Geometry writes never carry them: the frame is captured from the live native
+// window (see windowgeom.Tracker.Capture) and knows nothing about appearance, so
+// SetWindowState preserves whatever is already stored.
 type WindowState struct {
-	X          int  `json:"x"`
-	Y          int  `json:"y"`
-	Width      int  `json:"width"`
-	Height     int  `json:"height"`
-	HasPos     bool `json:"hasPos"`
-	Maximised  bool `json:"maximised"`
-	Fullscreen bool `json:"fullscreen"`
+	X          int    `json:"x"`
+	Y          int    `json:"y"`
+	Width      int    `json:"width"`
+	Height     int    `json:"height"`
+	HasPos     bool   `json:"hasPos"`
+	Maximised  bool   `json:"maximised"`
+	Fullscreen bool   `json:"fullscreen"`
+	Theme      string `json:"theme,omitempty"` // UI theme mode (system|light|dark) for this window; "" follows the project
+	Zoom       int    `json:"zoom,omitempty"`  // UI zoom (root font-size %) for this window; 0 follows the project
 }
 
 // Session represents the folder state with multiple conversations.
@@ -101,8 +137,8 @@ type Session struct {
 	Metadata             map[string]any         `json:"metadata,omitempty"`     // General-purpose key-value store for frontend flags
 	WindowState          *WindowState           `json:"windowState,omitempty"`  // Geometry written by a Juggler that had one window slot; folded into WindowStates["main"] on first use (see migrateWindowStates)
 	WindowStates         map[string]WindowState `json:"windowStates,omitempty"` // Native-window geometry for this project, per window role (nil until first save)
-	UIZoom               int                    `json:"uiZoom,omitempty"`       // UI zoom (root font-size %) for this project's window; 0 until first set
-	UITheme              string                 `json:"uiTheme,omitempty"`      // UI theme mode (system|light|dark) for this project's window; "" until first set
+	UIZoom               int                    `json:"uiZoom,omitempty"`       // Project-wide UI zoom (root font-size %), followed by any window without one of its own; 0 until first set
+	UITheme              string                 `json:"uiTheme,omitempty"`      // Project-wide UI theme mode (system|light|dark), followed by any window without one of its own; "" until first set
 	Pinboard             []Pin                  `json:"pinboard,omitempty"`     // Board written by a Juggler that had one; folded into Boards["main"] on first use (see migrateBoards)
 	Boards               map[string]Board       `json:"boards,omitempty"`       // Pinboard compositions by board id: "main" is the docked panel, the rest are detached windows (see pinboard.go)
 }
@@ -220,6 +256,47 @@ func (s *Session) setBoard(board Board) {
 		s.Boards = map[string]Board{}
 	}
 	s.Boards[board.ID] = board
+}
+
+// removeBoardsForConversation forgets every detached board that is a view of
+// one conversation, along with the geometry of the window each one held.
+//
+// A board is a window onto one conversation and stays there, so a conversation
+// that has gone leaves its boards nothing to be a view of — and a board kept
+// past that is a window reopened, next run, onto a transcript that no longer
+// exists. The main board names no conversation and is never touched.
+//
+// Returns the ids removed, in board order, so a caller can say what it did.
+func (s *Session) removeBoardsForConversation(convID string) []string {
+	if convID == "" {
+		return nil
+	}
+	s.migrateBoards()
+	var removed []string
+	for id, board := range s.Boards {
+		if board.Conversation != convID {
+			continue
+		}
+		delete(s.Boards, id)
+		delete(s.WindowStates, WindowRolePinboardFor(id))
+		removed = append(removed, id)
+	}
+	sort.Strings(removed)
+	return removed
+}
+
+// hasConversation reports whether a conversation is one of this project's
+// active ones. ConversationOrder is the authority: it holds exactly the
+// conversations the bar can open, and the on-load reconcile keeps it to the
+// folders that are actually there. A binned or deleted conversation has already
+// left it.
+func (s *Session) hasConversation(convID string) bool {
+	for _, id := range s.ConversationOrder {
+		if id == convID {
+			return true
+		}
+	}
+	return false
 }
 
 // SetConversations replaces the in-memory per-conversation metadata

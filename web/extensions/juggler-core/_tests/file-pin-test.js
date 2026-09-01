@@ -219,10 +219,21 @@ export async function runTests(ctx) {
   await test('describe reads the config and never the disk', () => {
     const described = pin.describe({ path: '/a/b/main.go' }, /** @type {any} */ ({}));
     assert(described.title === 'main.go', `the tab says the file, got "${described.title}"`);
-    assert((described.subtitle || '').endsWith('/a/b/main.go'),
-      `and the path underneath it, got "${described.subtitle}"`);
+    assert(described.path === '/a/b/main.go',
+      `the toolbar is handed the file itself, got "${described.path}"`);
+    assert(!described.subtitle,
+      `the path is the toolbar's title now, not a second line, got "${described.subtitle}"`);
     assert(pin.describe({ path: '/a/b' , isDirectory: true }, /** @type {any} */ ({})).title === 'b/',
       'a directory says so in its title');
+  });
+
+  await test('describe resolves a relative path against the project', () => {
+    const active = /** @type {any} */ ({ project: { path: '/proj' } });
+    const described = pin.describe({ path: 'src/main.go' }, active);
+    // The path is what the host opens, copies and reveals, so a relative one
+    // would name a file nothing outside the app could find.
+    assert(described.path === '/proj/src/main.go',
+      `expected the resolved path, got "${described.path}"`);
   });
 
   await test('a pin needs a project to resolve against', () => {
@@ -399,16 +410,19 @@ export async function runTests(ctx) {
     assert(mounted.watchers() === 0, 'and a torn-down one is not');
   });
 
-  await test('the toolbar offers Open first and the rest behind it', async () => {
+  await test('the toolbar offers only what the host cannot', async () => {
     const path = await writeFixture('actions.txt', 'x');
     const mounted = mount({ path });
     try {
       await settled(mounted.body);
       const actions = mounted.controller.getActions?.() || [];
-      assert(actions.filter((a) => a.primary).map((a) => a.id).join(',') === 'open',
-        `Open is the one action worth a button, got ${JSON.stringify(actions.map((a) => a.id))}`);
-      assert(actions.map((a) => a.id).join(',') === 'open,refresh,copy-path,reveal',
-        'the rest wait in the overflow, in a fixed order');
+      // Opening, copying and revealing the path belong to the host, which offers
+      // them for any pin that names one — and offers them the same way here as
+      // in a properties panel. Re-reading the file is this pin's alone.
+      assert(actions.map((a) => a.id).join(',') === 'refresh',
+        `expected Refresh alone, got ${JSON.stringify(actions.map((a) => a.id))}`);
+      assert(actions[0].primary === true && actions[0].icon === 'refresh',
+        'it is drawn as the refresh glyph, in the toolbar rather than the overflow');
       assert(actions.every((a) => typeof a.run === 'function' && a.label),
         'every action has words and something to do');
     } finally {
@@ -451,6 +465,75 @@ export async function runTests(ctx) {
         `a pin outside the project root still reads, got "${text}"`);
     } finally {
       mounted.teardown();
+    }
+  });
+
+  // ========================================================================
+  // The dialog that asks which file
+  // ========================================================================
+
+  /**
+   * Open the pin's configure dialog and hand back the levers to answer it.
+   * @returns {{panel: HTMLElement, input: any, answer: Promise<Record<string, any>|null>, abort: AbortController}} The open dialog.
+   */
+  function openDialog() {
+    const abort = new AbortController();
+    const answer = pin.configure({
+      active: {
+        project: { path: ctx.fixtureDir, displayName: 'fixture' },
+        conversation: null,
+        thread: null,
+      },
+      signal: abort.signal,
+    });
+    const panel = /** @type {HTMLElement} */ (document.querySelector('.pp-overlay .pp-panel'));
+    return { panel, input: panel?.querySelector('path-input'), answer, abort };
+  }
+
+  await test('the file dialog takes a typed path', async () => {
+    const { panel, input, answer, abort } = openDialog();
+    try {
+      assert(!!panel, 'the dialog opens');
+      assert(panel.querySelector('.pp-title')?.textContent === 'Pin a File',
+        'and says what it is asking for');
+
+      const typed = `${base}_dialog.txt`;
+      input.value = typed;
+      input.dispatchEvent(new CustomEvent('path-change', { bubbles: true, detail: { value: typed } }));
+      /** @type {HTMLButtonElement} */ (panel.querySelector('.pp-btn-open')).click();
+
+      const config = await answer;
+      assert(config?.path === typed,
+        `the pin is stored against the path that was typed, got ${JSON.stringify(config)}`);
+      assert(!document.querySelector('.pp-overlay'), 'and the dialog is gone');
+    } finally {
+      abort.abort();
+    }
+  });
+
+  // A browser tab has no native host to open an OS chooser with, so the button
+  // is absent rather than present and inert — the typed path with its
+  // completions is the way to answer everywhere.
+  await test('without a native host the dialog is the text field alone', async () => {
+    const { panel, answer, abort } = openDialog();
+    try {
+      assert(!!panel.querySelector('path-input'), 'the field is always there');
+      assert(!panel.querySelector('.pp-btn-browse'),
+        'a page with no native host must not offer a chooser it cannot open');
+    } finally {
+      abort.abort();
+      await answer;
+    }
+  });
+
+  await test('cancelling the file dialog pins nothing', async () => {
+    const { panel, answer, abort } = openDialog();
+    try {
+      /** @type {HTMLButtonElement} */ (panel.querySelector('.pp-btn-cancel')).click();
+      assert(await answer === null, 'a cancelled dialog is not an error, it is no pin');
+      assert(!document.querySelector('.pp-overlay'), 'and it takes itself away');
+    } finally {
+      abort.abort();
     }
   });
 

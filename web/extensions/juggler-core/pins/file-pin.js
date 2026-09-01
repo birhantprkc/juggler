@@ -4,9 +4,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import PinboardItemType from 'juggler/pinboard-item-type';
-import { openPath, revealPath } from 'juggler/ops';
-import { basename, formatDisplayPath } from 'juggler/item-utils';
-import { buildPickerPanel, copyToClipboard, createElement, injectStylesOnce, revealLabel } from 'juggler/ui';
+import { basename } from 'juggler/item-utils';
+import { buildPickerPanel, createElement, injectStylesOnce } from 'juggler/ui';
 import { fetchLiveFile, renderLiveFileBody } from '../lib/live-file.js';
 
 injectStylesOnce('file-pin-styles', `
@@ -200,16 +199,20 @@ class FilePin extends PinboardItemType {
   }
 
   /**
+   * The tab is named for the file; the toolbar is the path itself, which the
+   * host draws along with the controls that act on it. The name above the path
+   * said the same thing twice, and the tab was already saying the short half.
    * @param {Record<string, any>} config - The pin's config.
-   * @returns {import('juggler/pinboard-item-type').PinDescription} Name above path.
+   * @param {import('juggler/pinboard-item-type').PinActiveContext} active - The active context.
+   * @returns {import('juggler/pinboard-item-type').PinDescription} The tab's word and the file.
    */
-  describe(config) {
+  describe(config, active) {
     const path = config?.path || '';
     if (!path) return { title: this.name };
     const name = basename(path) || path;
     return {
       title: config.isDirectory ? `${name}/` : name,
-      subtitle: formatDisplayPath(path),
+      path: absolutePath(config, active),
     };
   }
 
@@ -302,11 +305,10 @@ class FilePin extends PinboardItemType {
         clearTimeout(pending);
         stopWatching();
       },
+      // Open, copy and reveal are the host's, offered for any pin that names a
+      // path — so this one is left with the only thing it knows how to do.
       getActions: () => [
-        { id: 'open', label: 'Open', primary: true, run: async () => { await openPath({ path: target }); } },
-        { id: 'refresh', label: 'Refresh', run: () => render() },
-        { id: 'copy-path', label: 'Copy path', run: () => copyToClipboard(target) },
-        { id: 'reveal', label: revealLabel(), run: async () => { await revealPath({ path: target }); } },
+        { id: 'refresh', label: 'Refresh', icon: 'refresh', primary: true, run: () => render() },
       ],
     };
   }

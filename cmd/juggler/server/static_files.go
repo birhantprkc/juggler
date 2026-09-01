@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"juggler/cmd/juggler/core"
 	"juggler/internal/jlog"
 	"juggler/web"
 )
@@ -423,23 +424,31 @@ func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 
-	// The project session's saved UI zoom (root font-size %), or 0 when none.
-	// Injected so the page paints at the right scale on the very first frame —
-	// a font-size change reflows the whole UI, so a late correction is a visible
-	// jump. 0 lets the client fall back to an inherited seed or the default.
+	// Which of this project's windows is asking. The desktop app puts the view
+	// and board in the page URL when it opens a window, so the page it is served
+	// can be the one that window was left in — a board detached onto a second
+	// display keeps its own theme and zoom, rather than every window of the
+	// project painting whatever one of them last chose.
+	role := core.WindowRoleForView(r.URL.Query().Get("view"), r.URL.Query().Get("board"))
+
+	// This window's saved UI zoom (root font-size %), or 0 when neither it nor
+	// the project has one. Injected so the page paints at the right scale on the
+	// very first frame — a font-size change reflows the whole UI, so a late
+	// correction is a visible jump. 0 lets the client fall back to an inherited
+	// seed or the default.
 	//
 	// This is the desktop window's setting. A remote viewer is sent it too, so a
 	// phone opens at the size the desktop is at rather than a stock default, but
 	// there it ranks below the device's own stored preference and the device
 	// never writes back (see web/js/utils/zoom-manager.js).
-	initialZoom, _ := s.SessionManager().GetUIZoom()
+	initialZoom, _ := s.SessionManager().GetWindowUIZoom(role)
 
-	// The project session's saved UI theme mode (system|light|dark), or "" when
-	// none. Injected so the first paint uses this project's own theme instead of
+	// This window's saved UI theme mode (system|light|dark), or "" when neither
+	// it nor the project has one. Injected so the first paint uses it instead of
 	// whichever theme another project left in the origin-shared localStorage
 	// (every project's server reuses the same port, hence the same origin).
 	// Ranked for a remote viewer exactly as the zoom above is.
-	initialThemeMode, _ := s.SessionManager().GetUITheme()
+	initialThemeMode, _ := s.SessionManager().GetWindowUITheme(role)
 
 	data := struct {
 		StaticVersion    string

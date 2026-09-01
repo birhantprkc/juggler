@@ -19,8 +19,9 @@ const testAPIToken = "test-instance-token-abc123"
 
 // newAuthTestServer builds a minimal non-test-mode server whose router carries
 // only the api-auth middleware, plus a gated /api/ops/call, an exempt
-// /api/health, and a non-/api "/" — enough to exercise every branch of the
-// token + Host allowlist without standing up the full New() machinery.
+// /api/health, the board routes either side of the delete exemption, and a
+// non-/api "/" — enough to exercise every branch of the token + Host allowlist
+// without standing up the full New() machinery.
 func newAuthTestServer(t *testing.T) (*Server, *bool) {
 	t.Helper()
 	var reached bool
@@ -36,6 +37,11 @@ func newAuthTestServer(t *testing.T) (*Server, *bool) {
 	s.router.HandleFunc("/api/session/conversations/{convId}/assets/{sha}", hit).Methods("GET")
 	s.router.HandleFunc("/api/session/files/content", hit).Methods("GET")
 	s.router.HandleFunc("/api/session/files/bytes", hit).Methods("POST")
+	// The board routes carry every method the exemption has to tell apart, so
+	// what refuses one is the middleware and not a router with no route for it.
+	s.router.HandleFunc("/api/session/pinboard/boards", hit).Methods("GET", "POST", "PUT", "DELETE")
+	s.router.HandleFunc("/api/session/pinboard/boards/restore", hit).Methods("POST", "DELETE")
+	s.router.HandleFunc("/api/session/pinboard", hit).Methods("GET", "DELETE")
 	s.router.HandleFunc("/", hit).Methods("GET")
 	return s, &reached
 }
@@ -289,6 +295,9 @@ func TestAPIAuthExemptEndpointsSkipToken(t *testing.T) {
 		{http.MethodGet, "/api/health"},
 		{http.MethodGet, "/api/session/window-state"},
 		{http.MethodPut, "/api/session/window-state"},
+		// The desktop app forgets a closed window's board over this, with no
+		// page and so no token to quote.
+		{http.MethodDelete, "/api/session/pinboard/boards"},
 	} {
 		*reached = false
 		req := httptest.NewRequest(tc.method, tc.path, nil)
@@ -298,6 +307,44 @@ func TestAPIAuthExemptEndpointsSkipToken(t *testing.T) {
 
 		if rec.Code != http.StatusOK || !*reached {
 			t.Fatalf("exempt %s %s: got %d reached=%v, want 200 reached=true", tc.method, tc.path, rec.Code, *reached)
+		}
+	}
+}
+
+// TestAPIAuthExemptsOnlyTheBoardDelete pins the boundary of that one. Forgetting
+// a board is let through because the app that does it has no token; reading the
+// boards is what names them, and it must stay gated, or the exemption hands out
+// the ids that are the only thing making it narrow.
+func TestAPIAuthExemptsOnlyTheBoardDelete(t *testing.T) {
+	s, reached := newAuthTestServer(t)
+
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut} {
+		*reached = false
+		req := httptest.NewRequest(method, "/api/session/pinboard/boards", nil)
+		req.Host = "localhost"
+		rec := httptest.NewRecorder()
+		s.router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s boards without a token: got %d, want 401", method, rec.Code)
+		}
+		if *reached {
+			t.Fatalf("%s boards must not reach the handler without a token", method)
+		}
+	}
+
+	// Neither is anything else under the pinboard, which the delete's path is a
+	// prefix of nothing in — but a future route named beneath it would be caught
+	// by a sloppier match here.
+	for _, path := range []string{"/api/session/pinboard", "/api/session/pinboard/boards/restore"} {
+		*reached = false
+		req := httptest.NewRequest(http.MethodDelete, path, nil)
+		req.Host = "localhost"
+		rec := httptest.NewRecorder()
+		s.router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized || *reached {
+			t.Fatalf("DELETE %s: got %d reached=%v, want 401 reached=false", path, rec.Code, *reached)
 		}
 	}
 }

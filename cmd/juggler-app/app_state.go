@@ -108,10 +108,20 @@ type winEntry struct {
 
 	// forceClose is set (via the registry goroutine) once the busy-work close
 	// guard has been satisfied — either the server had no in-flight turn or the
-	// user confirmed the discard. The WindowClosing hook reads it to let the
-	// real close proceed instead of vetoing and re-prompting. Owned by the
-	// registry goroutine like the rest of winEntry's shared fields.
+	// user confirmed the discard. The close gate reads it (through closeAllowed)
+	// to skip straight past the prompt. Owned by the registry goroutine like the
+	// rest of winEntry's shared fields.
 	forceClose bool
+
+	// settling is set while the close gate is running for this window, and
+	// settled once it has finished and the close it re-issues may proceed to
+	// teardown. They are separate because the gate can take seconds — a prompt
+	// waits on the user, a flush on the page — and the window stays clickable
+	// throughout, so further closes must be turned away without either starting
+	// a second gate or being mistaken for a settled one. Owned by the registry
+	// goroutine, like forceClose above them.
+	settling bool
+	settled  bool
 
 	// retainBoard is set (via the registry goroutine) when this board window is
 	// being taken down with the window that opened it, rather than closed on its
@@ -612,6 +622,50 @@ func normaliseMode(mode string) string {
 	}
 }
 
+// startupPrefs decides the theme, mode and zoom a window opens with, from the
+// three things that can have an opinion:
+//
+//   - saved: what this window's own role was last left in, read from the project
+//     session. It wins. Two boards detached onto two displays and set to two
+//     themes have to come back wearing them, whichever window opens them.
+//   - opts: the opener's hand-off (Session ▸ New Window, the page's open-in-new-
+//     window, a detach). What a window with nothing of its own inherits.
+//   - lastTheme/lastZoom: the freshest values any window of this app reported,
+//     this session or a previous launch. The fallback for a launch with no
+//     opener at all (Finder, restore).
+//
+// theme is a colour to paint the bare frame with before the page's first paint;
+// mode is the user's selection, so a 'system' opener hands 'system' on rather
+// than collapsing the child to a concrete colour. A saved 'system' therefore
+// names no colour: the inherited one stays as the pre-paint fill and the page
+// resolves the OS preference itself on its first frame. Empty/zero results mean
+// "say nothing", which leaves a first-ever launch following the OS and the
+// default size.
+func startupPrefs(opts windowOpts, saved core.WindowState, hasSaved bool, lastTheme string, lastZoom int) (theme, mode string, zoom int) {
+	theme = normaliseTheme(opts.theme)
+	if theme == "" {
+		theme = lastTheme
+	}
+	mode = normaliseMode(opts.mode)
+	zoom = opts.zoom
+	if zoom <= 0 {
+		zoom = lastZoom
+	}
+	if !hasSaved {
+		return theme, mode, zoom
+	}
+	if savedMode := normaliseMode(saved.Theme); savedMode != "" {
+		mode = savedMode
+		if savedTheme := normaliseTheme(saved.Theme); savedTheme != "" {
+			theme = savedTheme
+		}
+	}
+	if saved.Zoom > 0 {
+		zoom = saved.Zoom
+	}
+	return theme, mode, zoom
+}
+
 func (a *appState) setWindowTheme(e *winEntry, theme string) (application.RGBA, bool) {
 	theme = normaliseTheme(theme)
 	if theme == "" {
@@ -808,32 +862,13 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 	id := <-a.ids
 	nativeCtl := fmt.Sprintf("http://127.0.0.1:%d/win/%s", a.ctlPort, id)
 
-	// Resolve the startup theme hint before building the URL/options. The page can
-	// use ?theme= to apply the user's last-reported theme before localStorage is
-	// read, and the native window uses the same colour for its bare pre-paint fill.
-	// Only send a real hint (inherited from the source window or persisted from a
-	// previous launch); don't send the dark fallback, because a first-ever launch
-	// with no explicit choice should still let the page follow the OS preference.
-	startupTheme := normaliseTheme(opts.theme)
-	if startupTheme == "" {
-		a.reg(func(st *regState) { startupTheme = st.lastTheme })
-	}
-	// The opener's selected mode ('system'/'light'/'dark'), baked into the child
-	// URL as ?mode= so an 'auto' (system) parent hands 'auto' to the child instead
-	// of the child collapsing to the concrete ?theme= colour. Empty for a launch
-	// with no opener (Finder/restore); the page then follows its own precedence.
-	startupMode := normaliseMode(opts.mode)
-	// Resolve the startup zoom hint the same way: the page uses ?zoom= to paint
-	// at the last-active size before its own preference is read, but only when
-	// the project session has no saved zoom of its own (the page gives that
-	// priority). Prefer an explicitly inherited value (Cmd+N / open-in-new-window
-	// from a source window), else the freshest zoom any window reported this
-	// session or a previous launch; send nothing when we have neither, so a
-	// first-ever launch just uses the default.
-	startupZoom := opts.zoom
-	if startupZoom <= 0 {
-		a.reg(func(st *regState) { startupZoom = st.lastZoom })
-	}
+	// Resolve the startup appearance before building the URL/options, from what
+	// this window was last left in and what it inherits (see startupPrefs).
+	var lastTheme string
+	var lastZoom int
+	a.reg(func(st *regState) { lastTheme, lastZoom = st.lastTheme, st.lastZoom })
+	startupTheme, startupMode, startupZoom := startupPrefs(opts, saved, hasSaved, lastTheme, lastZoom)
+
 	resolved := opts
 	resolved.theme, resolved.mode, resolved.zoom = startupTheme, startupMode, startupZoom
 	fullURL := windowPageURL(serverURL, nativeCtl, resolved)
@@ -842,10 +877,10 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 	// frame. On Windows the window is created visible (platformWindowHidden is
 	// false), so Wails fills the bare frame with options.BackgroundColour on
 	// WM_ERASEBKGND until WebView2 paints; left unset that fill is black, which
-	// shows as a flash. Match it to the theme: the inherited theme for Session ▸ New
-	// Window, else the last theme any window reported this session or a previous
-	// launch (so a restored/Finder-launched window matches where you left off),
-	// else the app's dark default.
+	// shows as a flash. Match it to the theme startupPrefs resolved — this
+	// window's own, else the one it inherits — so a restored window comes up in
+	// the colour it was left in; the app's dark default covers a first-ever launch
+	// that has neither.
 	bgTheme := startupTheme
 	if bgTheme == "" {
 		bgTheme = "dark"
@@ -964,16 +999,19 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 	win.OnWindowEvent(events.Common.WindowDidMove, func(_ *application.WindowEvent) { e.triggerSave() })
 	win.OnWindowEvent(events.Common.WindowDidResize, func(_ *application.WindowEvent) { e.triggerSave() })
 
-	// Guard the close: a hook runs before the WindowClosing listeners and can
-	// cancel the event. If this window's server still has a turn in flight, veto
-	// the close and confirm first (see busy_guard.go); once satisfied the guard
-	// sets forceClose and re-issues Close(), which falls straight through here.
+	// Settle the close before the window can be torn down: confirming a discard
+	// and flushing the page's drafts both need a live webview, and this hook is
+	// the last point in the close that still has one. It cancels, settles on its
+	// own goroutine, and re-issues the close — which then falls straight through
+	// here. See close_gate.go.
 	win.RegisterHook(events.Common.WindowClosing, func(ev *application.WindowEvent) {
-		if a.closeAllowed(e) {
+		if a.closeReady(e) {
 			return
 		}
 		ev.Cancel()
-		go a.confirmThenClose(e)
+		if a.claimSettle(e) {
+			go a.settleThenClose(e)
+		}
 	})
 	win.OnWindowEvent(events.Common.WindowClosing, func(_ *application.WindowEvent) {
 		a.handleWindowClosed(e)
@@ -1070,12 +1108,11 @@ func (a *appState) onShutdown() {
 // around it, and marks them. Runs on the registry goroutine, which owns every
 // field it reads and writes.
 //
-// It answers two things. `retained` is whether the window closing is itself a
-// board being taken down with its owner rather than closed on its own — the
-// difference between a board that comes back and one that is finished with.
-// `boards` are the board windows this one opened, which go down with it: a board
-// is a view of a conversation, and one whose window has gone has nothing left to
-// reveal into.
+// It answers with the board windows this one opened, which go down with it: a
+// board is a view of a conversation, and one whose window has gone has nothing
+// left to reveal into. Marking them is what tells each one, when its own close
+// arrives, that it is being put away rather than finished with — see
+// boardFinishedWith, which reads the mark.
 //
 // Ownership is by opener, never by server. Two main windows on one project share
 // a server URL, so a server match cannot tell one window's boards from the
@@ -1086,10 +1123,9 @@ func (a *appState) onShutdown() {
 // and the window teardowns race the process, so a board taken down by the window
 // that happened to close first would be indistinguishable from one closed on
 // purpose.
-func markBoardsClosingWith(st *regState, e *winEntry) (retained bool, boards []*winEntry) {
-	retained = e.retainBoard
+func markBoardsClosingWith(st *regState, e *winEntry) (boards []*winEntry) {
 	if st.quitting {
-		return retained, nil
+		return nil
 	}
 	for _, w := range st.windows {
 		if w.openedBy != e.id || w.board == "" {
@@ -1103,19 +1139,35 @@ func markBoardsClosingWith(st *regState, e *winEntry) (retained bool, boards []*
 	}
 	// A settled order, so a test and a user get the same one.
 	sort.Slice(boards, func(i, j int) bool { return boards[i].id < boards[j].id })
-	return retained, boards
+	return boards
+}
+
+// boardFinishedWith reports whether the window closing is a detached board the
+// user is done with, which is the one case where what it holds is discarded.
+//
+// A board closed on its own is finished with. Every other way a board window
+// ends — the window it came from closing, the app quitting — is it being put
+// away, and it keeps its tabs and its frame so it comes back as it was. Both of
+// those are already marked by the time a board's own close runs:
+// markBoardsClosingWith sets retainBoard before it closes the boards going down
+// with their opener, and a quit sets st.quitting before any window tears down.
+func (a *appState) boardFinishedWith(e *winEntry) bool {
+	if e == nil || e.board == "" {
+		return false
+	}
+	finished := false
+	a.reg(func(st *regState) { finished = !st.quitting && !e.retainBoard })
+	return finished
 }
 
 // handleWindowClosed removes the closed window, stops its server when no other
 // window still views it, and quits the app when no windows remain. Runs on the
 // Wails WindowClosing goroutine.
 func (a *appState) handleWindowClosed(e *winEntry) {
-	// WindowClosing can arrive more than once for the same window: the teardown
-	// below blocks for up to closeFlushTimeout waiting on the page's draft flush,
-	// and the window stays clickable throughout, so a second click on its close
-	// button delivers a second event while the first is still waiting. Only the
-	// first tears the window down — a repeat would re-announce the flush and
-	// close stopSave twice, which panics.
+	// WindowClosing can arrive more than once for the same window: the close gate
+	// re-issues the close it cancelled, and both of this window's listener
+	// registrations answer the same event. Only the first tears the window down —
+	// a repeat would close stopSave twice, which panics.
 	if !a.claimClose(e) {
 		return
 	}
@@ -1128,24 +1180,23 @@ func (a *appState) handleWindowClosed(e *winEntry) {
 	if s, ok := a.currentWindowState(e); ok {
 		putWindowState(e.serverURL, e.role, s)
 	}
-	// Give the page its chance to rescue composer drafts and confirm they reached
-	// disk. Must complete before the entry leaves the registry below, since that
-	// is where the page's reply is matched, and before the server is stopped —
-	// the flush it is waiting on goes through that server.
-	a.awaitFlush(e.id, a.notifyWindowCloseRequested(e), time.Now().Add(closeFlushTimeout))
+	// A board closed on its own is a board the user is finished with, so its tabs
+	// and its frame go with it. Waited on rather than left to a goroutine, and
+	// kept up here beside the geometry write: everything this window still owes
+	// the session is written before anything below can take the process down.
+	if a.boardFinishedWith(e) {
+		forgetBoard(e.serverURL, e.board)
+	}
 	close(e.stopSave)
 
 	var orphanServer *exec.Cmd
 	remaining := -1
-	quitting := false
-	retained := false
 	// The boards this window opened, which go with it.
 	var boards []*winEntry
 	a.reg(func(st *regState) {
 		delete(st.windows, e.id)
 		remaining = len(st.windows)
-		quitting = st.quitting
-		retained, boards = markBoardsClosingWith(st, e)
+		boards = markBoardsClosingWith(st, e)
 		// If no surviving window views this server, hand back the spawned proc
 		// (if any) so we can stop it.
 		stillViewed := false
@@ -1160,13 +1211,6 @@ func (a *appState) handleWindowClosed(e *winEntry) {
 			delete(st.servers, e.serverURL)
 		}
 	})
-	// A board closed on its own is a board the user is finished with, so its tabs
-	// and its frame go with it. Every other way a board window ends — the window
-	// it came from closing, the app quitting — keeps them, which is what makes it
-	// a window that comes back rather than one that has to be set up again.
-	if !quitting && e.board != "" && !retained {
-		go forgetBoard(e.serverURL, e.board)
-	}
 	for _, b := range boards {
 		win := b.win
 		application.InvokeAsync(func() { win.Close() })
@@ -1186,21 +1230,31 @@ func (a *appState) handleWindowClosed(e *winEntry) {
 	}
 }
 
-// armFlushWait registers a fresh close-requested handshake for e and returns the
-// token the page must quote back, plus the channel closed when it does. Any
-// previous handshake for the window is abandoned (its channel left unclosed —
-// its waiter is already gone or timing out), so a re-announcement never inherits
-// a stale reply. Returns an empty token when the window is no longer registered.
+// armFlushWait registers a close-requested handshake for e and returns the token
+// the page must quote back, plus the channel closed when it does. Returns an
+// empty token when the window is no longer registered.
+//
+// A handshake already awaiting a reply is joined rather than replaced. Two
+// callers can want the same window flushed at once — the gate closing that one
+// window, and a quit sweeping every window — and the page can only answer what
+// it was last told. Re-arming would raise the sequence number under the reply
+// already on its way, so the answer would be refused as stale and the first
+// waiter would spend the whole deadline waiting for a reply that had already
+// come. Sharing the channel releases both on that one reply.
 func (a *appState) armFlushWait(e *winEntry) (string, chan struct{}) {
-	done := make(chan struct{})
+	fresh := make(chan struct{})
 	token := ""
+	var done chan struct{}
 	a.reg(func(st *regState) {
 		w := st.windows[e.id]
 		if w == nil {
 			return
 		}
-		w.flushSeq++
-		w.flushDone = done
+		if w.flushDone == nil {
+			w.flushSeq++
+			w.flushDone = fresh
+		}
+		done = w.flushDone
 		token = strconv.Itoa(w.flushSeq)
 	})
 	if token == "" {

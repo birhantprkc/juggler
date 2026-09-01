@@ -388,3 +388,13 @@ composer-box .input-ctrl-btn:active,
     border-radius: var(--radius-xl);
     padding: var(--spacing-md);
 }
+
+/* ==========================================================================
+   Spin (u-spin)
+   One rotation, for any control that turns while it is working. Shared so a
+   refresh in the settings panel and a refresh on the Pinboard turn alike.
+   ========================================================================== */
+
+@keyframes u-spin {
+    to { transform: rotate(360deg); }
+}

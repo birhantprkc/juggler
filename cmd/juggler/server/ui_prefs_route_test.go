@@ -5,6 +5,7 @@
 package server
 
 import (
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -133,6 +134,109 @@ func TestUIPrefReadsStayOpen(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "90") {
 		t.Fatalf("remote ui-zoom read should return the saved value, got %s", rec.Body.String())
+	}
+}
+
+// A window names itself with ?role=, and two windows of one project keep two
+// settings. Without this the last window restyled decides for all of them at the
+// next launch, which is what a user with two boards on two displays sees as
+// "they all came back the same".
+func TestUIPrefWritesArePerWindow(t *testing.T) {
+	s, mgr := newUIPrefsTestServer(t)
+	boardA := core.WindowRolePinboardFor("board_a")
+	boardB := core.WindowRolePinboardFor("board_b")
+
+	writes := []struct{ path, body string }{
+		{"/api/session/ui-theme?role=" + boardA, `{"uiTheme":"light"}`},
+		{"/api/session/ui-theme?role=" + boardB, `{"uiTheme":"dark"}`},
+		{"/api/session/ui-zoom?role=" + boardA, `{"uiZoom":130}`},
+	}
+	for _, wr := range writes {
+		if rec := uiPrefRequest(t, s, http.MethodPut, wr.path, wr.body, localViewerAddr, false); rec.Code != http.StatusOK {
+			t.Fatalf("PUT %s: got %d, want 200", wr.path, rec.Code)
+		}
+	}
+
+	if mode, _ := mgr.GetWindowUITheme(boardA); mode != "light" {
+		t.Fatalf("board a: got %q, want \"light\"", mode)
+	}
+	if mode, _ := mgr.GetWindowUITheme(boardB); mode != "dark" {
+		t.Fatalf("board b took board a's theme: got %q, want \"dark\"", mode)
+	}
+	if _, ok := mgr.GetUITheme(); ok {
+		t.Fatal("a board's theme must not become the project's")
+	}
+
+	rec := uiPrefRequest(t, s, http.MethodGet, "/api/session/ui-theme?role="+boardA, "", localViewerAddr, false)
+	if !strings.Contains(rec.Body.String(), `"light"`) {
+		t.Fatalf("reading board a back: got %s", rec.Body.String())
+	}
+	rec = uiPrefRequest(t, s, http.MethodGet, "/api/session/ui-zoom?role="+boardB, "", localViewerAddr, false)
+	if strings.Contains(rec.Body.String(), "130") {
+		t.Fatalf("board b was answered with board a's zoom: got %s", rec.Body.String())
+	}
+}
+
+// A window that has never been restyled follows the project, so detaching a
+// second board does not produce a window in some other theme than the one it
+// was opened from.
+func TestUIPrefReadsFallBackToTheProject(t *testing.T) {
+	s, mgr := newUIPrefsTestServer(t)
+	if err := mgr.SetUITheme("dark"); err != nil {
+		t.Fatalf("seed project theme: %v", err)
+	}
+
+	rec := uiPrefRequest(t, s, http.MethodGet,
+		"/api/session/ui-theme?role="+core.WindowRolePinboardFor("board_a"), "", localViewerAddr, false)
+	if !strings.Contains(rec.Body.String(), `"dark"`) {
+		t.Fatalf("an unstyled board should follow the project theme, got %s", rec.Body.String())
+	}
+}
+
+// serveIndex injects the theme the page must paint on its very first frame. It
+// reads the window from the URL the desktop app opened it with, so a board
+// window's own theme is in the markup rather than corrected a frame later —
+// which would be a visible flash of the wrong colour on every launch.
+func TestIndexInjectsTheWindowsOwnTheme(t *testing.T) {
+	mgr, err := core.NewSessionManagerForPath(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSessionManagerForPath: %v", err)
+	}
+	t.Cleanup(mgr.Shutdown)
+	if err := mgr.SetWindowUITheme(core.WindowRoleMain, "dark"); err != nil {
+		t.Fatalf("set main theme: %v", err)
+	}
+	if err := mgr.SetWindowUITheme(core.WindowRolePinboardFor("board_a"), "light"); err != nil {
+		t.Fatalf("set board theme: %v", err)
+	}
+	if err := mgr.SetWindowUIZoom(core.WindowRolePinboardFor("board_a"), 130); err != nil {
+		t.Fatalf("set board zoom: %v", err)
+	}
+
+	s := &Server{router: mux.NewRouter()}
+	s.projectState.Store(&projectState{sessionManager: mgr, projectPath: t.TempDir()})
+	tmpl, err := template.New("index").Parse(`theme={{.InitialThemeMode}} zoom={{.InitialZoom}}`)
+	if err != nil {
+		t.Fatalf("parse stand-in template: %v", err)
+	}
+	s.indexTemplate = tmpl
+
+	serve := func(target string) string {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.RemoteAddr = localViewerAddr
+		rec := httptest.NewRecorder()
+		s.serveIndex(rec, req)
+		return rec.Body.String()
+	}
+
+	if got, want := serve("/?window=1"), "theme=dark zoom=0"; got != want {
+		t.Fatalf("the ordinary window: got %q, want %q", got, want)
+	}
+	if got, want := serve("/?window=1&view=pinboard&board=board_a"), "theme=light zoom=130"; got != want {
+		t.Fatalf("the board window: got %q, want %q", got, want)
+	}
+	if got, want := serve("/?window=1&view=pinboard&board=board_b"), "theme=dark zoom=0"; got != want {
+		t.Fatalf("a board with nothing of its own follows the project: got %q, want %q", got, want)
 	}
 }
 

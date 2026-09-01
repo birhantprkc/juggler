@@ -7,10 +7,11 @@
  * `Add…`. One list, one code path: two lists of what can be added would be two
  * lists to keep true.
  *
- * One heading, saying what the menu does, over one list. The list is short
- * enough that headings above stretches of it would be furniture rather than
- * navigation, and an item type sorts by the `order` it asks for rather than by
- * any taxonomy of where it came from. An item type that cannot be added right
+ * One list, with nothing written over it. The list is short enough that
+ * headings above stretches of it would be furniture rather than navigation, and
+ * it hangs from the `+` that opened it, which has already said what it is for.
+ * An item type sorts by the `order` it asks for rather than by any taxonomy of
+ * where it came from. An item type that cannot be added right
  * now says why instead of quietly vanishing — "No project" is information; an
  * absence is a puzzle. One already on the board is offered as what it is: a row
  * that can no longer be chosen, because it has been.
@@ -30,9 +31,6 @@ const POPUP_ID = 'pinboard-add-picker';
 
 /** Above this many entries the list earns a filter box; below it, the eye is faster. */
 const FILTER_THRESHOLD = 8;
-
-/** What the menu is for, over the one list it holds. */
-const HEADING = 'Add new pinned item';
 
 /**
  * One row's worth of decisions about an item type.
@@ -135,10 +133,7 @@ export function openAddPicker({ anchor, active, onPick }) {
       ? entries.filter((e) => e.name.toLowerCase().includes(needle))
       : entries;
 
-    const heading = document.createElement('li');
-    heading.className = 'category-header';
-    heading.textContent = HEADING;
-    list.replaceChildren(heading);
+    list.replaceChildren();
 
     if (!shown.length) {
       const empty = document.createElement('li');

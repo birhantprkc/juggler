@@ -77,6 +77,30 @@ export function raiseThisWindow() {
 }
 
 /**
+ * Close the window this page is in. Used when the window has nothing left to
+ * show — a detached pinboard whose conversation has been deleted, which is a
+ * window onto something that is not there any more.
+ *
+ * The native host closes the real window. A browser window opened by script can
+ * close itself; a tab the user opened cannot, and a browser that refuses is
+ * within its rights — so a caller must leave behind a page worth reading rather
+ * than treat this as done.
+ * @returns {void}
+ */
+export function closeThisWindow() {
+  const url = windowControlURL('control', '?action=close');
+  if (url) {
+    void fetch(url, { method: 'POST' }).catch(() => {});
+    return;
+  }
+  try {
+    window.close();
+  } catch {
+    // Nothing to recover: the window stays where it is.
+  }
+}
+
+/**
  * Tell the native host that this page has finished flushing its drafts, so the
  * close/quit it announced may proceed. The host is blocked waiting for this —
  * unlike the other control signals it is a reply, not a command, and the token
@@ -123,12 +147,14 @@ export function hasNativeHost() {
 }
 
 /**
- * Open the native folder chooser (desktop app only) and resolve with the chosen
- * absolute path, or null if there is no native host or the user cancelled.
- * @returns {Promise<string|null>} The chosen directory path, or null.
+ * Ask the native host for a path (desktop app only).
+ * @param {string} action - The control action naming which chooser to open.
+ * @param {string} [query] - Query string to pass along, e.g. '?title=Pin%20a%20File'.
+ * @returns {Promise<string|null>} The chosen path, or null.
+ * @private
  */
-export async function pickDirectory() {
-  const url = windowControlURL('pick-directory');
+async function pickPath(action, query = '') {
+  const url = windowControlURL(action, query);
   if (!url) return null;
   try {
     const resp = await fetch(url, { method: 'POST' });
@@ -138,6 +164,29 @@ export async function pickDirectory() {
   } catch {
     return null;
   }
+}
+
+/**
+ * Open the native folder chooser (desktop app only) and resolve with the chosen
+ * absolute path, or null if there is no native host or the user cancelled.
+ * @returns {Promise<string|null>} The chosen directory path, or null.
+ */
+export async function pickDirectory() {
+  return pickPath('pick-directory');
+}
+
+/**
+ * Open the native file chooser (desktop app only) and resolve with the chosen
+ * absolute path, or null if there is no native host or the user cancelled.
+ *
+ * A directory is a valid answer here: everything that asks for a file path — a
+ * pin, a context item — takes one, so Browse reaches everything the typed path
+ * does.
+ * @param {string} [title] - The chooser's title; defaults to the host's.
+ * @returns {Promise<string|null>} The chosen path, or null.
+ */
+export async function pickFile(title = '') {
+  return pickPath('pick-file', title ? `?title=${encodeURIComponent(title)}` : '');
 }
 
 /**

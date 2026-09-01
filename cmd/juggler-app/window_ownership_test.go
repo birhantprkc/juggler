@@ -181,11 +181,10 @@ func TestAWindowTakesItsBoardsWithIt(t *testing.T) {
 	theirs := registerBoardOf(a, "w3", "http://localhost:1234", "w9")
 
 	var boards []*winEntry
-	var retained bool
-	a.reg(func(st *regState) { retained, boards = markBoardsClosingWith(st, window) })
+	a.reg(func(st *regState) { boards = markBoardsClosingWith(st, window) })
 
-	if retained {
-		t.Error("an ordinary window is not a board being taken down with anything")
+	if a.boardFinishedWith(window) {
+		t.Error("an ordinary window is not a board being finished with")
 	}
 	if len(boards) != 1 || boards[0] != mine {
 		t.Fatalf("only this window's own boards go with it, got %v", boards)
@@ -210,17 +209,37 @@ func TestABoardTakenDownWithItsWindowIsMarkedAsKept(t *testing.T) {
 
 	a.reg(func(st *regState) { markBoardsClosingWith(st, window) })
 
-	var retained bool
-	a.reg(func(st *regState) { retained, _ = markBoardsClosingWith(st, board) })
-	if !retained {
+	if a.boardFinishedWith(board) {
 		t.Fatal("the board must know it was put away rather than closed on its own")
 	}
 
 	// A board nobody took down is one the user closed, and is discarded.
 	alone := registerBoard(a, "w4", "http://localhost:1234")
-	a.reg(func(st *regState) { retained, _ = markBoardsClosingWith(st, alone) })
-	if retained {
+	if !a.boardFinishedWith(alone) {
 		t.Fatal("a board closed on its own is finished with")
+	}
+
+	// Nothing is finished with at quit: every window is going, and a board taken
+	// down by whichever closed first would be indistinguishable from one closed
+	// on purpose.
+	a.reg(func(st *regState) { st.quitting = true })
+	if a.boardFinishedWith(alone) {
+		t.Fatal("a quit discards no board")
+	}
+}
+
+// A window that is not a board has no board to be finished with, however it
+// closes — the forget is keyed on the board a window holds, and an ordinary
+// window holds none.
+func TestAnOrdinaryWindowIsNeverFinishedWith(t *testing.T) {
+	a := newTestAppState(t)
+	window := registerWindowOn(a, "w1", "http://localhost:1234")
+
+	if a.boardFinishedWith(window) {
+		t.Fatal("a main window is not a board")
+	}
+	if a.boardFinishedWith(nil) {
+		t.Fatal("and neither is nothing at all")
 	}
 }
 
@@ -234,7 +253,7 @@ func TestQuittingTakesNoBoardsDown(t *testing.T) {
 	a.reg(func(st *regState) { st.quitting = true })
 
 	var boards []*winEntry
-	a.reg(func(st *regState) { _, boards = markBoardsClosingWith(st, window) })
+	a.reg(func(st *regState) { boards = markBoardsClosingWith(st, window) })
 
 	if len(boards) != 0 {
 		t.Fatalf("a quit closes the windows itself, got %v", boards)

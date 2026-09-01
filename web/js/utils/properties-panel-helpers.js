@@ -15,7 +15,7 @@ import { revealLabel } from '../components/reveal-button.js';
 import { registerContextMenuProvider } from '../services/context-menu-service.js';
 import { osOpenPath, osRevealPath } from '../services/ops-api.js';
 import pinboardView from '../services/pinboard-view.js';
-import { PIN_SVG } from './icons.js';
+import { OPEN_IN_NEW_SVG, PIN_SVG } from './icons.js';
 import { applyAnsi, stripAnsi } from '../../sdk/lib/ansi.js';
 import { copyToClipboard } from '../../sdk/lib/clipboard.js';
 import { createCopyButton } from '../../sdk/lib/copy-button.js';
@@ -118,12 +118,12 @@ export function addLlmDescription(wrapper, label, text) {
 }
 
 /**
- * Add a bare file path display (no heading) with copy + reveal buttons.
- * The path fills the full available width of its row, with the copy + reveal
- * buttons pinned to the right. If `info` is provided, it renders as a small
+ * Add a bare file path display (no heading) with the shared file-action buttons.
+ * The path fills the full available width of its row, with the open, copy and
+ * reveal buttons pinned to the right. If `info` is provided, it renders as a small
  * annotation (e.g. file size, line count) on its own line below the path row.
  *
- * `options.pin` adds a third button that pins the file to the Pinboard. It takes
+ * `options.pin` adds a further button that pins the file to the Pinboard. It takes
  * the absolute path rather than a flag, because the path shown in the row is
  * often the one the model wrote — relative, and no use as a pin's identity. The
  * button is omitted entirely when nothing enabled can pin a file, so it is never
@@ -145,21 +145,8 @@ export function addFilePath(wrapper, path, info, options = {}) {
   if (path) el.dataset.filePath = path;
   row.appendChild(el);
 
-  if (path) {
-    const actions = document.createElement('div');
-    actions.className = 'properties-panel-filepath-actions';
-
-    actions.appendChild(createCopyButton(path, 'properties-panel-filepath-btn', 'Copy path to clipboard'));
-
-    const reveal = document.createElement('reveal-button');
-    reveal.setAttribute('path', path);
-    actions.appendChild(reveal);
-
-    const pinButton = createPinButton(options.pin || '');
-    if (pinButton) actions.appendChild(pinButton);
-
-    row.appendChild(actions);
-  }
+  const actions = createFileActions(path, options);
+  if (actions) row.appendChild(actions);
 
   wrapper.appendChild(row);
 
@@ -169,6 +156,45 @@ export function addFilePath(wrapper, path, info, options = {}) {
     infoEl.textContent = info;
     wrapper.appendChild(infoEl);
   }
+}
+
+/**
+ * The row of icon buttons that act on a file: open it, copy its path, reveal it
+ * in the file manager, and — when `options.pin` names an absolute path — pin it
+ * to the Pinboard. Shared so that everywhere a path is shown offers the same
+ * controls in the same order, whether that is a properties panel, a settings
+ * tab, or the Pinboard's own item toolbar.
+ * @param {string} path - The path to act on. An empty one yields no row at all.
+ * @param {{pin?: string}} [options] - `pin` is the absolute path to pin.
+ * @returns {HTMLElement|null} The actions container, or null with no path.
+ */
+export function createFileActions(path, options = {}) {
+  if (!path) return null;
+
+  const actions = document.createElement('div');
+  actions.className = 'properties-panel-filepath-actions';
+
+  const open = document.createElement('button');
+  open.type = 'button';
+  open.className = 'properties-panel-filepath-btn';
+  open.title = 'Open file';
+  open.setAttribute('aria-label', 'Open file');
+  open.innerHTML = OPEN_IN_NEW_SVG;
+  // Open failures are operational (path gone, nothing registered for the type);
+  // the op reports its own, so swallow here rather than throw into a click.
+  open.addEventListener('click', () => { void osOpenPath({ path }).catch(() => {}); });
+  actions.appendChild(open);
+
+  actions.appendChild(createCopyButton(path, 'properties-panel-filepath-btn', 'Copy path to clipboard'));
+
+  const reveal = document.createElement('reveal-button');
+  reveal.setAttribute('path', path);
+  actions.appendChild(reveal);
+
+  const pinButton = createPinButton(options.pin || '');
+  if (pinButton) actions.appendChild(pinButton);
+
+  return actions;
 }
 
 /**

@@ -306,6 +306,7 @@ class GitPin extends PinboardItemType {
         {
           id: 'refresh',
           label: 'Refresh',
+          icon: 'refresh',
           primary: true,
           run: () => context.services.git.refresh(),
         },
