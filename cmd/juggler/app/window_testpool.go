@@ -545,7 +545,7 @@ func runTestPoolWindowApp(srv *server.Server, devMode bool, headless bool, testI
 	// minus the relaunch: a wedged main thread under test is a result to
 	// surface, not something to silently restart, so it force-exits instead.
 	// No-op off macOS.
-	startMainThreadWatchdog(srv.GetAddr(), false)
+	startMainThreadWatchdog(srv.GetAddr(), false, jlog.FilePath())
 
 	if err := app.Run(); err != nil {
 		jlog.Error("application.Run failed: %v", err)

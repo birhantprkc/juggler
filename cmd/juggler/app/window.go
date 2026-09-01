@@ -177,7 +177,7 @@ func runHeadlessServerApp(srv *server.Server, selected selectedEngineHost, done 
 	// transparently. Its heartbeat only means anything while the run loop
 	// app.Run() is about to enter is pumping the main queue, which is why it is
 	// armed alongside that loop rather than at startup. No-op off macOS.
-	startMainThreadWatchdog(srv.GetAddr(), true)
+	startMainThreadWatchdog(srv.GetAddr(), true, jlog.FilePath())
 
 	if err := app.Run(); err != nil {
 		jlog.Error("application.Run failed: %v", err)

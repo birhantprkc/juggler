@@ -109,7 +109,13 @@ func jugglerOnDidWake() {
 // addr is the address the server actually bound to (host:port); its port is
 // pinned on the re-exec so the new image re-binds exactly where the viewer is
 // retrying.
-func startMainThreadWatchdog(addr string, allowRelaunch bool) {
+//
+// logPath is the process log file (jlog.FilePath()) that a stall sample is
+// written beside, empty when on-disk logging is off — which suppresses sampling
+// too. It is taken here rather than read at stall time: the file sink is
+// configured once at startup, and the moment the watchdog needs it is the one
+// moment the logging package may itself be stuck behind the wedge.
+func startMainThreadWatchdog(addr string, allowRelaunch bool, logPath string) {
 	procStart := time.Now()
 	// Say so, once. The watchdog is silent while the main thread is healthy,
 	// which is indistinguishable from a watchdog that was never armed — and a
@@ -203,7 +209,7 @@ func startMainThreadWatchdog(addr string, allowRelaunch bool) {
 				// harness reports, and sampling would spend CPU on the loaded
 				// machine that caused it.
 				if allowRelaunch {
-					sample = captureStallSample(jlog.FilePath(), os.Getpid(), now)
+					sample = captureStallSample(logPath, os.Getpid(), now)
 				}
 			}
 			if stalled >= hangThreshold {
