@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -245,14 +247,20 @@ func (a *appState) handleWindowControl(w http.ResponseWriter, r *http.Request) {
 		// directory just as readily, so pick-file takes either rather than refusing
 		// half of what the typed path allows. The title is the caller's, since it
 		// is the same sentence the panel above it is already saying.
-		files, title := pickerOptions(action, r.URL.Query().Get("title"))
-		path, err := a.app.Dialog.OpenFile().
+		files, title, dir := pickerOptions(action, r.URL.Query().Get("title"), r.URL.Query().Get("dir"))
+		dialog := a.app.Dialog.OpenFile().
 			CanChooseDirectories(true).
 			CanChooseFiles(files).
 			CanCreateDirectories(!files).
 			SetTitle(title).
-			AttachToWindow(e.win).
-			PromptForSingleSelection()
+			AttachToWindow(e.win)
+		// Only when the caller named somewhere worth starting. Left unset, the
+		// platform opens wherever this app last was, which for a chooser asking
+		// about a file in the open project is rarely the project.
+		if dir != "" {
+			dialog = dialog.SetDirectory(dir)
+		}
+		path, err := dialog.PromptForSingleSelection()
 		if err != nil {
 			logf("%s picker failed: %v", action, err)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -277,12 +285,34 @@ func (a *appState) handleWindowControl(w http.ResponseWriter, r *http.Request) {
 // is a lesser way of answering the same question. An untitled request gets the
 // project picker's wording, which is what every request meant before there was a
 // second kind.
-func pickerOptions(action, rawTitle string) (files bool, title string) {
+//
+// The directory to open in is the caller's too, and is taken only when it is an
+// absolute path to a directory that exists — a stale or misspelt one is dropped
+// rather than passed on, since a chooser that opens somewhere is better than one
+// that refuses to. The project picker names none: it is being asked where a new
+// project is, and the last place this app looked is the better guess there.
+func pickerOptions(action, rawTitle, rawDir string) (files bool, title, dir string) {
 	title = strings.TrimSpace(rawTitle)
 	if title == "" {
 		title = "Open project folder"
 	}
-	return action == "pick-file", title
+	if action == "pick-file" {
+		dir = usableDirectory(rawDir)
+	}
+	return action == "pick-file", title, dir
+}
+
+// usableDirectory returns the path if it is an absolute one naming a directory
+// that is there, and "" otherwise.
+func usableDirectory(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || !filepath.IsAbs(path) {
+		return ""
+	}
+	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+		return ""
+	}
+	return path
 }
 
 // updaterStateResponse is the JSON the page reads from op=state: the global

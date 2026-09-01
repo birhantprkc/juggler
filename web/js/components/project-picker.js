@@ -31,6 +31,7 @@ import { showAlert, showConfirm } from './modal-dialog.js';
  *   placeholder?: string,
  *   dirsOnly?: boolean,
  *   confirmLabel?: string,
+ *   startDir?: string,
  *   confirmOpensNewWindow?: boolean,
  *   validate?: ValidateFn | null,
  *   onNewWindow?: ((path: string) => void) | null,
@@ -57,6 +58,10 @@ export function buildPickerPanel({
   placeholder = 'Path to project folder…',
   dirsOnly = true,
   confirmLabel = 'Open',
+  // Where the native chooser opens. A picker asking about a file in the open
+  // project says so; the project picker names none, because it is asking where a
+  // new project is and the last place the app looked is the better guess.
+  startDir = '',
   // When true, the primary confirm button launches the chosen folder in a new
   // window (via onNewWindow) instead of resolving a path for an in-place load,
   // and the separate secondary new-window button is suppressed as redundant.
@@ -252,7 +257,7 @@ export function buildPickerPanel({
   const browseBtn = /** @type {HTMLButtonElement|null} */ (panel.querySelector('.pp-btn-browse'));
   if (browseBtn) {
     browseBtn.addEventListener('click', async () => {
-      const chosen = dirsOnly ? await pickDirectory() : await pickFile(title);
+      const chosen = dirsOnly ? await pickDirectory() : await pickFile(title, startDir);
       if (!chosen) return;
       pathInputEl.value = chosen;
       if (validate) {

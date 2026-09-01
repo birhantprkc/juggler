@@ -229,6 +229,43 @@ const pinboardStore = {
   },
 
   /**
+   * Add several pins as one batch, in the order given. One request and one
+   * broadcast, so a board being furnished appears as a board rather than as six
+   * tabs arriving one at a time.
+   * @param {Array<{type: string, config?: Record<string, any>}>} entries - What to add.
+   * @returns {Promise<Pin[]>} The resulting board.
+   */
+  async addAll(entries) {
+    /** @type {PinboardOp[]} */
+    const ops = entries.map(({ type, config }) => ({
+      op: 'add',
+      id: newPinId(),
+      type,
+      config: config || {},
+    }));
+    return applyOperations(ops);
+  },
+
+  /**
+   * Ask whether this viewer is the one to lay out the board's starting tabs.
+   *
+   * The server answers yes at most once in a board's life, because the answer is
+   * an instruction to write pins: every window reading this board asks as it
+   * loads, and a second one told yes would lay out a second set on top of the
+   * first. What the tabs are is not the server's business — a pin's type belongs
+   * to an extension, and the session knows one only as an opaque string — so the
+   * claim is all that crosses the wire and the caller holds the list.
+   * @returns {Promise<boolean>} True when this viewer should furnish the board.
+   */
+  async claimSeed() {
+    const data = await fetchJson(`/api/session/pinboard/seed?board=${encodeURIComponent(boardId())}`, {
+      method: 'POST',
+      errorPrefix: '[Pinboard] Could not ask whether to furnish the board',
+    });
+    return data?.seed === true;
+  },
+
+  /**
    * Remove a pin. Removing the panel never touches what it was showing: a Tasks
    * pin does not stop tasks, a memory pin does not edit MEMORY.md.
    * @param {string} pinId - The pin to remove.

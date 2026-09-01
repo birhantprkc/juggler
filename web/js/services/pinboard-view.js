@@ -22,7 +22,7 @@
 
 import pinboardStore from './pinboard-store.js';
 import pinboardItemRegistry from '../registries/pinboard-item-registry.js';
-import { initialPinId } from '../utils/view-mode.js';
+import { initialPinId, isPinboardView } from '../utils/view-mode.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 
 /** @typedef {import('./pinboard-store.js').Pin} Pin */
@@ -137,6 +137,36 @@ function findDuplicate(typeId, config) {
     }
   }
   return null;
+}
+
+/**
+ * The types a board is furnished with when it is new, in the order their tabs
+ * should sit in.
+ *
+ * `canAdd` is deliberately not consulted. It answers whether a type has anything
+ * to show *now* — most of these want a conversation, and a project usually opens
+ * without one — but the board is being arranged for the project's life, not for
+ * this instant, and a tab that says what it is waiting for is more use than a tab
+ * that was never placed.
+ * @returns {Array<{id: string, order: number}>} Default types, in tab order.
+ */
+function defaultTypes() {
+  /** @type {Array<{id: string, order: number}>} */
+  const types = [];
+  for (const type of pinboardItemRegistry.getEnabledTypes()) {
+    let manifest;
+    try {
+      manifest = type.getManifest();
+    } catch (err) {
+      console.error(`[Pinboard] Item type "${type.id}" failed to describe itself:`, err);
+      continue;
+    }
+    if (!manifest.defaultPin) continue;
+    types.push({ id: type.id, order: Number.isFinite(manifest.order) ? Number(manifest.order) : 0 });
+  }
+  // Stable: Array.prototype.sort is, so equal orders keep registration order —
+  // the same rule the add picker sorts by, so the two agree.
+  return types.sort((a, b) => a.order - b.order);
 }
 
 /**
@@ -277,6 +307,43 @@ const pinboardView = {
     const pin = await attempt("Couldn't add that pin.", () => pinboardStore.add(typeId, normalized));
     if (pin) this.reveal(pin.id);
     return pin;
+  },
+
+  /**
+   * Lay out a new board's starting tabs, so a project opens on something rather
+   * than on an empty board and a `+` button.
+   *
+   * Done once in a board's life, and the server is the one that decides whose
+   * turn it is — several windows of a project all reach here as they load. After
+   * that the board is the user's: a starting tab they remove stays removed, and
+   * an emptied board is left empty.
+   *
+   * Only the docked panel is furnished. A detached board is created carrying the
+   * tabs of the panel it was detached from, so it has never been empty.
+   * @returns {Promise<void>} Resolves once the board has been furnished, or once
+   *   it is settled that this viewer is not the one to do it.
+   */
+  async furnish() {
+    if (isPinboardView()) return;
+    const types = defaultTypes();
+    // Nothing to furnish it with, so nothing is claimed: spending the claim here
+    // would leave a board that is never laid out at all, because the extension
+    // that would have filled it arrives after the claim is gone.
+    if (!types.length) return;
+    let claimed = false;
+    try {
+      claimed = await pinboardStore.claimSeed();
+    } catch (err) {
+      // A board that cannot be furnished is an empty board, which is what the
+      // user already has. The panel's status line is for edits they asked for.
+      console.error('[Pinboard] Could not ask whether to furnish the board:', err);
+      return;
+    }
+    if (!claimed) return;
+    await attempt(
+      "Couldn't set the pinboard up.",
+      () => pinboardStore.addAll(types.map(({ id }) => ({ type: id }))),
+    );
   },
 
   /**

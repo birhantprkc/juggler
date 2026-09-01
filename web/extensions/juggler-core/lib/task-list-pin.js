@@ -20,6 +20,7 @@
  */
 
 import { createElement, injectStylesOnce } from 'juggler/ui';
+import { pinEmpty } from './pin-empty.js';
 
 injectStylesOnce('task-list-pin-styles', `
 .task-list-pin {
@@ -31,9 +32,6 @@ injectStylesOnce('task-list-pin-styles', `
 .task-list-pin__source {
   color: var(--text-tertiary);
   font-size: var(--font-size-sm);
-}
-.task-list-pin__empty {
-  color: var(--text-tertiary);
 }
 `);
 
@@ -102,7 +100,7 @@ export function mountTaskListPin(container, pinContext, spec) {
     drawn = signature;
 
     if (!items.length) {
-      body.replaceChildren(createElement('div', 'task-list-pin__empty', spec.empty));
+      body.replaceChildren(pinEmpty(spec.empty));
       return;
     }
 

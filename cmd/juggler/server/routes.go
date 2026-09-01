@@ -187,6 +187,10 @@ func (s *Server) setupSessionRoutes(sessionAPI *handlers.SessionAPI) {
 	// names rather than several routes.
 	api.HandleFunc("/session/pinboard", sessionAPI.HandleGetPinboard).Methods("GET")
 	api.HandleFunc("/session/pinboard/operations", sessionAPI.HandlePinboardOperations).Methods("POST")
+	// `seed` is a viewer asking whether the board's starting tabs are its to lay
+	// out — answered yes once per board, since the tabs would otherwise be laid
+	// out again by every window that opened.
+	api.HandleFunc("/session/pinboard/seed", sessionAPI.HandleClaimBoardSeed).Methods("POST")
 	// A board of its own is what a detached window has. Creating one is a window
 	// opening, deleting one is a window being closed for good, and `restore` is a
 	// window asking which boards outlived the last run — answered once, since the

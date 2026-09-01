@@ -12,6 +12,8 @@
  */
 
 import { revealLabel } from '../components/reveal-button.js';
+import { showNotice } from '../components/modal-dialog.js';
+import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { registerContextMenuProvider } from '../services/context-menu-service.js';
 import { osOpenPath, osRevealPath } from '../services/ops-api.js';
 import pinboardView from '../services/pinboard-view.js';
@@ -159,6 +161,38 @@ export function addFilePath(wrapper, path, info, options = {}) {
 }
 
 /**
+ * Hand a path to the host OS, and say so when it will not take it.
+ *
+ * Both of these fail invisibly: no window opens, nothing on screen changes, and
+ * the button is indistinguishable from a dead one. The op's own text is the only
+ * account of which operational reason it was — no handler for the file type, no
+ * `xdg-open` installed, a path on a volume that has gone — so it is carried
+ * through rather than replaced.
+ * @param {string} path - Absolute path to open.
+ * @returns {Promise<void>}
+ */
+async function openPath(path) {
+  try {
+    await osOpenPath({ path });
+  } catch (err) {
+    showNotice(`Couldn't open that file. ${extractErrorMessage(err)}`);
+  }
+}
+
+/**
+ * Show a path where it lives, and say so when that fails.
+ * @param {string} path - Absolute path to reveal.
+ * @returns {Promise<void>}
+ */
+async function showPath(path) {
+  try {
+    await osRevealPath({ path });
+  } catch (err) {
+    showNotice(`Couldn't show that file. ${extractErrorMessage(err)}`);
+  }
+}
+
+/**
  * The row of icon buttons that act on a file: open it, copy its path, reveal it
  * in the file manager, and — when `options.pin` names an absolute path — pin it
  * to the Pinboard. Shared so that everywhere a path is shown offers the same
@@ -180,9 +214,7 @@ export function createFileActions(path, options = {}) {
   open.title = 'Open file';
   open.setAttribute('aria-label', 'Open file');
   open.innerHTML = OPEN_IN_NEW_SVG;
-  // Open failures are operational (path gone, nothing registered for the type);
-  // the op reports its own, so swallow here rather than throw into a click.
-  open.addEventListener('click', () => { void osOpenPath({ path }).catch(() => {}); });
+  open.addEventListener('click', () => { void openPath(path); });
   actions.appendChild(open);
 
   actions.appendChild(createCopyButton(path, 'properties-panel-filepath-btn', 'Copy path to clipboard'));
@@ -255,9 +287,18 @@ registerContextMenuProvider({
     if (!path) return null;
     /** @type {import('../services/context-menu-service.js').ContextMenuItem[]} */
     const items = [
-      { label: 'Open file', onClick: () => { void osOpenPath({ path }).catch(() => {}); } },
-      { label: revealLabel(), onClick: () => { void osRevealPath({ path }).catch(() => {}); } },
-      { label: 'Copy path', onClick: () => { void copyToClipboard(path).catch(() => {}); } },
+      { label: 'Open file', onClick: () => { void openPath(path); } },
+      { label: revealLabel(), onClick: () => { void showPath(path); } },
+      {
+        label: 'Copy path',
+        // The menu row has no button to flash a tick on, so a clipboard the
+        // browser refused would otherwise look exactly like one that worked.
+        onClick: () => {
+          void copyToClipboard(path).catch((err) => {
+            showNotice(`Couldn't copy the path. ${extractErrorMessage(err)}`);
+          });
+        },
+      },
     ];
     const host = subject.closest('[data-context-item-id]');
     const unpin = host && /** @type {any} */ (host)._jugglerRemoveFromContext;

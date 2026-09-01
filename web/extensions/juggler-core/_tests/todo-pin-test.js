@@ -192,14 +192,14 @@ export async function runTests(_ctx) {
 
   await test('no list anywhere says so, briefly', () => {
     const m = mount(null);
-    assert((m.body.textContent || '').trim() === 'No todos.',
-      `expected 'No todos.', got ${JSON.stringify(m.body.textContent)}`);
+    assert((m.body.textContent || '').trim() === 'The checklist for the task in hand appears here.',
+      `expected the todo empty state, got ${JSON.stringify(m.body.textContent)}`);
     m.teardown();
   });
 
   await test('an emptied list is no list', () => {
     const m = mount(todoFound([]));
-    assert((m.body.textContent || '').trim() === 'No todos.',
+    assert((m.body.textContent || '').trim() === 'The checklist for the task in hand appears here.',
       `an empty list is nothing to show: ${JSON.stringify(m.body.textContent)}`);
     m.teardown();
   });
@@ -269,7 +269,7 @@ export async function runTests(_ctx) {
     const m = mount(todoFound(twoTodos));
     m.setFound(null);
     m.fireChange();
-    assert((m.body.textContent || '').trim() === 'No todos.',
+    assert((m.body.textContent || '').trim() === 'The checklist for the task in hand appears here.',
       `expected the empty state back, got ${JSON.stringify(m.body.textContent)}`);
     m.teardown();
   });

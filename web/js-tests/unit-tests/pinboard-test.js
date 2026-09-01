@@ -17,6 +17,7 @@
 
 import { assert } from '../utilities/test-helpers.js';
 import pinboardStore from '../../js/services/pinboard-store.js';
+import pinboardView from '../../js/services/pinboard-view.js';
 import pinboardItemRegistry from '../../js/registries/pinboard-item-registry.js';
 import wsService from '../../js/services/websocket.js';
 import PinboardItemType from 'juggler/pinboard-item-type';
@@ -339,6 +340,139 @@ export async function runTests(_ctx) {
     } finally {
       pinboardItemRegistry.reset();
     }
+  });
+
+  /**
+   * Register default-pin probes against an empty registry, so these cases assert
+   * about the types they registered rather than about the shipped pins a lane may
+   * have left behind.
+   * @returns {void}
+   */
+  function registerFurnishProbes() {
+    class LatePin extends PinboardItemType {
+      static MANIFEST = {
+        id: 'test-late-pin',
+        name: 'Late',
+        version: '1.0.0',
+        description: 'A starting tab, second',
+        order: 20,
+        defaultPin: true,
+      };
+      mount() {}
+    }
+    class EarlyPin extends PinboardItemType {
+      static MANIFEST = {
+        id: 'test-early-pin',
+        name: 'Early',
+        version: '1.0.0',
+        description: 'A starting tab, first',
+        order: 10,
+        defaultPin: true,
+      };
+      mount() {}
+    }
+    class AskedForPin extends PinboardItemType {
+      static MANIFEST = {
+        id: 'test-asked-for-pin',
+        name: 'Asked for',
+        version: '1.0.0',
+        description: 'Only ever added on purpose',
+      };
+      mount() {}
+    }
+    pinboardItemRegistry.reset();
+    // Registered out of order on purpose: the tabs must come out in manifest
+    // order, not in the order the extension's glob happened to load them.
+    for (const Probe of [LatePin, AskedForPin, EarlyPin]) {
+      const reg = pinboardItemRegistry.registerClass(/** @type {any} */ (Probe), { modulePath: '(test)' });
+      assert(reg.registered, `registerClass refused a probe: ${reg.reason}`);
+    }
+  }
+
+  await run('a new board is furnished with its starting tabs, in manifest order', async () => {
+    await seed([]);
+    registerFurnishProbes();
+    const stub = stubFetch((url, opts) => {
+      if (url.startsWith('/api/session/pinboard/seed')) {
+        return { ok: true, json: async () => ({ board: 'main', seed: true }) };
+      }
+      const ops = JSON.parse(opts.body).operations;
+      return {
+        ok: true,
+        json: async () => ({
+          pins: ops.map((/** @type {any} */ op) => ({ id: op.id, type: op.type, config: op.config })),
+        }),
+      };
+    });
+    try {
+      await pinboardView.furnish();
+    } finally {
+      stub.restore();
+      pinboardItemRegistry.reset();
+      pinboardView.reset();
+    }
+
+    assert(stub.calls.length === 2, `expected a claim and one batch, got ${stub.calls.length}`);
+    assert(stub.calls[0].url === '/api/session/pinboard/seed?board=main',
+      `the claim must name its board: ${stub.calls[0].url}`);
+    assert(stub.calls[0].opts?.method === 'POST', 'the claim is a POST — asking spends it');
+    // One batch, not one request per tab: a board being furnished should appear
+    // as a board rather than as tabs arriving one at a time.
+    const ops = JSON.parse(stub.calls[1].opts.body).operations;
+    assert(ops.map((/** @type {any} */ o) => o.type).join(',') === 'test-early-pin,test-late-pin',
+      `wrong starting tabs: ${ops.map((/** @type {any} */ o) => o.type).join(',')}`);
+    assert(ops.every((/** @type {any} */ o) => o.op === 'add' && String(o.id).startsWith('pin_')),
+      `every starting tab is a client-minted add: ${JSON.stringify(ops)}`);
+    assert(pinboardStore.get().length === 2, 'the furnished board must be adopted');
+  });
+
+  await run('a board that is nobody else\'s to furnish is left exactly as it was', async () => {
+    await seed([{ id: 'pin_a', type: 'file' }]);
+    registerFurnishProbes();
+    const stub = stubFetch(() => ({ ok: true, json: async () => ({ board: 'main', seed: false }) }));
+    try {
+      await pinboardView.furnish();
+    } finally {
+      stub.restore();
+      pinboardItemRegistry.reset();
+      pinboardView.reset();
+    }
+    assert(stub.calls.length === 1, `a refused claim must write nothing, got ${stub.calls.length} requests`);
+    assert(order(pinboardStore.get()) === 'pin_a',
+      `the board must be untouched, got ${order(pinboardStore.get())}`);
+  });
+
+  await run('with nothing to furnish a board with, the claim is not spent', async () => {
+    await seed([]);
+    // The registry fills after the extensions arrive. A claim spent while it was
+    // empty would furnish the board with nothing and never be offered again.
+    pinboardItemRegistry.reset();
+    const stub = stubFetch(() => ({ ok: true, json: async () => ({ board: 'main', seed: true }) }));
+    try {
+      await pinboardView.furnish();
+    } finally {
+      stub.restore();
+      pinboardView.reset();
+    }
+    assert(stub.calls.length === 0, `nothing should have been asked, got ${stub.calls.length} requests`);
+  });
+
+  await run('a claim that fails leaves the board alone rather than complaining', async () => {
+    await seed([{ id: 'pin_a', type: 'file' }]);
+    registerFurnishProbes();
+    const stub = stubFetch(() => ({ ok: false, status: 500, text: async () => 'nope' }));
+    let status = '';
+    try {
+      await pinboardView.furnish();
+      status = pinboardView.getStatus();
+    } finally {
+      stub.restore();
+      pinboardItemRegistry.reset();
+      pinboardView.reset();
+    }
+    assert(stub.calls.length === 1, 'a failed claim must not go on to write pins');
+    assert(status === '', `an unfurnished board is an empty board, not a complaint: got "${status}"`);
+    assert(order(pinboardStore.get()) === 'pin_a', 'the board must be untouched');
   });
 
   await run('PinboardItemType cannot be instantiated directly', async () => {

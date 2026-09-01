@@ -41,6 +41,7 @@ func newAuthTestServer(t *testing.T) (*Server, *bool) {
 	// what refuses one is the middleware and not a router with no route for it.
 	s.router.HandleFunc("/api/session/pinboard/boards", hit).Methods("GET", "POST", "PUT", "DELETE")
 	s.router.HandleFunc("/api/session/pinboard/boards/restore", hit).Methods("POST", "DELETE")
+	s.router.HandleFunc("/api/session/pinboard/seed", hit).Methods("POST", "DELETE")
 	s.router.HandleFunc("/api/session/pinboard", hit).Methods("GET", "DELETE")
 	s.router.HandleFunc("/", hit).Methods("GET")
 	return s, &reached
@@ -336,7 +337,7 @@ func TestAPIAuthExemptsOnlyTheBoardDelete(t *testing.T) {
 	// Neither is anything else under the pinboard, which the delete's path is a
 	// prefix of nothing in — but a future route named beneath it would be caught
 	// by a sloppier match here.
-	for _, path := range []string{"/api/session/pinboard", "/api/session/pinboard/boards/restore"} {
+	for _, path := range []string{"/api/session/pinboard", "/api/session/pinboard/boards/restore", "/api/session/pinboard/seed"} {
 		*reached = false
 		req := httptest.NewRequest(http.MethodDelete, path, nil)
 		req.Host = "localhost"
@@ -346,6 +347,25 @@ func TestAPIAuthExemptsOnlyTheBoardDelete(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized || *reached {
 			t.Fatalf("DELETE %s: got %d reached=%v, want 401 reached=false", path, rec.Code, *reached)
 		}
+	}
+}
+
+// The seed claim is spent by asking, so an untokened caller must not be able to
+// spend it: a board furnished by nobody is a board the window that asked next is
+// told is already done.
+func TestAPIAuthRejectsUntokenedBoardSeed(t *testing.T) {
+	s, reached := newAuthTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/session/pinboard/seed", nil)
+	req.Host = "localhost"
+	rec := httptest.NewRecorder()
+	s.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("POST seed without a token: got %d, want 401", rec.Code)
+	}
+	if *reached {
+		t.Fatal("POST seed must not reach the handler without a token")
 	}
 }
 

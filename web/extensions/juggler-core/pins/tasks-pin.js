@@ -6,6 +6,7 @@
 import PinboardItemType from 'juggler/pinboard-item-type';
 import { createElement, extractErrorMessage, injectStylesOnce } from 'juggler/ui';
 import { reconcileParts, reconcileRows, setText } from '../lib/reconcile.js';
+import { pinEmpty } from '../lib/pin-empty.js';
 
 injectStylesOnce('tasks-pin-styles', `
 .tasks-pin {
@@ -90,7 +91,6 @@ injectStylesOnce('tasks-pin-styles', `
   cursor: default;
   opacity: 0.5;
 }
-.tasks-pin__empty,
 .tasks-pin__note {
   color: var(--text-tertiary);
 }
@@ -241,6 +241,8 @@ class TasksPin extends PinboardItemType {
     name: 'Background tasks',
     version: '1.0.0',
     description: 'Lists the background tasks this conversation is running',
+    order: 50,
+    defaultPin: true,
   };
 
   /**
@@ -335,12 +337,14 @@ class TasksPin extends PinboardItemType {
       const parts = [];
 
       if (!tasks || !tasks.length) {
-        // A null list is not the same as an empty one, and saying "nothing
-        // running" before anything has been asked would be a guess.
-        const words = tasks === null ? 'Looking…' : 'Nothing running.';
+        // A null list is not the same as an empty one, and saying what the card
+        // holds before anything has been asked would be a guess.
+        const words = tasks === null
+          ? 'Looking…'
+          : 'Commands left running in the background appear here.';
         parts.push({
           key: 'empty',
-          build: () => createElement('div', 'tasks-pin__empty'),
+          build: () => pinEmpty(''),
           fill: (el) => setText(el, words),
         });
       } else {
@@ -377,7 +381,7 @@ class TasksPin extends PinboardItemType {
 
       // Always present, because it is what the list means rather than a remark
       // about it: the title says these are background tasks, but not whose, and
-      // without that "Nothing running" reads as the whole machine.
+      // without that an empty card reads as the whole machine.
       parts.push({
         key: 'note',
         build: () => createElement('div', 'tasks-pin__note'),

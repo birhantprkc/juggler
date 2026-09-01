@@ -30,6 +30,8 @@ class TodoPin extends PinboardItemType {
     name: 'Todos',
     version: '1.0.0',
     description: 'Follows the current checklist',
+    order: 20,
+    defaultPin: true,
   };
 
   /**
@@ -50,7 +52,7 @@ class TodoPin extends PinboardItemType {
       itemType: 'todo',
       itemsOf: (data) => data?.todos || [],
       render: (data) => createTodoBlock(data?.todos || []),
-      empty: 'No todos.',
+      empty: 'The checklist for the task in hand appears here.',
     });
   }
 }

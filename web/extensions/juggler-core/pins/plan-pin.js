@@ -34,6 +34,9 @@ class PlanPin extends PinboardItemType {
     name: 'Plan',
     version: '1.0.0',
     description: 'Follows the current plan and its progress',
+    // What the agent is about to do, which is the first thing worth a glance.
+    order: 10,
+    defaultPin: true,
   };
 
   /**
@@ -54,7 +57,7 @@ class PlanPin extends PinboardItemType {
       itemType: 'plan',
       itemsOf: (data) => data?.steps || [],
       render: (data) => createPlanBlock(data),
-      empty: 'No plan.',
+      empty: 'Plans put up for approval appear here, and their progress after that.',
     });
   }
 }

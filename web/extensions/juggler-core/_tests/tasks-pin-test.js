@@ -228,7 +228,8 @@ export async function runTests(_ctx) {
   await test('an empty answer says nothing is running', () => {
     const m = mount([]);
     const text = m.text();
-    assert(text.includes('Nothing running.'), `expected the empty state:\n${text}`);
+    assert(text.includes('Commands left running in the background appear here.'),
+      `expected the empty state:\n${text}`);
     assert(!text.includes('Looking'), `it has its answer now:\n${text}`);
     m.teardown();
   });
@@ -362,8 +363,13 @@ export async function runTests(_ctx) {
 
   await test('it says so with an empty list too, which is where the claim matters most', () => {
     const m = mount([]);
-    assert(m.text().includes('this conversation started'),
-      `"Nothing running" is the reading most likely to be over-generalised:\n${m.text()}`);
+    const text = m.text();
+    assert(text.includes('this conversation started'),
+      `an empty card is the reading most likely to be over-generalised:\n${text}`);
+    // A board is furnished with this tab before anything has ever run, so the
+    // empty card is the one most users meet first: it has to say what it is for.
+    assert(text.includes('appear here'),
+      `and it must say what will appear in it:\n${text}`);
     m.teardown();
   });
 
@@ -384,7 +390,7 @@ export async function runTests(_ctx) {
     assert(m.rows().length === 1, 'expected the first list');
     m.setTasks([]);
     m.fireChange();
-    assert(m.text().includes('Nothing running.'),
+    assert(m.text().includes('Commands left running in the background appear here.'),
       `expected the empty state after the task ended:\n${m.text()}`);
     m.teardown();
   });

@@ -65,6 +65,10 @@ class PinboardShell extends JugglerElement {
     this._session = null;
     /** @type {boolean} @private Whether the board has been fetched for this project. */
     this._loadStarted = false;
+    /** @type {Promise<any>|null} @private The board's arrival, for work that must follow it. */
+    this._loaded = null;
+    /** @type {boolean} @private Whether this viewer has asked to furnish a new board. */
+    this._furnishStarted = false;
     /** @type {number} @private The panel's width in rem, after clamping. */
     this._widthRem = DEFAULT_WIDTH_REM;
   }
@@ -232,11 +236,22 @@ class PinboardShell extends JugglerElement {
     const hasProject = !!this._session?.projectPath;
     if (hasProject && !this._loadStarted) {
       this._loadStarted = true;
-      void pinboardStore.load().catch((err) => {
+      this._loaded = pinboardStore.load().catch((err) => {
         pinboardView.setStatus(`Couldn't load the pinboard. ${extractErrorMessage(err)}`);
       });
     }
-    const usable = pinboardItemRegistry.getEnabledTypes().length > 0 || pinboardStore.get().length > 0;
+    const enabled = pinboardItemRegistry.getEnabledTypes();
+    // A new board is furnished with its starting tabs once, and this waits for
+    // two things before asking whose turn it is. The board, because a load still
+    // in flight would land on top of the tabs just written. And an item type to
+    // furnish it with, because the registry fills after the extensions arrive —
+    // a board claimed while it was empty would be laid out with nothing and
+    // never asked about again.
+    if (this._loaded && !this._furnishStarted && enabled.length > 0) {
+      this._furnishStarted = true;
+      void this._loaded.then(() => pinboardView.furnish());
+    }
+    const usable = enabled.length > 0 || pinboardStore.get().length > 0;
     this.hidden = !hasProject || !usable;
     // The toggle lives in the header rather than in here, so it does not go away
     // with the shell and has to be told.

@@ -223,7 +223,8 @@ export async function runTests(_ctx) {
 
   await test('nothing changed says so', () => {
     const m = mount([]);
-    assert(m.text().includes('Nothing changed yet.'), `got ${JSON.stringify(m.text())}`);
+    assert(m.text().includes('Files changed in this conversation appear here.'),
+      `got ${JSON.stringify(m.text())}`);
     assert(m.rows().length === 0, 'an empty list has no rows');
     m.teardown();
   });
@@ -318,7 +319,8 @@ export async function runTests(_ctx) {
 
   await test('a new edit redraws the list', () => {
     const m = mount([]);
-    assert(m.text().includes('Nothing changed yet.'), 'expected the empty state first');
+    assert(m.text().includes('Files changed in this conversation appear here.'),
+      'expected the empty state first');
     m.setEdits([edit('/tmp/proj/fresh.js')]);
     m.fireChange();
     assert(m.text().includes('fresh.js'), `expected the new file after a change:\n${m.text()}`);

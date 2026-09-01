@@ -267,6 +267,21 @@ func (api *SessionAPI) HandlePinboardOperations(w http.ResponseWriter, r *http.R
 	}
 }
 
+// HandleClaimBoardSeed answers whether this viewer is the one to lay out the
+// board's starting tabs, and answers yes at most once in a board's life.
+//
+// The server holds no list of what those tabs are: a pin's type belongs to an
+// extension, and the session knows one only as an opaque string. So the client
+// asks whether it is its place to furnish the board, and lays out its own list if
+// told yes. It is a POST rather than a GET because the claim is spent by asking.
+func (api *SessionAPI) HandleClaimBoardSeed(w http.ResponseWriter, r *http.Request) {
+	board, ok := boardID(w, r)
+	if !ok {
+		return
+	}
+	WriteJSON(w, r, http.StatusOK, map[string]any{"board": board, "seed": api.manager().ClaimBoardSeed(board)})
+}
+
 // HandleCreateBoard records a board for a window being detached: its own
 // composition, seeded with what the panel it came out of was showing, and tied
 // to the conversation it is a view of.

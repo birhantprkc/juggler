@@ -124,8 +124,10 @@ class FilePin extends PinboardItemType {
     instances: 'multiple',
     // The one type that shows whatever the user names rather than something the
     // conversation already has, so it leads the add picker and says in the row
-    // that choosing it asks a question.
-    addLabel: 'Select a file to pin…',
+    // that choosing it asks a question. "View" is the load-bearing word: a pin is
+    // somewhere to watch a file, and naming one here does not put it in front of
+    // the agent.
+    addLabel: 'Add a file to view…',
     order: -1,
   };
 
@@ -149,11 +151,17 @@ class FilePin extends PinboardItemType {
     document.body.appendChild(overlay);
 
     const { element, promise, cancel } = buildPickerPanel({
-      title: 'Pin a File',
-      placeholder: 'File path…',
+      title: 'Add a file to view',
+      // A folder is as pinnable as a file — a trailing slash names one, and the
+      // pin shows its tree — so the prompt says both rather than only the common
+      // half.
+      placeholder: 'File or folder path…',
       dirsOnly: false,
-      confirmLabel: 'Pin',
+      confirmLabel: 'Add',
       showCancel: true,
+      // Almost every file worth watching is in the open project, and without
+      // this the native chooser opens wherever the app last was.
+      startDir: options.active?.project?.path || '',
     });
     overlay.appendChild(element);
 

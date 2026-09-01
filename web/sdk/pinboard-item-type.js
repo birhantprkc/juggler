@@ -20,12 +20,18 @@
  *   reveals the existing pin instead of adding a second.
  * @property {string} [addLabel] - What the add picker calls this type, where that
  *   differs from its name — for one that opens a chooser rather than adding on the
- *   spot, e.g. 'Select a file to pin…'. Defaults to `name`.
- * @property {number} [order] - Add-picker sort key, ascending, default 0; ties keep
- *   registration order. Ask for a lower one only where the type earns the top of a
- *   list every user reads.
+ *   spot, e.g. 'Add a file to view…'. Defaults to `name`.
+ * @property {number} [order] - Sort key, ascending, default 0; ties keep registration
+ *   order. It orders the add picker and the tabs a new board is furnished with, so
+ *   the two agree. Ask for a lower one only where the type earns the top of a list
+ *   every user reads.
  * @property {boolean} [addable] - Whether the type appears in the add picker at all.
  *   Defaults to true; set false for a type only ever pinned from a source.
+ * @property {boolean} [defaultPin] - Whether a board opens with this type already on
+ *   it. The starting tabs are laid out once, the first time a board is used; after
+ *   that the board is the user's, so one they remove stays removed. Only ask for this
+ *   where the type is worth a tab before anyone has configured anything — a type that
+ *   needs a chooser answered has nothing to show, and there is nobody there to answer.
  */
 
 /**

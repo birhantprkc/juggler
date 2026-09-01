@@ -217,7 +217,7 @@ export async function runTests(ctx) {
   await test('no memory file yet is the ordinary case, not a failure', async () => {
     const m = mount(`${base}_never_written.md`);
     await settled(m.body);
-    assert((m.body.textContent || '').trim() === 'Nothing remembered.',
+    assert((m.body.textContent || '').trim() === 'Facts worth keeping across conversations appear here.',
       `expected the empty state, got ${JSON.stringify(m.body.textContent)}`);
     m.teardown();
   });
@@ -226,7 +226,7 @@ export async function runTests(ctx) {
     const path = await writeMemory('heading_only', '# Memory\n\n');
     const m = mount(path);
     await settled(m.body);
-    assert((m.body.textContent || '').trim() === 'Nothing remembered.',
+    assert((m.body.textContent || '').trim() === 'Facts worth keeping across conversations appear here.',
       `expected the empty state, got ${JSON.stringify(m.body.textContent)}`);
     m.teardown();
   });

@@ -7,6 +7,7 @@ import PinboardItemType from 'juggler/pinboard-item-type';
 import { readFile } from 'juggler/ops';
 import { createElement, injectStylesOnce } from 'juggler/ui';
 import { parseMemory } from '../lib/memory-format.js';
+import { pinEmpty } from '../lib/pin-empty.js';
 
 injectStylesOnce('memory-pin-styles', `
 .memory-pin {
@@ -74,6 +75,9 @@ class MemoryPin extends PinboardItemType {
     name: 'Memory',
     version: '1.0.0',
     description: 'Shows the project facts the assistant keeps',
+    // Last of the starting tabs: the one that changes least often.
+    order: 60,
+    defaultPin: true,
   };
 
   /**
@@ -139,7 +143,7 @@ class MemoryPin extends PinboardItemType {
 
       const { entries } = parseMemory(content);
       if (!entries.length) {
-        body.replaceChildren(createElement('div', 'memory-empty', 'Nothing remembered.'));
+        body.replaceChildren(pinEmpty('Facts worth keeping across conversations appear here.'));
         return;
       }
 

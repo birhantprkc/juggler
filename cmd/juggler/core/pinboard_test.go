@@ -667,3 +667,94 @@ func TestClaimDetachedBoardsDropsBoardsWhoseConversationHasGone(t *testing.T) {
 		t.Fatalf("the next run must not be given them either, got %+v", again)
 	}
 }
+
+// The starting tabs are laid out once. Every main window of a project asks, and
+// a project can have several open at once, so the second to ask must be told no
+// rather than lay out a second set on top of the first.
+func TestClaimBoardSeedAnswersOnce(t *testing.T) {
+	m := newManagerForTest(t)
+
+	if !m.ClaimBoardSeed(MainBoardID) {
+		t.Fatal("the first viewer of an unused project furnishes its board")
+	}
+	if m.ClaimBoardSeed(MainBoardID) {
+		t.Fatal("the second must be told no, or the board is furnished twice")
+	}
+	if pins := m.GetPinboard(MainBoardID); len(pins) != 0 {
+		t.Fatalf("the claim places no tabs itself, got %d pins", len(pins))
+	}
+}
+
+// The point of the flag: a board the user has stripped bare stays bare. Without
+// it an empty main board is dropped from the session, and being absent is what
+// makes a board claimable — so every launch would put the tabs back.
+func TestAnEmptiedBoardIsNotFurnishedAgain(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileSessionStore: %v", err)
+	}
+	if err := store.Save(NewSession()); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	m := startManager(store, dir, "")
+	if !m.ClaimBoardSeed(MainBoardID) {
+		t.Fatal("first claim")
+	}
+	if _, err := m.ApplyPinboardOps(MainBoardID, []PinboardOp{addOp("a", nil), addOp("b", nil)}); err != nil {
+		t.Fatalf("furnish: %v", err)
+	}
+	ops := []PinboardOp{{Op: pinOpRemove, ID: "a"}, {Op: pinOpRemove, ID: "b"}}
+	if _, err := m.ApplyPinboardOps(MainBoardID, ops); err != nil {
+		t.Fatalf("empty the board: %v", err)
+	}
+	m.Shutdown()
+
+	reopened, err := NewFileSessionStore(dir)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	m2 := startManager(reopened, dir, "")
+	t.Cleanup(m2.Shutdown)
+	if m2.ClaimBoardSeed(MainBoardID) {
+		t.Fatal("a board the user emptied must stay empty, not be furnished again")
+	}
+	if pins := m2.GetPinboard(MainBoardID); len(pins) != 0 {
+		t.Fatalf("and it must reopen empty, got %d pins", len(pins))
+	}
+}
+
+// A board written by a Juggler that laid out no starting tabs is an arrangement
+// its user made by hand. Furnishing it now would drop a set of tabs into a board
+// they had already made their own.
+func TestABoardArrangedByHandIsNeverClaimable(t *testing.T) {
+	m := newManagerForTest(t)
+	if _, err := m.ApplyPinboardOps(MainBoardID, []PinboardOp{addOp("a", nil)}); err != nil {
+		t.Fatalf("ApplyPinboardOps: %v", err)
+	}
+	if m.ClaimBoardSeed(MainBoardID) {
+		t.Fatal("a board that already has tabs is nobody's to furnish")
+	}
+	if got := pinIDs(m.GetPinboard(MainBoardID)); got != "a" {
+		t.Fatalf("and it is left exactly as it was: got %q want %q", got, "a")
+	}
+}
+
+// A detached board opens carrying the tabs of the panel it left, so it is never
+// waiting to be furnished. One that is missing has been forgotten, and answering
+// yes would put back a conversation-less orphan under its id.
+func TestOnlyTheMainBoardIsFurnished(t *testing.T) {
+	m := newManagerForTest(t)
+	if _, err := m.CreateBoard("board_one", "conv_a", []Pin{{ID: "a", Type: "file"}}); err != nil {
+		t.Fatalf("CreateBoard: %v", err)
+	}
+	if m.ClaimBoardSeed("board_one") {
+		t.Fatal("a detached board is furnished by the detach that made it")
+	}
+	if m.ClaimBoardSeed("board_forgotten") {
+		t.Fatal("and a board that has gone must not be conjured back by a claim")
+	}
+	if pins := m.GetPinboard("board_forgotten"); len(pins) != 0 {
+		t.Fatalf("no board should exist under that id, got %d pins", len(pins))
+	}
+}

@@ -942,6 +942,42 @@ func (m *SessionManager) ApplyPinboardOps(boardID string, ops []PinboardOp) ([]P
 	})
 }
 
+// ClaimBoardSeed answers whether the caller is the one to furnish this board
+// with its starting tabs, and is true at most once in a board's life.
+//
+// Which tabs those are is not a question the server can answer: a pin's type is
+// an item type published by an extension, and this package knows a type only as
+// an opaque string. So the claim is all that lives here — the client holds the
+// list, and asks first whether it is its place to lay it out. Being the one
+// answer that must not be given twice, it is settled on the actor goroutine,
+// where two windows opening together are serialized and the second is told no.
+//
+// The board is created by the winning claim, empty and marked, so a user who
+// removes every tab it was given is left with an empty board rather than one
+// that furnishes itself again on the next load.
+//
+// A board that already exists is never claimable, flag or no flag: it is an
+// arrangement somebody has already made.
+//
+// Only the main board is ever furnished this way. A detached board is created
+// carrying the tabs of the panel it was detached from, so one that is missing is
+// not a new board waiting to be filled — it is a board that has been forgotten,
+// and answering yes would put back a conversation-less orphan under its id.
+func (m *SessionManager) ClaimBoardSeed(boardID string) bool {
+	claimed, _ := runWrite(m, func(s *sessionState) (bool, error) {
+		if s.session == nil || boardID != MainBoardID {
+			return false, nil
+		}
+		s.session.migrateBoards()
+		if _, ok := s.session.Boards[boardID]; ok {
+			return false, nil
+		}
+		s.session.setBoard(Board{ID: boardID, Seeded: true})
+		return true, s.store.Save(s.session)
+	})
+	return claimed
+}
+
 // CreateBoard records a detached board: a window's own composition, seeded with
 // the pins it is to open on and tied to the conversation it is a view of.
 //
@@ -972,7 +1008,7 @@ func (m *SessionManager) CreateBoard(boardID, conversationID string, pins []Pin)
 		if len(pins) > MaxPins {
 			return Board{}, fmt.Errorf("too many pins: %d (max %d)", len(pins), MaxPins)
 		}
-		board := Board{ID: boardID, Conversation: conversationID, Pins: append([]Pin{}, pins...)}
+		board := Board{ID: boardID, Conversation: conversationID, Seeded: true, Pins: append([]Pin{}, pins...)}
 		s.session.setBoard(board)
 		if err := s.store.Save(s.session); err != nil {
 			return Board{}, err

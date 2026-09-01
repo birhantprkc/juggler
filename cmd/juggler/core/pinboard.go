@@ -44,9 +44,15 @@ const MainBoardID = "main"
 // conversation it was opened for. It is also what tells the two apart: a board
 // with a conversation is a window that can be reopened, and a board without one
 // is the panel that is always there.
+// Seeded records that the board has been furnished with its starting tabs, which
+// is not the same as its having any. A board arrives empty and is filled once,
+// by whichever viewer claims the seed; from then on its composition is the user's,
+// and a board they have emptied stays empty. Without the flag those two states
+// are the same state, and every load would put the starting tabs back.
 type Board struct {
 	ID           string `json:"id"`                     // Client-generated, stable for the board's life
 	Conversation string `json:"conversation,omitempty"` // The conversation a detached board views; empty for the main board
+	Seeded       bool   `json:"seeded,omitempty"`       // Its starting tabs have been placed (see ClaimBoardSeed)
 	Pins         []Pin  `json:"pins,omitempty"`         // Its tabs, in order
 }
 

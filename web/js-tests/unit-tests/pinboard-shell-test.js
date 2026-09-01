@@ -963,6 +963,83 @@ export async function runTests(_ctx) {
       }
     });
 
+    // The whole failure mode the file buttons had: opening a file that nothing
+    // can open changes nothing on screen, so a button that silently swallowed
+    // the error was indistinguishable from a dead one. On Linux with no
+    // xdg-open, that was every press.
+    await run('a file action that the OS refuses says so, in its own words', async () => {
+      const { shell, teardown } = await mountShell([
+        { id: 'pin_path', type: 'path', config: { path: '/proj/src/main.go' } },
+      ]);
+      const realFetch = window.fetch;
+      try {
+        pinboardView.open();
+        window.fetch = /** @type {any} */ (async (/** @type {any} */ url, /** @type {any} */ opts) => {
+          if (String(url).includes('/api/ops/call')) {
+            return { ok: false, status: 500, text: async () => 'xdg-open: executable file not found' };
+          }
+          return realFetch(url, opts);
+        });
+
+        const openButton = shell.querySelector(
+          '.pinboard-item-toolbar__actions .properties-panel-filepath-actions .properties-panel-filepath-btn'
+        );
+        assert(openButton.getAttribute('aria-label') === 'Open file', 'the first control opens the file');
+        openButton.click();
+        await settle();
+
+        const notice = document.querySelector('modal-dialog');
+        assert(!!notice, 'a refused open must be reported, not swallowed');
+        const text = notice.textContent || '';
+        assert(text.includes("Couldn't open that file."),
+          `with a plain-English lead, got "${text}"`);
+        // Never in place of it: the lead says what failed, and only the OS knows
+        // why. Dropping its words leaves nobody able to act on the message.
+        assert(text.includes('xdg-open'),
+          `and the underlying error kept beneath it, got "${text}"`);
+      } finally {
+        window.fetch = realFetch;
+        document.querySelector('modal-dialog')?.remove();
+        teardown();
+      }
+    });
+
+    await run('removing the last pin takes its name away with it', async () => {
+      const { shell, teardown } = await mountShell([
+        { id: 'pin_only', type: 'probe', config: { label: 'Only tab' } },
+      ]);
+      try {
+        pinboardView.open();
+        const toolbar = shell.querySelector('.pinboard-item-toolbar');
+        const title = shell.querySelector('.pinboard-item-toolbar__title');
+        const subtitle = shell.querySelector('.pinboard-item-toolbar__subtitle');
+        assert(title.textContent === 'Only tab',
+          `the toolbar should start out naming the pin, got "${title.textContent}"`);
+
+        await pinboardView.remove('pin_only');
+        await settle();
+
+        assert(shell.querySelector('.pinboard-empty__line').textContent === 'Nothing pinned.',
+          'an empty board shows the empty state');
+        // Both halves matter. The toolbar carries an author `display: flex`, so
+        // `hidden` alone leaves it on screen — name, divider and all — sitting
+        // above the "Nothing pinned." it contradicts.
+        assert(toolbar.hidden, 'the item toolbar is hidden once nothing is pinned');
+        assert(getComputedStyle(toolbar).display === 'none',
+          `and is actually off the screen, got display: ${getComputedStyle(toolbar).display}`);
+        assert(toolbar.getBoundingClientRect().height === 0,
+          `so it takes no room above the empty state, got ${toolbar.getBoundingClientRect().height}`);
+        assert(title.textContent === '',
+          `the removed pin's name must not be left behind, got "${title.textContent}"`);
+        assert(subtitle.textContent === '',
+          `nor its subtitle, got "${subtitle.textContent}"`);
+        assert(!('filePath' in title.dataset),
+          'nor its path, which would arm the right-click menu for a pin that has gone');
+      } finally {
+        teardown();
+      }
+    });
+
     await run('an icon action is a button of its own, and turns while it works', async () => {
       pathCalls.refreshes = 0;
       pathCalls.finish = null;

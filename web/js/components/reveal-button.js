@@ -19,6 +19,8 @@
  */
 
 import { osRevealPath } from '../services/ops-api.js';
+import { showNotice } from './modal-dialog.js';
+import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 
 const REVEAL_ICON_HTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true">
     <path d="M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h560q33 0 56.5 23.5T840-760v560q0 33-23.5 56.5T760-120H600v-80h160v-480H200v480h160v80H200Zm240 0v-246l-64 64-56-58 160-160 160 160-56 58-64-64v246h-80Z"/>
@@ -37,7 +39,10 @@ export function revealLabel() {
   const ua = navigator.userAgent || '';
   if (/Windows/.test(ua)) return 'Reveal in Explorer';
   if (/Macintosh|Mac OS X/.test(ua)) return 'Reveal in Finder';
-  return 'Reveal in file manager';
+  // Finder and Explorer are named because the platform names them. Everywhere
+  // else there is no one answer — the file manager is whichever one the desktop
+  // registered — so the label says the job rather than inventing a name.
+  return 'Show in file manager';
 }
 
 class RevealButton extends HTMLElement {
@@ -99,9 +104,13 @@ class RevealButton extends HTMLElement {
     e.stopPropagation();
     const path = this.path;
     if (!path) return;
-    // Reveal failures are operational (path gone, no file manager); the op
-    // surfaces its own feedback, so swallow here rather than throw.
-    void osRevealPath({ path }).catch(() => {});
+    // A reveal that fails does so invisibly — no window opens, and nothing on
+    // screen changes — so the button is indistinguishable from a dead one
+    // unless it says. The op's own text carries which of the operational
+    // reasons it was: the path has gone, or there is no file manager to ask.
+    void osRevealPath({ path }).catch((err) => {
+      showNotice(`Couldn't show that file. ${extractErrorMessage(err)}`);
+    });
   }
 }
 

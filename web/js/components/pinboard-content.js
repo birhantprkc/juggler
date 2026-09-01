@@ -446,6 +446,14 @@ class PinboardContent extends JugglerElement {
     const pin = this._pin;
     if (!pin) {
       this._toolbar.hidden = true;
+      // Emptied as well as hidden. What is left here is the name of a pin that is
+      // no longer on the board, and the path stamp arms the app-wide right-click
+      // menu — neither should outlive the tab it described.
+      this._title.classList.remove('pinboard-item-toolbar__title--path');
+      delete this._title.dataset.filePath;
+      this._title.textContent = '';
+      this._subtitle.textContent = '';
+      this._subtitle.hidden = true;
       this.removeAttribute('role');
       this.removeAttribute('aria-labelledby');
       return;

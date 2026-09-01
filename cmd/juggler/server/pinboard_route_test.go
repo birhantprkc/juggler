@@ -371,3 +371,66 @@ func TestPinboardRejectsAMalformedBoardID(t *testing.T) {
 		t.Fatalf("a refused request must not broadcast, got %d", len(bc.boards))
 	}
 }
+
+// The seed claim through the real router: the first window to ask is told to lay
+// out the starting tabs, and every window after it is told the board is already
+// somebody's arrangement.
+func TestPinboardSeedIsClaimedOnce(t *testing.T) {
+	s, _ := newPinboardTestServer(t)
+
+	seeded := func() bool {
+		t.Helper()
+		rec := pinboardRequest(t, s, http.MethodPost, "/api/session/pinboard/seed", "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("POST seed: got %d, want 200 (%s)", rec.Code, rec.Body.String())
+		}
+		var body struct {
+			Board string `json:"board"`
+			Seed  bool   `json:"seed"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode seed from %q: %v", rec.Body.String(), err)
+		}
+		if body.Board != core.MainBoardID {
+			t.Fatalf("a request naming no board is about the panel: got %q", body.Board)
+		}
+		return body.Seed
+	}
+
+	if !seeded() {
+		t.Fatal("the first window to ask lays out the starting tabs")
+	}
+	if seeded() {
+		t.Fatal("the second must be told no, or every window lays them out again")
+	}
+}
+
+// A board that already has tabs is an arrangement somebody made, and is never
+// handed to a viewer to furnish.
+func TestPinboardSeedRefusedOnAnArrangedBoard(t *testing.T) {
+	s, _ := newPinboardTestServer(t)
+
+	ops := `{"operations":[{"op":"add","id":"a","type":"file","config":{"path":"a.go"}}]}`
+	if rec := pinboardRequest(t, s, http.MethodPost, "/api/session/pinboard/operations", ops); rec.Code != http.StatusOK {
+		t.Fatalf("seed a pin: got %d (%s)", rec.Code, rec.Body.String())
+	}
+
+	rec := pinboardRequest(t, s, http.MethodPost, "/api/session/pinboard/seed", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST seed: got %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), `"seed":true`) {
+		t.Fatalf("a board with tabs on it is nobody's to furnish: %s", rec.Body.String())
+	}
+}
+
+// A misspelt board id is refused here as everywhere else under the pinboard,
+// rather than quietly spending the panel's claim instead.
+func TestPinboardSeedRefusesABadBoardID(t *testing.T) {
+	s, _ := newPinboardTestServer(t)
+
+	rec := pinboardRequest(t, s, http.MethodPost, "/api/session/pinboard/seed?board=not%20valid", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST seed with a bad board id: got %d, want 400 (%s)", rec.Code, rec.Body.String())
+	}
+}

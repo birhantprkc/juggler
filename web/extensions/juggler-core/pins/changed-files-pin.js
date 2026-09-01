@@ -7,6 +7,7 @@ import PinboardItemType from 'juggler/pinboard-item-type';
 import { basename, formatDisplayPath } from 'juggler/item-utils';
 import { createElement, injectStylesOnce } from 'juggler/ui';
 import { reconcileRows, setText } from '../lib/reconcile.js';
+import { pinEmpty } from '../lib/pin-empty.js';
 
 injectStylesOnce('changed-files-pin-styles', `
 .changed-files-pin {
@@ -67,7 +68,6 @@ injectStylesOnce('changed-files-pin-styles', `
 .changed-files-pin__removed {
   color: var(--error-color, var(--text-secondary));
 }
-.changed-files-pin__empty,
 .changed-files-pin__note {
   color: var(--text-tertiary);
 }
@@ -206,6 +206,8 @@ class ChangedFilesPin extends PinboardItemType {
     name: 'Changed files',
     version: '1.0.0',
     description: "Lists the files this conversation's tools changed",
+    order: 30,
+    defaultPin: true,
   };
 
   /**
@@ -265,13 +267,15 @@ class ChangedFilesPin extends PinboardItemType {
       // this avoids.
       reconcileRows(list, files, (entry) => entry.path, (entry) => fileRow(entry, reveal), fillFileRow);
 
-      // The body is the list — or a word saying there is none — with the note
-      // beneath it. Both outlive a render, so they are only swapped when the
-      // list crosses between empty and not.
+      // The body is the list — or a centred line saying what will appear in its
+      // place — with the note beneath either. The note stays on an empty card
+      // especially: an unqualified empty list is the one reading this pin must
+      // never invite. Both elements outlive a render, so they are only swapped
+      // when the list crosses between empty and not.
       const lead = files.length
         ? list
-        : (body.querySelector('.changed-files-pin__empty')
-          || createElement('div', 'changed-files-pin__empty', 'Nothing changed yet.'));
+        : (body.querySelector('.pin-empty')
+          || pinEmpty('Files changed in this conversation appear here.'));
       if (body.firstChild !== lead) body.replaceChildren(lead, note);
     };
 

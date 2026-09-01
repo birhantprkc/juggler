@@ -183,10 +183,17 @@ export async function pickDirectory() {
  * pin, a context item — takes one, so Browse reaches everything the typed path
  * does.
  * @param {string} [title] - The chooser's title; defaults to the host's.
+ * @param {string} [dir] - Absolute path to open in. Without it the chooser opens
+ *   wherever this app last was, which for a file in the open project is rarely
+ *   the project. A path that is not there is ignored by the host.
  * @returns {Promise<string|null>} The chosen path, or null.
  */
-export async function pickFile(title = '') {
-  return pickPath('pick-file', title ? `?title=${encodeURIComponent(title)}` : '');
+export async function pickFile(title = '', dir = '') {
+  const query = new URLSearchParams();
+  if (title) query.set('title', title);
+  if (dir) query.set('dir', dir);
+  const q = query.toString();
+  return pickPath('pick-file', q ? `?${q}` : '');
 }
 
 /**

@@ -227,7 +227,18 @@ func (s *Session) migrateWindowStates() {
 // A session with nothing pinned migrates to nothing rather than to an empty main
 // board. The board map is the arrangement the user made, and a project they
 // never opened the panel in has not made one.
+//
+// Every board that is already here counts as seeded, whether or not it carries
+// the flag. A board written by a Juggler that placed no starting tabs is one the
+// user arranged themselves, and filling it now would drop six tabs into a board
+// they had already made their own.
 func (s *Session) migrateBoards() {
+	for id, board := range s.Boards {
+		if !board.Seeded {
+			board.Seeded = true
+			s.Boards[id] = board
+		}
+	}
 	if len(s.Pinboard) == 0 {
 		s.Pinboard = nil
 		return
@@ -236,19 +247,22 @@ func (s *Session) migrateBoards() {
 		s.Boards = map[string]Board{}
 	}
 	if _, ok := s.Boards[MainBoardID]; !ok {
-		s.Boards[MainBoardID] = Board{ID: MainBoardID, Pins: s.Pinboard}
+		s.Boards[MainBoardID] = Board{ID: MainBoardID, Seeded: true, Pins: s.Pinboard}
 	}
 	s.Pinboard = nil
 }
 
 // setBoard stores a board, or drops it when there is nothing left worth keeping.
 //
-// An empty main board is not stored: it is indistinguishable from never having
-// pinned anything, and leaving the key behind would put an empty arrangement in
-// every project's session.json. An empty *detached* board is stored, because the
-// window it belongs to is still open and still has to come back.
+// An empty main board that has never been seeded is not stored: it is
+// indistinguishable from never having opened the panel, and leaving the key
+// behind would put an empty arrangement in every project's session.json. A
+// seeded one is stored however empty it is — that emptiness is a board the user
+// cleared, and dropping the key would have the next load furnish it again. An
+// empty *detached* board is stored too, because the window it belongs to is
+// still open and still has to come back.
 func (s *Session) setBoard(board Board) {
-	if len(board.Pins) == 0 && !board.IsDetached() {
+	if len(board.Pins) == 0 && !board.IsDetached() && !board.Seeded {
 		delete(s.Boards, board.ID)
 		return
 	}

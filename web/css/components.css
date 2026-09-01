@@ -10888,6 +10888,13 @@ pinboard-content:focus {
     border-bottom: 0.0625rem solid var(--border-divider);
 }
 
+/* An author `display` beats the UA sheet's [hidden], so a board with nothing on
+   it would otherwise keep the last pin's name and its divider above the empty
+   state. */
+.pinboard-item-toolbar[hidden] {
+    display: none;
+}
+
 /* The name of the thing takes the width; the actions keep theirs. */
 .pinboard-item-toolbar__text {
     flex: 1 1 auto;

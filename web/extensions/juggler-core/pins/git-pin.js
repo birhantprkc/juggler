@@ -6,6 +6,7 @@
 import PinboardItemType from 'juggler/pinboard-item-type';
 import { createElement, injectStylesOnce } from 'juggler/ui';
 import { reconcileParts, reconcileRows, setText } from '../lib/reconcile.js';
+import { pinEmpty } from '../lib/pin-empty.js';
 import {
   branchPhrase,
   countsPhrase,
@@ -204,6 +205,8 @@ class GitPin extends PinboardItemType {
     name: 'Git',
     version: '1.0.0',
     description: "Shows the project's working tree, branch and changed files",
+    order: 40,
+    defaultPin: true,
   };
 
   /**
@@ -267,7 +270,9 @@ class GitPin extends PinboardItemType {
 
       const repos = status.repos || [];
       if (!repos.length) {
-        body.replaceChildren(createElement('div', 'git-pin__quiet', 'No git repository.'));
+        // Already the whole answer: the tab says what the card is for, and this
+        // says why there is none of it. Centred like every other empty card.
+        body.replaceChildren(pinEmpty('No git repository.'));
         return;
       }
 

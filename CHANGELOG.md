@@ -6,6 +6,8 @@ of changes; this project follows semantic versioning.
 ## [Unreleased]
 
 - New Pinboard in the header bar, holding pinned files, plan, todos, memory, git, changed files and running tasks, and detachable onto one conversation in a window or tab of its own
+- Open file and Reveal now say when the system refuses, instead of appearing to do nothing
+- Reveal now selects the file in the Linux file manager rather than only opening its folder
 - Background tasks are now stopped when you switch project or quit, instead of being left running
 - Hand edits to the project memory file are noticed while you are looking at it
 - An expired Claude Code sign-in now says how to fix it, with a settings shortcut

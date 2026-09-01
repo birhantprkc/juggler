@@ -494,7 +494,9 @@ export async function runTests(ctx) {
     const { panel, input, answer, abort } = openDialog();
     try {
       assert(!!panel, 'the dialog opens');
-      assert(panel.querySelector('.pp-title')?.textContent === 'Pin a File',
+      // "View" is the word that answers the question the label raises: a pin is
+      // somewhere to watch a file, not a way to put one in front of the agent.
+      assert(panel.querySelector('.pp-title')?.textContent === 'Add a file to view',
         'and says what it is asking for');
 
       const typed = `${base}_dialog.txt`;
