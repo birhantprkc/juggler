@@ -372,8 +372,17 @@ func runTestPoolWindowApp(srv *server.Server, devMode bool, headless bool, testI
 		// window does so the pool keeps running regardless of visibility. Scoped
 		// to the test pool: production's main UI window *should* yield CPU when
 		// hidden — its hidden engine window does the background work.
+		// KeepRunningWhenHidden gets the lanes scheduled; it does not decide how
+		// coarsely their timers fire once they are. A hidden page also aligns
+		// its DOM timers to a ~1s cadence, so every `setTimeout(fn, 0)` a test
+		// or the code under test schedules costs a full second — a suite is
+		// then priced in awaited timers rather than in work, and one that
+		// awaits fifty of them takes a minute to do a second of asserting.
+		// Nobody is looking at this window, so nothing is saved by coarsening
+		// it: switch the alignment off and let the lanes run at wall speed.
 		macWindow.WebviewPreferences = application.MacWebviewPreferences{
-			KeepRunningWhenHidden: application.Enabled,
+			KeepRunningWhenHidden:               application.Enabled,
+			DisableHiddenPageDOMTimerThrottling: application.Enabled,
 		}
 		// Windows: the same hazard as WebView2 "efficiency mode" — a hidden
 		// window's controller is dropped to IsVisible=false and its JS timers

@@ -69,6 +69,15 @@ async function runAwaitingTurn(conversation, { harness }, looking) {
   __attention.setFocusedForTest(looking);
 
   try {
+    // "Looking" is two things: the window is focused AND this is the
+    // conversation on screen. The line above forces the focus half; put the
+    // other half in place through the production switch rather than trusting
+    // the harness to have left this conversation visible. It is the entire
+    // premise of the suppressed case, and a visible id that is anything else
+    // reads as "the user is elsewhere" — which alerts. Synchronous, so it costs
+    // no awaited timer.
+    if (looking) session.switchConversation(conversation.id);
+
     // Wire the observer while idle so its first status fire (start/preparing,
     // awaiting=false) seeds the per-conversation baseline without alerting.
     initAttention(session);
@@ -171,11 +180,16 @@ export const attentionSuppressedWhenLookingTest = {
    * @param {{harness: any}} ctx
    */
   customAssertions: async (conversation, ctx) => {
-    // The harness's single conversation is session.visibleConversationId, so
-    // with focus forced true the manager treats it as "being looked at".
-    const { delta } = await runAwaitingTurn(conversation, ctx, true);
+    // Focus is forced and this conversation is made the visible one, so the
+    // manager treats it as "being looked at".
+    const { delta, lastAlert, convId } = await runAwaitingTurn(conversation, ctx, true);
     if (delta !== 0) {
-      throw new Error(`expected no attention alert while looking, got ${delta}`);
+      // Name what alerted: an alert for another conversation in this window
+      // and a genuine suppression failure both land here, and they are
+      // different bugs.
+      const visible = ctx.harness.innerHarness.session.visibleConversationId;
+      throw new Error(`expected no attention alert while looking, got ${delta}`
+        + ` (this ${convId}, visible ${visible}, last alert for ${lastAlert && lastAlert.convId})`);
     }
   }
 };

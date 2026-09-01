@@ -110,20 +110,27 @@ func TestSwitchProjectInvalidatesConversationCache(t *testing.T) {
 	// so quiesce that state before t.TempDir's RemoveAll runs (registered after
 	// TempDir → runs first): switch back to no-project, which schedules the
 	// temp state's async teardown (stop watcher, release lock, remove
-	// instance.json), then wait for instance.json to disappear as the signal
-	// that teardown finished. Without this, RemoveAll races the live watcher and
-	// fails with "directory not empty".
+	// instance.json). Without this, RemoveAll races the live watcher and fails
+	// with "directory not empty".
 	t.Cleanup(func() {
 		if err := s.SwitchProject(""); err != nil {
 			return
 		}
-		infoPath := filepath.Join(newProject, ".juggler", "instance.json")
-		for i := 0; i < 300; i++ {
-			if _, err := os.Stat(infoPath); os.IsNotExist(err) {
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
+		jugglerDir := filepath.Join(newProject, ".juggler")
+		// instance.json disappearing means the teardown reached its last step,
+		// InstanceLock.Release, so the watcher and session manager are down.
+		waitUntil(3*time.Second, func() bool {
+			_, err := os.Stat(filepath.Join(jugglerDir, "instance.json"))
+			return os.IsNotExist(err)
+		})
+		// Release removes instance.json before it unlocks, and it is the unlock
+		// that closes the OS handle on juggler.lock. Windows refuses to unlink a
+		// file while a handle is open, so take the lock file down here, retrying
+		// until the unlock lands — RemoveAll then has nothing left to trip on.
+		waitUntil(3*time.Second, func() bool {
+			err := os.Remove(filepath.Join(jugglerDir, "juggler.lock"))
+			return err == nil || os.IsNotExist(err)
+		})
 	})
 	if err := s.SwitchProject(newProject); err != nil {
 		t.Fatalf("SwitchProject: %v", err)
