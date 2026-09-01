@@ -5,9 +5,11 @@
 package ops
 
 // RegisterAll wires every built-in operation handler into the package-global
-// registry and starts the background goroutines that own shared state
-// (shell registry, webfetch cache). Call exactly once at process startup;
-// tests that want a subset compose their own ops.Register(...) calls instead.
+// registry and starts the webfetch cache goroutine. Call exactly once at process
+// startup; tests that want a subset compose their own ops.Register(...) calls
+// instead. The background-shell registry is deliberately not started here: every
+// exported task accessor waits on it, so it runs from package init instead of
+// depending on a caller that may only want a subset (see shell_ops.go).
 func RegisterAll() {
 	Register("read-file", func(scope PathScope) Operations {
 		return NewFileOperations(scope)
@@ -37,6 +39,5 @@ func RegisterAll() {
 		return NewHTTPOperations(scope)
 	})
 
-	go runShellRegistry()
 	go cacheManager()
 }

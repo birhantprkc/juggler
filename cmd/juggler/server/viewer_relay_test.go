@@ -195,7 +195,22 @@ func expectNoRelay(t *testing.T, conn *websocket.Conn) {
 	}
 }
 
-// dialRole opens a real socket in the given role with the given viewer id.
+// dialRole opens a real socket in the given role with the given viewer id, and
+// returns only once that connection has joined the viewer group — which is what
+// makes it addressable.
+//
+// The dial returns as soon as the upgrade handshake does, several steps before
+// the server-side loop joins the group, so a relay sent the moment a dial
+// returns can be routed while its recipient is still not in the set. There is no
+// queue behind a relay, so it would simply be dropped and the test would wait
+// out its read deadline for a message that was never going to come.
+//
+// The probe is any message at all: the loop handles inbound messages only after
+// it has joined, and the join and the relay are enqueued on the viewer group's
+// one channel, so a frame the server emits in reply proves the join is already
+// in front of anything sent next. session-changed is used because it is echoed
+// straight back and has nothing to do with relaying, so a broken relay fails an
+// assertion rather than this setup.
 func dialRole(t *testing.T, ts *httptest.Server, role, viewerID string) *websocket.Conn {
 	t.Helper()
 	dialURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws?role=" + role + "&viewerId=" + viewerID
@@ -207,7 +222,24 @@ func dialRole(t *testing.T, ts *httptest.Server, role, viewerID string) *websock
 		t.Fatalf("%s WS dial failed: %v", role, err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	return conn
+
+	if err := conn.WriteJSON(map[string]string{"type": "session-changed"}); err != nil {
+		t.Fatalf("%s readiness probe could not be sent: %v", role, err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for {
+		_, msgBytes, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("the %s connection never joined the viewer group: %v", role, err)
+		}
+		var frame relayFrame
+		if err := json.Unmarshal(msgBytes, &frame); err != nil {
+			continue
+		}
+		if frame.Type == "session-changed" {
+			return conn
+		}
+	}
 }
 
 // TestViewerRelay_PayloadTravelsVerbatim drives the whole path over two real

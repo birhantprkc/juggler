@@ -6,8 +6,6 @@ package server
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -109,28 +107,20 @@ func TestSwitchProjectInvalidatesConversationCache(t *testing.T) {
 	// instance lock (writing newProject/.juggler). Nothing else switches away,
 	// so quiesce that state before t.TempDir's RemoveAll runs (registered after
 	// TempDir → runs first): switch back to no-project, which schedules the
-	// temp state's async teardown (stop watcher, release lock, remove
-	// instance.json). Without this, RemoveAll races the live watcher and fails
-	// with "directory not empty".
+	// temp state's async teardown, then wait for that teardown to finish.
+	// RemoveAll cannot run while any of it is live — it races the watcher and
+	// fails with "directory not empty", and on Windows it cannot unlink
+	// juggler.lock at all until InstanceLock.Release has closed its handle.
 	t.Cleanup(func() {
+		previous := s.projectState.Load()
 		if err := s.SwitchProject(""); err != nil {
 			return
 		}
-		jugglerDir := filepath.Join(newProject, ".juggler")
-		// instance.json disappearing means the teardown reached its last step,
-		// InstanceLock.Release, so the watcher and session manager are down.
-		waitUntil(3*time.Second, func() bool {
-			_, err := os.Stat(filepath.Join(jugglerDir, "instance.json"))
-			return os.IsNotExist(err)
-		})
-		// Release removes instance.json before it unlocks, and it is the unlock
-		// that closes the OS handle on juggler.lock. Windows refuses to unlink a
-		// file while a handle is open, so take the lock file down here, retrying
-		// until the unlock lands — RemoveAll then has nothing left to trip on.
-		waitUntil(3*time.Second, func() bool {
-			err := os.Remove(filepath.Join(jugglerDir, "juggler.lock"))
-			return err == nil || os.IsNotExist(err)
-		})
+		select {
+		case <-previous.teardownDone:
+		case <-time.After(30 * time.Second):
+			t.Error("the temp project's teardown never finished, so its files are still held open")
+		}
 	})
 	if err := s.SwitchProject(newProject); err != nil {
 		t.Fatalf("SwitchProject: %v", err)

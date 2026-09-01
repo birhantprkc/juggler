@@ -5,21 +5,12 @@
 package ops
 
 import (
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
-
-// TestMain starts the background-shell registry goroutine once for the package
-// so tests that exercise background shells (startBackground / TaskState) have a
-// live registry. Mirrors the goroutine RegisterAll() launches in production.
-func TestMain(m *testing.M) {
-	go runShellRegistry()
-	os.Exit(m.Run())
-}
 
 // waitForOutput polls TaskState until its Output contains want or the deadline
 // elapses. Returns the final snapshot. Polling a deterministic condition (vs a

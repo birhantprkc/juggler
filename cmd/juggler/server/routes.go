@@ -73,6 +73,7 @@ func (s *Server) seedProjectState(cfg Config) {
 		projectPath:    initialProjectPath,
 		sessionManager: cfg.SessionManager,
 		lock:           cfg.BootLock,
+		teardownDone:   make(chan struct{}),
 		viewers:        newViewerGroup(),
 	})
 }

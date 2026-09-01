@@ -170,8 +170,17 @@ type registryResp struct {
 
 var registryCh = make(chan registryOp, 16)
 
+// The registry actor runs for the lifetime of any process that links this
+// package, rather than being started by whoever wires the ops up. Every
+// accessor here waits for a reply from it, and registryCh is buffered, so a
+// process where nothing had started it would not fail — the send would land and
+// the caller would wait for an answer forever. StopBackgroundTasks is called
+// from a project switch and from shutdown, where that wait blocks the release
+// of everything sequenced behind it.
+func init() { go runShellRegistry() }
+
 // runShellRegistry owns the background-shell map and processes all ops
-// serialized through registryCh. Started by RegisterAll().
+// serialized through registryCh.
 func runShellRegistry() {
 	shells := make(map[string]*BackgroundShell)
 	latestByOwner := make(map[string]string)

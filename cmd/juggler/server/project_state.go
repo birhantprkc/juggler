@@ -33,6 +33,14 @@ type projectState struct {
 	lock           *core.InstanceLock
 	fileChangesCh  chan struct{} // closed when the file-change forwarder for this state has exited
 
+	// teardownDone is closed once this state has been fully released by the
+	// goroutine SwitchProject leaves behind: watcher stopped, forwarder exited,
+	// session manager down, instance lock released. Releasing the lock is what
+	// closes the OS handle on the project's juggler.lock, so this is the only
+	// point at which nothing of the project is held open any more. Nil on a
+	// state assembled by hand, which carries no such signal.
+	teardownDone chan struct{}
+
 	// viewerGroup owns this project's viewer-role clients, request cancel
 	// map, and shell cancel map. Project-scoped so a SwitchProject cleanly
 	// cancels in-flight work tied to the old project.
@@ -152,6 +160,7 @@ func (s *Server) SwitchProject(newPath string) error {
 		fileWatcher:    newWatcher,
 		lock:           newLock,
 		fileChangesCh:  make(chan struct{}),
+		teardownDone:   make(chan struct{}),
 		viewers:        newViewerGroup(),
 	}
 
@@ -178,6 +187,9 @@ func (s *Server) SwitchProject(newPath string) error {
 	// Tear down old asynchronously (gives in-flight handlers time to drain).
 	if old != nil {
 		go func(prev *projectState) {
+			if prev.teardownDone != nil {
+				defer close(prev.teardownDone)
+			}
 			time.Sleep(250 * time.Millisecond)
 			// A background task runs in the project it was started in and is
 			// addressed through that project's session. Once the switch is done
