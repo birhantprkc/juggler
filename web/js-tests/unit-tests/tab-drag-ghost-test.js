@@ -19,7 +19,7 @@
  * where it is. `_startDrag` is called directly: the real pointerdown listener
  * lives on tabs the bar builds from a session, and the geometry under test
  * needs neither. The drawer's `transform` is applied inline for the same reason
- * sidebar-swipe-test stands its drawer up by hand — the media query that
+ * sidebar-drawer-test stands its drawer up by hand — the media query that
  * produces it can't be driven headless.
  * @module unit-tests/tab-drag-ghost-test
  */

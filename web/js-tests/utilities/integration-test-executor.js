@@ -143,7 +143,7 @@ import { runTests as runConversationFocusPolicyTests } from '../unit-tests/conve
 import { runTests as runMobileComposerTests } from '../unit-tests/mobile-composer-test.js';
 import { runTests as runComposerSendLatchTests } from '../unit-tests/composer-send-latch-test.js';
 import { runTests as runScheduledSendTests } from '../unit-tests/scheduled-send-test.js';
-import { runTests as runSidebarSwipeTests } from '../unit-tests/sidebar-swipe-test.js';
+import { runTests as runSidebarDrawerTests } from '../unit-tests/sidebar-drawer-test.js';
 import { runTests as runTabDragGhostTests } from '../unit-tests/tab-drag-ghost-test.js';
 import { runTests as runReorderDragTests } from '../unit-tests/reorder-drag-test.js';
 import { runTests as runSlashCompletionTests } from '../unit-tests/slash-completion-test.js';
@@ -399,7 +399,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:mobile-composer', run: runMobileComposerTests },
   { name: 'unit:composer-send-latch', run: runComposerSendLatchTests },
   { name: 'unit:scheduled-send', run: runScheduledSendTests },
-  { name: 'unit:sidebar-swipe', run: runSidebarSwipeTests },
+  { name: 'unit:sidebar-drawer', run: runSidebarDrawerTests },
   { name: 'unit:tab-drag-ghost', run: runTabDragGhostTests },
   { name: 'unit:reorder-drag', run: runReorderDragTests },
   { name: 'unit:slash-completion', run: runSlashCompletionTests },

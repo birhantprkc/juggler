@@ -3,8 +3,9 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 /**
- * Swipe-to-dismiss for the phone sidebar drawer (`_setupSidebarSwipe` in
- * ui-event-manager.js). The invariants:
+ * Dismissal for the phone sidebar drawer (`_setupSidebarToggle` and
+ * `_setupSidebarSwipe` in ui-event-manager.js) — every way an open drawer goes
+ * away. Swiping:
  *
  *   1. A leftward drag past the threshold closes the drawer (`sidebar-open`
  *      comes off <body>) and leaves no inline transform behind.
@@ -18,24 +19,34 @@
  *      it and steal the pointer — and if one is stolen anyway, a gesture already
  *      past the threshold still dismisses instead of springing back.
  *
+ * And the popup-manager registration the Back button rides on:
+ *
+ *   7. An open drawer holds a popup token, so a Back press (popstate) dismisses
+ *      it instead of navigating away from the conversation.
+ *   8. Escape goes through that same registered handler.
+ *   9. Closing it any other way releases the token, so the next Back press is
+ *      the browser's own again.
+ *
  * Driven through the real handler against a stand-in drawer: the ids and the
  * `position: absolute` drawer-mode check are all it reads, and the media query
  * that produces that position headless can't be driven.
- * @module unit-tests/sidebar-swipe-test
+ * @module unit-tests/sidebar-drawer-test
  */
 
 import { assert } from '../utilities/test-helpers.js';
 import UIEventManager from '../../js/services/ui-event-manager.js';
+import { isAnyPopupOpen, __resetPopupManagerForTests } from '../../js/utils/popup-manager.js';
 
 /**
- * Build the drawer DOM the handler expects, open, with one tab in it.
- * @returns {{manager: any, sidebar: HTMLElement, tab: HTMLElement, teardown: () => void}} The wired manager, its drawer and tab, and a teardown.
+ * Build the drawer DOM the handler expects, with one tab in it.
+ * @param {{open?: boolean}} [opts] - Whether to mount it already open (default true).
+ * @returns {{manager: any, sidebar: HTMLElement, tab: HTMLElement, toggle: HTMLElement, teardown: () => void}} The wired manager, its drawer, tab and hamburger, and a teardown.
  */
-function mountDrawer() {
+function mountDrawer({ open = true } = {}) {
   const host = document.createElement('div');
   host.style.cssText = 'position:absolute;left:-9999px;top:0;width:360px;height:600px;';
   host.innerHTML = `
-    <button id="sidebar-toggle-button" aria-expanded="true"></button>
+    <button id="sidebar-toggle-button" aria-expanded="${open}"></button>
     <div id="sidebar-backdrop"></div>
     <div id="conversation-bar" style="position:absolute;inset:0 auto 0 0;width:240px;">
       <div class="conversation-tab active"><span class="tab-title">A tab</span></div>
@@ -46,14 +57,18 @@ function mountDrawer() {
     new UIEventManager({ onSendMessage: () => {}, onContextItemAction: async () => {} })
   );
   manager._setupSidebarToggle();
-  document.body.classList.add('sidebar-open');
+  // Opened by hand rather than through the hamburger: the swipe cases want a
+  // drawer that holds no popup token, so they never touch the History API.
+  if (open) document.body.classList.add('sidebar-open');
 
   const sidebar = /** @type {HTMLElement} */ (host.querySelector('#conversation-bar'));
   const tab = /** @type {HTMLElement} */ (host.querySelector('.conversation-tab'));
+  const toggle = /** @type {HTMLElement} */ (host.querySelector('#sidebar-toggle-button'));
   return {
     manager,
     sidebar,
     tab,
+    toggle,
     teardown: () => {
       manager.destroy();
       document.body.classList.remove('sidebar-open');
@@ -110,7 +125,31 @@ function touchMove(target) {
 }
 
 /**
- * Run the sidebar swipe-to-dismiss suite.
+ * Run `fn` with the History API stubbed out, counting the calls popup-manager
+ * makes. The sentinel entry an open drawer pushes must never really navigate:
+ * a genuine `history.back()` at the test page's base entry unloads it. The
+ * stubs stay up one macrotask past `fn`, since the sentinel's retraction is
+ * deferred that far.
+ * @param {(counts: {push: number, back: number}) => (void | Promise<void>)} fn - Test body.
+ * @returns {Promise<void>} Resolves once the real History API is back.
+ */
+async function withStubbedHistory(fn) {
+  const realPush = window.history.pushState;
+  const realBack = window.history.back;
+  const counts = { push: 0, back: 0 };
+  window.history.pushState = function () { counts.push++; };
+  window.history.back = function () { counts.back++; };
+  try {
+    await fn(counts);
+  } finally {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    window.history.pushState = realPush;
+    window.history.back = realBack;
+  }
+}
+
+/**
+ * Run the sidebar drawer dismissal suite.
  * @returns {Promise<{passed: number, failed: number, errors: string[]}>} Counts of passed/failed checks and any error messages.
  */
 export async function runTests() {
@@ -121,12 +160,13 @@ export async function runTests() {
 
   /**
    * @param {string} label - Test label.
-   * @param {(ctx: {sidebar: HTMLElement, tab: HTMLElement}) => (void | Promise<void>)} fn - Test body.
+   * @param {(ctx: {sidebar: HTMLElement, tab: HTMLElement, toggle: HTMLElement}) => (void | Promise<void>)} fn - Test body.
+   * @param {{open?: boolean}} [mountOpts] - Passed through to mountDrawer.
    */
-  const run = async (label, fn) => {
-    const { sidebar, tab, teardown } = mountDrawer();
+  const run = async (label, fn, mountOpts) => {
+    const { sidebar, tab, toggle, teardown } = mountDrawer(mountOpts);
     try {
-      await fn({ sidebar, tab });
+      await fn({ sidebar, tab, toggle });
       passed++;
     } catch (e) {
       failed++;
@@ -221,6 +261,56 @@ export async function runTests() {
     assert(isOpen(), 'dragging the resize grip must not close the drawer');
     assert(sidebar.style.transform === '', 'dragging the resize grip must not move the drawer');
   });
+
+  // The dismissal wiring below opens through the hamburger, the only path that
+  // takes a popup token. `__resetPopupManagerForTests()` first because the pool
+  // shares one JS realm across a lane's tests and the sentinel push is gated on
+  // a clean 0 → 1 transition; each case closes the drawer again, so it leaks
+  // nothing onward.
+  await run('the Back button dismisses the drawer', async ({ toggle }) => {
+    await withStubbedHistory(async (counts) => {
+      __resetPopupManagerForTests();
+      toggle.click();
+      assert(isOpen(), 'the hamburger must open the drawer');
+      assert(counts.push === 1,
+        `the open drawer must push exactly one sentinel history entry, got ${counts.push}`);
+
+      window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+      assert(!isOpen(), 'a Back press must dismiss the drawer, not navigate away');
+      assert(!isAnyPopupOpen(), 'the dismissed drawer must release its popup token');
+      assert(counts.back === 0,
+        'a Back press must not go back again — the browser already popped the entry');
+    });
+  }, { open: false });
+
+  await run('Escape dismisses the drawer', async ({ toggle }) => {
+    await withStubbedHistory(async () => {
+      __resetPopupManagerForTests();
+      toggle.click();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      assert(!isOpen(), 'Escape must dismiss the drawer');
+      assert(!isAnyPopupOpen(), 'the dismissed drawer must release its popup token');
+    });
+  }, { open: false });
+
+  await run('closing the drawer hands Back to the browser again', async ({ toggle }) => {
+    await withStubbedHistory(async (counts) => {
+      __resetPopupManagerForTests();
+      toggle.click();
+      assert(isAnyPopupOpen(), 'the open drawer must count as an overlay');
+
+      toggle.click();
+      assert(!isOpen(), 'a second tap of the hamburger must close the drawer');
+      assert(!isAnyPopupOpen(), 'the closed drawer must release its popup token');
+      assert(toggle.getAttribute('aria-expanded') === 'false',
+        'aria-expanded must follow the drawer shut');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert(counts.back === 1,
+        `closing must retract the sentinel entry exactly once, got ${counts.back}`);
+      assert(counts.push === 1,
+        `closing must push nothing further, got ${counts.push} pushes in all`);
+    });
+  }, { open: false });
 
   return { passed, failed, errors };
 }

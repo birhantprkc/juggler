@@ -3,6 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 import { presentPopup } from '../utils/popup-surface.js';
+import { markPopupOpen } from '../utils/popup-manager.js';
 import { openSettings } from './settings-launcher.js';
 
 /**
@@ -76,6 +77,12 @@ class UIEventManager {
 
     /** @type {(() => void)|null} @private */
     this._unregisterToolGrouping = null;
+
+    /**
+     * Popup-manager token, held for as long as the sidebar drawer is open.
+     * @type {(() => void)|null} @private
+     */
+    this._releaseSidebarPopup = null;
   }
 
   /**
@@ -400,8 +407,9 @@ class UIEventManager {
    * On wide screens the sidebar is a static column and the hamburger button
    * is CSS-hidden, so this is inert there. On narrow screens the sidebar
    * becomes an off-canvas drawer driven entirely by the `sidebar-open` class
-   * on <body>: the hamburger toggles it, the backdrop, a swipe and selecting a
-   * conversation close it. Pure ephemeral view state — no domain/Yjs state.
+   * on <body>: the hamburger toggles it, and the backdrop, a swipe, Escape, the
+   * Back button and selecting a conversation close it. Pure ephemeral view
+   * state — no domain/Yjs state.
    * @private
    */
   _setupSidebarToggle() {
@@ -413,6 +421,18 @@ class UIEventManager {
     const setOpen = (open) => {
       document.body.classList.toggle('sidebar-open', open);
       toggleButton?.setAttribute('aria-expanded', open ? 'true' : 'false');
+      // The open drawer is one of the overlays a phone puts over the page, so it
+      // holds a popup token for as long as it is up. That is what makes the
+      // mobile/browser Back button dismiss it instead of navigating away from
+      // the conversation, and what gives it its Escape — both route through
+      // popup-manager's closeAllPopups, which calls the handler below.
+      //
+      // Releasing before re-taking keeps this at one token even if the drawer is
+      // set to a state it already holds; the single sentinel history entry
+      // survives that swap, since its retraction is deferred a macrotask and
+      // re-checks whether anything is open.
+      this._releaseSidebarPopup?.();
+      this._releaseSidebarPopup = open ? markPopupOpen(close) : null;
     };
     const isOpen = () => document.body.classList.contains('sidebar-open');
     const close = () => setOpen(false);
@@ -464,15 +484,6 @@ class UIEventManager {
       this._listeners.push({ element: sidebar, event: 'click', handler, options: true });
       this._setupSidebarSwipe(sidebar, isOpen, close);
     }
-
-    // A keyboard Escape closes the drawer too.
-    /** @param {Event} ev */
-    const keyHandler = (ev) => {
-      const e = /** @type {KeyboardEvent} */ (ev);
-      if (e.key === 'Escape' && isOpen()) close();
-    };
-    document.addEventListener('keydown', keyHandler);
-    this._listeners.push({ element: document, event: 'keydown', handler: keyHandler });
   }
 
   /**
@@ -828,6 +839,8 @@ class UIEventManager {
     this._unregisterZoomOut?.();
     this._unregisterShowShortcuts?.();
     this._unregisterToolGrouping?.();
+    this._releaseSidebarPopup?.();
+    this._releaseSidebarPopup = null;
   }
 }
 
