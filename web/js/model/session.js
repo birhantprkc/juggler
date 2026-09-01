@@ -1029,10 +1029,16 @@ class Session {
   /**
    * Float a conversation toward the top of the tab list.
    *
-   * By default the tab stops just beneath the leading run of busy tabs, so an
-   * LLM-driven update can refresh recency without jiggling the active band at
-   * the top. Local user sends pass `forceTop: true` because explicit user input
-   * should always take priority over that busy-tab barrier.
+   * Two callers, and only two: a local user send (`forceTop: true`, from the
+   * send action site — explicit user input outranks the busy-tab barrier), and
+   * the attention manager when a conversation reaches one of its two edges, a
+   * turn coming to rest or an approval parking. Nothing else may call this. In
+   * particular a turn's own writes must not: they arrive several times a second
+   * and would drag the list around for as long as the turn ran.
+   *
+   * By default the tab stops just beneath the leading run of busy tabs, so a
+   * finished conversation refreshes recency without jiggling the active band at
+   * the top.
    *
    * Honours manual drag order otherwise — this only moves the one conversation.
    * Persists via the reorder endpoint (no-op when already in place, which also
@@ -1040,10 +1046,9 @@ class Session {
    *
    * The `tabReorder` attention pref switches the whole thing off, which is why
    * the gate sits here rather than at either call site: it's the one choke point
-   * both the remote-activity bump and the local send's forceTop bump pass
-   * through. The pref is per-window, so it stops THIS window initiating bumps —
-   * a window with it on still persists its own, and this one follows the
-   * resulting reordered event like any other remote order change.
+   * both bumps pass through. The pref is per-window, so it stops THIS window
+   * initiating bumps — a window with it on still persists its own, and this one
+   * follows the resulting reordered event like any other remote order change.
    * @param {string} conversationId
    * @param {{forceTop?: boolean}} [options]
    */
@@ -1067,8 +1072,8 @@ class Session {
 
     // A bump only ever floats a conversation UP. If it already sits at or
     // above its barrier-computed ceiling — e.g. a user send force-topped it
-    // and its own streaming chunks then trigger an LLM-driven bump while a
-    // tab below it is busy — moving it down to the ceiling would demote it,
+    // and its turn then came to rest while a tab below it is still busy —
+    // moving it down to the ceiling would demote it,
     // and a recency signal can never mean "less recent".
     const current = order.indexOf(conversationId);
     if (current <= target) return; // at or above its ceiling — no churn, no POST

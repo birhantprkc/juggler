@@ -13,9 +13,14 @@
  *    would silently break "jump to whatever is waiting" — the failure mode this
  *    file exists to catch.
  *  - `tabReorder` off must stop `Session.bumpConversation` moving anything, for
- *    both bump paths (remote activity and the local send's forceTop), and must
+ *    both bump paths (an attention edge and the local send's forceTop), and must
  *    not POST a reorder either — an order write is what other windows would
  *    follow.
+ *  - With it on, a bump must follow the two attention EDGES and nothing else. A
+ *    turn writes to its conversation several times a second; reordering on that
+ *    churn takes the list out of the user's hands for as long as a turn runs,
+ *    which is what these cases exist to catch. The tab still floats for the
+ *    conversation on screen — only the alert is suppressed there.
  *
  * `tabHighlight` spans two modules, and the SECOND one is the louder: the
  * attention manager's standing tint waits quietly until the conversation is
@@ -36,7 +41,9 @@ import { assert } from '../utilities/test-helpers.js';
 import Session from '../../js/model/session.js';
 import {
   getAttentionPrefs,
+  initAttention,
   setNotifyEnabled,
+  setSoundEnabled,
   setTabHighlightEnabled,
   setTabReorderEnabled,
   __attention,
@@ -106,6 +113,46 @@ function fakeSession(ids) {
 }
 
 /**
+ * A stand-in session wired to the real attention manager, with a spying
+ * `bumpConversation` in place of the session's. `tick()` publishes one
+ * `conversation:changed` — the feed a live conversation fires on every write its
+ * turn makes, streaming content included.
+ * @param {string} convId
+ * @returns {{conv: any, sess: any, tick: () => void}} The conversation stub, the
+ *   stand-in session (with a `bumps` log), and the activity pump.
+ */
+function attentionHarness(convId) {
+  /** @type {((e: any) => void)[]} */
+  const listeners = [];
+  const conv = {
+    id: convId,
+    processing: false,
+    completedTurns: 0,
+    llmState: { isConversationProcessing: () => conv.processing },
+    rootMessageThread: { items: /** @type {any[]} */ ([]) },
+  };
+  const sess = {
+    conversations: new Map([[convId, conv]]),
+    /** @type {string|null} */
+    visibleConversationId: null,
+    /** @type {string[]} */
+    bumps: [],
+    onLLMStatusChange() { /* the doc feed alone is enough to drive both edges */ },
+    subscribe(/** @type {(e: any) => void} */ fn) { listeners.push(fn); },
+    bumpConversation(/** @type {string} */ id) { sess.bumps.push(id); },
+  };
+  initAttention(/** @type {any} */ (sess));
+  const tick = () => {
+    for (const fn of listeners) fn({ type: 'conversation:changed', data: { conversationId: convId } });
+  };
+  return { conv, sess, tick };
+}
+
+// A thread whose single tool-action is parked on an approval.
+/** @type {any[]} */
+const awaitingItems = [{ get: (/** @type {string} */ k) => ({ type: 'tool-action', state: 'pending' }[k]) }];
+
+/**
  * @returns {Promise<{passed: number, failed: number, errors: string[]}>} Aggregated test results.
  */
 export async function runTests() {
@@ -131,12 +178,18 @@ export async function runTests() {
   const prefs = getAttentionPrefs();
   /** @type {HTMLElement[]} */
   const tabs = [];
+  // Ids the edge cases raise a real alert on, cleared in the finally.
+  /** @type {string[]} */
+  const flags = [];
 
   // Flagging a conversation re-syncs the browser-tab title badge; switch the
   // out-of-app signal off so this suite leaves the page title alone while it
   // raises flags on conversations that don't exist. An alert lasts until its
   // conversation is viewed, so the flags themselves are dropped in the finally.
   setNotifyEnabled(false);
+  // The edge cases run the real alert path rather than flashForTest, so silence
+  // the chime for the duration too.
+  setSoundEnabled(false);
 
   try {
     await run('highlight on: the tab gets both the standing mark and the one-shot animation', () => {
@@ -246,17 +299,73 @@ export async function runTests() {
       assert([...self.conversations.keys()].join() === 'a,b,c', `forceTop must be gated too — got ${[...self.conversations.keys()].join()}`);
       assert(self.persists === 0, 'a gated forceTop bump must not POST a reorder');
     });
+
+    // ── What a bump is FOR: the edges, not the churn ──────────────────────
+    await run('a running turn’s own writes move nothing; coming to rest floats the tab once', () => {
+      const convId = 'conv_bump_stream';
+      flags.push(convId);
+      const { conv, sess, tick } = attentionHarness(convId);
+
+      tick(); // first observation seeds the baselines — never an edge
+      conv.processing = true;
+      // The firehose: a streaming message rewrites its content several times a
+      // second, and every write reaches this feed. The list must not move.
+      for (let i = 0; i < 8; i++) tick();
+      assert(sess.bumps.length === 0, `mid-turn writes must not reorder tabs — got ${sess.bumps.length} bumps`);
+
+      conv.completedTurns = 1;
+      conv.processing = false;
+      tick();
+      assert(sess.bumps.join() === convId, `the finished turn must float its tab — got [${sess.bumps.join()}]`);
+
+      tick();
+      tick();
+      assert(sess.bumps.length === 1, 'a conversation at rest must not keep bumping');
+    });
+
+    await run('parking on an approval floats the tab mid-turn', () => {
+      const convId = 'conv_bump_await';
+      flags.push(convId);
+      const { conv, sess, tick } = attentionHarness(convId);
+
+      conv.processing = true;
+      tick(); // seeded while busy, with nothing awaiting
+      assert(sess.bumps.length === 0, 'precondition: a busy conversation has not bumped');
+
+      conv.rootMessageThread.items = awaitingItems;
+      tick();
+      assert(sess.bumps.join() === convId, `an approval parking must float its tab — got [${sess.bumps.join()}]`);
+    });
+
+    await run('the conversation on screen floats too, without alerting', () => {
+      const convId = 'conv_bump_watched';
+      const { conv, sess, tick } = attentionHarness(convId);
+      sess.visibleConversationId = convId;
+      __attention.setFocusedForTest(true);
+      try {
+        tick();
+        const alerts = __attention.alertCount;
+        conv.completedTurns = 1;
+        tick();
+        assert(sess.bumps.join() === convId, `the watched conversation’s tab must float too — got [${sess.bumps.join()}]`);
+        assert(__attention.alertCount === alerts, 'the conversation being watched must not raise an alert');
+      } finally {
+        __attention.setFocusedForTest(null);
+      }
+    });
   } finally {
     // Restore every pref touched and drop the mounted tabs. The prefs live in
     // localStorage, shared by every lane on this origin — hence the suite's
     // needsExclusiveRun.
     setTabHighlightEnabled(prefs.tabHighlight);
     setTabReorderEnabled(prefs.tabReorder);
+    setSoundEnabled(prefs.sound);
     for (const tab of tabs) {
       const id = tab.dataset.conversationId;
       if (id) __attention.clearForTest(id);
       tab.remove();
     }
+    for (const id of flags) __attention.clearForTest(id);
     // Last, so restoring the out-of-app signal re-syncs a title badge against an
     // empty flag set rather than the invented conversations above.
     setNotifyEnabled(prefs.notify);

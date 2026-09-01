@@ -45,10 +45,15 @@
  * sounds — the same `sound` pref the settings checkbox drives.
  *
  * One pref here isn't an alert surface at all: `tabReorder` governs whether this
- * window floats a conversation's tab up the list on activity. It lives with the
- * alert prefs because it's the same kind of per-window "how much may a tab
- * demand of me" choice, and shares their settings section; the gate itself is
- * read by {@link module:model/session~Session#bumpConversation}.
+ * window floats a conversation's tab up the list. It lives with the alert prefs
+ * because it's the same kind of per-window "how much may a tab demand of me"
+ * choice, shares their settings section, and — since the bump fires on the same
+ * two edges above — is decided in the same place; the gate itself is read by
+ * {@link module:model/session~Session#bumpConversation}.
+ *
+ * The bump differs from an alert in one respect: it is not suppressed for the
+ * conversation the user is watching. Reordering a tab costs nothing to ignore,
+ * where a chime for the thread already on screen is an interruption.
  * @module utils/attention-manager
  */
 
@@ -72,9 +77,10 @@ export const ATTENTION_PREFS_EVENT = 'juggler:attention-prefs-changed';
  *   conversation bar's awaiting pulse. Off leaves tabs looking untouched; the
  *   conversation is still flagged, so the other surfaces and jump-to-attention
  *   are unaffected.
- * @property {boolean} tabReorder - Let activity float a conversation's tab up
- *   the list in this window (read by `Session.bumpConversation`). Off pins the
- *   order to whatever the user last dragged it to.
+ * @property {boolean} tabReorder - Let a conversation's tab float up the list in
+ *   this window when it comes to rest, parks on an approval, or the user sends
+ *   to it (read by `Session.bumpConversation`). Off pins the order to whatever
+ *   the user last dragged it to.
  * @property {ChimeParams} chime - Abstract chime voice parameters.
  */
 
@@ -213,14 +219,14 @@ export function setTabHighlightEnabled(on) {
   }
 }
 
-/** @returns {boolean} Whether this window may float tabs up the list on activity. */
+/** @returns {boolean} Whether this window may float tabs up the list. */
 export function isTabReorderEnabled() {
   return getAttentionPrefs().tabReorder;
 }
 
 /**
- * Set whether activity may float a conversation's tab up the tab list in this
- * window. Read by `Session.bumpConversation`; existing order is left as it is.
+ * Set whether a conversation's tab may float up the tab list in this window.
+ * Read by `Session.bumpConversation`; existing order is left as it is.
  * @param {boolean} on
  * @returns {void}
  */
@@ -448,10 +454,10 @@ function raiseAttention(convId) {
 
 /**
  * React to activity in one conversation — a status tick or a doc change: detect
- * the awaiting / turn-done edges and either alert or (if the user is looking)
- * clear any standing flash. Idempotent, so it is safe to run from both feeds
- * (see {@link initAttention}): the first observation of an edge moves the
- * baseline, and every later one sees no edge.
+ * the awaiting / turn-done edges, float the conversation's tab, and either alert
+ * or (if the user is looking) clear any standing flash. Idempotent, so it is
+ * safe to run from both feeds (see {@link initAttention}): the first observation
+ * of an edge moves the baseline, and every later one sees no edge.
  * @param {string} convId
  * @private
  */
@@ -477,19 +483,27 @@ function onActivity(convId) {
   // the second one is for.
   if (!seeded || !processing) prevTurns.set(convId, turns);
 
+  const awaitingEdge = seeded && awaiting && !hadAwaiting;
+  // "Came to rest": a turn completed and the conversation is now idle.
+  const turnEdge = seeded && turns > /** @type {number} */ (hadTurns) && !processing;
+  const wantsUser = awaitingEdge || turnEdge;
+
+  // Float the tab on these two edges and on nothing else. The tab list is not a
+  // progress bar: a running turn writes to its conversation several times a
+  // second, and reordering on that churn moves tabs under the hand of anyone
+  // arranging them. Unlike the alert, the bump is not suppressed for the
+  // conversation being watched — the tab moves for the same reason either way,
+  // and a bump is cheap where a chime would be an interruption.
+  if (wantsUser) session?.bumpConversation?.(convId);
+
   // If the user is looking at this conversation, it's not "needing attention" —
   // keep baselines current and clear any leftover flash.
   if (isLookingAt(convId)) {
     clearFlash(convId);
     return;
   }
-  if (!seeded) return;
 
-  const awaitingEdge = awaiting && !hadAwaiting;
-  // "Came to rest": a turn completed and the conversation is now idle.
-  const turnEdge = turns > /** @type {number} */ (hadTurns) && !processing;
-
-  if (awaitingEdge || turnEdge) raiseAttention(convId);
+  if (wantsUser) raiseAttention(convId);
 }
 
 /**

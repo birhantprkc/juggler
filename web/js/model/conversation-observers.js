@@ -106,14 +106,12 @@ export function setupYjsObservers(c) {
       // Extract inserted message IDs from Yjs delta
       const insertedItemIds = extractInsertedItemIds(arrayEvent?.changes?.delta || []);
 
-      // Auto-recents for live LLM/worker changes. User sends are bumped
-      // synchronously at the action site with forceTop; this observer path
-      // is only for remote, non-user item changes and uses the default busy
-      // barrier. Gate on loadState so initial hydration/background load
-      // doesn't reorder tabs just because old history arrived from disk.
-      if (isViewer() && !transaction.local && c.loadState === 'loaded' && isLLMRecentsChange(c, events, insertedItemIds)) {
-        c._session.bumpConversation?.(c.id);
-      }
+      // Auto-recents is NOT driven from here. Every write a turn makes lands in
+      // this observer — a streaming message rewrites its `content` several times
+      // a second — and a tab list that reordered on each of them is unusable
+      // while a turn runs. Recency rides the attention edges instead
+      // (attention-manager.onActivity), and a user send bumps from its own
+      // action site.
 
       // Check if any context items were inserted/changed
       const hasContextItems = checkForContextItemChanges(arrayEvent);
@@ -256,42 +254,6 @@ export function setupYjsObservers(c) {
       c._yjsMetadataObserver = null;
     }
   };
-}
-
-/**
- * @param {any} c - Conversation instance
- * @param {any[]} events - Yjs observeDeep events
- * @param {string[]} insertedItemIds - Item ids inserted by the array delta
- * @returns {boolean} True when the remote change should bump LLM recency
- */
-function isLLMRecentsChange(c, events, insertedItemIds) {
-  if (hasNonUserInsertion(c, insertedItemIds)) return true;
-  // Streaming text usually mutates the `content` field of an existing assistant
-  // message before the final response inserts/settles anything. Treat those
-  // remote field changes as LLM activity too, so a streaming tab becomes recent
-  // while work is visibly happening.
-  for (const event of events || []) {
-    if (!event.keysChanged?.has?.('content')) continue;
-    const target = event.target;
-    if (target?.get?.('type') !== 'user') return true;
-  }
-  return false;
-}
-
-/**
- * @param {any} c - Conversation instance
- * @param {string[]} insertedItemIds - Item ids inserted by the array delta
- * @returns {boolean} True when any inserted item is not a user message
- */
-function hasNonUserInsertion(c, insertedItemIds) {
-  if (!insertedItemIds?.length) return false;
-  for (const id of insertedItemIds) {
-    const item = c.findItemById?.(id);
-    if (!item?.get) continue;
-    const type = item.get('type');
-    if (type && type !== 'user') return true;
-  }
-  return false;
 }
 
 /**

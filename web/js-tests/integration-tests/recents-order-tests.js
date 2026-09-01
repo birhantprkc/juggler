@@ -8,13 +8,22 @@
  * The tab list bumps a conversation toward the top when the user sends in it —
  * the bump is driven from the send action site (Conversation.sendMessage), not
  * from observing replicated state, so loading or refreshing a window never
- * reorders anyone's tabs. User-entered messages go to the absolute top. For
- * LLM-driven recency bumps, a bumped tab never moves up past the leading run of
- * busy tabs: it tucks in just beneath them.
+ * reorders anyone's tabs. User-entered messages go to the absolute top.
+ *
+ * Every other bump rides an attention edge: a turn coming to rest, or an
+ * approval parking. A running turn's own writes move nothing — the last test
+ * here drags a tab down mid-turn and holds the mock paused while output lands,
+ * because a list that reorders on streaming content cannot be arranged by hand.
+ * Such a bump never moves up past the leading run of busy tabs either: it tucks
+ * in just beneath them.
+ *
+ * The headless harness doesn't load app.js, so `initAttention(session)` — the
+ * production wiring for that edge feed — is called by the tests that need it.
  * @module integration-tests/recents-order-tests
  */
 
-import { textResponse } from '../utilities/integration-test-runner.js';
+import { textResponse, toolUseResponse } from '../utilities/integration-test-runner.js';
+import { initAttention, __attention } from '../../js/utils/attention-manager.js';
 
 /**
  * Return the live session order (top→bottom) restricted to THIS test's own
@@ -186,9 +195,9 @@ export const llmRecentsBusyBarrierTest = {
   }
 };
 
-export const llmInsertionBumpsWithBusyBarrierTest = {
-  name: 'recents-llm-insertion-bumps-with-busy-barrier',
-  description: 'A real LLM response insertion bumps the tab, but not above busy tabs',
+export const turnEndBumpsWithBusyBarrierTest = {
+  name: 'recents-turn-end-bumps-with-busy-barrier',
+  description: 'A turn coming to rest bumps the tab, but not above busy tabs',
   fixture: 'unit-test-fixture',
 
   llmResponses: [
@@ -215,11 +224,18 @@ export const llmInsertionBumpsWithBusyBarrierTest = {
   customAssertions: async (_conversation, { harness }) => {
     const { own } = ownOrder(harness);
     const [A, B, C, D] = own;
+    const session = harness.innerHarness.session;
+
+    // Wire the edge feed, then seed its baseline for D while D is still
+    // mid-turn, so the completion below is read as an edge rather than as a
+    // first sighting.
+    initAttention(session);
+    session.notifyConversationChange('conversation:changed', { conversationId: D });
 
     // Release D first while A remains marked busy. Prevent A's tab from being the
     // visible conversation so the switch itself doesn't affect the order being
     // asserted.
-    const convA = harness.innerHarness.session.getConversation(A);
+    const convA = session.getConversation(A);
     convA.setMetadata('processingState', { status: 'mock-paused' });
     harness.innerHarness.switchConversation(D);
     harness.innerHarness.releaseMock();
@@ -228,10 +244,10 @@ export const llmInsertionBumpsWithBusyBarrierTest = {
     const live = ownOrder(harness).live;
     const pos = (/** @type {string} */ id) => live.indexOf(id);
     if (!(pos(A) < pos(D))) {
-      throw new Error(`LLM insertion in D must stay below busy A — order [${live.join(', ')}]`);
+      throw new Error(`the finished turn in D must stay below busy A — order [${live.join(', ')}]`);
     }
     if (!(pos(D) < pos(B) && pos(D) < pos(C))) {
-      throw new Error(`LLM insertion in D must rise above idle B/C — order [${live.join(', ')}]`);
+      throw new Error(`the finished turn in D must rise above idle B/C — order [${live.join(', ')}]`);
     }
 
     // Release A so teardown is clean.
@@ -239,6 +255,78 @@ export const llmInsertionBumpsWithBusyBarrierTest = {
     harness.innerHarness.switchConversation(A);
     harness.innerHarness.releaseMock();
     await harness.waitForTurnComplete();
+    for (const id of own) __attention.clearForTest(id);
+  }
+};
+
+const STREAM_TOOL_ID = 'call_recents_stream_1';
+
+/**
+ * The complaint this pins: a tab dragged out of the way must stay where the user
+ * put it for as long as the turn runs. The turn is held at two mock pauses —
+ * both AFTER the response has streamed into the doc — so the order is read at a
+ * point where a full response, a tool-action insertion and its result have all
+ * landed. Only when the conversation comes to rest may the tab float.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const streamingLeavesDraggedOrderTest = {
+  name: 'recents-streaming-leaves-dragged-order',
+  description: 'Mid-turn output leaves a dragged tab put; only coming to rest floats it',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    // A read: it needs no approval, and an approval PARKING is itself an
+    // attention edge — the mid-turn checkpoint has to be free of one.
+    toolUseResponse(STREAM_TOOL_ID, 'read', { file_path: 'README.md' }, 'Reading.', { pauseBeforeReturn: true }),
+    textResponse('All done.', { pauseBeforeReturn: true })
+  ],
+
+  operations: [
+    { type: 'create-conversation', name: 'Stream B' },
+    { type: 'create-conversation', name: 'Stream C' },
+    { type: 'create-conversation', name: 'Stream D' },
+    { type: 'switch-conversation', conversationId: '$CONV_3' },
+    { type: 'send-message-no-wait', message: 'work D' },
+    { type: 'wait-for-mock-paused' }
+  ],
+
+  /**
+   * @param {any} _conversation The conversation the assertion runs against.
+   * @param {{harness: any}} root0 The destructured context object carrying the test harness.
+   */
+  customAssertions: async (_conversation, { harness }) => {
+    const { own } = ownOrder(harness);
+    const [A, B, C, D] = own;
+    const session = harness.innerHarness.session;
+
+    initAttention(session);
+    session.notifyConversationChange('conversation:changed', { conversationId: D });
+
+    // The user drags D below their other tabs while its turn is running. Moving
+    // each of the others to sit immediately before D is the drag, expressed
+    // through the API the tab strip itself uses.
+    for (const id of [A, B, C]) session.reorderConversation(id, D);
+    const dragged = ownOrder(harness).live;
+    if (dragged[dragged.length - 1] !== D) {
+      throw new Error(`precondition: D should have been dragged last — order [${dragged.join(', ')}]`);
+    }
+
+    // Let the turn run on: the tool executes, and the next response streams into
+    // the doc before parking on the second pause. None of that may move a tab.
+    harness.innerHarness.releaseMock();
+    await harness.waitForExecution(STREAM_TOOL_ID);
+    await harness.waitForMockPaused();
+    assertSeq(ownOrder(harness).live, dragged, 'mid-turn output must leave the dragged order alone');
+
+    // Coming to rest is the edge that floats it.
+    harness.innerHarness.releaseMock();
+    await harness.waitForTurnComplete();
+    const settled = ownOrder(harness).live;
+    const pos = (/** @type {string} */ id) => settled.indexOf(id);
+    if (!(pos(D) < pos(A) && pos(D) < pos(B) && pos(D) < pos(C))) {
+      throw new Error(`D must float once its turn comes to rest — order [${settled.join(', ')}]`);
+    }
+    for (const id of own) __attention.clearForTest(id);
   }
 };
 
@@ -246,5 +334,6 @@ export const tests = [
   recentsBumpMostRecentOnTopTest,
   recentsUserSendBeatsBusyBarrierTest,
   llmRecentsBusyBarrierTest,
-  llmInsertionBumpsWithBusyBarrierTest
+  turnEndBumpsWithBusyBarrierTest,
+  streamingLeavesDraggedOrderTest
 ];

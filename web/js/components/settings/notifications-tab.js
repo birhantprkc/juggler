@@ -197,7 +197,7 @@ export class NotificationsTab {
     );
     const reorderRow = buildToggleRow(
       'Updated conversations move to the top',
-      'Float a conversation’s tab up the list when it’s active or you send to it. With this off, tabs only move when you drag them.',
+      'Float a conversation’s tab up the list when you send to it, when it finishes, and when it needs your approval. Output arriving mid-turn leaves the order alone. With this off, tabs only move when you drag them.',
       prefs.tabReorder,
       (on) => setTabReorderEnabled(on),
     );
