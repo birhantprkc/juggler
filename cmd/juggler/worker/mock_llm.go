@@ -136,7 +136,7 @@ func (r *run) popMockResponse(turnID string, sink func(StreamChunk)) (*LLMRespon
 		}
 
 		if paused {
-			r.sendStatus("mock-paused", "")
+			r.announceMockPause()
 			select {
 			case <-r.mock.releaseCh:
 			case <-r.done:
@@ -148,6 +148,26 @@ func (r *run) popMockResponse(turnID string, sink func(StreamChunk)) (*LLMRespon
 	}()
 
 	return r.waitForLLMResponse(turnID, LLMTimeout)
+}
+
+// announceMockPause publishes the pause point on the run's own entry, and only
+// while that run still holds its claim. Tests watch for it two ways: the browser
+// harness's wait-for-mock-paused reads processingState.status, which the
+// projection republishes from the entry, and the message goes out on the wire as
+// an ordinary status.
+//
+// Deliberately not sendStatus. This runs on the mock's goroutine while the turn
+// is parked in waitForLLMResponse, so it describes a turn it does not own, and a
+// status frame is rebuilt from scratch — claim included. A cancel that lands
+// first rests that turn and retires it; a frame written here afterwards would
+// then put the claim back on a thread with nothing running, leaving the
+// conversation busy forever. The gated patch is a no-op once the claim is gone.
+func (r *run) announceMockPause() {
+	r.patchRunIf(r.t.thread.itemID,
+		func(entry map[string]any) bool { return entryActivity(entry) != ActivityNone },
+		func(entry, _ map[string]any) { entry["status"] = "mock-paused" },
+	)
+	r.send(map[string]any{"type": "status", "status": "mock-paused", "message": ""})
 }
 
 // callLLMMock is the mock branch of callLLM. Returns the next scripted
