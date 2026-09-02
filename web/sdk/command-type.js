@@ -21,7 +21,8 @@
  * @property {boolean} [mutatesConversation] - True if the command writes to the conversation's
  *   YArray in a way that would race a live turn (snapshot/move/delete items, etc.). When set,
  *   `SlashCommandHandler` awaits `conversation.cancelAndSettle()` before invoking `execute()`
- *   so the command never captures or overwrites mid-flight tool/LLM state. Pure side-effect
+ *   so the command never captures or overwrites mid-flight tool/LLM state. With a turn actually
+ *   in flight it asks the user first, and abandons the command if they decline. Pure side-effect
  *   commands (`/help`, anything that only reads or only opens a UI panel) leave this unset.
  * @property {boolean} [rejectWhileBusy] - True if a mutating command must be rejected rather
  *   than cancel the active turn.

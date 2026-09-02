@@ -338,6 +338,16 @@ export class UITestHarness {
   }
 
   /**
+   * Run a command without fencing on anything it might start.
+   * @param {string} command - Command name
+   * @param {string} [args] - Command arguments
+   * @returns {Promise<void>}
+   */
+  async runCommandNoWait(command, args) {
+    return this.innerHarness.runCommandNoWait(command, args);
+  }
+
+  /**
    * Compact items up to an index.
    * @param {number} index - Index to compact up to
    * @returns {Promise<void>}

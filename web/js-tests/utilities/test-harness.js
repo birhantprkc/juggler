@@ -1192,6 +1192,24 @@ export class IntegrationTestHarness {
   }
 
   /**
+   * Fire a slash command without fencing on anything it might start.
+   *
+   * For when the command is expected NOT to run: a declined confirmation leaves
+   * the original turn in flight, so both fences runCommand waits on (the turn
+   * epoch for compact, idle for everything else) would sit out the whole test.
+   * @param {string} command - Command name (without leading slash)
+   * @param {string} [args] - Optional command arguments
+   * @returns {Promise<void>}
+   */
+  async runCommandNoWait(command, args) {
+    if (!this._conversation) {
+      throw new Error('Conversation not initialized');
+    }
+    const message = args ? `/${command} ${args}` : `/${command}`;
+    await this._conversation.sendMessage(message, null, this.rootThread);
+  }
+
+  /**
    * Compact items up to a given index via pure yjs mutations.
    * Creates a thread with the items + summarization prompt.
    * The worker auto-detects the thread and processes it.

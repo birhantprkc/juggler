@@ -51,6 +51,35 @@ export function parseInvocation(input) {
 }
 
 /**
+ * Ask before a conversation-mutating command stops a turn that is still running.
+ *
+ * The cancel is not negotiable — see the invariant at the call site — but taking
+ * a live turn down is the user's call, not ours, and the only signal they got
+ * otherwise was a notice after the fact. Dismissing the dialog (Escape, backdrop,
+ * Back) resolves null rather than false, so every falsy answer leaves the turn
+ * alone.
+ *
+ * Reaches for the `window.*` alias rather than importing the component, the same
+ * way the model layer does: this service is imported by tests and by callers with
+ * no UI mounted, and with no dialog to answer the invariant still has to hold, so
+ * an absent presenter proceeds rather than blocking on a prompt nobody can see.
+ * @param {string} commandName - Command name without the leading slash
+ * @returns {Promise<boolean>} True when the turn may be stopped
+ */
+async function confirmStoppingTurn(commandName) {
+  const showConfirm = /** @type {any} */ (window).showConfirm;
+  if (typeof showConfirm !== 'function') {
+    return true;
+  }
+  const answer = await showConfirm(
+    `/${commandName} can't run while a turn is in flight. Running it now stops the turn.`,
+    'Stop the current turn?',
+    { confirmText: 'Stop turn', cancelText: 'Leave it running', danger: true }
+  );
+  return !!answer;
+}
+
+/**
  * Handles slash command execution via plugin registry
  */
 class SlashCommandHandler {
@@ -118,7 +147,14 @@ class SlashCommandHandler {
     // of cancel/settle semantics. Without this, /compact firing during a
     // live bash action snapshots a `state: 'running'` item into the new
     // sub-thread where nothing will ever flip it to cancelled/completed.
+    //
+    // Which makes the cancel unavoidable, not automatic: ask before taking down
+    // a turn the user is watching, and treat a refusal as the command being
+    // handled — nothing ran, and they already know why.
     if (CommandClass.MANIFEST?.mutatesConversation && conv) {
+      if (conv.isTurnActive() && !(await confirmStoppingTurn(commandName))) {
+        return { handled: true };
+      }
       await conv.cancelAndSettle('slash command');
     }
 

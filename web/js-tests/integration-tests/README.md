@@ -177,6 +177,30 @@ Execute a slash command.
 { type: 'run-command', command: 'compact', args: '' }
 ```
 
+### `run-command-no-wait`
+
+Execute a slash command without fencing on anything it might start. For commands
+expected *not* to run — a declined confirmation leaves the original turn in
+flight, so `run-command`'s fences would never settle.
+
+```javascript
+{ type: 'run-command-no-wait', command: 'compact' }
+```
+
+### `expect-confirm` / `assert-confirm-shown`
+
+Answer the next confirmation dialog by clicking the real `<modal-dialog>`, then
+assert what it said. Arm `expect-confirm` **before** the operation that raises
+the dialog — that operation is blocked on the answer, so it can never reach a
+later step. `assert-confirm-shown` waits for the dialog to have appeared (failing
+if it never did) and clears the arm.
+
+```javascript
+{ type: 'expect-confirm', answer: false },
+{ type: 'run-command-no-wait', command: 'compact' },
+{ type: 'assert-confirm-shown', titleContains: 'Stop the current turn?' }
+```
+
 ### `simulate-disconnect`
 
 Simulate WebSocket disconnection for reconnection tests.

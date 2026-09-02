@@ -725,7 +725,7 @@ export const duplicateConversationTest = {
 };
 
 /**
- * RED test for the cancel-before-mutate architectural fix.
+ * The cancel-before-mutate architectural fix, and the confirmation that gates it.
  *
  * Scenario: a turn is in flight (LLM mid-stream, paused at the mock barrier
  * exactly as a real long-running tool action would leave the worker busy).
@@ -733,27 +733,29 @@ export const duplicateConversationTest = {
  * is:
  *
  *   1. `SlashCommandHandler` notices `/compact` is a `mutatesConversation`
- *      command and the conversation is processing, so it awaits
- *      `conversation.cancelAndSettle()` before invoking the command.
+ *      command and the conversation is processing, so it asks whether the turn
+ *      may be stopped and, on yes, awaits `conversation.cancelAndSettle()`
+ *      before invoking the command.
  *   2. `cancelAndSettle()` cancels the worker (the paused mock is abandoned),
  *      cancels any running actions, and resolves only once everything is idle.
  *   3. `/compact` then snapshots a *stable* item list and runs the normal
  *      compaction path. The sub-thread's strategy loop produces the summary.
  *
- * Before the fix `/compact` runs while processing is still live: it snapshots
+ * Without the cancel `/compact` runs while processing is still live: it snapshots
  * mid-flight items (including the partial assistant text that the worker is
  * about to keep streaming into), moves them into a sub-thread, and leaves the
  * original turn's processing state dangling — the user sees a sub-thread item
  * stuck `state: 'running'` and the parent never settles cleanly until they
  * hit Escape.
  *
- * Asserts the full document shape AND that no item anywhere in the document
- * (parent or nested thread) carries `state: 'running'` once the test settles.
+ * Asserts the confirmation is raised, the full document shape, AND that no item
+ * anywhere in the document (parent or nested thread) carries `state: 'running'`
+ * once the test settles.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
 export const compactionCancelsRunningTurnTest = {
   name: 'compaction-cancels-running-turn',
-  description: '/compact mid-flight cancels the live turn before snapshotting; no item is left stuck running',
+  description: '/compact mid-flight asks, then cancels the live turn before snapshotting; no item is left stuck running',
   fixture: 'unit-test-fixture',
 
   llmResponses: [
@@ -767,10 +769,17 @@ export const compactionCancelsRunningTurnTest = {
   operations: [
     { type: 'send-message-no-wait', message: 'Message 1' },
     { type: 'wait-for-mock-paused' },
-    // Fire /compact while the worker is paused mid-turn. With the fix this
-    // awaits cancelAndSettle() before mutating; without it, snapshot races
-    // the live turn and leaves orphaned running state.
+    // Armed before the command, because the command blocks on the answer.
+    { type: 'expect-confirm', answer: true },
+    // Fire /compact while the worker is paused mid-turn. Confirmed, this
+    // awaits cancelAndSettle() before mutating; without the cancel, the
+    // snapshot races the live turn and leaves orphaned running state.
     { type: 'run-command', command: 'compact' },
+    {
+      type: 'assert-confirm-shown',
+      titleContains: 'Stop the current turn?',
+      messageContains: '/compact'
+    },
     { type: 'wait-for-state', condition: { hasCompactionBarrier: true } }
   ],
 
@@ -806,6 +815,54 @@ export const compactionCancelsRunningTurnTest = {
       }
     };
     assertNoRunning(conversation.rootMessageThread.items, 'root');
+  }
+};
+
+/**
+ * The other half of that gate: declining leaves the turn alone.
+ *
+ * A turn the user is watching is not ours to take down on their behalf, so
+ * `/compact` mid-flight asks first — and an answer of "leave it running" must
+ * stop the command dead, not merely delay it. The turn then finishes normally.
+ *
+ * Non-vacuous by construction: were the confirmation missing (or answered for
+ * the user), `/compact` would cancel the paused turn and fold the transcript
+ * into a sub-thread, so the golden below — the original turn, complete, with no
+ * thread item anywhere — could not hold. The one scripted mock is the turn's
+ * own; a compaction would have no summariser response to consume.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const compactionDeclinedLeavesTurnRunningTest = {
+  name: 'compaction-declined-leaves-turn-running',
+  description: 'Declining the mid-turn confirmation abandons /compact and leaves the live turn to finish',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    textResponse('Response the user chose to keep.', { pauseBeforeReturn: true })
+  ],
+
+  operations: [
+    { type: 'send-message-no-wait', message: 'Message 1' },
+    { type: 'wait-for-mock-paused' },
+    { type: 'expect-confirm', answer: false },
+    // No fence: declined, the command starts nothing, and the original turn is
+    // still paused — so there is no epoch bump and no idle to wait on yet.
+    { type: 'run-command-no-wait', command: 'compact' },
+    {
+      type: 'assert-confirm-shown',
+      titleContains: 'Stop the current turn?',
+      messageContains: '/compact'
+    },
+    { type: 'release-mock' },
+    { type: 'wait-for-idle' }
+  ],
+
+  expectedDocument: {
+    items: [
+      { type: 'system-prompt', itemId: '$ITEM_1' },
+      { type: 'user', content: 'Message 1' },
+      { type: 'assistant', content: 'Response the user chose to keep.' }
+    ]
   }
 };
 
@@ -918,5 +975,6 @@ export const tests = [
   newConversationTest,
   duplicateConversationTest,
   compactionCancelsRunningTurnTest,
+  compactionDeclinedLeavesTurnRunningTest,
   compactionResummariseTest
 ];

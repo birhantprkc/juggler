@@ -26,6 +26,85 @@ import { SecondViewer } from './second-viewer.js';
  */
 
 /**
+ * @typedef {object} SeenConfirmation
+ * @property {string} title - The dialog's title text
+ * @property {string} message - The dialog's body text
+ * @property {string[]} buttons - Button labels, in DOM order
+ */
+
+/**
+ * The confirmation armed by `expect-confirm`, awaited by `assert-confirm-shown`.
+ *
+ * Module scope because the two operations are separate steps of one test — and a
+ * lane's realm is shared across every suite it runs, so an arm left watching the
+ * DOM would click a dialog belonging to a later test. It is therefore cancelled
+ * both when consumed and when superseded, and its watcher stops on the first of
+ * those or its own deadline.
+ * @type {{promise: Promise<SeenConfirmation>, cancel: () => void}|null}
+ */
+let armedConfirm = null;
+
+/** Stop watching for a confirmation, if one is armed. */
+function disarmConfirm() {
+  armedConfirm?.cancel();
+  armedConfirm = null;
+}
+
+/**
+ * Resolve when a confirmation dialog is on screen carrying the button this test
+ * means to click.
+ *
+ * Deliberately narrower than matching `modal-dialog`: that element is a reused
+ * singleton which also presents alerts and notices, so "a dialog is showing" is
+ * not "the confirmation is showing" — a warning notice raised by the operation
+ * under test would otherwise be answered instead. Waiting for the button also
+ * rules out clicking a footer that is still being built. Class changes are
+ * observed as well as children, because the reused element gains `.show` by
+ * attribute alone.
+ * @param {string} buttonSelector - The button that must be present
+ * @param {number} timeoutMs - Fail-fast deadline
+ * @returns {{promise: Promise<{modal: HTMLElement, button: HTMLElement}>, cancel: () => void}} The wait and its off switch
+ */
+function waitForConfirmDialog(buttonSelector, timeoutMs) {
+  const find = () => {
+    const modal = /** @type {HTMLElement|null} */ (document.querySelector('modal-dialog.show:not(.is-notice)'));
+    const button = /** @type {HTMLElement|null} */ (modal?.querySelector(buttonSelector) || null);
+    return modal && button ? { modal, button } : null;
+  };
+  const found = find();
+  if (found) return { promise: Promise.resolve(found), cancel: () => {} };
+  /** @type {() => void} */
+  let cancel = () => {};
+  const promise = new Promise((resolve, reject) => {
+    const observer = new MutationObserver(() => {
+      const hit = find();
+      if (hit) {
+        stop();
+        resolve(hit);
+      }
+    });
+    const stop = () => {
+      observer.disconnect();
+      clearTimeout(timer);
+    };
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+    const timer = setTimeout(() => {
+      stop();
+      const shown = document.querySelector('modal-dialog.show');
+      reject(new Error(
+        `expect-confirm: no confirmation with a '${buttonSelector}' button appeared within ${timeoutMs}ms` +
+				(shown ? ` (a dialog titled "${shown.querySelector('.modal-title')?.textContent || ''}" was showing)` : '')
+      ));
+    }, timeoutMs);
+    cancel = () => {
+      stop();
+      reject(new Error('expect-confirm: superseded before the dialog appeared'));
+    };
+  });
+  return { promise, cancel };
+}
+
+/**
  * Resolve when an element matching `selector` exists in the DOM, observing
  * mutations (no polling). Rejects on timeout. The timeout is fail-fast only.
  * @param {string} selector - CSS selector
@@ -437,6 +516,14 @@ export async function executeUIOperation(harness, op) {
       break;
     }
 
+    case 'run-command-no-wait': {
+      if (!op.command) {
+        throw new Error('run-command-no-wait operation requires command');
+      }
+      await harness.runCommandNoWait(op.command, op.args);
+      break;
+    }
+
     case 'compact-up-to': {
       if (op.index === undefined) {
         throw new Error('compact-up-to operation requires index');
@@ -739,6 +826,58 @@ export async function executeUIOperation(harness, op) {
       }
       /** @type {HTMLElement} */ (clickEl).click();
       await driver.waitForDOMStable();
+      break;
+    }
+
+    case 'expect-confirm': {
+      // Answer the next confirmation dialog, driving the real <modal-dialog>
+      // rather than standing in for the presenter — so the copy, the buttons
+      // and the promise the caller is blocked on are all the production ones.
+      //
+      // Armed BEFORE the operation that raises the dialog, because that
+      // operation is blocked on the answer and can never reach a later step:
+      // the waiter runs in the background, clicks when the dialog mounts, and
+      // `assert-confirm-shown` collects what it saw.
+      const wanted = op.answer === false
+        ? '.modal-button.secondary'
+        : '.modal-button.danger, .modal-button.primary';
+      // A previous test in this lane's realm may have died holding an arm; its
+      // watcher must not answer this test's dialog.
+      disarmConfirm();
+      const pending = waitForConfirmDialog(wanted, op.timeoutMs || 5000);
+      const waiter = pending.promise
+        .then(({ modal, button }) => {
+          /** @type {SeenConfirmation} */
+          const seen = {
+            title: modal.querySelector('.modal-title')?.textContent || '',
+            message: modal.querySelector('.modal-message')?.textContent || '',
+            buttons: Array.from(modal.querySelectorAll('.modal-button'))
+              .map(b => b.textContent || ''),
+          };
+          button.click();
+          return seen;
+        });
+      // Awaited by assert-confirm-shown, which sees any rejection. Swallowed
+      // here as well so a test that dies before consuming its arm fails on its
+      // own error rather than on an unhandled rejection.
+      waiter.catch(() => {});
+      armedConfirm = { promise: waiter, cancel: pending.cancel };
+      break;
+    }
+
+    case 'assert-confirm-shown': {
+      if (!armedConfirm) {
+        throw new Error('assert-confirm-shown: nothing armed — put expect-confirm before the operation that raises the dialog');
+      }
+      const armed = armedConfirm.promise;
+      armedConfirm = null;
+      const seen = await armed;
+      if (op.titleContains && !seen.title.includes(op.titleContains)) {
+        throw new Error(`assert-confirm-shown: title "${seen.title}" does not contain "${op.titleContains}"`);
+      }
+      if (op.messageContains && !seen.message.includes(op.messageContains)) {
+        throw new Error(`assert-confirm-shown: message "${seen.message}" does not contain "${op.messageContains}"`);
+      }
       break;
     }
 

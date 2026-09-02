@@ -447,7 +447,11 @@ export const clearWipesPendingTest = {
     { type: 'send-message-no-wait', message: 'work' },
     { type: 'wait-for-mock-paused' },
     { type: 'send-message-no-wait', message: 'queued, will be cleared' },
+    // /clear mutates the conversation, so mid-turn it asks before stopping the
+    // turn. Armed ahead of the command, which is blocked on the answer.
+    { type: 'expect-confirm', answer: true },
     { type: 'run-command', command: 'clear' },
+    { type: 'assert-confirm-shown', titleContains: 'Stop the current turn?' },
     { type: 'wait-for-state', condition: { processingStatus: 'idle' } }
   ],
 
