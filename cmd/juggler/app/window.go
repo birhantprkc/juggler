@@ -93,8 +93,16 @@ func runHeadlessServerApp(srv *server.Server, selected selectedEngineHost, done 
 	// Node-hosted server exactly where every non-macOS platform already is.
 	if !engineHostRequiresNativeApp(selected.mode) {
 		onWindowReady(nil, nil)
-		startEngineHost(buildEngineHost(selected, nil, srv, requestQuit), srv, requestQuit)
+		host := buildEngineHost(selected, nil, srv, requestQuit)
+		startEngineHost(host, srv, requestQuit)
 		<-done
+		// The engine is a separate process here, so it has to be told. Teardown
+		// first, for the same reason the webview host quits after it: the engine
+		// is still the realm the closing conversations belong to, and the wait is
+		// bounded. Then take the process tree down, so nothing of this server is
+		// left dialling a port the next one will bind.
+		awaitTeardown(teardownDone, serverShutdownTimeout)
+		host.Stop()
 		return
 	}
 

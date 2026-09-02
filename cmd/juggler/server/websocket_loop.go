@@ -52,14 +52,28 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			conn.Close()
 			return
 		}
+		// An engine that names a token must name ours. The token is minted per
+		// process, so this is the one thing that tells an engine of this server
+		// apart from one that outlived the server before it and is still dialling
+		// the address we now hold — and the engine slot goes to the newest
+		// arrival, so a stranger taking it means the work goes to a realm that
+		// cannot do it. A token-less engine is still admitted: the webview host's
+		// socket runs in a worker with no token to send, and loopback plus the
+		// origin check is what has always vouched for it.
+		if token := r.URL.Query().Get("token"); token != "" && token != s.apiToken {
+			jlog.Info("Rejected an engine WS upgrade from %s carrying another instance's token — an engine outlived its server and found this one", r.RemoteAddr)
+			conn.Close()
+			return
+		}
 		role = ClientRoleEngine
 	}
 
 	// Per-instance token gate for local viewer upgrades (§S.1) — the defense
 	// against a same-machine cross-site page opening a socket to the agent.
 	// Exempt:
-	//   - the engine role: already restricted to the in-process loopback WebView
-	//     by engineRoleAllowed, and its page carries no token;
+	//   - the engine role: restricted to the in-process loopback WebView by
+	//     engineRoleAllowed, and gated above on the token when it sends one —
+	//     the webview host's worker has none to send;
 	//   - remote ingress: these are the user's explicit remote grants
 	//     (possession of the unguessable URL), authorized exactly like the
 	//     LAN gate authorizes them, and their transport need not thread the token

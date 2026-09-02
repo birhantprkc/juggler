@@ -102,6 +102,9 @@ type engineHost interface {
 	// off the main thread, and only after the reconnect grace has lapsed — so it
 	// may be expensive, but it must not block for long.
 	Recover()
+	// Stop takes the engine down as the server exits, so nothing of ours is
+	// still dialling the address once the process is gone.
+	Stop()
 }
 
 // webviewHost runs the engine inside the hidden WebKit/WebView2 webview — the
@@ -151,6 +154,10 @@ func (h *webviewHost) Recover() {
 	jlog.Info("[engine] reloading the engine WebView")
 	win.Reload()
 }
+
+// Stop is nothing to do for this host: the engine is a window in this process
+// and goes when the process does, so there is no separate life to end.
+func (h *webviewHost) Stop() {}
 
 // startEngineHost brings up a selected engine host and installs the server's
 // engine-readiness gate.

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"sync/atomic"
 
+	"juggler/cmd/juggler/childcontain"
 	"juggler/cmd/juggler/server"
 	"juggler/internal/enginehost"
 	"juggler/internal/jlog"
@@ -23,14 +24,28 @@ import (
 // `node <snapshot>/engine-host.mjs --server <addr>` against it. The engine then
 // connects its WebSocket back exactly as the webview worker does; readiness and
 // tool execution flow through the same host-agnostic paths.
+//
+// The engine process must not outlive the server that spawned it. It dials that
+// address forever — the engine is exempt from the reconnect's did-the-server-
+// restart check, having no page to reload — and a port is re-bound by whatever
+// starts next, so an engine left behind attaches to a stranger. The engine slot
+// goes to the newest arrival, so the stranger then receives the work meant for
+// the real engine and does nothing with it: a run that hangs until its caller
+// gives up rather than an error anyone can see. Containment is therefore not
+// tidiness; it is what keeps one server's engine out of the next server.
 type nodeHost struct {
 	srv         *server.Server
 	requestQuit func()
 	nodePath    string
 	version     string
-	// proc is the spawned engine process, kept so a wedged engine can be killed
-	// from the server's supervisor goroutine. Nil until Start succeeds.
-	proc atomic.Pointer[os.Process]
+	// child is the contained engine process, kept so a wedged engine can be
+	// killed from the server's supervisor goroutine and so shutdown can take the
+	// whole subtree down. Nil until Start succeeds.
+	child atomic.Pointer[childcontain.Child]
+	// stopping records that the death about to be observed was asked for, so the
+	// watcher below reports it as an exit rather than a failure and does not ask
+	// for a shutdown that is already under way.
+	stopping atomic.Bool
 }
 
 // newNodeHost constructs a nodeHost from a validated node probe (info.OK).
@@ -47,13 +62,26 @@ func (h *nodeHost) Describe() string { return "node " + h.version }
 // it and tears the server down. That is the honest outcome for a host that
 // cannot be revived, and node mode is the dev/debug host in any case.
 func (h *nodeHost) Recover() {
-	proc := h.proc.Load()
-	if proc == nil {
+	child := h.child.Load()
+	if child == nil {
 		jlog.Error("[engine-node] cannot restart the node engine: no process handle")
 		return
 	}
 	jlog.Error("[engine-node] node engine stopped answering — killing it")
-	_ = proc.Kill()
+	_ = child.Terminate()
+}
+
+// Stop kills the engine process tree. Called once the server is on its way out,
+// so no engine of ours is left dialling a port somebody else is about to bind.
+func (h *nodeHost) Stop() {
+	child := h.child.Load()
+	if child == nil {
+		return
+	}
+	h.stopping.Store(true)
+	if err := child.Terminate(); err != nil {
+		jlog.Error("[engine-node] couldn't stop the node engine: %v", err)
+	}
 }
 
 // Start snapshots the engine graph and spawns the node process against it.
@@ -70,10 +98,11 @@ func (h *nodeHost) Start(addr string) error {
 		"JUGGLER_TOKEN="+spec.Token,
 		"JUGGLER_PROJECT_ROOT="+spec.ProjectRoot,
 	)
-	// Best-effort: on Linux, have the kernel kill the child if we die, so a
-	// crashed server never orphans a live node engine. No-op on other OSes,
-	// where node mode is dev/debug-only.
-	setChildDeathSignal(cmd)
+	// Containment covers the deaths no cleanup gets to run for — a crash, a
+	// SIGKILL, the watchdog's same-PID re-exec: Pdeathsig on Linux, the
+	// parent-death reaper on macOS, a kill-on-close job object on Windows. Stop
+	// covers the ordinary exit.
+	childcontain.Prepare(cmd)
 
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
@@ -89,16 +118,29 @@ func (h *nodeHost) Start(addr string) error {
 		spec.Cleanup()
 		return fmt.Errorf("spawn node engine host: %w", err)
 	}
-	h.proc.Store(cmd.Process)
+	child, containErr := childcontain.Adopt(cmd)
+	if containErr != nil {
+		jlog.Info("[engine-node] child containment unavailable (%v); a hard kill of this process may leave the engine running", containErr)
+	}
+	h.child.Store(child)
+	// The pid is worth saying: an engine that outlived its server is invisible
+	// otherwise, and this is what identifies it in the process table.
+	jlog.Info("[engine-node] engine host running as pid %d", cmd.Process.Pid)
 	go pipeToJlog(stderr)
 	go pipeToJlog(stdout)
 
 	// Node engine death after startup ⇒ tear the server down, mirroring the
 	// webview catch-all (engine_lifecycle.go): a headless server whose host died
-	// can do no useful work and must not linger as a zombie holding its port.
+	// can do no useful work and must not linger as a zombie holding its port. A
+	// death we asked for is neither news nor a reason to ask again.
 	go func() {
 		werr := cmd.Wait()
+		child.Cleanup()
 		spec.Cleanup()
+		if h.stopping.Load() {
+			jlog.Info("[engine-node] node engine process exited (%v)", werr)
+			return
+		}
 		jlog.Error("[engine-node] node engine process exited (%v) — shutting down", werr)
 		h.requestQuit()
 	}()
