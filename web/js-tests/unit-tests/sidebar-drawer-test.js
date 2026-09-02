@@ -35,7 +35,11 @@
 
 import { assert } from '../utilities/test-helpers.js';
 import UIEventManager from '../../js/services/ui-event-manager.js';
-import { isAnyPopupOpen, __resetPopupManagerForTests } from '../../js/utils/popup-manager.js';
+import {
+  isAnyPopupOpen,
+  __resetPopupManagerForTests,
+  __settlePopupHistoryForTests,
+} from '../../js/utils/popup-manager.js';
 
 /**
  * Build the drawer DOM the handler expects, with one tab in it.
@@ -163,6 +167,11 @@ export async function runTests() {
   let failed = 0;
   /** @type {string[]} */
   const errors = [];
+
+  // A lane's tests share one JS realm, and a pop popup-manager is still owed
+  // from an earlier one is consumed rather than read as a Back press — which is
+  // what it is for, and would swallow the synthetic Back press below.
+  await __settlePopupHistoryForTests();
 
   /**
    * @param {string} label - Test label.

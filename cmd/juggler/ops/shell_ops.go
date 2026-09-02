@@ -912,8 +912,6 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 		setProcGroup(cmd)
 		cmd.Dir = ops.scope.Root()
 
-		updateShellCmd(shellID, cmd)
-
 		// Merge stdout/stderr through a pipe and publish output to the registry
 		// incrementally as it arrives, so readers (ops.TaskState) see a running
 		// command's output before it exits. The reader keeps draining at full
@@ -936,6 +934,14 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 			time.AfterFunc(1*time.Hour, func() { removeBackgroundShell(shellID) })
 			return
 		}
+
+		// Hand the command to the registry only now that it is started. Start
+		// writes cmd.Process, and the registry reads it (signalShellStop) from its
+		// own goroutine — publishing beforehand puts the handle in reach of a
+		// reader with nothing ordering it after that write. A kill arriving in the
+		// gap still stops the task: it cancels the context, and a command built
+		// with CommandContext dies at Start rather than escaping.
+		updateShellCmd(shellID, cmd)
 
 		cmdDone := make(chan error, 1)
 		go func() {
@@ -960,7 +966,34 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 
 		// Wait for the process to exit, then for the reader to drain fully before
 		// reading the cap accounting (happens-before its final writes).
-		err := <-cmdDone
+		var err error
+		select {
+		case err = <-cmdDone:
+		case <-ctx.Done():
+			// The deadline has to end the task, not just the process fronting it.
+			// exec.CommandContext kills the leader alone, so anything that leader
+			// started — a shell that forked rather than exec'd, something
+			// backgrounded — lives on in the process group setProcGroup gave it,
+			// holding the output pipe's write end open. cmd.Wait() waits on every
+			// holder of that pipe, so the task would sit at "running" long past the
+			// deadline, waiting on the processes the deadline was meant to take.
+			//
+			// Only a deadline kills here. A stop asked for by hand has had its
+			// polite SIGTERM from the kill op, which takes the group itself if the
+			// task ignores it; this branch just bounds the wait for that to land.
+			if ctx.Err() == context.DeadlineExceeded {
+				killProcessGroup(cmd)
+			}
+			select {
+			case err = <-cmdDone:
+			case <-time.After(ops.reapGraceOrDefault()):
+				// A grandchild that escaped the process group (setsid, double fork)
+				// survives the kill and holds the pipe open. Force it closed so the
+				// reader returns and the task reaches a terminal status; cmd.Wait()
+				// keeps its own goroutine and cmdDone is buffered, so nothing leaks.
+				pipeReader.Close()
+			}
+		}
 		<-readerDone
 		pipeReader.Close()
 

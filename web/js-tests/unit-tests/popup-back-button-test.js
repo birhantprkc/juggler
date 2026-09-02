@@ -15,7 +15,9 @@
  *    history.back();
  *  - the `popstate` answering our OWN sentinel drop is not a Back press: an
  *    overlay opened while it was in flight survives it, and the history layer is
- *    covered again afterwards;
+ *    covered again afterwards — judged by where that pop says it landed, not by
+ *    what the page's current entry happens to hold;
+ *  - a retraction nothing will ever answer doesn't spend a later Back press;
  *  - Escape routes through the same registered-handler dismissal;
  *  - closeAllPopups() closes most-recently-opened first (LIFO), and also
  *    dismisses dropdowns wired through the POPUP_CLOSE_ALL event.
@@ -36,6 +38,7 @@ import {
   closeAllPopups,
   registerOpenPopup,
   __resetPopupManagerForTests,
+  __settlePopupHistoryForTests,
 } from '../../js/utils/popup-manager.js';
 import { modelGestureShouldHandle } from '../../js/services/model-cycler.js';
 
@@ -90,6 +93,12 @@ export async function runTests() {
   /** @param {number} r */
   const tally = (r) => { if (r) passed += r; else failed += 1; };
 
+  // A lane's tests share one JS realm, and a pop popup-manager is still owed
+  // from an earlier one is consumed rather than read as a Back press — which is
+  // what it is for, and would swallow the first synthetic Back press below.
+  // Settle the debt before taking a baseline.
+  await __settlePopupHistoryForTests();
+
   // === a sentinel WE dropped must not dismiss the overlay that replaced it ===
   //
   // This case runs against the REAL History API, before the stub below goes in:
@@ -135,6 +144,28 @@ export async function runTests() {
   relAfterPop();
   await tick();
   tally(check(await drainPop, 'stray-pop: the closing overlay drops its sentinel for real', errors));
+
+  // === settling a debt waits for the pop rather than writing it off ===
+  // Also on the real API. A pop still in flight is one the browser is going to
+  // deliver, and a suite that forgot it would be handed it moments later as a
+  // Back press — dismissing whatever that suite had opened by then, which is the
+  // stray pop above all over again. Only a debt nothing will ever answer gets
+  // written off, and that takes the whole budget to establish.
+  const relSettling = markPopupOpen(() => {});
+  relSettling();
+  await tick(); // the retraction runs: a real back() is now in flight
+  await __settlePopupHistoryForTests(3000);
+  let dismissedAfterSettle = 0;
+  /** @type {() => void} */
+  let relAfterSettle = () => {};
+  relAfterSettle = markPopupOpen(() => { dismissedAfterSettle++; relAfterSettle(); });
+  await new Promise((r) => setTimeout(r, 100)); // long enough for a late pop to land
+  tally(check(dismissedAfterSettle === 0,
+    `settle: the pop it waited for is not spent on the next overlay (closed ${dismissedAfterSettle}×)`, errors));
+  const drainSettled = nextPopstate();
+  relAfterSettle();
+  await tick();
+  tally(check(await drainSettled, 'settle: and that overlay drops its own sentinel for real', errors));
 
   // Stub History so no real navigation occurs; count the calls popup-manager
   // makes and capture the most recent pushed state for assertions.
@@ -194,6 +225,30 @@ export async function runTests() {
     tally(check(backCount === bBeforeClose + 1,
       `close-last: one history.back() drops the sentinel (got ${backCount - bBeforeClose})`, errors));
 
+    // === the retraction's pop reads the entry it landed on, not the page ===
+    // Where the traversal left us is what the pop itself reports. Reading the
+    // page's current entry instead is the same answer in the app and a different
+    // one here, where the pushes are stubbed and the page can be standing on a
+    // sentinel some other test in this realm left behind: the module would come
+    // away believing in a sentinel it never pushed, and the next overlay would
+    // silently get none — Back would then leave the app instead of dismissing.
+    // The marker is planted with the real replaceState, so it poisons only what
+    // the page reports and adds no entry to undo.
+    window.history.replaceState({ [OVERLAY_MARKER]: true }, '');
+    try {
+      const relPoison = markPopupOpen(() => {});
+      relPoison();
+      await tick(); // the retraction runs; the stub's back() answers with state null
+      const pBeforeLanded = pushCount;
+      const relAfterLanded = markPopupOpen(() => {});
+      tally(check(pushCount === pBeforeLanded + 1,
+        `landed-state: the next overlay still gets its sentinel (got ${pushCount - pBeforeLanded})`, errors));
+      relAfterLanded();
+      await tick();
+    } finally {
+      window.history.replaceState(null, '');
+    }
+
     // === async swap: an awaited overlay→overlay transition keeps the sentinel ===
     // A confirm dialog whose result opens Settings closes the modal (last
     // overlay → 0), then resolves its promise several microtasks later before
@@ -232,6 +287,32 @@ export async function runTests() {
     await tick();
     tally(check(backCount === bBeforePop,
       'popstate: no extra history.back() — the entry was already popped', errors));
+
+    // === a pop that will never come must not spend a later Back press ===
+    // A retraction whose back() goes unanswered — a counting stub, a traversal
+    // with nowhere left to go — leaves the module owed a pop for the rest of the
+    // realm's life, and the realm outlives this test: the debt would be settled
+    // by the next Back press some other test dispatches, which is then swallowed
+    // instead of dismissing. That is what the settle writes off, and every suite
+    // that presses Back synthetically opens by calling it.
+    __resetPopupManagerForTests();
+    const answeringBack = window.history.back;
+    window.history.back = function () { backCount++; }; // owes an answer, never pays
+    /** @type {() => void} */
+    let relOwed = () => {};
+    relOwed = markPopupOpen(() => { relOwed(); });
+    relOwed();
+    await tick(); // the retraction runs: back() called, nothing answers
+    window.history.back = answeringBack;
+    await __settlePopupHistoryForTests(50);
+    let closedAfterDebt = 0;
+    /** @type {() => void} */
+    let relAfterDebt = () => {};
+    relAfterDebt = markPopupOpen(() => { closedAfterDebt++; relAfterDebt(); });
+    window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+    tally(check(closedAfterDebt === 1,
+      'owed-pop: a Back press after an unanswerable retraction still dismisses', errors));
+    await tick();
 
     // === Escape routes through the same registered-handler dismissal ===
     let closedByEsc = 0;

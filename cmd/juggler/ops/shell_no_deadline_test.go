@@ -6,6 +6,8 @@ package ops
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
@@ -15,6 +17,14 @@ import (
 // host an extension embeds in a pinboard pin. Every other background task is
 // capped at maxExecTimeoutMs; `timeout: -1` is how a caller asks for no
 // deadline at all, and these are the properties that has to have.
+
+// stopBudget is how long these tests give a task that is supposed to end, and it
+// is far longer than any of them needs: a killed `sleep` is gone in
+// milliseconds. The property under test is that the task ends at all, never how
+// soon — the suite runs race-instrumented alongside three other packages
+// spawning processes of their own, where seconds of scheduling latency say
+// nothing about the code.
+const stopBudget = 20 * time.Second
 
 // waitForNotRunning polls until the task leaves "running", or fails.
 func waitForNotRunning(t *testing.T, id string, deadline time.Duration) TaskSnapshot {
@@ -49,7 +59,7 @@ func startNoDeadlineTask(t *testing.T) (*ShellOperations, string) {
 		t.Fatalf("startBackground returned no task_id: %+v", res)
 	}
 	t.Cleanup(func() { KillTask(id) })
-	waitForOutput(t, id, "ready", 5*time.Second)
+	waitForOutput(t, id, "ready", stopBudget)
 	return shellOps, id
 }
 
@@ -86,30 +96,28 @@ func TestStartBackground_NoDeadlineStillKillable(t *testing.T) {
 		t.Fatalf("kill did not report killing the task: %+v", res)
 	}
 
-	waitForNotRunning(t, id, 5*time.Second)
+	waitForNotRunning(t, id, stopBudget)
 }
 
 // The sentinel is one exact value, and everything either side of it is still an
-// ordinary duration — a task asked to stop soon must still stop soon.
+// ordinary duration — a task asked to stop soon must still stop soon, and take
+// what it started with it.
 //
-// The command here is a bare `sleep` on purpose, and the reason is a bug this
-// test would otherwise trip over rather than describe. The deadline is enforced
-// by exec.CommandContext, which kills only the `sh` it started; setProcGroup has
-// put that shell in its own process group, so a command that leaves a grandchild
-// behind (`echo x; sleep 30`, where sh forks rather than execs) keeps running,
-// and cmd.Wait() blocks on the write end of the pipe the survivor inherited. A
-// bare `sleep` is exec'd by sh, so the process the deadline kills is the only
-// one there is. `kill` does not have this problem — it escalates to the whole
-// process group (see the "kill" case in the registry goroutine) — so stopping a
-// task explicitly works whatever it spawned; it is only the timeout path that is
-// weak. Orthogonal to the no-deadline sentinel and left alone deliberately.
+// The command backgrounds a subshell that keeps writing to a file, because the
+// deadline is enforced by exec.CommandContext, which kills only the `sh` it
+// started. setProcGroup put that shell in its own process group, so a child it
+// leaves behind survives the leader — and holds the output pipe's write end open,
+// which is what cmd.Wait() waits on. Both halves are asserted here: the task
+// reaches a terminal status, and the file stops growing once it has.
 func TestStartBackground_OrdinaryTimeoutStillExpires(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell command syntax is POSIX")
 	}
-	shellOps := NewShellOperations(NewPathScope(t.TempDir(), nil))
+	dir := t.TempDir()
+	ticks := filepath.Join(dir, "ticks")
+	shellOps := NewShellOperations(NewPathScope(dir, nil))
 	res, err := shellOps.startBackground(map[string]any{
-		"command": "sleep 30",
+		"command": "(while true; do echo tick >> ticks; sleep 0.1; done) & sleep 30",
 		"timeout": float64(300),
 	})
 	if err != nil {
@@ -118,9 +126,74 @@ func TestStartBackground_OrdinaryTimeoutStillExpires(t *testing.T) {
 	id, _ := res.(map[string]any)["task_id"].(string)
 	t.Cleanup(func() { KillTask(id) })
 
-	s := waitForNotRunning(t, id, 5*time.Second)
+	s := waitForNotRunning(t, id, stopBudget)
 	if s.Status != "failed" {
 		t.Errorf("timed-out task status = %q, want failed", s.Status)
+	}
+
+	// Twenty ticks' worth of quiet: a survivor writes every 100ms, so growth here
+	// is a child the deadline failed to reach, however loaded the machine is.
+	settled := fileSize(t, ticks)
+	time.Sleep(2 * time.Second)
+	if grown := fileSize(t, ticks); grown != settled {
+		t.Errorf("something the task started outlived its deadline: %s grew from %d to %d bytes",
+			ticks, settled, grown)
+	}
+}
+
+// fileSize reports a file's size, treating "not there at all" as empty.
+func fileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	return info.Size()
+}
+
+// And when the deadline cannot reach what the task started — a grandchild that
+// left the process group entirely, and holds the output pipe's write end open —
+// the task must still end. cmd.Wait() waits on every holder of that pipe, so the
+// teardown is bounded by the reap grace and closes the pipe itself rather than
+// leaving the task at "running" for as long as the escapee cares to live.
+func TestStartBackground_TimeoutEndsTheTaskDespiteEscapedChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX process-group semantics only")
+	}
+	// The escapee outlives the assertion below by a distance, so a teardown that
+	// waited on it could not pass by luck.
+	escaped := escapeGroupSleep("15")
+	if escaped == "" {
+		t.Skip("no setsid/perl available to launch a group-escaping child")
+	}
+
+	shellOps := NewShellOperations(NewPathScope(t.TempDir(), nil))
+	shellOps.reapGrace = 300 * time.Millisecond // measure boundedness, not the real 7s
+	res, err := shellOps.startBackground(map[string]any{
+		"command": escaped + " & sleep 30",
+		"timeout": float64(300),
+	})
+	if err != nil {
+		t.Fatalf("startBackground failed: %v", err)
+	}
+	id, _ := res.(map[string]any)["task_id"].(string)
+	t.Cleanup(func() { KillTask(id) })
+
+	start := time.Now()
+	s := waitForNotRunning(t, id, stopBudget)
+	// Generous against the 300ms deadline + 300ms reap grace, and still far short
+	// of the escapee's own 15s: an unbounded wait can only land the wrong side.
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("the task waited on the escaped child: took %v to reach a terminal status", elapsed)
+	}
+	if s.Status != "failed" {
+		t.Errorf("timed-out task status = %q, want failed", s.Status)
+	}
+	if s.Error == "" {
+		t.Errorf("timed-out task reported no error: %+v", s)
 	}
 }
 
@@ -142,7 +215,7 @@ func TestStartBackground_ZeroTimeoutIsNotForever(t *testing.T) {
 	id, _ := res.(map[string]any)["task_id"].(string)
 	t.Cleanup(func() { KillTask(id) })
 
-	waitForNotRunning(t, id, 5*time.Second)
+	waitForNotRunning(t, id, stopBudget)
 }
 
 // The sentinel is only meaningful where something outlives the call that made

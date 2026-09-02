@@ -120,13 +120,37 @@ export function isForeignPopupOpen(ownIds = []) {
  * Forgetting one would let a pop from a previous test dismiss this test's
  * overlays — the very race the pool's shared realm makes easy to hit. A stubbed
  * `history.back()` must therefore answer with a `popstate` of its own, as the
- * real API does, or its pop is owed forever.
+ * real API does, or its pop is owed forever. A test that dispatches a synthetic
+ * Back press wants that debt settled first: see __settlePopupHistoryForTests.
  */
 export function __resetPopupManagerForTests() {
   openPopups.clear();
   openPopupsById.clear();
   overlayStatePushed = false;
   removalScheduled = false;
+}
+
+/**
+ * TEST-ONLY: wait until the browser has answered every history pop this module
+ * asked for, so a test that dispatches a synthetic Back press knows it will be
+ * read as one. A pop still owed is consumed rather than treated as a dismissal —
+ * correct, and invisible in the app, where the debt is a few milliseconds old and
+ * the pop that settles it is genuinely ours. In the pool's shared realm it is a
+ * debt one test can run up and the next one pay: whoever dispatches the next
+ * `popstate` settles it and gets nothing dismissed.
+ *
+ * Waits rather than forgets, so a real pop still in flight lands where it
+ * belongs; a debt that outlives the budget was owed by something that will never
+ * answer (a stubbed `back()`, a traversal with nowhere to go) and is written off.
+ * @param {number} [timeoutMs] - How long to wait before writing the debt off.
+ * @returns {Promise<void>} Resolves once nothing is owed.
+ */
+export async function __settlePopupHistoryForTests(timeoutMs = 1000) {
+  const until = Date.now() + timeoutMs;
+  while (pendingSelfPops > 0 && Date.now() < until) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  pendingSelfPops = 0;
 }
 
 /**
@@ -418,10 +442,14 @@ function releaseOverlayStateIfLast() {
 // Guarded: this module is transitively imported by context items that load in
 // the DOM-less node engine host, where `window` is undefined.
 if (typeof window !== 'undefined') {
-  window.addEventListener('popstate', () => {
+  window.addEventListener('popstate', (event) => {
     if (pendingSelfPops > 0) {
       pendingSelfPops--;
-      const landedState = /** @type {any} */ (window.history.state);
+      // The event carries the state of the entry the traversal landed on — the
+      // same thing `history.state` holds, but read from the pop itself, so a
+      // stubbed History API is answered by its own stub rather than by whatever
+      // the page's real session history happens to be standing on.
+      const landedState = /** @type {any} */ (event.state);
       overlayStatePushed = !!(landedState && landedState[OVERLAY_HISTORY_MARKER]);
       ensureOverlaySentinel();
       return;
