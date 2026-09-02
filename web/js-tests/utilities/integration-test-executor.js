@@ -159,6 +159,7 @@ import { runTests as runParallelThreadSelectionTests } from '../unit-tests/paral
 import { runTests as runPinboardThreadSourceTests } from '../unit-tests/pinboard-thread-source-test.js';
 import { runTests as runPinboardFileEditsTests } from '../unit-tests/pinboard-file-edits-test.js';
 import { runTests as runPinboardTasksTests } from '../unit-tests/pinboard-tasks-test.js';
+import { runTests as runPinboardRetentionTests } from '../unit-tests/pinboard-retention-test.js';
 import { runTests as runPinboardSatelliteTests } from '../unit-tests/pinboard-satellite-test.js';
 import { runTests as runScrollAwayAutofollowTests } from '../unit-tests/scroll-away-autofollow-test.js';
 import { runTests as runScrollToTopTests } from '../unit-tests/scroll-to-top-test.js';
@@ -459,6 +460,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:pinboard-thread-source', run: runPinboardThreadSourceTests },
   { name: 'unit:pinboard-file-edits', run: runPinboardFileEditsTests },
   { name: 'unit:pinboard-tasks', run: runPinboardTasksTests },
+  { name: 'unit:pinboard-retention', run: runPinboardRetentionTests },
   // Exclusive: it puts the whole document into pinboard mode for the length of
   // a case, and a suite sharing the lane would boot into the wrong shell.
   { name: 'unit:pinboard-satellite', run: runPinboardSatelliteTests, needsExclusiveRun: true },

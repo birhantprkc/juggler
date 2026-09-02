@@ -56,12 +56,26 @@ func setHTMLSecurityHeadersFramed(w http.ResponseWriter, nonce string, sameOrigi
 	if extraConnect != "" {
 		connectSrc += " " + extraConnect
 	}
+	// Extensions embed local dev servers in an iframe — a Cmajor patch GUI, a docs
+	// preview, a Storybook — and default-src 'self' refuses every one of them, so
+	// loopback is named here and nothing else is. Two things to be clear about:
+	// framing a document is a wider permission than the ws:/wss: connect-src
+	// above, not a narrower one, and loopback means the loopback of whichever
+	// machine renders the page, so a browser attached over the network resolves
+	// these against its own — which is a thing the viewer could have opened in a
+	// tab anyway, and which an https page refuses as mixed content regardless.
+	// What may frame Juggler is a separate question, answered by frame-ancestors
+	// below, and the answer there is nothing.
+	frameSrc := "frame-src 'self' " +
+		"http://127.0.0.1:* http://localhost:* http://[::1]:* " +
+		"https://127.0.0.1:* https://localhost:* https://[::1]:*"
 	csp := "default-src 'self'; " +
 		"script-src 'self' 'nonce-" + nonce + "' https://cdnjs.cloudflare.com; " +
 		"style-src 'self' 'unsafe-inline'; " +
 		"img-src 'self' data: blob:; " +
 		"font-src 'self' data:; " +
 		connectSrc + "; " +
+		frameSrc + "; " +
 		"object-src 'none'; " +
 		"base-uri 'self'; " +
 		frameAncestors

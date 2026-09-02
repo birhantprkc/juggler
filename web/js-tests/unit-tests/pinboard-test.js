@@ -475,6 +475,103 @@ export async function runTests(_ctx) {
     assert(order(pinboardStore.get()) === 'pin_a', 'the board must be untouched');
   });
 
+  {
+    /**
+     * Register one probe whose willRemove behaves as the case asks.
+     * @param {(config: any, options: any) => Promise<void>} willRemove - Its release hook.
+     * @returns {void}
+     */
+    const registerReleaseProbe = (willRemove) => {
+      class ReleasePin extends PinboardItemType {
+        static MANIFEST = {
+          id: 'test-release-pin',
+          name: 'Release probe',
+          version: '1.0.0',
+          description: 'A pin that exists only in this test',
+        };
+
+        /**
+         * @param {any} config - The stored config.
+         * @returns {any} The config as this type wants to see it.
+         */
+        normalizeConfig(config) {
+          return { ...config, normalized: true };
+        }
+
+        /**
+         * @param {any} config - The normalized config.
+         * @param {any} options - The active context.
+         * @returns {Promise<void>} Resolves when the release is done.
+         */
+        async willRemove(config, options) {
+          await willRemove(config, options);
+        }
+
+        mount() {}
+      }
+      pinboardItemRegistry.reset();
+      const reg = pinboardItemRegistry.registerClass(/** @type {any} */ (ReleasePin), { modulePath: '(test)' });
+      assert(reg.registered, `registerClass refused the probe: ${reg.reason}`);
+    };
+
+    await run('removing a pin offers its type the chance to release what it started', async () => {
+      await seed([{ id: 'pin_r', type: 'test-release-pin', config: { port: 3939 } }]);
+      /** @type {any[]} */
+      const released = [];
+      registerReleaseProbe(async (config, options) => { released.push({ config, options }); });
+      const stub = stubFetch(() => ({ ok: true, json: async () => ({ pins: [] }) }));
+      try {
+        await pinboardView.remove('pin_r', /** @type {any} */ ({ conversation: { id: 'conv_1' } }));
+      } finally {
+        stub.restore();
+        pinboardItemRegistry.reset();
+        pinboardView.reset();
+      }
+
+      assert(released.length === 1, `expected exactly one release, got ${released.length}`);
+      // Normalized, like every other config a type is handed: what it stored may
+      // be several versions old, and this is not the moment to find that out.
+      assert(released[0].config.port === 3939 && released[0].config.normalized === true,
+        `the release hook must get the normalized config: ${JSON.stringify(released[0].config)}`);
+      assert(released[0].options.active?.conversation?.id === 'conv_1',
+        'the release hook must get the active context the panel had');
+      assert(stub.calls.length === 1, 'the pin must still have been removed');
+    });
+
+    await run('a release that throws does not keep the pin', async () => {
+      await seed([{ id: 'pin_r', type: 'test-release-pin', config: {} }]);
+      registerReleaseProbe(async () => { throw new Error('probe refused to let go'); });
+      const stub = stubFetch(() => ({ ok: true, json: async () => ({ pins: [] }) }));
+      try {
+        await pinboardView.remove('pin_r');
+      } finally {
+        stub.restore();
+        pinboardItemRegistry.reset();
+        pinboardView.reset();
+      }
+      assert(stub.calls.length === 1, 'a pin the user asked to be rid of goes whatever its type thinks');
+      assert(pinboardStore.get().length === 0, 'the board must have been adopted from the response');
+    });
+
+    await run('a release that never finishes does not hold the removal open', async () => {
+      // The real wait is the point: a Remove button an extension can make hang
+      // is not a Remove button, so the removal has to go ahead on its own. This
+      // case therefore sits out the release deadline once.
+      await seed([{ id: 'pin_r', type: 'test-release-pin', config: {} }]);
+      registerReleaseProbe(() => new Promise(() => {}));
+      const stub = stubFetch(() => ({ ok: true, json: async () => ({ pins: [] }) }));
+      try {
+        await pinboardView.remove('pin_r');
+      } finally {
+        stub.restore();
+        pinboardItemRegistry.reset();
+        pinboardView.reset();
+      }
+      assert(stub.calls.length === 1, 'the removal must go ahead without the type that would not finish');
+      assert(pinboardStore.get().length === 0, 'and the board must be the one the server sent back');
+    });
+  }
+
   await run('PinboardItemType cannot be instantiated directly', async () => {
     let threw = false;
     try {

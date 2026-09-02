@@ -15,6 +15,8 @@ of changes; this project follows semantic versioning.
 - Improvements to the UX and features in the slash commands menu and editor panels
 - A tab moves to the top when its turn finishes or needs you, not while output is arriving
 - The cache-miss caution now follows the model each thread actually ran, and clears again in sub-threads
+- Pinboard items can stay live while you read another tab, instead of starting over on the way back
+- Extensions can embed a local server in a pin, and start a background task with no deadline
 
 ## [0.5.9] - 2026-08-29
 

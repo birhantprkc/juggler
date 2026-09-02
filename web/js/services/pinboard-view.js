@@ -54,6 +54,14 @@ let _seedSpent = false;
 /** @type {string} */
 let _status = '';
 
+/**
+ * How long a pin's type is given to release what it started before the removal
+ * goes ahead without it. Long enough for a local server to be asked to stop,
+ * short enough that a click on Remove is still a click that removes something.
+ * @type {number}
+ */
+const RELEASE_TIMEOUT_MS = 2000;
+
 /** @type {Set<() => void>} */
 const _subscribers = new Set();
 
@@ -188,6 +196,51 @@ async function attempt(lead, edit) {
   }
 }
 
+/**
+ * Offer a pin's type the moment before its pin goes, so it can release what that
+ * pin created — a server it started, a connection it opened. What it was merely
+ * looking at is not its to touch: removing a view is not an instruction to act
+ * on the world it was a view of.
+ *
+ * Advisory in every direction. It is awaited, so a type that stops a process has
+ * a chance to finish; a type that throws is logged and the removal goes ahead
+ * regardless; and a type that takes longer than {@link RELEASE_TIMEOUT_MS} is
+ * left to finish on its own while the removal goes ahead without it. A pin the
+ * user has asked to be rid of goes whatever its extension thinks about it, and
+ * a Remove button that can be made to hang is not a Remove button.
+ * @param {Pin} pin - The pin about to be removed.
+ * @param {import('juggler/pinboard-item-type').PinActiveContext} [active] - The active snapshot.
+ * @returns {Promise<void>} Resolves once the type has had its turn, or its time.
+ */
+async function releasePin(pin, active) {
+  const type = pinboardItemRegistry.getType(pin.type);
+  if (!type) return;
+  let config = pin.config;
+  try {
+    config = type.normalizeConfig(pin.config) ?? config;
+  } catch {
+    // A type that cannot make sense of its own stored config is still owed the
+    // chance to release what it started; the raw config is better than nothing.
+  }
+  /** @type {number|undefined} */
+  let timer;
+  const expired = new Promise((resolve) => {
+    timer = window.setTimeout(() => {
+      console.error(`[Pinboard] Item type "${pin.type}" took too long to release its pin; removing it anyway.`);
+      resolve(undefined);
+    }, RELEASE_TIMEOUT_MS);
+  });
+  const released = (async () => {
+    try {
+      await type.willRemove(config, { active: active ?? null });
+    } catch (err) {
+      console.error(`[Pinboard] Item type "${pin.type}" failed to release its pin:`, err);
+    }
+  })();
+  await Promise.race([released, expired]);
+  window.clearTimeout(timer);
+}
+
 const pinboardView = {
   /**
    * Subscribe to view changes — open/closed, active pin, status. Fires after the
@@ -251,7 +304,7 @@ const pinboardView = {
   setActivePin(pinId) {
     if (_activePinId === pinId) return;
     _activePinId = pinId;
-    const index = pinboardStore.get().findIndex((p) => p.id === pinId);
+    const index = pinboardStore.get().findIndex((pin) => pin.id === pinId);
     if (index >= 0) _activeIndex = index;
     notify();
   },
@@ -372,11 +425,16 @@ const pinboardView = {
 
   /**
    * Remove a pin from the shared board. Removing the panel never touches what it
-   * was showing.
+   * was showing — only what it started; see {@link releasePin}.
    * @param {string} pinId - The pin to remove.
+   * @param {import('juggler/pinboard-item-type').PinActiveContext} [active] - The
+   *   active-context snapshot, for the type's release hook. The panel has one to
+   *   hand; nothing else that removes a pin needs to.
    * @returns {Promise<void>}
    */
-  async remove(pinId) {
+  async remove(pinId, active) {
+    const pin = pinboardStore.getPin(pinId);
+    if (pin) await releasePin(pin, active);
     await attempt("Couldn't remove that pin.", () => pinboardStore.remove(pinId));
   },
 

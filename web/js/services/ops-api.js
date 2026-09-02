@@ -375,7 +375,9 @@ export function __setOpCallTimeoutForTest(ms) {
  * @typedef {object} ShellExecuteParams
  * @property {string} [command] - Shell command to execute (max 10000 chars)
  * @property {string} [code] - Python code to execute (alternative to command)
- * @property {number} [timeout] - Timeout in milliseconds (default 30000, max 1200000)
+ * @property {number} [timeout] - Timeout in milliseconds (default 30000, max 1200000).
+ *   The -1 that {@link ShellStartBackgroundParams} reads as "no deadline" is refused
+ *   here: a command whose caller waits for its output must have something that ends it.
  * @property {string} [cwd] - Working directory for command
  * @property {string} [conv_id] - Conversation that owns this command; buckets its full-output spill file
  */
@@ -825,7 +827,11 @@ export async function shellExecute(params) {
  * Parameters for starting a background shell
  * @typedef {object} ShellStartBackgroundParams
  * @property {string} command - The command to execute
- * @property {number} [timeout] - Optional timeout in milliseconds (max 1200000)
+ * @property {number} [timeout] - Optional timeout in milliseconds (max 1200000).
+ *   Pass -1 for no deadline at all: the task then runs until {@link shellKill}
+ *   stops it or the server goes away, which is what a long-lived local server —
+ *   a dev server, a patch host an extension embeds — needs. Do not pass 0
+ *   meaning "forever": 0 is a real duration and the task dies immediately.
  * @property {string} [conv_id] - Conversation ID for tracking ownership
  * @property {string} [tool_use_id] - Tool use ID for frontend correlation
  */

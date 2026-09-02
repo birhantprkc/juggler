@@ -183,6 +183,15 @@ const pinboardStore = {
     return _pins;
   },
 
+  /**
+   * One pin off the current board, by id.
+   * @param {string} pinId - The pin wanted.
+   * @returns {Pin|null} The pin, or null when the board does not have it.
+   */
+  getPin(pinId) {
+    return _pins.find((pin) => pin.id === pinId) || null;
+  },
+
   /** @returns {boolean} True once a board has been read from the server. */
   isLoaded() {
     return _loaded;
@@ -266,8 +275,16 @@ const pinboardStore = {
   },
 
   /**
-   * Remove a pin. Removing the panel never touches what it was showing: a Tasks
-   * pin does not stop tasks, a memory pin does not edit MEMORY.md.
+   * Remove a pin. Removing the panel never touches what it was *showing*: a Tasks
+   * pin does not stop tasks it merely listed, a memory pin does not edit
+   * MEMORY.md, a file pin does not delete a file.
+   *
+   * What a pin *started* is the other half of that line and belongs to the pin:
+   * a type may define `willRemove` to release a server it launched, which
+   * `pinboardView.remove` awaits on the way through. This is the low-level edit
+   * and does not call it — a batch of operations is not a user removing a pin —
+   * so anything that removes a pin on the user's behalf should go through the
+   * view rather than here.
    * @param {string} pinId - The pin to remove.
    * @returns {Promise<Pin[]>} The resulting board.
    */

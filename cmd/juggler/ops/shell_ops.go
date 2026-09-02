@@ -24,6 +24,14 @@ const (
 	maxExecTimeoutMs     = 1200000 // hard cap on any requested timeout
 )
 
+// noDeadlineTimeoutMs is the "timeout" a caller passes to ask for a background
+// task with no deadline at all. Zero cannot mean this: it is a legitimate
+// duration that context.WithTimeout treats as already expired, so a caller who
+// meant "forever" and typed 0 would get a task that died immediately. Negative
+// is not a duration anybody means literally, which is what makes it safe to
+// spend as a sentinel.
+const noDeadlineTimeoutMs = -1
+
 // timeoutFromParams reads an optional "timeout" (milliseconds) from params,
 // falling back to defaultMs when absent, and caps the result at maxExecTimeoutMs.
 func timeoutFromParams(params map[string]any, defaultMs int) time.Duration {
@@ -33,6 +41,22 @@ func timeoutFromParams(params map[string]any, defaultMs int) time.Duration {
 	}
 	return capTimeout(timeoutMs)
 }
+
+// wantsNoDeadline reports whether params asked for a task that runs until it is
+// stopped. Only startBackground can honour it; the foreground paths refuse it
+// with errNoDeadlineForeground.
+func wantsNoDeadline(params map[string]any) bool {
+	t, ok := params["timeout"].(float64)
+	return ok && int(t) == noDeadlineTimeoutMs
+}
+
+// errNoDeadlineForeground is what a foreground command asking for no deadline
+// gets. A command whose caller waits for its output must have something that
+// ends it, and the sentinel read as an ordinary duration is a negative one,
+// which context.WithTimeout treats as already expired — so the alternative to
+// saying this is a command that returns instantly for reasons nobody can see.
+var errNoDeadlineForeground = fmt.Errorf(
+	"timeout %d asks for no deadline, which only a background task can have", noDeadlineTimeoutMs)
 
 // capTimeout caps a millisecond timeout at maxExecTimeoutMs and converts it to
 // a Duration.
@@ -835,7 +859,10 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 		return nil, fmt.Errorf("invalid command: %w", err)
 	}
 
-	// Get timeout from params (default: 10 minutes for background tasks)
+	// Get timeout from params (default: the 20-minute cap for background tasks).
+	// Read even for a task that will not have one, because it is what names the
+	// deadline in the failure message — which only a task that has one can reach.
+	noDeadline := wantsNoDeadline(params)
 	timeout := timeoutFromParams(params, maxExecTimeoutMs)
 
 	// Extract conversation/tool-use tracking params (optional)
@@ -845,8 +872,19 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 	// Generate unique shell ID
 	shellID := fmt.Sprintf("bg-%d", time.Now().UnixNano())
 
-	// Create context with timeout and cancellation
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	// Create context with timeout and cancellation. A task asked for with no
+	// deadline gets cancellation alone: something meant to run until it is
+	// stopped — a dev server, a patch host an extension is embedding — has no
+	// business dying twenty minutes in, and the caller that started it is the
+	// thing that knows when it is done. `cancel` is the only way either kind
+	// ends, and `kill` is what calls it, so the two are the same task downstream.
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if noDeadline {
+		ctx, cancel = context.WithCancel(context.Background())
+	} else {
+		ctx, cancel = context.WithTimeout(context.Background(), timeout)
+	}
 
 	// Create background shell entry (mutable state initialized here,
 	// owned by registry goroutine once registered)
@@ -997,6 +1035,10 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 //
 // WARNING: Both modes execute arbitrary code and are security risks.
 func (ops *ShellOperations) execute(ctx context.Context, params map[string]any) (any, error) {
+	if wantsNoDeadline(params) {
+		return nil, errNoDeadlineForeground
+	}
+
 	// Check if this is Python code execution (code param) or shell command
 	if code, ok := params["code"].(string); ok {
 		// Python code execution - pass via stdin to python3

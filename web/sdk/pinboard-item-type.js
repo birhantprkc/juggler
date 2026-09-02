@@ -32,6 +32,24 @@
  *   that the board is the user's, so one they remove stays removed. Only ask for this
  *   where the type is worth a tab before anyone has configured anything — a type that
  *   needs a chooser answered has nothing to show, and there is nobody there to answer.
+ * @property {boolean} [retain] - Keep this pin mounted when the user switches to
+ *   another tab, instead of tearing it down and building it again on the way back.
+ *   Off by default, and the default is the right answer for almost everything: a pin
+ *   that re-reads its source on mount is *better* for being rebuilt, because it
+ *   cannot then show anything stale.
+ *
+ *   Ask for it when a rebuild would destroy something config cannot reconstruct — a
+ *   live connection, an audio session, an `<iframe>` whose page would reload and
+ *   start over. Those are not merely slow to rebuild; they are impossible to rebuild
+ *   identically, and a user who switched tabs did not ask for the thing they were
+ *   watching to begin again.
+ *
+ *   A retained pin's body element stays in the document and is hidden rather than
+ *   removed — reparenting an `<iframe>` reloads it, so the host never moves one —
+ *   and its `signal` stays unaborted, so its subscriptions go on running out of
+ *   sight. Its controller gets `hide()` and `show()` to quieten down and pick up
+ *   again. `teardown()` then means what it says: the pin is going for good, not
+ *   merely off screen.
  */
 
 /**
@@ -368,6 +386,15 @@
  * @property {(next: PinContext) => void} [update] - Apply a new context snapshot in place
  * @property {() => void} [teardown] - Stop timers and listeners
  * @property {() => void} [focus] - Move focus into the body, when the host reveals this pin
+ * @property {() => void} [hide] - Only for a type with `retain` in its manifest: the
+ *   user has switched to another tab and this pin is off screen, still mounted and
+ *   still subscribed. Quieten down — pause an animation, stop asking for what nobody
+ *   is reading — but do not release what retention exists to protect. Never called
+ *   for a pin that is not retained, which is torn down instead.
+ * @property {() => void} [show] - The retained pin is on screen again. Pick up
+ *   whatever `hide()` put down, and re-read anything that may have moved on while
+ *   nobody was looking: the news that arrived meanwhile was delivered, but a pin
+ *   that stopped listening in `hide()` will not have heard it.
  * @property {() => PinAction[]} [getActions] - The actions the item toolbar offers for
  *   this pin. The host asks after `mount()` and after every `update()`, and at no
  *   other time — there is no channel for announcing that your actions changed, so
@@ -443,6 +470,11 @@
  * every pin of its type, mount and teardown happen for reasons you do not control
  * (a project switch, a hot reload, the user switching tabs), and the same board is
  * open in windows you cannot see.
+ *
+ * A type with `retain` in its manifest is spared only the last of those: switching
+ * tabs hides it instead of tearing it down. It is not spared any of the others, and
+ * it is not spared this rule — a retained pin is still one of several views of a
+ * board it does not own, and what it must survive is still written in its config.
  * @class
  * @abstract
  */
@@ -481,6 +513,14 @@ class PinboardItemType {
   }
 
   /**
+   * @returns {boolean} True when this type's pins stay mounted while another tab is
+   *   showing, rather than being torn down and rebuilt on the way back.
+   */
+  get retainsMount() {
+    return this.getManifest().retain === true;
+  }
+
+  /**
    * Whether a new pin of this type can be added right now. Return a string to say
    * why not — the add picker shows it, which is far better than the entry silently
    * vanishing ('No project', 'No active conversation'). Defaults to always addable.
@@ -501,6 +541,41 @@ class PinboardItemType {
    */
   async configure(options) {
     return options.initialConfig ?? {};
+  }
+
+  /**
+   * The user is removing this pin. Release anything this pin created and nothing
+   * else.
+   *
+   * The boundary is the whole of the rule, and it is narrower than it looks.
+   * Removing a pin is removing a *view*, so a pin releases what it brought into
+   * existence — a server it started, a connection it opened — and never touches
+   * what it was merely looking at. A Tasks pin does not stop tasks it only
+   * listed; a Memory pin does not edit MEMORY.md; a File pin does not delete a
+   * file. Leaving a process running that the user now has no window onto is the
+   * problem this exists to solve, and it is the only one.
+   *
+   * Best-effort and advisory: it is awaited, but throwing does not stop the
+   * removal, and neither does taking too long — a couple of seconds in, the
+   * removal goes ahead and leaves you to finish on your own. A pin the user has
+   * asked to be rid of goes whatever its type thinks about it, so do the release
+   * and do not bargain. Not called when an extension is disabled or the app
+   * quits — there is no promise here that a resource is ever cleaned up, only
+   * that the obvious moment is offered.
+   *
+   * It runs once, in the window the pin was removed in. A board is shared, so
+   * the other windows showing it learn of the removal from the board itself and
+   * give their own mount `teardown()` and nothing more: this is where the one
+   * thing behind the pin is released, `teardown()` where one view of it is. Be
+   * ready to be called about something already gone, since the window doing the
+   * removing need not be the window that started it.
+   * @param {Record<string, any>} config - The pin's normalized config.
+   * @param {{active: PinActiveContext|null}} options - The active context, where the host had one.
+   * @returns {Promise<void>} Resolves when the release is done.
+   */
+  async willRemove(config, options) {
+    void config;
+    void options;
   }
 
   /**

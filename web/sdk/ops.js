@@ -49,6 +49,11 @@ export {
   shellGetOutput as shellOutput,
   shellGetOutputDelta as shellOutputDelta,
   shellKill,
+  // Liveness for tasks you already hold ids for. Not an inventory: it answers
+  // only about the ids you pass, and carries no output, so a surface watching a
+  // long-lived task polls this rather than dragging the whole log back with
+  // `shellOutput` every few seconds.
+  shellTaskStatus as shellStatus,
   // Web
   httpRequest,
   webFetch,

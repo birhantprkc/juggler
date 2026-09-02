@@ -341,7 +341,7 @@ class PinboardPanel extends JugglerElement {
       pinboardView.setActivePin(/** @type {CustomEvent} */ (e).detail.pinId);
     });
     this.on(this, 'pinboard-remove', (e) => {
-      void pinboardView.remove(/** @type {CustomEvent} */ (e).detail.pinId);
+      void pinboardView.remove(/** @type {CustomEvent} */ (e).detail.pinId, this._activeContext());
     });
     this.on(this, 'pinboard-move', (e) => {
       const { pinId, index } = /** @type {CustomEvent} */ (e).detail;
@@ -598,6 +598,10 @@ class PinboardPanel extends JugglerElement {
 
     const activePin = pins.find((pin) => pin.id === activeId) || null;
     this._nameWindow(active.conversation?.title || '');
+    // A retained pin stays mounted while another tab is showing, so the board is
+    // the only thing that can say it has gone. The board is shared: it may have
+    // been removed by a viewer that is not this one.
+    this._content.syncPins(pins);
     const mounted = this._content.setPin(activePin, active);
     // A pin that was already mounted takes the new snapshot in place; one that
     // has just been mounted was given it already.
@@ -640,6 +644,10 @@ class PinboardPanel extends JugglerElement {
     this._contextJson = '';
     this._tabbar.setTabs([], null);
     this._content.setPin(null, this._activeContext());
+    // Including the retained ones, which setPin only hides: a pin kept alive
+    // here would go on running against a conversation this board can no longer
+    // show, which is the very thing this branch exists to prevent.
+    this._content.syncPins([]);
     // A board that cannot name its conversation yet says only what it is, so the
     // header holds no name from a conversation this window has stopped showing.
     this._nameWindow('');
@@ -662,6 +670,10 @@ class PinboardPanel extends JugglerElement {
   _remount() {
     this._contextJson = '';
     this._content?.setPin(null, this._activeContext());
+    // Retention must not survive a reload: the class behind a retained pin has
+    // just been replaced, so keeping the old one alive would be keeping exactly
+    // the thing the reload was meant to get rid of.
+    this._content?.syncPins([]);
     this._render();
   }
 

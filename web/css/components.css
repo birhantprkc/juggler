@@ -11043,6 +11043,20 @@ pinboard-content:focus {
     overflow: auto;
 }
 
+/* Each mounted pin gets a slot of its own, so a retained pin can be hidden
+   without disturbing the one on screen. The slot is transparent to layout —
+   full height, no box of its own — because a pin sizing itself against the
+   body is what every item type was written against. */
+.pinboard-content__slot,
+.pinboard-content__placeholder {
+    height: 100%;
+}
+
+.pinboard-content__slot[hidden],
+.pinboard-content__placeholder[hidden] {
+    display: none;
+}
+
 .pinboard-empty,
 .pinboard-placeholder {
     display: flex;

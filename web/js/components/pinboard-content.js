@@ -210,6 +210,29 @@ class PinboardContent extends JugglerElement {
     /** @type {AbortController|null} @private */
     this._abort = null;
     /**
+     * The pins that stay mounted while another tab is showing, by pin id — the
+     * ones whose type asked for `retain`. Each holds the element it was mounted
+     * into, its controller, its own AbortController — retention means the pin's
+     * signal outlives the tab switch that hid it — and the pin exactly as it was
+     * handed over, normalized config and all, so that what a hidden pin is told
+     * later is what it was mounted with rather than a second reading of the
+     * board that might have moved on.
+     *
+     * The element is hidden in place and never moved: reparenting an `<iframe>`
+     * reloads it, which would undo the whole point of keeping it.
+     * @type {Map<string, {element: HTMLElement, controller: import('juggler/pinboard-item-type').PinController|null, abort: AbortController, pin: Pin}>} @private
+     */
+    this._retained = new Map();
+    /**
+     * The element the pin on screen was mounted into, when that pin is not a
+     * retained one. Removed on the way out; a retained pin's element is in
+     * {@link _retained} instead and is only hidden.
+     * @type {HTMLElement|null} @private
+     */
+    this._transientSlot = null;
+    /** @type {HTMLElement|null} @private Where the empty/missing/error states are drawn. */
+    this._placeholder = null;
+    /**
      * Where each pin was scrolled to, by pin id. Viewer-local reading position,
      * kept for the life of this element.
      * @type {Map<string, number>} @private
@@ -220,7 +243,7 @@ class PinboardContent extends JugglerElement {
     /**
      * Listeners with news waiting — one entry each, however many times they
      * were told. See {@link _scheduleNotify}.
-     * @type {Map<(...args: any[]) => void, string>} @private
+     * @type {Map<(...args: any[]) => void, {what: string, signal: AbortSignal|undefined}>} @private
      */
     this._pendingNotify = new Map();
     /** @type {number|null} @private The frame the pending notifications will go out on. */
@@ -301,6 +324,11 @@ class PinboardContent extends JugglerElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     this._unmount();
+    // Retention is for a pin that is off screen, not for one whose board has
+    // left the document: nothing may still be running against a board nobody
+    // can reach.
+    this._dropAllSlots();
+    this._cancelNotify();
   }
 
   /**
@@ -354,15 +382,42 @@ class PinboardContent extends JugglerElement {
       if (this._taskListeners.size > 0) void this._pollTasks();
     }
     this._renderToolbar();
+    // Every mounted pin hears this, not only the one on screen: a retained pin
+    // is still running against the active context, and one that learned of a
+    // conversation change only when the user happened to switch back to it
+    // would have been reading the wrong conversation until they did.
+    for (const [pinId, kept] of [...this._retained]) {
+      if (this._pin && pinId === this._pin.id) continue;
+      this._updateRetained(kept);
+    }
     const update = this._controller?.update;
-    if (!update || !this._pin) return;
+    if (!update || !this._pin || !this._abort) return;
     try {
-      update(this._pinContext(this._pin));
+      update(this._pinContext(this._pin, this._abort));
     } catch (err) {
       this._renderError(err);
       return;
     }
     this._renderActions();
+  }
+
+  /**
+   * Hand one hidden retained pin a new active-context snapshot. Its failure is
+   * its own: a pin nobody is looking at must not replace the body of the pin
+   * they are, so this logs and drops the pin rather than drawing an error over
+   * something unrelated.
+   * @param {{controller: import('juggler/pinboard-item-type').PinController|null, abort: AbortController, pin: Pin}} kept - Its mount.
+   * @private
+   */
+  _updateRetained(kept) {
+    const update = kept.controller?.update;
+    if (typeof update !== 'function') return;
+    try {
+      update(this._pinContext(kept.pin, kept.abort));
+    } catch (err) {
+      console.error(`[Pinboard] Retained item type "${kept.pin.type}" failed to update:`, err);
+      this._dropSlot(kept.pin.id);
+    }
   }
 
   /**
@@ -423,12 +478,21 @@ class PinboardContent extends JugglerElement {
       if (this._pin) this._scrollTops.set(this._pin.id, body.scrollTop);
     });
 
+    // The states the host draws in a pin's place get an element of their own
+    // rather than the run of the body, because the body may be holding retained
+    // pins that are merely hidden, and emptying it would end them.
+    const placeholder = document.createElement('div');
+    placeholder.className = 'pinboard-content__placeholder';
+    placeholder.hidden = true;
+    body.appendChild(placeholder);
+
     this.append(toolbar, body);
     this._toolbar = toolbar;
     this._title = title;
     this._subtitle = subtitle;
     this._actions = actions;
     this._body = body;
+    this._placeholder = placeholder;
   }
 
   /**
@@ -646,10 +710,15 @@ class PinboardContent extends JugglerElement {
    * after them — so those are delivered as they arrive.
    * @param {(...args: any[]) => void} listener - The item type's callback.
    * @param {string} what - What changed, for the log when it throws.
+   * @param {AbortSignal} signal - The signal of the pin the listener belongs to,
+   *   so news held for a pin that has since gone away is dropped rather than
+   *   delivered to a controller that has been torn down. Several pins can be
+   *   mounted at once — the one on screen and any retained behind it — so "the
+   *   pin on screen" is not the same question as "the pin this listener is for".
    * @private
    */
-  _scheduleNotify(listener, what) {
-    this._pendingNotify.set(listener, what);
+  _scheduleNotify(listener, what, signal) {
+    this._pendingNotify.set(listener, { what, signal });
     if (this._visible) this._scheduleFlush();
   }
 
@@ -675,7 +744,10 @@ class PinboardContent extends JugglerElement {
     if (!this._pendingNotify.size) return;
     const pending = this._pendingNotify;
     this._pendingNotify = new Map();
-    for (const [listener, what] of pending) this._notifyPin(listener, [], what);
+    for (const [listener, held] of pending) {
+      if (held.signal?.aborted) continue;
+      this._notifyPin(listener, [], held.what);
+    }
   }
 
   /**
@@ -686,6 +758,21 @@ class PinboardContent extends JugglerElement {
   _cancelNotify() {
     this._pendingNotify.clear();
     this._clearFlush();
+  }
+
+  /**
+   * Drop the news held for one pin's listeners, leaving everyone else's alone.
+   * A board can have several pins mounted at once — the one on screen and any
+   * retained ones behind it — so a pin going away must not silence them too.
+   * @param {AbortSignal|undefined} signal - The going pin's signal, if it had one.
+   * @private
+   */
+  _dropNotifyFor(signal) {
+    if (!signal) return;
+    for (const [listener, held] of this._pendingNotify) {
+      if (held.signal === signal) this._pendingNotify.delete(listener);
+    }
+    if (!this._pendingNotify.size) this._clearFlush();
   }
 
   /**
@@ -754,7 +841,7 @@ class PinboardContent extends JugglerElement {
   _mount(pin) {
     const body = this._body;
     if (!body) return;
-    body.replaceChildren();
+    this._hidePlaceholder();
 
     const type = pinboardItemRegistry.getType(pin.type);
     if (!type) {
@@ -770,36 +857,164 @@ class PinboardContent extends JugglerElement {
       return;
     }
 
-    this._abort = new AbortController();
+    // A retained pin that is still mounted is revealed rather than built again —
+    // that is the whole of what retaining one means. A config change is a
+    // different thing in the same tab, so that one is rebuilt like any other.
+    const kept = this._retained.get(pin.id);
+    if (kept) {
+      if (JSON.stringify(kept.pin.config) === JSON.stringify(config)) {
+        this._abort = kept.abort;
+        this._controller = kept.controller;
+        kept.element.hidden = false;
+        this._callController(kept.controller, 'show');
+        this._restoreScroll(pin);
+        return;
+      }
+      this._dropSlot(pin.id);
+    }
+
+    // Every pin is mounted into an element of its own, retained or not, so that
+    // one being hidden is never the others being disturbed.
+    const slot = document.createElement('div');
+    slot.className = 'pinboard-content__slot';
+    body.appendChild(slot);
+
+    const abort = new AbortController();
+    this._abort = abort;
+    const mounted = { ...pin, config };
+    /** @type {any} */
+    let result;
     try {
-      const result = type.mount(body, this._pinContext({ ...pin, config }));
-      this._controller = typeof result === 'function' ? { teardown: result } : (result || null);
+      result = type.mount(slot, this._pinContext(mounted, abort));
     } catch (err) {
+      slot.remove();
+      this._abort = null;
       this._renderError(err);
       return;
     }
-    // Put the reader back where they were reading, now the body has content.
+    this._controller = typeof result === 'function' ? { teardown: result } : (result || null);
+
+    if (type.retainsMount) {
+      this._retained.set(pin.id, {
+        element: slot,
+        controller: this._controller,
+        abort,
+        pin: mounted,
+      });
+    } else {
+      this._transientSlot = slot;
+    }
+    this._restoreScroll(pin);
+  }
+
+  /**
+   * Put the reader back where they were reading, now the body has content.
+   * @param {Pin} pin - The pin just shown.
+   * @private
+   */
+  _restoreScroll(pin) {
     const scrollTop = this._scrollTops.get(pin.id);
-    if (scrollTop) body.scrollTop = scrollTop;
+    if (scrollTop && this._body) this._body.scrollTop = scrollTop;
+  }
+
+  /**
+   * Call one of a controller's optional lifecycle methods. Best-effort, like
+   * everything else an item type is asked to do: one that throws on the way past
+   * is logged and stepped over, never allowed to take the board with it.
+   * @param {import('juggler/pinboard-item-type').PinController|null} controller - The controller.
+   * @param {'hide'|'show'} method - Which to call.
+   * @private
+   */
+  _callController(controller, method) {
+    const fn = controller?.[method];
+    if (typeof fn !== 'function') return;
+    try {
+      fn.call(controller);
+    } catch (err) {
+      const what = method === 'hide' ? 'go off screen' : 'come back';
+      console.error(`[Pinboard] Item type failed to ${what}:`, err);
+    }
+  }
+
+  /**
+   * End a retained pin for good: abort its signal, tear its controller down and
+   * take its element out of the document. The counterpart to hiding one, and the
+   * only thing that undoes a mount.
+   * @param {string} pinId - The pin to drop.
+   * @private
+   */
+  _dropSlot(pinId) {
+    const kept = this._retained.get(pinId);
+    if (!kept) return;
+    this._retained.delete(pinId);
+    try {
+      kept.abort.abort();
+    } catch (err) {
+      console.error('[Pinboard] Abort failed:', err);
+    }
+    this._dropNotifyFor(kept.abort.signal);
+    try {
+      kept.controller?.teardown?.();
+    } catch (err) {
+      console.error('[Pinboard] Item type failed to tear down:', err);
+    }
+    kept.element.remove();
+    if (this._abort === kept.abort) {
+      this._abort = null;
+      this._controller = null;
+    }
+  }
+
+  /**
+   * Drop every retained pin. For the cases where nothing may still be running
+   * against this board at all — the element leaving the document, or the board
+   * losing the conversation it was a view of.
+   * @private
+   */
+  _dropAllSlots() {
+    for (const pinId of [...this._retained.keys()]) this._dropSlot(pinId);
+  }
+
+  /**
+   * Say which pins are still on the board, so the ones that have gone can be
+   * ended rather than left running out of sight. The board is shared, so a pin
+   * may be removed by a viewer that is not this one.
+   * @param {Pin[]} pins - The board as it now stands.
+   * @returns {void}
+   */
+  syncPins(pins) {
+    if (!this._retained.size) return;
+    const live = new Set(pins.map((pin) => pin.id));
+    for (const pinId of [...this._retained.keys()]) {
+      if (!live.has(pinId)) this._dropSlot(pinId);
+    }
   }
 
   /**
    * The context handed to an item type: the pin, the active snapshot, the host
    * services, a signal that fires when the pin goes away, and the one way it may
    * write anything down.
+   *
+   * The mount's own AbortController is carried through every service rather than
+   * read off the host at subscription time, because several pins are mounted at
+   * once and an item type may subscribe long after the call that handed it this
+   * context — from a promise it resolved, from a timer. Whichever pin is on
+   * screen when that happens is not the question; whose subscription it is, is.
    * @param {Pin} pin - The pin being mounted.
+   * @param {AbortController} abort - The mount this context belongs to.
    * @returns {import('juggler/pinboard-item-type').PinContext} The context.
    * @private
    */
-  _pinContext(pin) {
+  _pinContext(pin, abort) {
+    const signal = abort.signal;
     return {
       pin: { id: pin.id, type: pin.type, config: pin.config },
       active: /** @type {PinActiveContext} */ (this._active),
       services: {
-        files: { onChange: (listener) => this._watchFiles(listener) },
+        files: { onChange: (listener) => this._watchFiles(listener, signal) },
         contextItems: {
           find: (type, from) => this._findContextItem(type, from),
-          onChange: (listener) => this._watchContextItems(listener),
+          onChange: (listener) => this._watchContextItems(listener, signal),
           reveal: (threadId, itemId) => this._reveal(itemId
             ? { kind: 'item', id: itemId }
             : { kind: 'thread', id: threadId ?? null }),
@@ -807,14 +1022,14 @@ class PinboardContent extends JugglerElement {
         git: {
           status: () => gitStatusCache.get(),
           error: () => gitStatusCache.getError(),
-          onChange: (listener) => this._watchGitStatus(listener),
+          onChange: (listener) => this._watchGitStatus(listener, signal),
           refresh: async () => {
             await gitStatusCache.refresh();
           },
         },
         fileEdits: {
           list: (query) => this._listFileEdits(query),
-          onChange: (listener) => this._watchFileEdits(listener),
+          onChange: (listener) => this._watchFileEdits(listener, signal),
           reveal: (itemId) => this._reveal({ kind: 'item', id: itemId }),
         },
         tasks: {
@@ -822,12 +1037,12 @@ class PinboardContent extends JugglerElement {
           // snapshot, and mutating it must not reach the next reader.
           list: () => (this._tasks ? this._tasks.map((task) => ({ ...task })) : null),
           error: () => this._taskError,
-          onChange: (listener) => this._watchTasks(listener),
+          onChange: (listener) => this._watchTasks(listener, signal),
           reveal: (itemId) => this._reveal({ kind: 'item', id: itemId }),
           stop: (taskId) => this._stopTask(taskId),
         },
       },
-      signal: /** @type {AbortController} */ (this._abort).signal,
+      signal,
       updateConfig: async (nextConfig) => {
         await pinboardStore.updateConfig(pin.id, nextConfig);
       },
@@ -867,12 +1082,12 @@ class PinboardContent extends JugglerElement {
    * function, so an item type that forgets to unsubscribe still stops listening
    * when it goes away.
    * @param {(changes: import('juggler/pinboard-item-type').PinFileChange[]) => void} listener - Called with each batch.
+   * @param {AbortSignal} signal - The subscribing pin's mount signal.
    * @returns {() => void} Unsubscribe.
    * @private
    */
-  _watchFiles(listener) {
+  _watchFiles(listener, signal) {
     const root = (this._active?.project?.path || '').replace(/\/+$/, '');
-    const signal = this._abort?.signal;
     const handler = (/** @type {any} */ changes) => {
       if (!Array.isArray(changes) || !changes.length) return;
       const resolved = changes.map((/** @type {any} */ change) => ({
@@ -888,7 +1103,7 @@ class PinboardContent extends JugglerElement {
       stopped = true;
       wsService.off('file-change', handler);
     };
-    signal?.addEventListener('abort', stop, { once: true });
+    signal.addEventListener('abort', stop, { once: true });
     return stop;
   }
 
@@ -900,15 +1115,15 @@ class PinboardContent extends JugglerElement {
    * Tied to the pin's signal as well as to the returned function, like the file
    * watcher, so forgetting to unsubscribe leaks nothing.
    * @param {() => void} listener - Called when a new status has arrived.
+   * @param {AbortSignal} signal - The subscribing pin's mount signal.
    * @returns {() => void} Unsubscribe.
    * @private
    */
-  _watchGitStatus(listener) {
-    const signal = this._abort?.signal;
+  _watchGitStatus(listener, signal) {
     const unsubscribe = gitStatusCache.subscribe(() => {
       this._notifyPin(listener, [], 'a git status change');
     });
-    signal?.addEventListener('abort', unsubscribe, { once: true });
+    signal.addEventListener('abort', unsubscribe, { once: true });
     return unsubscribe;
   }
 
@@ -1026,12 +1241,12 @@ class PinboardContent extends JugglerElement {
    * Tied to the pin's own signal as well as to the returned function, exactly as
    * {@link _watchFiles} is.
    * @param {() => void} listener - Called after a change.
+   * @param {AbortSignal} signal - The subscribing pin's mount signal.
    * @returns {() => void} Unsubscribe.
    * @private
    */
-  _watchContextItems(listener) {
-    const signal = this._abort?.signal;
-    const fire = () => this._scheduleNotify(listener, 'a context-item change');
+  _watchContextItems(listener, signal) {
+    const fire = () => this._scheduleNotify(listener, 'a context-item change', signal);
     /** @param {{type: string, data?: any}} event - A session event. */
     const onSession = (event) => {
       if (event.type !== 'context-items:changed' && event.type !== 'conversation:changed') return;
@@ -1138,11 +1353,12 @@ class PinboardContent extends JugglerElement {
    * signals a context-item watcher uses: a tool action completing is an items
    * change like any other.
    * @param {() => void} listener - Called after a change.
+   * @param {AbortSignal} signal - The subscribing pin's mount signal.
    * @returns {() => void} Unsubscribe.
    * @private
    */
-  _watchFileEdits(listener) {
-    return this._watchContextItems(listener);
+  _watchFileEdits(listener, signal) {
+    return this._watchContextItems(listener, signal);
   }
 
   /**
@@ -1299,10 +1515,11 @@ class PinboardContent extends JugglerElement {
    * Tied to the pin's signal as well as to the returned function, like every
    * other service here.
    * @param {() => void} listener - Called when the list may have changed.
+   * @param {AbortSignal} signal - The subscribing pin's mount signal.
    * @returns {() => void} Unsubscribe.
    * @private
    */
-  _watchTasks(listener) {
+  _watchTasks(listener, signal) {
     this._taskListeners.add(listener);
     this._updateTaskPolling();
     void this._pollTasks();
@@ -1314,7 +1531,7 @@ class PinboardContent extends JugglerElement {
       this._taskListeners.delete(listener);
       this._updateTaskPolling();
     };
-    this._abort?.signal.addEventListener('abort', stop, { once: true });
+    signal.addEventListener('abort', stop, { once: true });
     return stop;
   }
 
@@ -1352,22 +1569,36 @@ class PinboardContent extends JugglerElement {
    * @private
    */
   _unmount() {
-    // News held for a controller that is going away is news for nobody.
-    this._cancelNotify();
-    try {
-      this._abort?.abort();
-    } catch (err) {
-      console.error('[Pinboard] Abort failed:', err);
-    }
-    try {
-      this._controller?.teardown?.();
-    } catch (err) {
-      console.error('[Pinboard] Item type failed to tear down:', err);
+    const kept = this._pin ? this._retained.get(this._pin.id) : null;
+    if (kept) {
+      // Put it away rather than end it. Its signal stays unaborted and its
+      // subscriptions stay live, so what happens while it is hidden is still
+      // news it will be told — which is the difference between a pin that
+      // survives a tab switch and one that merely gets rebuilt quickly.
+      this._callController(kept.controller, 'hide');
+      kept.element.hidden = true;
+    } else {
+      // News held for a controller that is going away is news for nobody — but
+      // only that controller's, because a retained pin next to it is still
+      // listening and its news is still wanted.
+      this._dropNotifyFor(this._abort?.signal);
+      try {
+        this._abort?.abort();
+      } catch (err) {
+        console.error('[Pinboard] Abort failed:', err);
+      }
+      try {
+        this._controller?.teardown?.();
+      } catch (err) {
+        console.error('[Pinboard] Item type failed to tear down:', err);
+      }
+      this._transientSlot?.remove();
+      this._transientSlot = null;
     }
     this._abort = null;
     this._controller = null;
     this._pin = null;
-    this._body?.replaceChildren();
+    this._hidePlaceholder();
     this._actionList = [];
     // The toolbar has been emptied, so whatever it last said is no longer a
     // description of what is drawn — and the next pin's actions must not be
@@ -1385,8 +1616,7 @@ class PinboardContent extends JugglerElement {
    * @private
    */
   _renderEmpty() {
-    const body = this._body;
-    if (!body) return;
+    if (!this._placeholder) return;
     const empty = document.createElement('div');
     empty.className = 'pinboard-empty';
     const line = document.createElement('p');
@@ -1400,7 +1630,30 @@ class PinboardContent extends JugglerElement {
       this.dispatchEvent(new CustomEvent('pinboard-add', { bubbles: true }));
     });
     empty.append(line, add);
-    body.replaceChildren(empty);
+    this._showPlaceholder(empty);
+  }
+
+  /**
+   * Draw one of the host's own states in the pin's place. It goes in an element
+   * of its own so that retained pins, which are hidden rather than removed, are
+   * still there when the board has something to show again.
+   * @param {HTMLElement} content - What to show.
+   * @private
+   */
+  _showPlaceholder(content) {
+    if (!this._placeholder) return;
+    this._placeholder.replaceChildren(content);
+    this._placeholder.hidden = false;
+  }
+
+  /**
+   * Take the placeholder down and let go of what it was holding.
+   * @private
+   */
+  _hidePlaceholder() {
+    if (!this._placeholder) return;
+    this._placeholder.replaceChildren();
+    this._placeholder.hidden = true;
   }
 
   /**
@@ -1410,8 +1663,7 @@ class PinboardContent extends JugglerElement {
    * @private
    */
   _renderMissing(pin) {
-    const body = this._body;
-    if (!body) return;
+    if (!this._placeholder) return;
     const missing = document.createElement('div');
     missing.className = 'pinboard-placeholder';
     const line = document.createElement('p');
@@ -1421,7 +1673,7 @@ class PinboardContent extends JugglerElement {
     note.className = 'pinboard-placeholder__note';
     note.textContent = 'The pin keeps its settings until you remove it.';
     missing.append(line, note);
-    body.replaceChildren(missing);
+    this._showPlaceholder(missing);
   }
 
   /**
@@ -1434,13 +1686,21 @@ class PinboardContent extends JugglerElement {
    * @private
    */
   _renderError(err) {
-    const body = this._body;
-    if (!body) return;
+    if (!this._placeholder) return;
     console.error('[Pinboard] Item type failed:', err);
-    try {
-      this._controller?.teardown?.();
-    } catch (teardownErr) {
-      console.error('[Pinboard] Item type failed to tear down after an error:', teardownErr);
+    // A retained pin that has thrown is dropped outright rather than kept: what
+    // retention protects is a thing still working, and this one has said it is
+    // not. Dropping it takes its element and its subscriptions with it.
+    if (this._pin && this._retained.has(this._pin.id)) {
+      this._dropSlot(this._pin.id);
+    } else {
+      try {
+        this._controller?.teardown?.();
+      } catch (teardownErr) {
+        console.error('[Pinboard] Item type failed to tear down after an error:', teardownErr);
+      }
+      this._transientSlot?.remove();
+      this._transientSlot = null;
     }
     this._controller = null;
     this._renderActions();
@@ -1453,7 +1713,7 @@ class PinboardContent extends JugglerElement {
     detail.className = 'pinboard-placeholder__error';
     detail.textContent = extractErrorMessage(err);
     shell.append(line, detail);
-    body.replaceChildren(shell);
+    this._showPlaceholder(shell);
   }
 }
 
