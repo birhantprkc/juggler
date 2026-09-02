@@ -113,6 +113,16 @@ class StrategySelector extends HTMLElement {
      */
     this._anchorTokens = 0;
     /**
+     * The model signature recorded by the anchored turn's transaction blob — the
+     * model that actually built the cached prefix. It heads the BASELINE (the
+     * live selection heads the current fingerprint), because the two are
+     * different claims: what the provider holds versus what the next send would
+     * ask for. '' when no turn is anchored, or when the blob predates the field.
+     * @type {string}
+     * @private
+     */
+    this._anchorModelSig = '';
+    /**
      * The full generated tool set, cached so the per-edit recompute is sync (it
      * changes only on a strategy/plugin toggle, not on item edits).
      * @type {any[]|null}
@@ -384,38 +394,67 @@ class StrategySelector extends HTMLElement {
    * @private
    */
   _modelSignature(thread) {
-    const cfg = thread?.getEffectiveModelConfig?.();
+    return this._configSignature(thread?.getEffectiveModelConfig?.());
+  }
+
+  /**
+   * Encode a model config as the `provider/model#thinking` signature. Shared by
+   * the live selection and the anchor blob so the baseline and the outgoing
+   * prefix are always described on identical terms — the fingerprint diff is an
+   * equality test on these strings, so one encoding is the whole contract.
+   * @param {{provider?: string, model?: string, thinking?: string}|null|undefined} cfg - A model config
+   * @returns {string} The signature ('' when there is no config)
+   * @private
+   */
+  _configSignature(cfg) {
     if (!cfg) return '';
     return `${cfg.provider || ''}/${cfg.model || ''}#${cfg.thinking || ''}`;
   }
 
   /**
-   * Resolve the bound thread's last-turn anchored input tokens — the size of the
-   * cached prefix a switch would discard. Reads the same transaction blob the
-   * footer's meter shows (findLastAssistantTxnId → blob inputTokens). Returns 0
-   * when no turn has been anchored (fresh conversation) → predicate says 'none'.
+   * Resolve what the anchored turn cached: its input tokens (the size of the
+   * prefix a switch would discard) and the model that built it. Both come from
+   * one read of the transaction blob the footer's meter shows
+   * (findLastAssistantTxnId → blob), so the anchor is measured and attributed
+   * from a single source.
+   *
+   * The model matters as much as the size. The baseline claims what the provider
+   * has cached, and only the blob knows that — the live selection is a claim
+   * about the NEXT send, and a thread that inherits its model (any sub-thread
+   * without an override) has that selection changed under it whenever the
+   * conversation's default moves. Reading the head off the live config let a
+   * root-level switch silently rewrite what a sub-thread believed it had cached,
+   * so returning to the model that genuinely ran read as a bust.
+   *
+   * Tokens 0 / signature '' when no turn has been anchored (fresh conversation)
+   * → the predicate says 'none' and the head falls back to the live selection.
    * @param {any} thread - The bound message thread
-   * @returns {Promise<number>} Last-turn input tokens, or 0
+   * @returns {Promise<{tokens: number, modelSig: string}>} The anchored turn's size and model
    * @private
    */
-  async _resolvePrefixTokens(thread) {
+  async _resolveAnchor(thread) {
+    const none = { tokens: 0, modelSig: '' };
     const txnId = findLastAssistantTxnId(thread?.items);
     const convId = thread?.conversation?.id;
-    if (!txnId || !convId) return 0;
+    if (!txnId || !convId) return none;
     try {
       const { default: workerManager } = await import('../services/worker-manager.js');
       const blob = /** @type {any} */ (await workerManager.getTransaction(convId, txnId));
-      return Number(blob?.inputTokens) || 0;
+      return {
+        tokens: Number(blob?.inputTokens) || 0,
+        modelSig: this._configSignature(blob?.modelConfig)
+      };
     } catch {
-      return 0;
+      return none;
     }
   }
 
   /**
    * Refresh the async inputs of the cache-bust detector, off the hot render path
    * (generateToolDefinitions and the token-blob lookup are async; render() is
-   * sync). Caches the full tool set and the last-turn anchor tokens, optionally
-   * (re)captures the idle baseline fingerprint, then re-diffs synchronously.
+   * sync). Caches the full tool set and the anchored turn's size and model,
+   * optionally (re)captures the idle baseline fingerprint, then re-diffs
+   * synchronously.
    * Callers: the once-per-thread items rebind, the processing→idle transition,
    * and a registries reload. render() and the per-edit path never await.
    * @param {{rebaseline?: boolean}} [opts] - Recapture the baseline (use on bind / idle)
@@ -425,17 +464,33 @@ class StrategySelector extends HTMLElement {
   async _refreshCacheInputs({ rebaseline = false } = {}) {
     const thread = this._messageThread;
     if (!thread) { this._baseline = null; this._setImpact('none'); return; }
+    // "Did the thread swap under us" is a question about the THREAD, not about
+    // the wrapper object: conversation-tab mints a fresh MessageThread for every
+    // sub-thread column on every doc update, so the object we started with is
+    // routinely replaced mid-await while still describing the same thread. An
+    // identity check on the object therefore aborts almost every sub-thread
+    // refresh — including the rebaseline that follows a turn, which arrives
+    // inside exactly such an update — leaving the baseline frozen forever and
+    // the caution stuck on. The root thread reuses one wrapper and never saw it.
+    const threadKey = thread.threadItemId || null;
+    const swapped = () =>
+      !this._messageThread || (this._messageThread.threadItemId || null) !== threadKey;
     try {
       const tools = await generateToolDefinitions();
-      if (this._messageThread !== thread) return; // thread swapped mid-await
+      if (swapped()) return;
       this._toolsAll = tools;
-      this._anchorTokens = await this._resolvePrefixTokens(thread);
-      if (this._messageThread !== thread) return;
+      const anchor = await this._resolveAnchor(thread);
+      if (swapped()) return;
+      this._anchorTokens = anchor.tokens;
+      this._anchorModelSig = anchor.modelSig;
       // Rebaseline only when idle: mid-turn the transcript is still growing and
       // is not a stable cached prefix. When idle, the current transcript is
-      // exactly what the provider has now cached.
+      // exactly what the provider has now cached — under the model that sent it,
+      // which is the anchor's, not whatever is selected now.
       if ((rebaseline || this._baseline === null) && this._isIdle()) {
-        this._baseline = this._buildCurrentFingerprint();
+        this._baseline = this._buildFingerprint(
+          this._anchorModelSig || this._modelSignature(this._messageThread)
+        );
       }
       this._recomputeImpact();
     } catch (err) {
@@ -444,14 +499,29 @@ class StrategySelector extends HTMLElement {
   }
 
   /**
-   * Build the outgoing prefix fingerprint from cached inputs: the effective
-   * strategy's tool-set signature followed by one signature per history item.
-   * Sync and cheap (no await) — safe to call on every item edit. Returns null
-   * until the tool set has been resolved.
+   * Build the OUTGOING prefix fingerprint: the transcript as it stands, headed
+   * by the model the next send would use. Sync and cheap (no await) — safe to
+   * call on every item edit.
    * @returns {string[]|null} The fingerprint, or null when inputs aren't ready
    * @private
    */
   _buildCurrentFingerprint() {
+    return this._buildFingerprint(this._modelSignature(this._messageThread));
+  }
+
+  /**
+   * Build a prefix fingerprint from cached inputs under a given model: the
+   * model signature, the effective strategy's tool-set signature, then one
+   * signature per leading `prefix` context item and per history item. The model
+   * is a parameter because the baseline and the outgoing prefix share every
+   * other term and differ only there — the baseline is headed by the model that
+   * cached the transcript, the outgoing one by the model that would send it.
+   * Returns null until the tool set has been resolved.
+   * @param {string} modelSig - The model signature to head the fingerprint with
+   * @returns {string[]|null} The fingerprint, or null when inputs aren't ready
+   * @private
+   */
+  _buildFingerprint(modelSig) {
     const thread = this._messageThread;
     if (!thread || !this._toolsAll) return null;
     const strategy = strategyRegistry.createStrategy(thread.currentStrategyId || 'default', thread);
@@ -462,7 +532,7 @@ class StrategySelector extends HTMLElement {
       (/** @type {any} */ ci) => contextPositionOf(ci) === 'prefix'
     );
     return buildPrefixFingerprint({
-      modelSig: this._modelSignature(thread),
+      modelSig,
       toolsetSig,
       prefixItems,
       items: thread.items

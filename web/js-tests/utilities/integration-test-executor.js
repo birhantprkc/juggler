@@ -57,6 +57,7 @@ import { tests as attentionAlertTests } from '../integration-tests/attention-ale
 import { tests as binGuardTests } from '../integration-tests/bin-guard-tests.js';
 import { tests as modelAvailabilityTests } from '../integration-tests/model-availability-tests.js';
 import { runTests as runContextCacheImpactTests } from '../unit-tests/context-cache-impact-test.js';
+import { runTests as runCacheBaselineAnchorTests } from '../unit-tests/cache-baseline-anchor-test.js';
 import { runTests as runCodeLinesTests } from '../unit-tests/code-lines-test.js';
 import { runTests as runCacheMissWarningTests } from '../unit-tests/cache-miss-warning-test.js';
 import { runTests as runErrorRetryGateTests } from '../unit-tests/error-retry-gate-test.js';
@@ -333,6 +334,7 @@ const ALL_TESTS = [
  */
 const UNIT_TEST_SUITES = [
   { name: 'unit:context-cache-impact', run: runContextCacheImpactTests },
+  { name: 'unit:cache-baseline-anchor', run: runCacheBaselineAnchorTests },
   { name: 'unit:code-lines', run: runCodeLinesTests },
   { name: 'unit:cache-miss-warning', run: runCacheMissWarningTests },
   { name: 'unit:error-retry-gate', run: runErrorRetryGateTests },

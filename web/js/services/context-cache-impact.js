@@ -28,7 +28,10 @@
  * switch changes, since strategy guidance is injected as tail messages, never
  * placed in the system prompt), and the rest is one signature per history item. The baseline is the
  * fingerprint captured when the conversation last went idle (that transcript is
- * exactly what was cached). Diff current vs baseline: a divergence that *replaces*
+ * exactly what was cached), headed by the model that SENT it rather than the one
+ * selected now — a thread that inherits its model has the selection moved under
+ * it by an unrelated switch elsewhere, and the cache does not care what is
+ * selected, only what ran. Diff current vs baseline: a divergence that *replaces*
  * a cached item (current is not a prefix of baseline) busts the cache from there;
  * the two ways current stays a prefix of baseline both cost nothing — a pure
  * append (a new user message) diverges only past the baseline's end, and a
@@ -151,7 +154,7 @@ function contextItemSignature(ci) {
  * history item. They precede the history entries here so a divergence in them is
  * measured against everything cached after them.
  * @param {object} args
- * @param {string} [args.modelSig] - The effective `provider/model` the next send would use
+ * @param {string} [args.modelSig] - The `provider/model#thinking` this prefix belongs to (the next send's for the outgoing one, the anchored turn's for a baseline)
  * @param {string} args.toolsetSig - Sorted tool-name signature under the effective strategy
  * @param {Array<{id?: string, type?: string, data?: {content?: unknown}}>} [args.prefixItems] - The thread's leading `prefix`-position context items
  * @param {Array<{get?: (key: string) => any}>} args.items - The thread's history items

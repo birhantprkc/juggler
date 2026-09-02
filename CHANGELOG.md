@@ -14,6 +14,7 @@ of changes; this project follows semantic versioning.
 - A conversation with no history yet shows the composer keys and gestures
 - Improvements to the UX and features in the slash commands menu and editor panels
 - A tab moves to the top when its turn finishes or needs you, not while output is arriving
+- The cache-miss caution now follows the model each thread actually ran, and clears again in sub-threads
 
 ## [0.5.9] - 2026-08-29
 
