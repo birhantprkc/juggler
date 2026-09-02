@@ -245,18 +245,21 @@ func (a *appState) handleWindowControl(w http.ResponseWriter, r *http.Request) {
 		// The project picker wants a folder and nothing else. Everything else that
 		// asks for a path — pinning a file, adding one to the context — accepts a
 		// directory just as readily, so pick-file takes either rather than refusing
-		// half of what the typed path allows. The title is the caller's, since it
-		// is the same sentence the panel above it is already saying.
-		files, title, dir := pickerOptions(action, r.URL.Query().Get("title"), r.URL.Query().Get("dir"))
+		// half of what the typed path allows. Only macOS can offer both at once;
+		// GTK and the Windows common item dialog have a file mode and a folder
+		// mode, and a dialog that will take a file gets the file one there. The
+		// title is the caller's, since it is the same sentence the panel above it
+		// is already saying.
+		files, title, dir := pickerOptions(action, r.URL.Query().Get("title"), r.URL.Query().Get("dir"), a.pickerDirectory())
 		dialog := a.app.Dialog.OpenFile().
 			CanChooseDirectories(true).
 			CanChooseFiles(files).
 			CanCreateDirectories(!files).
 			SetTitle(title).
 			AttachToWindow(e.win)
-		// Only when the caller named somewhere worth starting. Left unset, the
-		// platform opens wherever this app last was, which for a chooser asking
-		// about a file in the open project is rarely the project.
+		// Only when there is somewhere worth starting. Left unset, the platform
+		// opens wherever it feels like — for GTK, which remembers nothing, that
+		// is the working directory this app was launched from.
 		if dir != "" {
 			dialog = dialog.SetDirectory(dir)
 		}
@@ -265,6 +268,12 @@ func (a *appState) handleWindowControl(w http.ResponseWriter, r *http.Request) {
 			logf("%s picker failed: %v", action, err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
+		}
+		// Remember where that came from, so the next chooser opens where this
+		// one left off instead of starting over. A cancelled chooser reports
+		// nothing and moves nothing.
+		if path != "" {
+			a.setPickerDirectory(filepath.Dir(path))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"path": path})
@@ -286,17 +295,25 @@ func (a *appState) handleWindowControl(w http.ResponseWriter, r *http.Request) {
 // project picker's wording, which is what every request meant before there was a
 // second kind.
 //
-// The directory to open in is the caller's too, and is taken only when it is an
-// absolute path to a directory that exists — a stale or misspelt one is dropped
-// rather than passed on, since a chooser that opens somewhere is better than one
-// that refuses to. The project picker names none: it is being asked where a new
-// project is, and the last place this app looked is the better guess there.
-func pickerOptions(action, rawTitle, rawDir string) (files bool, title, dir string) {
+// Where the chooser opens is decided here too, from two candidates. The place
+// this app last picked from wins: a chooser that reopens where you were beats
+// one that starts over every time, and it is the only such memory there is — of
+// the three platforms only macOS and Windows keep one, and naming a start
+// directory, which a file chooser always does, discards it. The caller's
+// suggestion is the fallback, and stands for the first pick of a run. The
+// project picker offers none: it is being asked where a new project is, and
+// nothing about the open one predicts that.
+//
+// Either candidate is taken only when it is an absolute path to a directory that
+// exists — a stale or misspelt one is dropped rather than passed on, since a
+// chooser that opens somewhere is better than one that refuses to.
+func pickerOptions(action, rawTitle, rawDir, lastDir string) (files bool, title, dir string) {
 	title = strings.TrimSpace(rawTitle)
 	if title == "" {
 		title = "Open project folder"
 	}
-	if action == "pick-file" {
+	dir = usableDirectory(lastDir)
+	if dir == "" && action == "pick-file" {
 		dir = usableDirectory(rawDir)
 	}
 	return action == "pick-file", title, dir

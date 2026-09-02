@@ -167,6 +167,14 @@ type regState struct {
 	// via workspace.json; the per-project value lives in the session.
 	lastZoom int
 
+	// lastPickerDir is the folder the most recent native path chooser picked
+	// from, and where the next one opens. It is the run's browsing position
+	// rather than a setting, so it is deliberately not persisted: a fresh launch
+	// starts from whatever the caller suggests again. Of the three platforms
+	// only macOS and Windows remember this by themselves, and both forget it the
+	// moment a start directory is named, which every file chooser here does.
+	lastPickerDir string
+
 	// quitting is set once an app-wide quit has been authorised (the quit guard
 	// found no busy work, or the user confirmed the discard). While set, the
 	// ShouldQuit hook allows termination and per-window close hooks stop
@@ -689,6 +697,25 @@ func (a *appState) setWindowTheme(e *winEntry, theme string) (application.RGBA, 
 		a.workspace.saveTheme(theme)
 	}
 	return themeColours[theme], true
+}
+
+// pickerDirectory returns where the last native path chooser picked from, or ""
+// if none has yet this run.
+func (a *appState) pickerDirectory() string {
+	var dir string
+	a.reg(func(st *regState) { dir = st.lastPickerDir })
+	return dir
+}
+
+// setPickerDirectory records where a native path chooser just picked from, so
+// the next one opens there. It is one position for the whole app, not one per
+// window or per project: a chooser is a place you were, and the window you
+// happened to open it from is not what you remember about it.
+func (a *appState) setPickerDirectory(dir string) {
+	if dir == "" {
+		return
+	}
+	a.reg(func(st *regState) { st.lastPickerDir = dir })
 }
 
 // setWindowZoom records the freshest page-reported UI zoom, so the next window
