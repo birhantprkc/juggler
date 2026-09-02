@@ -3,7 +3,7 @@ module juggler
 go 1.26
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.61.0
+	github.com/anthropics/anthropic-sdk-go v1.69.0
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/buger/jsonparser v1.6.0
 	github.com/fsnotify/fsnotify v1.10.1
