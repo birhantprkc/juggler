@@ -4,6 +4,7 @@
 
 import { presentPopup } from '../utils/popup-surface.js';
 import { markPopupOpen } from '../utils/popup-manager.js';
+import { attachSwipeDismiss } from '../utils/swipe-dismiss.js';
 import { openSettings } from './settings-launcher.js';
 
 /**
@@ -83,6 +84,13 @@ class UIEventManager {
      * @type {(() => void)|null} @private
      */
     this._releaseSidebarPopup = null;
+
+    /**
+     * Detaches the drawer's swipe-to-dismiss. Owned here rather than in
+     * `_listeners`, which holds listener tuples a detach cannot be reduced to.
+     * @type {(() => void)|null} @private
+     */
+    this._detachSidebarSwipe = null;
   }
 
   /**
@@ -487,160 +495,34 @@ class UIEventManager {
   }
 
   /**
-   * Swipe the drawer away — a leftward drag anywhere on it (touch/pen only).
+   * Swipe the drawer away — a leftward drag anywhere on it.
    *
-   * The drawer tracks the finger and, released past the threshold, dismisses;
-   * anything short snaps back. It is the horizontal twin of the drag-to-dismiss
-   * every phone bottom sheet gets from `presentPopup` (see popup-surface.js), so
-   * the two kinds of overlay a phone puts over the page go away the same way.
+   * The gesture itself is `attachSwipeDismiss`, shared with the pinboard panel
+   * and the phone bottom sheet, so the surfaces a phone puts over the page all
+   * go away the same way. What is local to the drawer is what it concedes.
    *
-   * The first decisive movement claims an axis and keeps it: a vertical drag is
-   * the tab list scrolling and must stay the browser's — which is also why the
-   * drawer declares `touch-action: pan-y` rather than `none`. Drags starting on
-   * the resize grip, a tab's drag handle or the rename editor belong to those,
-   * and a mouse never swipes at all: inside the bar a mouse drag already means
-   * tab reorder, and a mouse has the backdrop, Escape and the hamburger.
+   * A vertical drag is the tab list scrolling and must stay the browser's, which
+   * the axis claim leaves alone — and is also why the drawer declares
+   * `touch-action: pan-y` rather than `none`. Drags starting on the resize grip,
+   * a tab's drag handle or the rename editor belong to those. Nothing inside the
+   * bar scrolls horizontally, and `pan-y` forbids a horizontal pan in any case,
+   * so there is no scroller here to hand the gesture to.
    *
-   * `pan-y` alone is not enough to keep the gesture, though. A real finger drifts
-   * vertically on its way left, and a browser is entitled to read that drift as
-   * the start of a scroll — which cancels the pointer and leaves the drawer
-   * springing back mid-swipe. Cancelling the touchmove once the swipe owns the
-   * gesture is what actually holds it (see `onTouchMove`).
+   * Drawer mode only: on a wide viewport the bar is a static column
+   * (`position: relative`), with nothing to slide out of the way.
    * @param {HTMLElement} sidebar - The conversation-bar element.
    * @param {() => boolean} isOpen - Whether the drawer is currently open.
    * @param {() => void} close - Closes the drawer.
    * @private
    */
   _setupSidebarSwipe(sidebar, isOpen, close) {
-    /** Leftward distance (px) past which releasing the drag dismisses. */
-    const DISMISS_PX = 60;
-    /** Movement (px) before a drag commits to an axis. */
-    const SLOP_PX = 10;
-
-    /** @type {number|null} The pointer being tracked, if any. */
-    let pointerId = null;
-    let startX = 0;
-    let startY = 0;
-    let dx = 0;
-    /** Whether the drag has won the horizontal axis and owns the transform. */
-    let swiping = false;
-    /** Set briefly after a real swipe, to swallow the click it leaves behind. */
-    let swipeJustOccurred = false;
-
-    /** Drop the tracked pointer and hand the transform back to CSS. */
-    const release = () => {
-      document.removeEventListener('pointermove', onMove);
-      document.removeEventListener('pointerup', onUp);
-      document.removeEventListener('pointercancel', onCancel);
-      pointerId = null;
-      swiping = false;
-      dx = 0;
-      // Dropping the inline transition restores the CSS one, so the drawer
-      // glides from wherever the finger left it: back open, or the rest of the
-      // way out once close() takes the class off.
-      sidebar.style.removeProperty('transition');
-      sidebar.style.removeProperty('transform');
-    };
-
-    /** @param {Event} ev */
-    const onMove = (ev) => {
-      const e = /** @type {PointerEvent} */ (ev);
-      if (e.pointerId !== pointerId) return;
-      const moveX = e.clientX - startX;
-      const moveY = e.clientY - startY;
-      if (!swiping) {
-        if (Math.abs(moveX) < SLOP_PX && Math.abs(moveY) < SLOP_PX) return;
-        // Anything but a decisively leftward move is someone else's gesture —
-        // a scroll, a tap that wandered — so the pointer is dropped for good
-        // rather than reconsidered as the finger travels.
-        if (-moveX <= Math.abs(moveY)) {
-          release();
-          return;
-        }
-        swiping = true;
-        sidebar.style.transition = 'none'; // track the finger 1:1
-      }
-      dx = Math.min(0, moveX);
-      sidebar.style.transform = `translateX(${dx}px)`;
-    };
-
-    /**
-     * End the gesture: dismiss if it travelled far enough, snap back otherwise.
-     * @param {boolean} leavesClick - Whether a click will follow. A finger lifted
-     *   off a tab leaves one; a cancelled gesture doesn't.
-     */
-    const finish = (leavesClick) => {
-      const dismiss = swiping && -dx >= DISMISS_PX;
-      if (swiping && leavesClick) {
-        swipeJustOccurred = true;
-        setTimeout(() => { swipeJustOccurred = false; }, 100);
-      }
-      release();
-      if (dismiss) close();
-    };
-
-    /** @param {Event} ev */
-    const onUp = (ev) => {
-      if (/** @type {PointerEvent} */ (ev).pointerId === pointerId) finish(true);
-    };
-
-    /** @param {Event} ev */
-    const onCancel = (ev) => {
-      // Something upstream took the touch. Past the threshold the intent was
-      // already unambiguous, so honour it rather than springing back.
-      if (/** @type {PointerEvent} */ (ev).pointerId === pointerId) finish(false);
-    };
-
-    // Once the swipe owns the gesture, no scroll may start from it. Only
-    // cancelling the touchmove says so — `touch-action: pan-y` still leaves the
-    // browser free to read the drag's vertical drift as a scroll, and a scroll
-    // starting cancels the pointer out from under the swipe. The listener is
-    // registered up front and non-passive because a browser decides whether a
-    // touch can be blocked when the finger lands, not once it has moved.
-    /** @param {Event} ev */
-    const onTouchMove = (ev) => {
-      if (swiping) ev.preventDefault();
-    };
-
-    /** @param {Event} ev */
-    const onDown = (ev) => {
-      const e = /** @type {PointerEvent} */ (ev);
-      if (pointerId !== null || e.pointerType === 'mouse' || !isOpen()) return;
-      // Drawer mode only: on a wide viewport the bar is a static column
-      // (`position: relative`), with nothing to slide out of the way.
-      if (window.getComputedStyle(sidebar).position !== 'absolute') return;
-      const target = /** @type {HTMLElement|null} */ (e.target);
-      if (target?.closest('col-resize-handle, .tab-drag-handle, .conversation-tab-rename')) return;
-      pointerId = e.pointerId;
-      startX = e.clientX;
-      startY = e.clientY;
-      dx = 0;
-      // Track on the document: a tab re-render mid-drag would take the
-      // pointerdown target — and with it the implicit touch capture — out of
-      // the DOM, stranding the gesture. Tab-reorder drags listen there too.
-      document.addEventListener('pointermove', onMove);
-      document.addEventListener('pointerup', onUp);
-      document.addEventListener('pointercancel', onCancel);
-    };
-
-    // A swipe leaves behind a click on whatever it started over, usually a tab
-    // — which would switch conversation on the way out. Swallow that one click.
-    // Document capture runs before any listener inside the bar whatever the
-    // order they were added in; the 100ms window matches the equivalent guard
-    // on tab-reorder drags (`_dragJustOccurred` in conversation-bar.js).
-    /** @param {Event} ev */
-    const onClickCapture = (ev) => {
-      if (!swipeJustOccurred) return;
-      ev.stopPropagation();
-      ev.preventDefault();
-    };
-
-    sidebar.addEventListener('pointerdown', onDown);
-    sidebar.addEventListener('touchmove', onTouchMove, { passive: false });
-    document.addEventListener('click', onClickCapture, true);
-    this._listeners.push({ element: sidebar, event: 'pointerdown', handler: onDown });
-    this._listeners.push({ element: sidebar, event: 'touchmove', handler: onTouchMove });
-    this._listeners.push({ element: document, event: 'click', handler: onClickCapture, options: true });
+    this._detachSidebarSwipe = attachSwipeDismiss(sidebar, {
+      direction: 'left',
+      thresholdPx: 60,
+      isActive: () => isOpen() && window.getComputedStyle(sidebar).position === 'absolute',
+      exclude: 'col-resize-handle, .tab-drag-handle, .conversation-tab-rename',
+      onDismiss: close,
+    });
   }
 
   /**
@@ -839,6 +721,8 @@ class UIEventManager {
     this._unregisterZoomOut?.();
     this._unregisterShowShortcuts?.();
     this._unregisterToolGrouping?.();
+    this._detachSidebarSwipe?.();
+    this._detachSidebarSwipe = null;
     this._releaseSidebarPopup?.();
     this._releaseSidebarPopup = null;
   }

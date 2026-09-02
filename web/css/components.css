@@ -10519,6 +10519,15 @@ pinboard-shell.open .pinboard-scrim {
     visibility: hidden;
     pointer-events: auto;
 
+    /* Deliberately no `touch-action`. The panel can be swiped away to the right
+       (attachSwipeDismiss, in js/utils/swipe-dismiss.js), and the drawer buys
+       its equivalent gesture with `touch-action: pan-y` — but that forbids
+       horizontal panning for a whole subtree, and this one is full of things
+       that need it: code files are `white-space: pre` in an `overflow-x: auto`
+       block, and so are markdown fences, tables and directory listings. The
+       swipe defers to those by scroll position instead, and holds its gesture
+       by cancelling the touchmove once it owns one. */
+
     /* Visibility is what takes the closed panel out of the tab order and the
        accessibility tree, so it must flip the INSTANT the board opens — not
        midway through the slide, which is where a transitioned discrete property

@@ -16,6 +16,7 @@ import { showNotice } from '../components/modal-dialog.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { registerContextMenuProvider } from '../services/context-menu-service.js';
 import { osOpenPath, osRevealPath } from '../services/ops-api.js';
+import { localFilePathFromHref } from '../../sdk/lib/window-control.js';
 import pinboardView from '../services/pinboard-view.js';
 import { OPEN_IN_NEW_SVG, PIN_SVG } from './icons.js';
 import { applyAnsi, stripAnsi } from '../../sdk/lib/ansi.js';
@@ -229,6 +230,19 @@ export function createFileActions(path, options = {}) {
   return actions;
 }
 
+/** What pinning a file is called, wherever it is offered. */
+const PIN_LABEL = 'Pin to Pinboard';
+
+/**
+ * What a path looks like to the Pinboard: the live file, whatever surface named
+ * it, so the button and the menu row ask for one thing.
+ * @param {string} path - The path to pin.
+ * @returns {import('juggler/pinboard-item-type').PinSource} The source to pin.
+ */
+function pinSource(path) {
+  return { kind: 'file', path, presentation: 'live' };
+}
+
 /**
  * The button that puts a file on the Pinboard, or null when there is nothing to
  * pin or nothing enabled to pin it with. Pinning is a view, not a context
@@ -238,15 +252,14 @@ export function createFileActions(path, options = {}) {
  */
 function createPinButton(path) {
   if (!path) return null;
-  /** @type {import('juggler/pinboard-item-type').PinSource} */
-  const source = { kind: 'file', path, presentation: 'live' };
+  const source = pinSource(path);
   if (!pinboardView.canPin(source)) return null;
 
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'properties-panel-filepath-btn';
-  button.title = 'Pin to Pinboard';
-  button.setAttribute('aria-label', 'Pin to Pinboard');
+  button.title = PIN_LABEL;
+  button.setAttribute('aria-label', PIN_LABEL);
   button.innerHTML = PIN_SVG;
   button.addEventListener('click', () => { void pinboardView.addSource(source); });
   return button;
@@ -275,15 +288,36 @@ export function addDiffViewer(wrapper, toolAction, fallbackPath) {
   return true;
 }
 
-// Right-click menu for file references (pinned @files, read-file results, any
-// path rendered via addFilePath). Open / Reveal go through the host-OS `os` op;
-// Copy path is local. When the path sits inside a removable context item that
-// attached an unpin hook (see FileContentContextItem), a "Remove from context"
-// row is appended.
+/**
+ * The file a right-clicked element is about: the path a `data-file-path` names,
+ * or the on-disk file a link points at. An anchor is asked the same question the
+ * click handler asks it (see link-guard), so the menu offers a file exactly when
+ * clicking would open one — an external link, an in-page `#anchor` and a
+ * non-web scheme are not files and yield nothing, leaving the right-click to the
+ * text menu.
+ * @param {Element} subject - The matched element.
+ * @returns {string} The path, or '' when the element is not about a file.
+ */
+function fileMenuPath(subject) {
+  if (subject.tagName === 'A') {
+    const anchor = /** @type {HTMLAnchorElement} */ (subject);
+    return localFilePathFromHref(anchor.getAttribute('href') || '', anchor.href) || '';
+  }
+  return subject.getAttribute('data-file-path') || '';
+}
+
+// Right-click menu for file references: pinned @files, read-file results, any
+// path rendered via addFilePath, and links to project files in rendered
+// markdown. Open / Reveal go through the host-OS `os` op; Copy path is local.
+// When the path sits inside a removable context item that attached an unpin hook
+// (see FileContentContextItem), a "Remove from context" row is appended.
 registerContextMenuProvider({
-  match: (start) => start?.closest('[data-file-path]') || null,
+  // The nearer of the two wins, so a link is about its own href and a file row
+  // about its path. One provider rather than two because resolveMenu takes the
+  // first that offers rows, which would leave the answer to module load order.
+  match: (start) => start?.closest('[data-file-path], a[href]') || null,
   build: (subject) => {
-    const path = subject.getAttribute('data-file-path') || '';
+    const path = fileMenuPath(subject);
     if (!path) return null;
     /** @type {import('../services/context-menu-service.js').ContextMenuItem[]} */
     const items = [
@@ -300,6 +334,12 @@ registerContextMenuProvider({
         },
       },
     ];
+    // Offered on the same terms as the pin button: asked first, left out when
+    // nothing enabled would take it.
+    const source = pinSource(path);
+    if (pinboardView.canPin(source)) {
+      items.push({ label: PIN_LABEL, onClick: () => { void pinboardView.addSource(source); } });
+    }
     const host = subject.closest('[data-context-item-id]');
     const unpin = host && /** @type {any} */ (host)._jugglerRemoveFromContext;
     if (typeof unpin === 'function') {

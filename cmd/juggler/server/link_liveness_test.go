@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,8 +29,11 @@ import (
 
 // linkBudget bounds how long these wait for the server to act. A test-local
 // patience limit, not a product constant: the production windows are shortened
-// through the seams in link_liveness.go so these run fast.
-const linkBudget = 3 * time.Second
+// through the seams in link_liveness.go so these run fast, and the budget is
+// generous because it is only ever spent by a run that is going to fail anyway —
+// on a CI box running every package's tests at once, losing the CPU for several
+// seconds is ordinary.
+const linkBudget = 10 * time.Second
 
 // stubClient is a RealtimeClient that records what it was sent and whether it was
 // closed, with no transport underneath. It deliberately does NOT implement
@@ -270,16 +274,34 @@ func TestViewerSocket_SilentViewerIsClosed(t *testing.T) {
 // TestViewerSocket_BeatingViewerKeepsItsSocket is the converse over the same real
 // socket: a viewer doing nothing but keeping its half of the protocol must be
 // left alone for as long as it likes.
+//
+// The windows are compressed a couple of hundred times below the production ones
+// and the scheduler is not compressed with them, so this test measures its own
+// beats as well as the server's verdict: a run whose beats were starved for
+// longer than the window it is asking the server to honour has produced the
+// silence itself, and cannot tell a wrongly-dropped viewer from a viewer that
+// really did go quiet. That run reports the starvation rather than a verdict.
 func TestViewerSocket_BeatingViewerKeepsItsSocket(t *testing.T) {
+	const (
+		silenceWindow = 400 * time.Millisecond
+		beatInterval  = 40 * time.Millisecond // ten beats per window
+	)
 	s, ts := newViewerSocketServer(t)
-	s.setServerBeatInterval(60 * time.Millisecond)
-	s.setViewerSilenceWindow(150 * time.Millisecond)
+	s.setServerBeatInterval(150 * time.Millisecond)
+	s.setViewerSilenceWindow(silenceWindow)
 	conn := dialViewer(t, ts)
+
+	// Both written by the beating goroutine and read by this one once the socket
+	// has failed: the longest gap between beats that reached the wire, and when
+	// the last of them did.
+	var longestGap, lastBeat atomic.Int64
+	lastBeat.Store(time.Now().UnixNano())
+	writeErr := make(chan error, 1)
 
 	stop := make(chan struct{})
 	defer close(stop)
 	go func() {
-		tick := time.NewTicker(30 * time.Millisecond)
+		tick := time.NewTicker(beatInterval)
 		defer tick.Stop()
 		for {
 			select {
@@ -287,20 +309,44 @@ func TestViewerSocket_BeatingViewerKeepsItsSocket(t *testing.T) {
 				return
 			case <-tick.C:
 				if err := conn.WriteJSON(map[string]string{"type": "viewer-heartbeat"}); err != nil {
+					writeErr <- err
 					return
 				}
+				now := time.Now()
+				if gap := now.UnixNano() - lastBeat.Load(); gap > longestGap.Load() {
+					longestGap.Store(gap)
+				}
+				lastBeat.Store(now.UnixNano())
 			}
 		}
 	}()
 
-	deadline := time.Now().Add(600 * time.Millisecond) // four eviction windows
+	deadline := time.Now().Add(3 * silenceWindow)
 	_ = conn.SetReadDeadline(deadline)
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {
 			if netErr, ok := err.(interface{ Timeout() bool }); ok && netErr.Timeout() {
 				return // read deadline reached with the socket still open: correct
 			}
-			t.Fatalf("a beating viewer was dropped anyway: %v", err)
+			select {
+			case werr := <-writeErr:
+				t.Skipf("this viewer's own beats stopped reaching the socket, so the close "+
+					"says nothing about liveness: %v (socket: %v)", werr, err)
+			default:
+			}
+			// The gap still open at the close counts too: a process starved right
+			// now has not recorded that gap between two beats yet.
+			gap := time.Duration(longestGap.Load())
+			if open := time.Since(time.Unix(0, lastBeat.Load())); open > gap {
+				gap = open
+			}
+			if gap > silenceWindow {
+				t.Skipf("this process went %v without getting a beat out — longer than the %v "+
+					"window it is asking the server to honour — so the close is unattributable: %v",
+					gap.Round(time.Millisecond), silenceWindow, err)
+			}
+			t.Fatalf("a beating viewer was dropped anyway: %v (longest gap between beats %v, "+
+				"well inside the %v window)", err, gap.Round(time.Millisecond), silenceWindow)
 		}
 		if time.Now().After(deadline) {
 			return

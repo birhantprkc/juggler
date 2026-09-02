@@ -18,20 +18,23 @@ injectStylesOnce('tasks-pin-styles', `
 .tasks-pin__list {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 0.5rem;
 }
 .tasks-pin__row {
   display: flex;
-  align-items: baseline;
+  flex-direction: column;
   gap: 0.5rem;
+  padding: 0.5rem;
+  border: 0.0625rem solid var(--border-color);
+  border-radius: var(--radius-md, 0.25rem);
 }
 .tasks-pin__open {
   display: flex;
-  flex: 1;
+  flex-direction: column;
+  gap: 0.375rem;
+  width: 100%;
   min-width: 0;
-  align-items: baseline;
-  gap: 0.5rem;
-  padding: 0.25rem;
+  padding: 0;
   border: none;
   border-radius: var(--radius-md, 0.25rem);
   background: transparent;
@@ -40,8 +43,8 @@ injectStylesOnce('tasks-pin-styles', `
   text-align: left;
   cursor: pointer;
 }
-.tasks-pin__open:hover {
-  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+.tasks-pin__open:hover .tasks-pin__command {
+  text-decoration: underline;
 }
 .tasks-pin__open:focus-visible,
 .tasks-pin__stop:focus-visible {
@@ -49,31 +52,35 @@ injectStylesOnce('tasks-pin-styles', `
   outline-offset: 0.125rem;
 }
 .tasks-pin__command {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
   font-family: var(--font-mono);
   font-size: var(--font-size-sm);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.tasks-pin__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-sm);
+}
+.tasks-pin__tool {
+  font-family: var(--font-mono);
 }
 .tasks-pin__label {
-  flex-shrink: 0;
-  max-width: 40%;
-  overflow: hidden;
-  color: var(--text-tertiary);
-  font-size: var(--font-size-sm);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: var(--text-secondary);
 }
 .tasks-pin__elapsed {
-  flex-shrink: 0;
-  color: var(--text-tertiary);
+  margin-left: auto;
   font-family: var(--font-mono);
-  font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
+}
+.tasks-pin__actions {
+  display: flex;
+  justify-content: flex-end;
 }
 .tasks-pin__stop {
-  flex-shrink: 0;
   padding: 0.25rem 0.5rem;
   border: 0.0625rem solid var(--border-color);
   border-radius: var(--radius-md, 0.25rem);
@@ -133,17 +140,20 @@ function elapsed(startedAt, now) {
 }
 
 /**
- * One task's row: what it is running, what it was for, how long it has been at
- * it, and the way to stop it.
+ * One task's card: the command it is running, then a line of what is known about
+ * it — the tool it came from, what it was for, how long it has been at it — and
+ * the way to stop it. A card rather than a line because a handful of tasks is all
+ * there ever is, so there is room to say each thing in its own place instead of
+ * fitting them all between two ellipses.
  *
- * The row is keyed by task id, so the id the Stop button hands back is the same
- * id the row was built for however long it stands. The action to reveal is
- * carried on the row and read at click time, so nothing here can outlive what it
+ * The card is keyed by task id, so the id the Stop button hands back is the same
+ * id the card was built for however long it stands. The action to reveal is
+ * carried on the card and read at click time, so nothing here can outlive what it
  * points at.
  * @param {import('juggler/pinboard-item-type').PinTask} task - The running task.
  * @param {(itemId: string) => void} reveal - Go to the action that started it.
  * @param {(taskId: string, button: HTMLButtonElement) => void} stop - Stop it.
- * @returns {HTMLElement} The row.
+ * @returns {HTMLElement} The card.
  */
 function buildTaskRow(task, reveal, stop) {
   const row = createElement('div', 'tasks-pin__row');
@@ -152,7 +162,7 @@ function buildTaskRow(task, reveal, stop) {
   const open = document.createElement('button');
   open.type = 'button';
   open.className = 'tasks-pin__open';
-  open.appendChild(createElement('span', 'tasks-pin__command'));
+  open.append(createElement('span', 'tasks-pin__command'), createElement('div', 'tasks-pin__meta'));
   open.addEventListener('click', () => reveal(row.dataset.itemId || ''));
 
   const stopBtn = document.createElement('button');
@@ -161,20 +171,38 @@ function buildTaskRow(task, reveal, stop) {
   stopBtn.textContent = 'Stop';
   stopBtn.addEventListener('click', () => stop(taskId, stopBtn));
 
-  row.append(open, stopBtn);
+  const actions = createElement('div', 'tasks-pin__actions');
+  actions.appendChild(stopBtn);
+
+  row.append(open, actions);
   return row;
 }
 
 /**
- * Write one task's current words into its row.
- * @param {HTMLElement} row - The row for this task.
+ * One field of the meta line, when there is something to put in it.
+ * @param {string} key - Its place in the line.
+ * @param {string} className - The class it is styled by.
+ * @param {string} text - What it says.
+ * @returns {import('../lib/reconcile.js').PartSpec} The field.
+ */
+function metaField(key, className, text) {
+  return {
+    key,
+    build: () => createElement('span', className),
+    fill: (el) => setText(el, text),
+  };
+}
+
+/**
+ * Write one task's current words into its card.
+ * @param {HTMLElement} row - The card for this task.
  * @param {import('juggler/pinboard-item-type').PinTask} task - The running task.
- * @param {number} now - Unix ms, so every row in one render agrees on the time.
+ * @param {number} now - Unix ms, so every card in one render agrees on the time.
  * @returns {void}
  */
 function fillTaskRow(row, task, now) {
-  const open = /** @type {HTMLElement} */ (row.firstElementChild);
-  const stopBtn = /** @type {HTMLElement} */ (row.lastElementChild);
+  const open = /** @type {HTMLElement} */ (row.querySelector('.tasks-pin__open'));
+  const stopBtn = /** @type {HTMLElement} */ (row.querySelector('.tasks-pin__stop'));
   const name = task.command || task.toolName;
 
   if (row.dataset.itemId !== task.itemId) row.dataset.itemId = task.itemId;
@@ -192,24 +220,15 @@ function fillTaskRow(row, task, now) {
     name.length > COMMAND_LIMIT ? `${name.slice(0, COMMAND_LIMIT)}…` : name
   );
 
-  const elapsedEl = open.querySelector('.tasks-pin__elapsed');
-  const label = open.querySelector('.tasks-pin__label');
-  if (task.label) {
-    // The label sits between the command and the elapsed time, so one arriving
-    // after the clock has started goes in front of it.
-    if (label) setText(/** @type {HTMLElement} */ (label), task.label);
-    else open.insertBefore(createElement('span', 'tasks-pin__label', task.label), elapsedEl);
-  } else if (label) {
-    label.remove();
-  }
-
+  /** @type {import('../lib/reconcile.js').PartSpec[]} */
+  const meta = [];
+  // Which tool a command came from is worth a word, except when the command line
+  // is the tool's own name and saying it twice would be the only thing said.
+  if (task.command && task.toolName) meta.push(metaField('tool', 'tasks-pin__tool', task.toolName));
+  if (task.label) meta.push(metaField('label', 'tasks-pin__label', task.label));
   const since = elapsed(task.at, now);
-  if (since) {
-    if (elapsedEl) setText(/** @type {HTMLElement} */ (elapsedEl), since);
-    else open.appendChild(createElement('span', 'tasks-pin__elapsed', since));
-  } else if (elapsedEl) {
-    elapsedEl.remove();
-  }
+  if (since) meta.push(metaField('elapsed', 'tasks-pin__elapsed', since));
+  reconcileParts(/** @type {HTMLElement} */ (open.querySelector('.tasks-pin__meta')), meta);
 }
 
 /**

@@ -22,13 +22,6 @@ injectStylesOnce('file-pin-styles', `
 `);
 
 /**
- * Lines shown before the preview stops. A pin is a place to keep an eye on a
- * file, not a place to read all of one — `Open` is one click away and opens the
- * editor that is actually good at it.
- */
-const PREVIEW_LINES = 500;
-
-/**
  * How long to wait for a burst of file changes to finish before re-reading. A
  * save from an editor arrives as several events, and re-reading each of them
  * would be several reads to show one file.
@@ -207,10 +200,12 @@ class FilePin extends PinboardItemType {
 
   /**
    * Two pins name the same file when their paths do. Both configs are already
-   * normalized, and both are absolute for anything this class created, so this is
-   * a string comparison and deliberately nothing cleverer: resolving symlinks or
-   * case-folding would need the filesystem, and `isSameConfig` is asked before
-   * anything is read.
+   * normalized, so this is a string comparison and deliberately nothing cleverer:
+   * resolving symlinks or case-folding would need the filesystem, and
+   * `isSameConfig` is asked before anything is read. A path a source arrived with
+   * relative is kept that way and resolved at read time, so the same file pinned
+   * from a relative link and from an absolute path is two pins — two spellings
+   * are told apart, never the wrong file shown.
    * @param {Record<string, any>} a - One config.
    * @param {Record<string, any>} b - The other.
    * @returns {boolean} True when they name the same path.
@@ -283,7 +278,7 @@ class FilePin extends PinboardItemType {
 
       const result = await fetchLiveFile(path, {
         signal: context.signal,
-        head: PREVIEW_LINES,
+        whole: true,
       });
       if (mine !== generation || context.signal.aborted) return;
 
@@ -292,6 +287,8 @@ class FilePin extends PinboardItemType {
         conversationId: context.active?.conversation?.id,
       });
 
+      // The pin asks for the whole file, so this only speaks up when the read
+      // op cut the file short anyway — over the size a read will return at all.
       const shown = result.lineCount || 0;
       const total = result.totalLines || 0;
       if (!result.isDirectory && shown && total > shown) {

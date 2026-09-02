@@ -73,6 +73,45 @@ function mountScrollingMenu() {
 }
 
 /**
+ * Force sheet mode for the duration of `fn`. The breakpoint that produces it is
+ * a media query, and the test window's width is not the test's to set.
+ * @param {() => Promise<void>} fn - What to run with the breakpoint held.
+ * @returns {Promise<void>} Resolves once matchMedia is back.
+ */
+async function asPhone(fn) {
+  const real = window.matchMedia;
+  window.matchMedia = (/** @type {string} */ query) => (
+    query.includes('36rem')
+      ? /** @type {any} */ ({
+        matches: true, media: query, addEventListener: () => {}, removeEventListener: () => {},
+      })
+      : real.call(window, query)
+  );
+  try {
+    await fn();
+  } finally {
+    window.matchMedia = real;
+  }
+}
+
+/**
+ * Drag a sheet down by its grabber, and let go.
+ * @param {HTMLElement} grabber - The injected handle.
+ * @param {number} dy - How far to drag, in px.
+ */
+function dragSheet(grabber, dy) {
+  const step = (/** @type {string} */ type, /** @type {number} */ at) => {
+    grabber.dispatchEvent(new PointerEvent(type, {
+      pointerId: 1, pointerType: 'touch', buttons: 1, clientX: 100, clientY: 100 + at,
+      bubbles: true, cancelable: true,
+    }));
+  };
+  step('pointerdown', 0);
+  step('pointermove', dy);
+  step('pointerup', dy);
+}
+
+/**
  * Run the popup-surface test suite.
  * @returns {Promise<{passed: number, failed: number, errors: string[]}>} Counts of passed/failed checks and any error messages.
  */
@@ -152,6 +191,38 @@ export async function runTests() {
           .forEach((el) => el.remove());
         __resetPopupManagerForTests();
       }
+    });
+
+    await run('a modal sheet is dragged away by its grabber, and snaps back short of it', async () => {
+      await asPhone(async () => {
+        __resetPopupManagerForTests();
+        const anchor = document.createElement('button');
+        const surface = document.createElement('nav');
+        document.body.append(anchor, surface);
+        let closes = 0;
+        const release = presentPopup({
+          surface, anchor, id: 'sheet', onClose: () => { closes++; },
+        });
+        try {
+          await tick();
+          const grabber = /** @type {HTMLElement} */ (surface.querySelector('.popup-sheet-grabber'));
+          assert(!!grabber, 'a modal sheet must offer the drag handle');
+
+          dragSheet(grabber, 30);
+          assert(closes === 0, 'a short drag is not a dismissal');
+          assert(surface.style.transform === '',
+            'and the sheet goes back to CSS to spring home');
+
+          dragSheet(grabber, 140);
+          assert(closes === 1, `a drag past the threshold dismisses, got ${closes}`);
+        } finally {
+          release();
+          anchor.remove();
+          surface.remove();
+          document.querySelectorAll('.popup-sheet-scrim').forEach((el) => el.remove());
+          __resetPopupManagerForTests();
+        }
+      });
     });
 
     await run('placing a menu leaves a long list where the user left it', () => {

@@ -57,6 +57,7 @@ import { tests as attentionAlertTests } from '../integration-tests/attention-ale
 import { tests as binGuardTests } from '../integration-tests/bin-guard-tests.js';
 import { tests as modelAvailabilityTests } from '../integration-tests/model-availability-tests.js';
 import { runTests as runContextCacheImpactTests } from '../unit-tests/context-cache-impact-test.js';
+import { runTests as runCodeLinesTests } from '../unit-tests/code-lines-test.js';
 import { runTests as runCacheMissWarningTests } from '../unit-tests/cache-miss-warning-test.js';
 import { runTests as runErrorRetryGateTests } from '../unit-tests/error-retry-gate-test.js';
 import { runTests as runAuthErrorActionTests } from '../unit-tests/auth-error-action-test.js';
@@ -144,6 +145,7 @@ import { runTests as runMobileComposerTests } from '../unit-tests/mobile-compose
 import { runTests as runComposerSendLatchTests } from '../unit-tests/composer-send-latch-test.js';
 import { runTests as runScheduledSendTests } from '../unit-tests/scheduled-send-test.js';
 import { runTests as runSidebarDrawerTests } from '../unit-tests/sidebar-drawer-test.js';
+import { runTests as runSwipeDismissTests } from '../unit-tests/swipe-dismiss-test.js';
 import { runTests as runTabDragGhostTests } from '../unit-tests/tab-drag-ghost-test.js';
 import { runTests as runReorderDragTests } from '../unit-tests/reorder-drag-test.js';
 import { runTests as runSlashCompletionTests } from '../unit-tests/slash-completion-test.js';
@@ -331,6 +333,7 @@ const ALL_TESTS = [
  */
 const UNIT_TEST_SUITES = [
   { name: 'unit:context-cache-impact', run: runContextCacheImpactTests },
+  { name: 'unit:code-lines', run: runCodeLinesTests },
   { name: 'unit:cache-miss-warning', run: runCacheMissWarningTests },
   { name: 'unit:error-retry-gate', run: runErrorRetryGateTests },
   { name: 'unit:auth-error-action', run: runAuthErrorActionTests },
@@ -400,6 +403,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:composer-send-latch', run: runComposerSendLatchTests },
   { name: 'unit:scheduled-send', run: runScheduledSendTests },
   { name: 'unit:sidebar-drawer', run: runSidebarDrawerTests },
+  { name: 'unit:swipe-dismiss', run: runSwipeDismissTests },
   { name: 'unit:tab-drag-ghost', run: runTabDragGhostTests },
   { name: 'unit:reorder-drag', run: runReorderDragTests },
   { name: 'unit:slash-completion', run: runSlashCompletionTests },

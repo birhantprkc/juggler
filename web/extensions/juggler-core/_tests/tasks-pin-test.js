@@ -262,6 +262,22 @@ export async function runTests(_ctx) {
     m.teardown();
   });
 
+  await test('the tool a command came from is named beside it', () => {
+    const m = mount([task('npm run build', { toolName: 'bash' })]);
+    const shown = m.body.querySelector('.tasks-pin__tool')?.textContent || '';
+    assert(shown === 'bash', `expected the tool named, got ${JSON.stringify(shown)}`);
+    m.teardown();
+  });
+
+  await test('a task with no command of its own is not made to say its tool twice', () => {
+    const m = mount([task('', { toolName: 'Monitor' })]);
+    const command = m.body.querySelector('.tasks-pin__command')?.textContent || '';
+    assert(command === 'Monitor', `the tool stands in for the missing command, got ${JSON.stringify(command)}`);
+    assert(m.body.querySelector('.tasks-pin__tool') === null,
+      'and is not then repeated underneath itself');
+    m.teardown();
+  });
+
   await test('a long command is cut short rather than filling the board', () => {
     const long = `echo ${'x'.repeat(400)}`;
     const m = mount([task(long)]);

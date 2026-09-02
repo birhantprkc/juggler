@@ -281,17 +281,29 @@ export async function runTests(ctx) {
     }
   });
 
-  await test('a big file is previewed, not poured out', async () => {
-    const lines = Array.from({ length: 900 }, (_, i) => `line ${i + 1}`).join('\n');
+  await test('a big file is shown whole, not cut short', async () => {
+    const total = 2600;
+    const lines = Array.from({ length: total }, (_, i) => `line ${i + 1}`).join('\n');
     const path = await writeFixture('big.txt', lines);
     const mounted = mount({ path });
     try {
-      const text = await settled(mounted.body);
-      assert(text.includes('line 1'), 'the preview starts at the beginning');
-      assert(!text.includes('line 900'), 'and stops well before the end of a 900-line file');
+      await settled(mounted.body);
+      // Past the read op's own default ceiling, so a pin that did not ask for
+      // the whole file would stop at 2000 with a note saying so.
+      const numbers = [...mounted.body.querySelectorAll('.ci-line')]
+        .map((line) => Number(line.dataset.line));
+      assert(numbers.length > 0, 'the pin rendered no lines at all');
+      assert(numbers[0] === 1, `the file starts at line ${numbers[0]}, want 1`);
       const note = mounted.body.querySelector('.file-pin__note');
-      assert(!!note && /^First \d+ lines of 900\.$/.test(note.textContent || ''),
-        `the pin says how much it is showing, got "${note?.textContent}"`);
+      assert(!note, `nothing was cut short, so there is nothing to note, got "${note?.textContent}"`);
+      // Long enough to be windowed, so the last line arrives by scrolling
+      // rather than by being in the DOM already; the scroll extent is what says
+      // the whole file is there.
+      const view = mounted.body.querySelector('.ci-code-lines');
+      const rowHeight = mounted.body.querySelector('.ci-line')?.getBoundingClientRect().height || 0;
+      assert(rowHeight > 0, 'could not measure a row');
+      assert(Math.abs((view?.getBoundingClientRect().height || 0) - total * rowHeight) < rowHeight * 2,
+        `the block is ${view?.getBoundingClientRect().height}px tall, want ${total} rows of ${rowHeight}px`);
     } finally {
       mounted.teardown();
     }

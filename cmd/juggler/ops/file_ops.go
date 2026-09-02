@@ -395,13 +395,21 @@ func (ops *FileOperations) loadFile(params map[string]any) (any, error) {
 		lineCount = endIdx - startIdx
 
 	} else {
-		// Full file mode with default limit
-		if !raw && totalLines > DefaultMaxLines {
-			// Truncate to first DefaultMaxLines lines
-			readMode = fmt.Sprintf("Lines 1-%d (truncated)", DefaultMaxLines)
-			resultContent = strings.Join(lines[:DefaultMaxLines], "\n")
+		// Full file mode. The line ceiling is DefaultMaxLines unless the caller
+		// names its own with maxLines, where 0 means "no ceiling" — what a
+		// viewer displaying the file wants, as against the context-trimming the
+		// LLM-facing read wants. Over-long lines are still truncated either
+		// way: only raw mode returns them whole.
+		maxLines := DefaultMaxLines
+		if requested, ok := params["maxLines"].(float64); ok && requested >= 0 {
+			maxLines = int(requested)
+		}
+		if !raw && maxLines > 0 && totalLines > maxLines {
+			// Truncate to first maxLines lines
+			readMode = fmt.Sprintf("Lines 1-%d (truncated)", maxLines)
+			resultContent = strings.Join(lines[:maxLines], "\n")
 			lineOffset = 1
-			lineCount = DefaultMaxLines
+			lineCount = maxLines
 		} else {
 			readMode = "Full file"
 			resultContent = fullContent

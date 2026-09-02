@@ -31,6 +31,7 @@
 
 import { positionDropdown } from '../../sdk/lib/dropdown-positioning.js';
 import { registerOpenPopup } from './popup-manager.js';
+import { attachSwipeDismiss } from './swipe-dismiss.js';
 
 /**
  * Viewport width at or below which popups present as bottom sheets. Matches the
@@ -100,52 +101,44 @@ export function presentPopup({
   let observer = null;
   /** @type {HTMLElement|null} Drag handle injected at the top of a modal sheet. */
   let grabber = null;
+  /** @type {(() => void)|null} Detaches the grabber's drag, while there is one. */
+  let detachGrabberDrag = null;
 
   const reposToAnchor = () => positionDropdown(surface, anchor, gap, { align });
 
   // --- Bottom-sheet drag-to-dismiss ---------------------------------------
   // The grabber affords the idiomatic grab-and-drag-down gesture: the sheet
   // tracks the finger down and dismisses once dragged past the threshold,
-  // snapping back otherwise. It lives on the grabber element (which sets
-  // `touch-action: none`) so the gesture is never claimed by the sheet's own
-  // scroll — no need to fight or sniff scroll position.
+  // snapping back otherwise. It is the vertical case of `attachSwipeDismiss`,
+  // shared with the sidebar drawer and the pinboard panel.
+  //
+  // The gesture is taken on the grabber rather than on the sheet, and the
+  // grabber sets `touch-action: none`, so nothing else is ever competing for it:
+  // it claims the first movement outright, with no axis to win and no scroll
+  // position to sniff.
   /** Distance (px) past which releasing the drag dismisses the sheet. */
   const SHEET_DISMISS_PX = 90;
-  let dragStartY = 0;
-  let dragDy = 0;
-
-  const onGrabberDown = (/** @type {PointerEvent} */ e) => {
-    dragStartY = e.clientY;
-    dragDy = 0;
-    grabber?.setPointerCapture(e.pointerId);
-    surface.style.transition = 'none'; // track the finger 1:1 while dragging
-  };
-  const onGrabberMove = (/** @type {PointerEvent} */ e) => {
-    if (!grabber?.hasPointerCapture(e.pointerId)) return;
-    dragDy = Math.max(0, e.clientY - dragStartY);
-    surface.style.transform = `translateY(${dragDy}px)`;
-  };
-  const onGrabberUp = (/** @type {PointerEvent} */ e) => {
-    if (grabber?.hasPointerCapture(e.pointerId)) grabber.releasePointerCapture(e.pointerId);
-    // Restore the CSS transform transition so the sheet glides back (or away).
-    surface.style.removeProperty('transition');
-    surface.style.removeProperty('transform');
-    if (dragDy > SHEET_DISMISS_PX) onClose();
-    dragDy = 0;
-  };
 
   const addGrabber = () => {
     if (grabber) return;
     grabber = document.createElement('div');
     grabber.className = 'popup-sheet-grabber';
-    grabber.addEventListener('pointerdown', onGrabberDown);
-    grabber.addEventListener('pointermove', onGrabberMove);
-    grabber.addEventListener('pointerup', onGrabberUp);
-    grabber.addEventListener('pointercancel', onGrabberUp);
     surface.insertBefore(grabber, surface.firstChild);
+    detachGrabberDrag = attachSwipeDismiss(grabber, {
+      direction: 'down',
+      surface,
+      thresholdPx: SHEET_DISMISS_PX,
+      claim: 'immediate',
+      allowMouse: true,
+      onDismiss: onClose,
+    });
   };
   const removeGrabber = () => {
     if (!grabber) return;
+    // Detaching first: it drops any inline transform of its own, including one
+    // left by a drag still in progress when the sheet was taken away.
+    detachGrabberDrag?.();
+    detachGrabberDrag = null;
     grabber.remove();
     grabber = null;
     surface.style.removeProperty('transition');
@@ -217,6 +210,9 @@ export function presentPopup({
     mql.removeEventListener('change', apply);
     if (observer) observer.disconnect();
     if (scrim) scrim.remove();
+    // Detach before the surface goes: a sheet dismissed by its own drag is torn
+    // down from inside that drag, which still has document listeners out.
+    removeGrabber();
     surface.remove();
     releaseDismiss();
 

@@ -134,6 +134,7 @@ export function __setOpCallTimeoutForTest(ms) {
  * @property {number} [tail] - Read last N lines
  * @property {number} [head] - Read first N lines
  * @property {{line: number, context: number}} [around] - Read lines around specific line
+ * @property {number} [maxLines] - Line ceiling for a whole-file read; 0 means no ceiling. Omitted, the op's own default applies
  * @property {boolean} [userInitiated] - If true (a user pin), paths outside the project root are allowed, relative or absolute
  */
 

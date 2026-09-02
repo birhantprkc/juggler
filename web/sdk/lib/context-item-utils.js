@@ -13,6 +13,7 @@
 import { createCopyButton } from './copy-button.js';
 import { renderMarkdown, decorateCodeBlocks } from './markdown.js';
 import { highlightCode } from './syntax-highlight.js';
+import { renderLineNumberedCode } from './code-lines.js';
 import { injectStylesOnce } from './inject-styles.js';
 
 /**
@@ -212,7 +213,7 @@ export function createTextBlock(content) {
  * @typedef {object} CodeBlockOptions
  * @property {string|Node} content - Code content (string or DOM node)
  * @property {string} [language='text'] - Language for syntax highlighting
- * @property {number} [lineNumberStart] - Starting line number (enables CSS Grid line numbers)
+ * @property {number} [lineNumberStart] - Starting line number (enables line numbers)
  * @property {boolean} [bordered=false] - Wrap in bordered container
  * @property {boolean} [header=false] - Show language/range header (implies bordered)
  * @property {string} [range] - Range label for header (e.g. "Lines 10-50")
@@ -220,6 +221,9 @@ export function createTextBlock(content) {
 
 /**
  * Create a code block element with proper structure for scrolling.
+ *
+ * A line-numbered block long enough to be windowed carries a `destroy` method,
+ * which a caller with a teardown seam should call when it drops the element.
  * @param {CodeBlockOptions} options - Code block configuration
  * @returns {HTMLElement} Code block element with nested structure
  */
@@ -261,7 +265,7 @@ export function createCodeBlock(options) {
 
   // Determine if we're dealing with a Node or string content
   const isNode = typeof content === 'object' && content !== null && 'nodeType' in content;
-  const isGrid = lineNumberStart !== undefined && lineNumberStart !== null;
+  const isNumbered = lineNumberStart !== undefined && lineNumberStart !== null;
 
   // If content is a DOM node (HTMLElement or DocumentFragment), append it directly to code
   if (isNode) {
@@ -272,45 +276,28 @@ export function createCodeBlock(options) {
     // Otherwise, treat as code text with a language class and syntax-highlight
     // through the shared engine. `highlightCode` degrades to escaped plain text
     // when the grammar isn't bundled, so an unknown/`text` language renders
-    // exactly as before. Grid mode highlights per line below, so skip the
-    // throwaway full-block highlight here.
+    // exactly as before. A line-numbered block highlights per line below, so
+    // skip the throwaway full-block highlight here.
     pre.className = `language-${language}`;
     code.className = `language-${language}`;
-    if (isGrid) code.textContent = content || '';
+    if (isNumbered) code.textContent = content || '';
     else code.innerHTML = highlightCode(content || '', language);
   }
 
   pre.appendChild(code);
   codeContent.appendChild(pre);
 
-  // Add line numbers using CSS Grid if lineNumberStart is provided
-  if (isGrid) {
+  // Add line numbers if lineNumberStart is provided
+  if (isNumbered) {
     // Get text content regardless of whether content is a Node or string
     const text = isNode ? (content.textContent || '') : (content || '');
     const lines = text.split('\n');
 
-    // Replace pre>code with a CSS grid layout inside code
-    code.textContent = '';
-    code.classList.add('ci-code-grid');
-    // counter-reset starts at lineNumberStart - 1 so first increment produces lineNumberStart
-    code.style.setProperty('--line-start', String(lineNumberStart - 1));
-
-    for (const line of lines) {
-      const numSpan = document.createElement('span');
-      numSpan.className = 'ci-line-num';
-
-      // Highlight each line independently so it aligns with its grid line
-      // number (and keeps wrap-per-line alignment). The tradeoff is that a
-      // construct spanning multiple lines — a block comment, a multi-line
-      // template literal — is tokenised per line rather than as a whole; the
-      // shared engine still falls back to escaped text for unbundled languages.
-      const lineSpan = document.createElement('span');
-      lineSpan.className = 'ci-line';
-      lineSpan.innerHTML = highlightCode(line, language);
-
-      code.appendChild(numSpan);
-      code.appendChild(lineSpan);
-    }
+    // Replace pre>code with one block per line inside code. A long file is
+    // rendered a window at a time; `destroy` unsubscribes it, for callers that
+    // have a teardown seam to hang it on.
+    const destroy = renderLineNumberedCode(code, lines, language, lineNumberStart);
+    if (destroy) /** @type {any} */ (codeBlock).destroy = destroy;
   }
 
   codeBlock.appendChild(codeContent);

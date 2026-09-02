@@ -60,10 +60,11 @@ injectFileContentStyles();
  * can be torn down mid-read must check its own signal before using what comes
  * back rather than assuming this rejected.
  * @param {string} path - File or directory path. A trailing "/" means directory.
- * @param {{signal?: AbortSignal, noIgnore?: boolean, head?: number}} [options] - Abort
- *   signal for the file read, whether a directory listing ignores .gitignore, and a
- *   line ceiling for a caller showing a preview rather than the whole file. Without
- *   `head` the read op's own default cap applies, which is generous.
+ * @param {{signal?: AbortSignal, noIgnore?: boolean, head?: number, whole?: boolean}} [options] - Abort
+ *   signal for the file read, whether a directory listing ignores .gitignore, a line
+ *   ceiling for a caller showing a preview rather than the whole file, and `whole` for
+ *   a caller that wants every line. With neither the read op's own default cap
+ *   applies, which is generous but is still a cap.
  * @returns {Promise<LiveFileResult>} What disk said; `exists: false` on any failure.
  */
 export async function fetchLiveFile(path, options = {}) {
@@ -110,11 +111,12 @@ export async function fetchLiveFile(path, options = {}) {
   }
 
   try {
-    const r = await readFile(
-      options.head && options.head > 0
-        ? { path, userInitiated: true, head: options.head }
-        : { path, userInitiated: true },
-      options.signal);
+    /** @type {import('../../../js/services/ops-api.js').ReadFileLoadParams} */
+    const readParams = { path, userInitiated: true };
+    if (options.head && options.head > 0) readParams.head = options.head;
+    else if (options.whole) readParams.maxLines = 0;
+
+    const r = await readFile(readParams, options.signal);
     return {
       path: r.path || path,
       isDirectory: false,

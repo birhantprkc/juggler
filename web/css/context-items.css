@@ -256,37 +256,50 @@
     font-size: inherit !important;
 }
 
-/* Line numbers for code (CSS Grid + CSS Counters) */
-.ci-code-grid {
-    display: grid;
-    grid-template-columns: min-content 1fr;
-    counter-reset: line-num var(--line-start, 0);
-}
+/* Line-numbered code: one block per source line, its number drawn in the left
+   gutter by a ::before. A block layout rather than a two-column grid because a
+   grid's min-content gutter column has to measure every line-number cell in the
+   file before it can size the column, which dominates layout cost on a large
+   one. The gutter is sized from --line-digits (the digit count of the last line
+   number) instead, so nothing is measured. */
+.ci-code-lines {
+    --line-gutter: calc(var(--line-digits, 4) * 1ch + 1.25rem);
 
-.ci-line-num {
-    counter-increment: line-num;
-    text-align: right;
-    color: var(--text-tertiary);
-    font-family: var(--font-mono);
-    font-size: 0.8125rem;
-    line-height: 1.6;
-    padding-left: 0.75rem;
-    padding-right: 0.5rem;
-    margin-right: 0.5rem;
-    border-right: 0.0625rem solid var(--border-divider);
-    user-select: none;
-    white-space: nowrap;
-}
-
-.ci-line-num::before {
-    content: counter(line-num);
+    display: block;
 }
 
 .ci-line {
+    display: block;
+    position: relative;
+    padding-left: var(--line-gutter);
     font-family: var(--font-mono);
     font-size: 0.8125rem;
     line-height: 1.6;
+
+    /* A blank line is an empty block, which would otherwise collapse to no
+       height and break the uniform row height the line numbers align to. */
+    min-height: 1.6em;
     white-space: pre;
+}
+
+/* Stands in for the rows outside the rendered window of a long file, so the
+   scrollbar reflects the whole file. Height is set inline, in rows. */
+.ci-line-spacer {
+    display: block;
+}
+
+.ci-line::before {
+    content: attr(data-line);
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: calc(var(--line-gutter) - 0.5rem);
+    padding-right: 0.5rem;
+    border-right: 0.0625rem solid var(--border-divider);
+    color: var(--text-tertiary);
+    text-align: right;
+    user-select: none;
 }
 
 /* ===================================================================

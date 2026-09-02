@@ -16,7 +16,9 @@
  *
  * Opening is latched — a click, or the shortcut. Clicking inside the board never
  * closes it, and neither does the pointer leaving: file previews, text selection
- * and drags all need to survive a wandering mouse. There is no hover peek.
+ * and drags all need to survive a wandering mouse. There is no hover peek. A
+ * finger has one more way out: the board can be swiped back off the edge it
+ * arrived from, as the conversation drawer and a bottom sheet can.
  *
  * The chord is dispatched here rather than by the shortcut manager: an open board
  * holds a popup token, and the manager stands every command down behind an
@@ -31,6 +33,7 @@ import pinboardItemRegistry from '../registries/pinboard-item-registry.js';
 import { REGISTRIES_RELOADED } from '../registries/reload-registries.js';
 import keyShortcutManager, { eventMatchesBinding } from '../services/key-shortcut-manager.js';
 import { markPopupOpen, isAnyPopupOpen } from '../utils/popup-manager.js';
+import { attachSwipeDismiss } from '../utils/swipe-dismiss.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { isPinboardView } from '../utils/view-mode.js';
 import './pinboard-panel.js';
@@ -141,6 +144,22 @@ class PinboardShell extends JugglerElement {
     this.append(scrim, panel);
     this._scrim = scrim;
     this._panel = panel;
+
+    // Push it back off the right edge it came in from — the mirror of the
+    // sidebar drawer's leftward swipe, and the same gesture. Two of the panel's
+    // own drags are conceded by name: the resize grip on its left edge, and a
+    // tab's reorder grip. The rest is conceded by scroll position, because the
+    // board's content is a scroll box and its commonest occupant is a code block
+    // wider than a phone — a rightward drag there is the reader coming back to
+    // the left margin until there is no margin left to come back to.
+    this.addCleanup(attachSwipeDismiss(panel, {
+      direction: 'right',
+      thresholdPx: 60,
+      isActive: () => pinboardView.isOpen(),
+      exclude: '.pinboard-resize-handle, .pinboard-tab__grip',
+      yieldToScroll: true,
+      onDismiss: () => pinboardView.close(),
+    }));
 
     this._applyWidth(loadWidth());
 

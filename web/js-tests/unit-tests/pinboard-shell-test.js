@@ -335,6 +335,31 @@ function chord() {
 }
 
 /**
+ * Drag horizontally across an element with a finger, and let go. Positive is
+ * rightward, the way the board leaves.
+ * @param {HTMLElement} target - Element the drag starts on.
+ * @param {number} dx - How far to travel, in px.
+ */
+function swipe(target, dx) {
+  const start = { x: 200, y: 200 };
+  const step = (/** @type {string} */ type, /** @type {number} */ at) => {
+    target.dispatchEvent(new PointerEvent(type, {
+      pointerId: 1,
+      pointerType: 'touch',
+      buttons: 1,
+      clientX: start.x + at,
+      clientY: start.y,
+      bubbles: true,
+      cancelable: true,
+    }));
+  };
+  step('pointerdown', 0);
+  step('pointermove', Math.sign(dx) * 15);
+  step('pointermove', dx);
+  step('pointerup', dx);
+}
+
+/**
  * @param {any} shell - The mounted shell.
  * @returns {string[]} The tab labels, in strip order.
  */
@@ -430,6 +455,33 @@ export async function runTests(_ctx) {
         pinboardView.open();
         shell.querySelector('.pinboard-scrim').click();
         assert(!shell.classList.contains('open'), 'a click on the scrim must close the board');
+      } finally {
+        teardown();
+      }
+    });
+
+    await run('the board can be swiped back off the edge it came in from', async () => {
+      // The gesture itself is pinned by swipe-dismiss-test; what this pins is
+      // the board's wiring of it — which way it goes, and what it concedes.
+      const { shell, teardown } = await mountShell([{ id: 'pin_s', type: 'probe', config: { label: 'A' } }]);
+      try {
+        const panel = /** @type {HTMLElement} */ (shell.querySelector('.pinboard-panel'));
+        const grip = /** @type {HTMLElement} */ (shell.querySelector('.pinboard-tab__grip'));
+        assert(!!grip, 'the fixture needs a tab, to have a reorder grip to concede to');
+
+        pinboardView.open();
+        swipe(panel, 20);
+        assert(pinboardView.isOpen(), 'a short drag is not a dismissal');
+
+        swipe(panel, 120);
+        assert(!pinboardView.isOpen(), 'a rightward drag past the threshold pushes the board away');
+
+        pinboardView.open();
+        swipe(panel, -120);
+        assert(pinboardView.isOpen(), 'dragging the other way is dragging it further onto the screen');
+
+        swipe(grip, 120);
+        assert(pinboardView.isOpen(), 'a drag from a tab grip is that tab being reordered');
       } finally {
         teardown();
       }

@@ -73,15 +73,20 @@ class TextFileViewer extends FileViewer {
   /**
    * @param {import('juggler/file-source').FileSource} source - The file to render
    * @param {HTMLElement} host - Element to render into
-   * @returns {Promise<void>}
+   * @returns {Promise<(() => void)|void>} Teardown when the block windows a long file
    */
   async render(source, host) {
     const text = source.text ?? new TextDecoder().decode(await source.bytes());
-    host.appendChild(createFileContentBlock({
+    const block = createFileContentBlock({
       content: text,
       language: TextFileViewer.languageFor(source),
       lineNumberStart: source.lineOffset || 1,
-    }));
+    });
+    host.appendChild(block);
+    // A file long enough to be rendered a window at a time is subscribed to its
+    // scroller; hand that subscription to the host's teardown.
+    const destroy = /** @type {any} */ (block).destroy;
+    return typeof destroy === 'function' ? destroy : undefined;
   }
 
   /**

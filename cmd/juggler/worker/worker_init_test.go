@@ -265,6 +265,13 @@ func TestInitLeavesUnsummarisedThreadAlone(t *testing.T) {
 	w.doc.Destroy()
 }
 
+// initBudget bounds how long the reconnect test waits for the worker to answer.
+// A patience limit, not a timing this proves anything about: an init is answered
+// from the run loop in milliseconds, so the whole budget is only ever spent by a
+// run that is going to fail — and on CI, where every package's tests share two
+// cores, a several-second stall of the whole process is ordinary.
+const initBudget = 20 * time.Second
+
 // TestInitDuringProcessingCancelsAndResetsState verifies that receiving an init
 // message while the strategy loop is running cancels the operation and resets state.
 func TestInitDuringProcessingDoesNotCancel(t *testing.T) {
@@ -322,7 +329,7 @@ func TestInitDuringProcessingDoesNotCancel(t *testing.T) {
 	manager.HandleMessage("conv1", "init", initPayload, sendCallback)
 	select {
 	case <-readyChan:
-	case <-time.After(2 * time.Second):
+	case <-time.After(initBudget):
 		t.Fatal("Timeout waiting for ready")
 	}
 
@@ -339,7 +346,7 @@ func TestInitDuringProcessingDoesNotCancel(t *testing.T) {
 	manager.HandleMessage("conv1", "send-message", sendPayload, nil)
 
 	// Wait for worker to enter processing state
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(initBudget)
 	for time.Now().Before(deadline) {
 		if w.State() == StateProcessing {
 			break
@@ -356,8 +363,9 @@ func TestInitDuringProcessingDoesNotCancel(t *testing.T) {
 	// Wait for the reconnect init to be processed (it sends "ready")
 	select {
 	case <-readyChan:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Timeout waiting for ready after reconnect")
+	case <-time.After(initBudget):
+		t.Fatalf("Timeout waiting for ready after reconnect (state=%s): the reconnect init is "+
+			"answered from the run loop, which a turn's LLM call must not occupy", w.State())
 	}
 
 	// Worker should still be processing — reconnect does not cancel

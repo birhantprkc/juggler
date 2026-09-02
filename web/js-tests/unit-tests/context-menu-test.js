@@ -8,6 +8,10 @@
  * Covers:
  *  - provider dispatch (resolveMenu): first matching, non-empty provider wins,
  *    empty results are skipped, non-matching elements resolve to null;
+ *  - the file-reference menu: which elements it claims (a `data-file-path`, a
+ *    link to a project file) and which it leaves alone (an external link, an
+ *    in-page anchor), and that the Pin row is offered only when something is
+ *    enabled to take the file;
  *  - the built-in text-edit menu (buildTextEditMenu): Cut/Copy/Paste/Select All
  *    for writable fields, Copy-only for read-only selections, nothing for plain
  *    elements or read-only fields — this is what keeps the native menu (with its
@@ -22,10 +26,14 @@ import {
   resolveMenu,
   registerContextMenuProvider,
 } from '../../js/services/context-menu-service.js';
+// Imported for its registration: the file-reference menu is a side effect of
+// loading the module that owns it, and these tests are about that menu.
+import '../../js/utils/properties-panel-helpers.js';
+import pinboardItemRegistry from '../../js/registries/pinboard-item-registry.js';
 
 // Unique marker so our test provider never collides with real providers or
 // real DOM. Real providers match code-block / diff-viewer / .conversation-tab /
-// [data-file-path]; none of those match this attribute.
+// [data-file-path] and a[href]; none of those match this attribute.
 const MARK = 'data-cm-unit-test';
 
 let _providerRegistered = false;
@@ -45,6 +53,50 @@ function ensureTestProvider() {
     },
   });
   _providerRegistered = true;
+}
+
+/**
+ * A stand-in pin type that takes any live file, so the menu's Pin row has
+ * something to be offered by. It is never mounted: resolveSource asks the class,
+ * not an instance.
+ */
+class TakesFiles {
+  static MANIFEST = {
+    id: 'cm-test-file',
+    name: 'Files, for testing',
+    version: '1.0.0',
+    description: 'Takes any file so the Pin row has a taker',
+  };
+
+  /**
+   * @param {{kind?: string, path?: string}} source - The source offered.
+   * @returns {boolean} True for a file with a path.
+   */
+  static canPinSource(source) {
+    return source?.kind === 'file' && !!source.path;
+  }
+
+  /**
+   * @param {{path?: string}} source - The source offered.
+   * @returns {{path: string}} The config to pin it with.
+   */
+  static configFromSource(source) {
+    return { path: source.path || '' };
+  }
+}
+
+/**
+ * An anchor as rendered markdown would leave one: a real element in the
+ * document, so its href resolves against this page the way a clicked one does.
+ * @param {string} href - The href to set.
+ * @returns {HTMLAnchorElement} The anchor, already in the document.
+ */
+function anchorWith(href) {
+  const anchor = document.createElement('a');
+  anchor.setAttribute('href', href);
+  anchor.textContent = 'a link';
+  document.body.appendChild(anchor);
+  return anchor;
 }
 
 /**
@@ -104,6 +156,57 @@ export async function runTests() {
 
   tally(check(resolveMenu(null) === null,
     'resolveMenu: null target should resolve to null', errors));
+
+  // === File references (data-file-path rows, links in rendered markdown) ===
+  // A lane shares one realm, so the registry is emptied first: whatever an
+  // earlier suite left registered would otherwise decide whether Pin is offered.
+  pinboardItemRegistry.reset();
+
+  const fileLink = anchorWith('docs/report.md');
+  const externalLink = anchorWith('https://example.com/report.md');
+  const inPageLink = anchorWith('#section');
+  const fileRow = document.createElement('div');
+  fileRow.setAttribute('data-file-path', '/a/b.txt');
+  document.body.appendChild(fileRow);
+  try {
+    const linkMenu = resolveMenu(fileLink);
+    const linkLabels = linkMenu ? labelsOf(linkMenu.items) : [];
+    tally(check(!!linkMenu && linkMenu.subject === fileLink,
+      'file menu: a link to a project file is claimed, and is its own subject', errors));
+    tally(check(linkLabels.length === 3 && linkLabels[0] === 'Open file' && linkLabels[2] === 'Copy path',
+      `file menu: a file link offers open/reveal/copy (got ${JSON.stringify(linkLabels)})`, errors));
+    tally(check(!linkLabels.includes('Pin to Pinboard'),
+      'file menu: with nothing enabled to take a file, Pin is left out rather than offered dead', errors));
+
+    tally(check(resolveMenu(externalLink) === null,
+      'file menu: an external link is not a file, and is left to the text menu', errors));
+    tally(check(resolveMenu(inPageLink) === null,
+      'file menu: an in-page #anchor is not a file either', errors));
+
+    const rowMenu = resolveMenu(fileRow);
+    tally(check(!!rowMenu && rowMenu.subject === fileRow && labelsOf(rowMenu.items).length === 3,
+      'file menu: a data-file-path row still resolves to its own path', errors));
+
+    // Both selectors in one provider: the nearer subject decides, so a link
+    // inside a file row is about its own href.
+    const nested = document.createElement('a');
+    nested.setAttribute('href', 'docs/other.md');
+    fileRow.appendChild(nested);
+    tally(check(resolveMenu(nested)?.subject === nested,
+      'file menu: a link inside a file row is about the link, not the row', errors));
+
+    pinboardItemRegistry.registerClass(TakesFiles, { extensionId: 'test' });
+    tally(check(labelsOf(resolveMenu(fileLink)?.items || []).includes('Pin to Pinboard'),
+      'file menu: with something enabled to take it, a file link offers to pin it', errors));
+    tally(check(labelsOf(resolveMenu(fileRow)?.items || []).includes('Pin to Pinboard'),
+      'file menu: and so does a file row, matching the pin button beside it', errors));
+  } finally {
+    fileLink.remove();
+    externalLink.remove();
+    inPageLink.remove();
+    fileRow.remove();
+    pinboardItemRegistry.reset();
+  }
 
   // === Built-in text-edit menu (buildTextEditMenu) ===
   // Writable textarea with a selection → full edit menu, Cut/Copy enabled.
