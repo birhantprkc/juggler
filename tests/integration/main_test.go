@@ -174,14 +174,24 @@ func loadPoolConfig() poolConfig {
 
 func (c poolConfig) totalSlots() int { return c.windows * c.iframes }
 
-// serverBinary is the built server binary under <root>/bin, using the platform
-// executable name — "juggler" on Unix, "juggler.exe" on Windows. Both halves of
-// the contract need this: `go build -o` writes the output name verbatim (it does
-// NOT append .exe on a Windows target), and Windows exec.LookPath refuses to run
-// an extension-less file. So the three spawn sites here and the CI build step
-// must all agree on this name, or the suite fails at spawn with "executable file
-// not found" on Windows (which -short used to hide).
+// serverBinary is the server binary every spawn site in this suite runs.
+//
+// JUGGLER_TEST_SERVER names it outright, for a build system that keeps its
+// test-capable server somewhere other than the slot the desktop app occupies —
+// pointing the suite at that binary is then a matter of one variable, and
+// bin/juggler is left alone.
+//
+// Otherwise it is <root>/bin plus the platform executable name — "juggler" on
+// Unix, "juggler.exe" on Windows. Both halves of the contract need this:
+// `go build -o` writes the output name verbatim (it does NOT append .exe on a
+// Windows target), and Windows exec.LookPath refuses to run an extension-less
+// file. So the spawn sites here and the CI build step must all agree on this
+// name, or the suite fails at spawn with "executable file not found" on Windows
+// (which -short used to hide).
 func serverBinary(root string) string {
+	if custom := os.Getenv("JUGGLER_TEST_SERVER"); custom != "" {
+		return custom
+	}
 	name := "juggler"
 	if runtime.GOOS == "windows" {
 		name += ".exe"
