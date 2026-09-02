@@ -985,14 +985,19 @@ conversation-bar .info-cards-button[aria-expanded="true"] {
    the column and scrolls (see .conversation-tabs above) while the rail has cards to
    show, so it keeps a share to show them in; with nothing to show it shrinks to its
    "i" row (basis 0) and the list takes the lot. The button and the cards
-   bottom-align so they rest just above the Bin. overflow:hidden is a safety net — the component
-   only ever appends cards that fully fit. Deliberately low-key: no per-card
+   bottom-align so they rest just above the Bin, so overflow:hidden cuts the top
+   card's top — the one card the component will mount without room for it all. Deliberately low-key: no per-card
    background or shadow — just muted text on the sidebar panel, with a hairline
    divider between adjacent cards for gentle zoning (see .info-card + .info-card).
    .app-main sets a monospace font-family that the sidebar inherits, so the
    host forces the card text (title, body, keycap) back to the UI sans font.
    ---------------------------------------------------------------------------- */
 conversation-bar info-rail {
+    /* Depth of the fade over a clipped card's cut edge. The rail keeps at least
+       twice this much of the card visible (MIN_CLIPPED_REVEAL_REM in info-rail.js),
+       so the fade never covers the whole of what it is signing. */
+    --info-card-fade: 1.5rem;
+
     display: flex;
     flex-direction: column;
     justify-content: flex-end;
@@ -1015,6 +1020,14 @@ conversation-bar info-rail {
    mode): the rail collapses to nothing again and the tabs get the whole column. */
 conversation-bar info-rail:has(info-cards-button[hidden]) {
     min-height: 0;
+}
+
+/* Set while the top card overflows the rail. The stack is bottom-aligned, so the
+   overflow leaves past the top edge and the fade puts it behind the tab list above
+   — a card carrying on out of view, rather than one that failed to draw. Applied
+   only when something is actually cut, so a card that fits keeps its full contrast. */
+conversation-bar info-rail[data-clipped] {
+    mask-image: linear-gradient(to bottom, transparent 0, #000 var(--info-card-fade));
 }
 
 conversation-bar info-rail[hidden] {

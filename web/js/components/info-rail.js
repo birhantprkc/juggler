@@ -21,9 +21,12 @@
  * use (`flex: 1 1 0`), so the rail's own height IS the free space — no sibling
  * geometry. The list is capped at a share of the column while the rail has cards to
  * put there, and takes the whole column when it hasn't; the rail publishes which of
- * those it is as the `data-has-cards` attribute CSS keys off. Cards stack top-priority-first,
- * and a card is shown *whole or not at all*: any that don't fully fit are dropped
- * from the tail (never clipped). A single ResizeObserver watches the rail (for the
+ * those it is as the `data-has-cards` attribute CSS keys off. Cards stack
+ * top-priority-first, and below the first one they are shown *whole or not at all*:
+ * any that don't fully fit are dropped from the tail. The first card is the
+ * exception — rather than leave a card-sized hole above the Bin, it is kept and
+ * allowed to run off the rail's top edge, faded, while enough of it stays visible to
+ * be worth reading. A single ResizeObserver watches the rail (for the
  * leftover space: list grows/shrinks, sidebar/window resize) and every mounted card
  * (for content that grows after it was measured), and reconciles synchronously —
  * the observer runs after layout but before paint, so a shrink never paints a
@@ -41,6 +44,16 @@ import { providers, isHidden, hideCard, INFO_CARDS_CHANGED_EVENT } from '../serv
 import { TIPS_CHANGED_EVENT } from '../services/tips-manager.js';
 import './info-cards-button.js';
 import JugglerElement from './juggler-element.js';
+
+/**
+ * How much of the top card has to stay visible, in rem, for showing it clipped to
+ * beat showing nothing. Twice the fade the CSS signs the cut with
+ * (`--info-card-fade`), so there is always as much solid card as faded card —
+ * below that the whole thing is fade and reads as a rendering fault. Under this,
+ * the rail is visibly just its "i" row and no space looks unaccounted for.
+ * @type {number}
+ */
+const MIN_CLIPPED_REVEAL_REM = 3;
 
 /**
  * The runtime shape of a mounted card — an {@link import('juggler/info-card-type').default}
@@ -152,7 +165,14 @@ class InfoRail extends JugglerElement {
    * ignores the top-edge overflow our bottom-aligned stack produces). The "i" menu
    * shares the stack, so its own height (and the gap below it) comes off the budget
    * first — it is never the thing that gets dropped.
-   * @returns {number} The count of leading cards that fit.
+   *
+   * When not even the first card fits, it is kept anyway and left to overflow,
+   * provided {@link MIN_CLIPPED_REVEAL_REM} of the rail is there to show it in. The
+   * stack is bottom-aligned, so what overflows leaves past the rail's TOP edge and
+   * the card keeps the end its content builds towards. Dropping it instead is what
+   * leaves a card-sized hole above the Bin that reads as a card failing to render.
+   * @returns {{count: number, clipped: boolean}} How many leading cards to keep, and
+   *   whether the topmost of them overflows the rail.
    * @private
    */
   _fitCount() {
@@ -169,7 +189,12 @@ class InfoRail extends JugglerElement {
       used = next;
       count += 1;
     }
-    return count;
+    if (count === 0 && this._mounted.length > 0) {
+      const remPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+      if (available >= MIN_CLIPPED_REVEAL_REM * remPx) return { count: 1, clipped: true };
+    }
+    // Anything kept by the loop fits whole, so only the forced card is ever clipped.
+    return { count, clipped: false };
   }
 
   /**
@@ -188,6 +213,7 @@ class InfoRail extends JugglerElement {
       if (/** @type {any} */ (window).JUGGLER_TEST_MODE) {
         this._teardownAll();
         this.removeAttribute('data-has-cards');
+        this.removeAttribute('data-clipped');
         this.hidden = true;
         return;
       }
@@ -247,11 +273,14 @@ class InfoRail extends JugglerElement {
       // rather than reading scrollHeight: with the stack bottom-aligned it overflows
       // the *top* edge, and scrollHeight doesn't count start-edge overflow in every
       // engine (Chrome reports none) — so scrollHeight would silently miss the clip.
-      const fit = this._fitCount();
+      const { count: fit, clipped } = this._fitCount();
       while (this._mounted.length > fit) {
         const dropped = this._mounted.pop();
         if (dropped) this._teardownEntry(dropped);
       }
+      // Let CSS fade the top card's cut edge. Safe to set from here: a mask paints,
+      // it doesn't lay out, so it can't resize the rail back into this observer.
+      this.toggleAttribute('data-clipped', clipped);
       // Left intentionally present even when empty: as the flex:1 child it holds
       // the Bin at the bottom of the column, just as the tabs menu used to.
     } finally {
