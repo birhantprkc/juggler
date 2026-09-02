@@ -88,6 +88,28 @@ export async function runTests(_ctx) {
   scroller.style.cssText = 'position:absolute;left:-9999px;top:0;width:60rem;height:25rem;overflow:auto;';
   document.body.appendChild(scroller);
 
+  /**
+   * Scroll the enclosing box and let the block react to it.
+   *
+   * Assigning `scrollTop` moves the scroller at once, but the scroll event it
+   * owes is fired in the rendering update step, which a hidden page defers for
+   * as long as it likes — so the event is announced here rather than waited
+   * for. It is the listener's response that is under test, not the browser's
+   * bookkeeping about when to run it.
+   * @param {number} top - Offset to scroll to
+   * @returns {Promise<void>} Resolves once the block has redrawn
+   */
+  const scrollTo = async (top) => {
+    scroller.scrollTop = top;
+    // Named separately from what the block did with it, so a fixture that
+    // cannot scroll never reads as a window that failed to move.
+    const want = Math.max(0, Math.min(top, scroller.scrollHeight - scroller.clientHeight));
+    assert(Math.abs(scroller.scrollTop - want) < 2,
+      `the scroller would not move: asked for ${top}, sits at ${scroller.scrollTop}, want ${want}`);
+    scroller.dispatchEvent(new Event('scroll'));
+    await settle();
+  };
+
   /** @type {Array<() => void>} */
   const cleanups = [];
 
@@ -155,8 +177,7 @@ export async function runTests(_ctx) {
     await test('scrolling to the end shows the last line', async () => {
       const lines = 10000;
       const block = await mount(lines);
-      scroller.scrollTop = scroller.scrollHeight;
-      await settle();
+      await scrollTo(scroller.scrollHeight);
       const numbers = renderedNumbers(block);
       assert(numbers[numbers.length - 1] === lines,
         `last rendered line is ${numbers[numbers.length - 1]}, want ${lines}`);
@@ -170,8 +191,7 @@ export async function runTests(_ctx) {
     await test('scrolling to the middle shows the middle', async () => {
       const lines = 10000;
       const block = await mount(lines);
-      scroller.scrollTop = Math.floor(scroller.scrollHeight / 2);
-      await settle();
+      await scrollTo(Math.floor(scroller.scrollHeight / 2));
       const numbers = renderedNumbers(block);
       const middle = lines / 2;
       assert(numbers[0] !== undefined && Math.abs(numbers[0] - middle) < lines / 20,
@@ -184,8 +204,7 @@ export async function runTests(_ctx) {
     await test('a rendered line sits exactly where its number says', async () => {
       const lines = 10000;
       const block = await mount(lines);
-      scroller.scrollTop = Math.floor(scroller.scrollHeight / 2);
-      await settle();
+      await scrollTo(Math.floor(scroller.scrollHeight / 2));
 
       const code = /** @type {HTMLElement} */ (block.querySelector('.ci-code-lines'));
       const rowHeight = block.querySelector('.ci-line')?.getBoundingClientRect().height ?? 0;
@@ -210,8 +229,7 @@ export async function runTests(_ctx) {
       destroy();
       assert(block.querySelectorAll('.ci-line').length === 0,
         'teardown left lines behind');
-      scroller.scrollTop = scroller.scrollHeight;
-      await settle();
+      await scrollTo(scroller.scrollHeight);
       assert(block.querySelectorAll('.ci-line').length === 0,
         'a torn-down block redrew itself on scroll');
     });
