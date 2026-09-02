@@ -138,7 +138,13 @@ async function withStubbedHistory(fn) {
   const realBack = window.history.back;
   const counts = { push: 0, back: 0 };
   window.history.pushState = function () { counts.push++; };
-  window.history.back = function () { counts.back++; };
+  // The stub answers with a popstate, as the real API does a task later: a
+  // `back()` that never answers leaves popup-manager owed a pop for the rest of
+  // the realm's life, and the next Back press is spent settling that debt.
+  window.history.back = function () {
+    counts.back++;
+    window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+  };
   try {
     await fn(counts);
   } finally {

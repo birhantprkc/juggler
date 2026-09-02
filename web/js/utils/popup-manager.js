@@ -114,6 +114,13 @@ export function isForeignPopupOpen(ownIds = []) {
  * called in production: the app never force-clears popup state (each surface
  * releases its own token on close). Clears the id-map and overlay flags too so
  * the whole module is pristine.
+ *
+ * The count of self-inflicted history pops still in flight is deliberately NOT
+ * cleared: it tracks answers the browser owes us, which no reset can call off.
+ * Forgetting one would let a pop from a previous test dismiss this test's
+ * overlays — the very race the pool's shared realm makes easy to hit. A stubbed
+ * `history.back()` must therefore answer with a `popstate` of its own, as the
+ * real API does, or its pop is owed forever.
  */
 export function __resetPopupManagerForTests() {
   openPopups.clear();
@@ -323,19 +330,39 @@ const OVERLAY_HISTORY_MARKER = 'jugglerOverlay';
 let overlayStatePushed = false;
 /** @type {boolean} Whether a deferred sentinel removal is already queued. */
 let removalScheduled = false;
+/**
+ * Sentinel drops we asked for whose `popstate` has not arrived yet.
+ *
+ * `history.back()` answers in a later task, so the pop it produces is not
+ * evidence of a Back press — it is our own retraction reporting in, and the page
+ * can have opened another overlay in the meantime. Counted rather than a flag
+ * because a rapid open/close/open can leave more than one in flight.
+ * @type {number}
+ */
+let pendingSelfPops = 0;
 
 /**
- * Push the sentinel entry as the overlay layer appears (0 → 1 popups). No-op if
- * a sentinel is already up (a second, stacked popup shares the one entry) or if
- * the History API is unavailable.
+ * Put a sentinel entry on top for the overlay layer, unless one is already there
+ * or nothing is open to need it. Pushing also prunes whatever was ahead of the
+ * current entry, which is what clears any sentinel a traversal orphaned.
  * @private
  */
-function pushOverlayStateIfFirst() {
-  if (openPopups.size !== 1 || overlayStatePushed) return;
+function ensureOverlaySentinel() {
+  if (openPopups.size === 0 || overlayStatePushed) return;
   try {
     window.history.pushState({ [OVERLAY_HISTORY_MARKER]: true }, '');
     overlayStatePushed = true;
   } catch (e) { /* History API unavailable — Back integration simply off. */ }
+}
+
+/**
+ * Push the sentinel entry as the overlay layer appears (0 → 1 popups). A second,
+ * stacked popup shares the one entry, so only the transition pushes.
+ * @private
+ */
+function pushOverlayStateIfFirst() {
+  if (openPopups.size !== 1) return;
+  ensureOverlaySentinel();
 }
 
 /**
@@ -360,17 +387,45 @@ function releaseOverlayStateIfLast() {
     removalScheduled = false;
     if (openPopups.size > 0 || !overlayStatePushed) return; // re-opened in the swap
     overlayStatePushed = false;
-    try { window.history.back(); } catch (e) { /* History API unavailable. */ }
+    pendingSelfPops++;
+    try {
+      window.history.back();
+    } catch (e) {
+      pendingSelfPops--; // History API unavailable — nothing will answer.
+    }
   }, 0);
 }
 
 // A Back press that pops our sentinel while overlays are open IS the dismissal.
 // The browser already removed the entry, so clear the flag before closing (so
 // the cascade of releases doesn't try to history.back() over it again).
+//
+// A pop WE asked for is not a Back press, however late it arrives. Between the
+// retraction's `history.back()` and its answer the page can have opened another
+// overlay, and dismissing on that pop tears down something the user just opened
+// — a notice raised moments after a menu closed vanishing before it was read.
+// So a pending self-pop is consumed instead, and the sentinel bookkeeping is
+// re-derived from where the traversal actually left us rather than assumed: it
+// need not be the entry we aimed at, since the target is resolved when the
+// traversal is queued and any sentinel pushed in the meantime is jumped over.
+// Believing a sentinel is up when it is not is the harmful direction — the next
+// Back press would leave the app, and the next retraction would navigate it away
+// — so the layer is re-covered when the pop left it bare.
+//
+// This module is the only thing in the app that touches session history, so
+// every popstate is either a Back press or one of ours.
+//
 // Guarded: this module is transitively imported by context items that load in
 // the DOM-less node engine host, where `window` is undefined.
 if (typeof window !== 'undefined') {
   window.addEventListener('popstate', () => {
+    if (pendingSelfPops > 0) {
+      pendingSelfPops--;
+      const landedState = /** @type {any} */ (window.history.state);
+      overlayStatePushed = !!(landedState && landedState[OVERLAY_HISTORY_MARKER]);
+      ensureOverlaySentinel();
+      return;
+    }
     if (!isAnyPopupOpen()) return;
     overlayStatePushed = false;
     closeAllPopups();

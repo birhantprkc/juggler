@@ -483,12 +483,11 @@ function settle() {
 /**
  * Open the board in the ordinary view, with the overlay layer in a known state.
  *
- * An open board claims that layer, and the layer's history sentinel is released
- * on a macrotask — so a case that had one open earlier can leave a
- * `history.back()` still in flight, and the `popstate` it lands on closes
- * whatever is open at the time. Clearing the layer first, then letting any such
- * release arrive against nothing, is what makes "the board is open" a fact this
- * case established rather than one the previous case is still undoing.
+ * An open board claims that layer, and a case that had one open earlier can
+ * leave the layer still claimed — the pool shares one JS realm across a lane's
+ * tests. Clearing it first, then letting the deferred sentinel release settle,
+ * is what makes "the board is open" a fact this case established rather than one
+ * the previous case is still undoing.
  * @returns {Promise<void>}
  */
 async function openBoard() {
