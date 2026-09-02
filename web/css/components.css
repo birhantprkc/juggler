@@ -295,14 +295,24 @@ conversation-bar .conversation-tabs {
     list-style: none;
     overflow: auto;
 
-    /* Content-sized, but shrinks and scrolls before the info rail gets any room —
-       the conversation list always wins the column (see the info-rail flex below). */
+    /* Content-sized, shrinking and scrolling before the info rail gets any room, up
+       to the cap below (see the info-rail flex below). */
     flex: 0 1 auto;
     min-height: 0;
 
     /* Thin, unobtrusive scrollbar — matches .conversation-message-list */
     scrollbar-width: thin;
     scrollbar-color: var(--overlay-light-10) transparent;
+}
+
+/* A long list scrolls at 70% of the column rather than taking all of it, leaving
+   the info rail below a share to show cards in. Keyed on whether the rail has any
+   card ELIGIBLE to show, not on how many it managed to mount: mounting depends on
+   the space this cap creates, so the mounted count would feed back into itself.
+   With every card hidden or empty there is nothing to reserve for, the cap lifts,
+   and the list uses the whole column. */
+conversation-bar .conversation-bar:has(info-rail[data-has-cards]) .conversation-tabs {
+    max-height: 70%;
 }
 
 conversation-bar .conversation-tab,
@@ -971,9 +981,11 @@ conversation-bar .info-cards-button[aria-expanded="true"] {
    (Tips, Git status, …) filling the empty sidebar space above the Bin, shown only
    while the tabs leave room for them. The rail is the flex child that grows into
    whatever the conversation list doesn't use (flex: 1 1 0), so its own height IS
-   the available space — no measuring of siblings. When the list is tall it shrinks
-   to its "i" row first (basis 0) and the tabs scroll instead; the button and the
-   cards bottom-align so they rest just above the Bin. overflow:hidden is a safety net — the component
+   the available space — no measuring of siblings. A tall list is capped at 70% of
+   the column and scrolls (see .conversation-tabs above) while the rail has cards to
+   show, so it keeps a share to show them in; with nothing to show it shrinks to its
+   "i" row (basis 0) and the list takes the lot. The button and the cards
+   bottom-align so they rest just above the Bin. overflow:hidden is a safety net — the component
    only ever appends cards that fully fit. Deliberately low-key: no per-card
    background or shadow — just muted text on the sidebar panel, with a hairline
    divider between adjacent cards for gentle zoning (see .info-card + .info-card).

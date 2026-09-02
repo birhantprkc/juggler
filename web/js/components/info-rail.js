@@ -17,9 +17,11 @@
  * flex:1 child: anything placed beside it would be stranded at the top of the free
  * space instead of resting with the bottom-aligned cards.
  *
- * The conversation tabs always win the column. CSS makes this rail the flex child
- * that grows into whatever the list doesn't use (`flex: 1 1 0`), so the rail's own
- * height IS the free space — no sibling geometry. Cards stack top-priority-first,
+ * CSS makes this rail the flex child that grows into whatever the tab list doesn't
+ * use (`flex: 1 1 0`), so the rail's own height IS the free space — no sibling
+ * geometry. The list is capped at a share of the column while the rail has cards to
+ * put there, and takes the whole column when it hasn't; the rail publishes which of
+ * those it is as the `data-has-cards` attribute CSS keys off. Cards stack top-priority-first,
  * and a card is shown *whole or not at all*: any that don't fully fit are dropped
  * from the tail (never clipped). A single ResizeObserver watches the rail (for the
  * leftover space: list grows/shrinks, sidebar/window resize) and every mounted card
@@ -185,6 +187,7 @@ class InfoRail extends JugglerElement {
       // Never intrude during automated UI tests (matches the old tip-rail).
       if (/** @type {any} */ (window).JUGGLER_TEST_MODE) {
         this._teardownAll();
+        this.removeAttribute('data-has-cards');
         this.hidden = true;
         return;
       }
@@ -193,6 +196,18 @@ class InfoRail extends JugglerElement {
       const eligible = providers().filter(
         (p) => !isHidden(p.id) && (typeof p.hasContent !== 'function' || p.hasContent()),
       );
+
+      // Tell CSS whether there is anything worth reserving column space for: with
+      // cards to show, the tab list is capped and scrolls rather than squeezing the
+      // rail down to its "i" row; with every card hidden or empty, the cap lifts and
+      // the list takes the whole column. The signal is what is ELIGIBLE, never how
+      // many are mounted — mounting depends on the space the cap creates, so keying
+      // on the mounted count would feed itself. Eligibility is decided upstream of
+      // layout, so the attribute settles in one pass. toggleAttribute is a no-op
+      // when the value already matches, which matters: this runs on every doc change
+      // while a turn streams, and a redundant write would invalidate styles ~100
+      // times a second.
+      this.toggleAttribute('data-has-cards', eligible.length > 0);
 
       // Reconcile the mounted set to the eligible providers, in priority order,
       // reusing existing cards so their state (tip rotation) survives.
