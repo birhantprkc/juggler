@@ -147,6 +147,7 @@ import { runTests as runComposerSendLatchTests } from '../unit-tests/composer-se
 import { runTests as runScheduledSendTests } from '../unit-tests/scheduled-send-test.js';
 import { runTests as runSidebarDrawerTests } from '../unit-tests/sidebar-drawer-test.js';
 import { runTests as runSwipeDismissTests } from '../unit-tests/swipe-dismiss-test.js';
+import { runTests as runInfoRailTests } from '../unit-tests/info-rail-test.js';
 import { runTests as runTabDragGhostTests } from '../unit-tests/tab-drag-ghost-test.js';
 import { runTests as runReorderDragTests } from '../unit-tests/reorder-drag-test.js';
 import { runTests as runSlashCompletionTests } from '../unit-tests/slash-completion-test.js';
@@ -407,6 +408,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:scheduled-send', run: runScheduledSendTests },
   { name: 'unit:sidebar-drawer', run: runSidebarDrawerTests },
   { name: 'unit:swipe-dismiss', run: runSwipeDismissTests },
+  { name: 'unit:info-rail', run: runInfoRailTests },
   { name: 'unit:tab-drag-ghost', run: runTabDragGhostTests },
   { name: 'unit:reorder-drag', run: runReorderDragTests },
   { name: 'unit:slash-completion', run: runSlashCompletionTests },

@@ -13,25 +13,31 @@
  *
  * The rail also hosts the {@link module:components/info-cards-button|"i" menu} as
  * the first child of its stack, so the control rides immediately above the cards
- * it manages. It is a rail child rather than a sibling because the rail is the
- * flex:1 child: anything placed beside it would be stranded at the top of the free
- * space instead of resting with the bottom-aligned cards.
+ * it manages, and stays reachable to bring hidden cards back when no card is up.
  *
- * CSS makes this rail the flex child that grows into whatever the tab list doesn't
- * use (`flex: 1 1 0`), so the rail's own height IS the free space — no sibling
- * geometry. The list is capped at a share of the column while the rail has cards to
- * put there, and takes the whole column when it hasn't; the rail publishes which of
- * those it is as the `data-has-cards` attribute CSS keys off. Cards stack
- * top-priority-first, and below the first one they are shown *whole or not at all*:
- * any that don't fully fit are dropped from the tail. The first card is the
- * exception — rather than leave a card-sized hole above the Bin, it is kept and
- * allowed to run off the rail's top edge, faded, while enough of it stays visible to
- * be worth reading. A single ResizeObserver watches the rail (for the
- * leftover space: list grows/shrinks, sidebar/window resize) and every mounted card
- * (for content that grows after it was measured), and reconciles synchronously —
- * the observer runs after layout but before paint, so a shrink never paints a
- * half-clipped card. Surviving cards are reused across reconciles, so tip rotation
- * isn't reset as the sidebar resizes.
+ * The rail asks for exactly the height its cards need (`flex: 0 0 auto`) and the
+ * tab list takes everything above it, so the list runs right down to the topmost
+ * card: it scrolls only when the column is genuinely full, never beside space it
+ * could have used. What the cards don't get to win is the whole column — CSS caps
+ * the rail at a share of it (`max-height`), and that resolved cap, not the rail's
+ * own box, is the budget {@link InfoRail#_fitCount} measures against. Reading its
+ * own height instead would be circular now that its height is its content: a rail
+ * showing one card would measure room for one card and could never take a dropped
+ * one back.
+ *
+ * Two limits, in this order. {@link MAX_CARDS} caps how many cards are ever
+ * mounted, so a tall window doesn't hand the sidebar over to them. Then geometry:
+ * cards stack top-priority-first and, below the first, are shown *whole or not at
+ * all* — any that don't fully fit the budget are dropped from the tail. The first
+ * card is the exception; rather than leave a card-sized hole above the Bin it is
+ * kept and allowed to run off the rail's top edge, faded, while enough of it stays
+ * visible to be worth reading.
+ *
+ * A single ResizeObserver watches the column (for the budget: sidebar drag, window
+ * resize) and every mounted card (for content that grows after it was measured),
+ * and reconciles synchronously — the observer runs after layout but before paint,
+ * so a shrink never paints a half-clipped card. Surviving cards are reused across
+ * reconciles, so tip rotation isn't reset as the sidebar resizes.
  *
  * Nothing polls the rail. A dropped card is torn down, so a periodic re-fit would
  * rebuild — and remount, and refetch — every card that doesn't fit, once per tick.
@@ -56,6 +62,37 @@ import JugglerElement from './juggler-element.js';
 const MIN_CLIPPED_REVEAL_REM = 3;
 
 /**
+ * How many cards may be on screen at once, taken highest-priority-first. The rail
+ * is ambient furniture: past a few cards the sidebar stops being a list of
+ * conversations with something in the space below it. A count is the cheap half of
+ * the limit — the CSS cap on the rail's height is the half that holds in a short
+ * window, where even this many wouldn't fit.
+ * @type {number}
+ */
+const MAX_CARDS = 3;
+
+/**
+ * Whether the rail may mount under {@link __allowInfoRailInTests}.
+ * @type {boolean}
+ */
+let allowedInTests = false;
+
+/**
+ * Test seam. The rail keeps out of automated UI runs entirely (see `_reconcile`),
+ * which is why nothing pinned its geometry for so long — so the one suite that
+ * does pin it switches it back on around its own fixture.
+ *
+ * Realm-global, like the module it lives in, and a lane runs several suites in one
+ * realm: a caller MUST turn it off again, or the next suite gets cards mounted
+ * into its sidebar.
+ * @param {boolean} allowed - Whether the rail may mount while JUGGLER_TEST_MODE is set.
+ * @returns {void}
+ */
+export function __allowInfoRailInTests(allowed) {
+  allowedInTests = Boolean(allowed);
+}
+
+/**
  * The runtime shape of a mounted card — an {@link import('juggler/info-card-type').default}
  * instance. Cards expose their manifest metadata as instance getters (id, name,
  * eyebrow) alongside the lifecycle methods.
@@ -78,7 +115,7 @@ class InfoRail extends JugglerElement {
     /** @type {HTMLElement|null} @private The "i" menu heading the stack. */
     this._cardsButton = null;
     /**
-     * Watches the rail's box (the free space) and every mounted card's box
+     * Watches the sidebar column's box (the budget) and every mounted card's box
      * (content that grows after it was measured). The sole re-fit trigger.
      * @type {ResizeObserver|null} @private
      */
@@ -97,22 +134,24 @@ class InfoRail extends JugglerElement {
     this.onWindow(INFO_CARDS_CHANGED_EVENT, () => this._reconcile());
     this.onWindow(TIPS_CHANGED_EVENT, () => this._reconcile());
 
-    // The rail's own height IS the free space (CSS flex: 1 1 0). Observe it and
-    // reconcile SYNCHRONOUSLY: a ResizeObserver callback runs after layout but
+    // Reconcile SYNCHRONOUSLY: a ResizeObserver callback runs after layout but
     // before paint, so dropping a card that no longer fits here means the clipped
     // frame is never painted. This observer is the ONLY thing that drives a
-    // re-fit, and it covers every way the fit can change: the rail's own box for
-    // the leftover space (the tab list growing/shrinking, the sidebar drag, the
-    // window resizing), and each mounted card's box for content that grows after
-    // it was measured. Nothing polls the rail — a periodic re-fit would tear down
-    // and rebuild every card that doesn't fit, once per tick (see _reconcile).
+    // re-fit, and it covers every way the fit can change: the column's box for the
+    // budget (the sidebar drag, the window resizing), and each mounted card's box
+    // for content that grows after it was measured. Nothing polls the rail — a
+    // periodic re-fit would tear down and rebuild every card that doesn't fit,
+    // once per tick (see _reconcile).
     //
-    // Our own add/remove doesn't change the rail's height (overflow-hidden,
-    // flex-basis 0), so it can't feed back into a loop; a dropped card is
-    // unobserved before it leaves the DOM, so its removal queues no callback.
+    // The COLUMN is what's watched, not the rail: the rail's height is now its own
+    // content, so watching it would be watching our own output — and every card we
+    // mounted or dropped would call us back to decide it again. Nothing the rail
+    // does changes the column's height, so there is no path back into this. A
+    // dropped card is unobserved before it leaves the DOM, so its removal queues no
+    // callback either.
     if (typeof ResizeObserver !== 'undefined') {
       this._resizeObserver = new ResizeObserver(() => this._reconcile());
-      this._resizeObserver.observe(this);
+      if (this.parentElement) this._resizeObserver.observe(this.parentElement);
       this.addCleanup(() => {
         this._resizeObserver?.disconnect();
         this._resizeObserver = null;
@@ -158,8 +197,31 @@ class InfoRail extends JugglerElement {
   }
 
   /**
+   * The height the rail is allowed to take, in px — the cap CSS puts on it, not the
+   * rail's own box. Its box is its content now, so measuring that would only ever
+   * confirm the cards already up: a rail showing one card would find room for one
+   * card and never take a dropped one back.
+   *
+   * getComputedStyle reports max-height as specified rather than used (it isn't one
+   * of the properties whose resolved value is the used value), so a percentage
+   * arrives here still a percentage and is resolved against the containing block —
+   * the column's content box. Both forms are handled, so the share stays written
+   * once, in CSS, whichever units it is written in.
+   * @returns {number} The budget, falling back to the column's full height if the
+   *   rail is uncapped.
+   * @private
+   */
+  _budget() {
+    const column = this.parentElement ? this.parentElement.clientHeight : this.clientHeight;
+    const cap = getComputedStyle(this).maxHeight;
+    const value = parseFloat(cap);
+    if (!Number.isFinite(value)) return column;
+    return cap.endsWith('%') ? (column * value) / 100 : Math.min(value, column);
+  }
+
+  /**
    * How many of the currently-mounted cards, taken from the top (highest priority),
-   * fully fit the rail's content box — summing each card's own offsetHeight plus the
+   * fully fit the rail's budget — summing each card's own offsetHeight plus the
    * inter-card gap. offsetHeight is a card's true rendered height even while the
    * parent is clipping it, so this is engine-independent (unlike scrollHeight, which
    * ignores the top-edge overflow our bottom-aligned stack produces). The "i" menu
@@ -180,7 +242,7 @@ class InfoRail extends JugglerElement {
     const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
     const gap = parseFloat(cs.rowGap) || 0;
     const buttonHeight = this._cardsButton ? this._cardsButton.offsetHeight : 0;
-    const available = this.clientHeight - padY - (buttonHeight > 0 ? buttonHeight + gap : 0);
+    const available = this._budget() - padY - (buttonHeight > 0 ? buttonHeight + gap : 0);
     let used = 0;
     let count = 0;
     for (const entry of this._mounted) {
@@ -198,42 +260,34 @@ class InfoRail extends JugglerElement {
   }
 
   /**
-   * Show the enabled, has-content cards top-priority-first, and only those that
-   * FULLY fit the rail's height — a card is shown whole or not at all, never
-   * clipped. Surviving cards are reused (so tip rotation isn't reset as the sidebar
-   * resizes); only the lowest-priority cards that no longer fit are removed. Run
-   * synchronously from the ResizeObserver so a shrink never paints a clipped card.
+   * Show the enabled, has-content cards top-priority-first — at most
+   * {@link MAX_CARDS} of them, and of those only the ones that FULLY fit the
+   * budget, since a card is shown whole or not at all. Surviving cards are reused
+   * (so tip rotation isn't reset as the sidebar resizes); only the lowest-priority
+   * cards that no longer fit are removed. Run synchronously from the
+   * ResizeObserver so a shrink never paints a clipped card.
    * @private
    */
   _reconcile() {
     if (!this.isConnected || this._reconciling) return;
     this._reconciling = true;
     try {
-      // Never intrude during automated UI tests (matches the old tip-rail).
-      if (/** @type {any} */ (window).JUGGLER_TEST_MODE) {
+      // Never intrude during automated UI tests (matches the old tip-rail), unless
+      // it is the rail itself under test (see __allowInfoRailInTests).
+      if (/** @type {any} */ (window).JUGGLER_TEST_MODE && !allowedInTests) {
         this._teardownAll();
-        this.removeAttribute('data-has-cards');
         this.removeAttribute('data-clipped');
         this.hidden = true;
         return;
       }
       if (this.hidden) this.hidden = false;
 
-      const eligible = providers().filter(
-        (p) => !isHidden(p.id) && (typeof p.hasContent !== 'function' || p.hasContent()),
-      );
-
-      // Tell CSS whether there is anything worth reserving column space for: with
-      // cards to show, the tab list is capped and scrolls rather than squeezing the
-      // rail down to its "i" row; with every card hidden or empty, the cap lifts and
-      // the list takes the whole column. The signal is what is ELIGIBLE, never how
-      // many are mounted — mounting depends on the space the cap creates, so keying
-      // on the mounted count would feed itself. Eligibility is decided upstream of
-      // layout, so the attribute settles in one pass. toggleAttribute is a no-op
-      // when the value already matches, which matters: this runs on every doc change
-      // while a turn streams, and a redundant write would invalidate styles ~100
-      // times a second.
-      this.toggleAttribute('data-has-cards', eligible.length > 0);
+      // The count limit, applied before anything is built: providers() is already
+      // sorted by descending priority, so this keeps the cards worth the room and
+      // the rest are never mounted at all. Geometry then trims what's left.
+      const eligible = providers()
+        .filter((p) => !isHidden(p.id) && (typeof p.hasContent !== 'function' || p.hasContent()))
+        .slice(0, MAX_CARDS);
 
       // Reconcile the mounted set to the eligible providers, in priority order,
       // reusing existing cards so their state (tip rotation) survives.
@@ -281,8 +335,9 @@ class InfoRail extends JugglerElement {
       // Let CSS fade the top card's cut edge. Safe to set from here: a mask paints,
       // it doesn't lay out, so it can't resize the rail back into this observer.
       this.toggleAttribute('data-clipped', clipped);
-      // Left intentionally present even when empty: as the flex:1 child it holds
-      // the Bin at the bottom of the column, just as the tabs menu used to.
+      // Left in the column even with nothing to show: it shrinks to the "i" row —
+      // the only way back for a card hidden by its × — and to nothing at all once
+      // that row hides itself too.
     } finally {
       this._reconciling = false;
     }

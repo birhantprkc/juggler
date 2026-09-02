@@ -295,24 +295,16 @@ conversation-bar .conversation-tabs {
     list-style: none;
     overflow: auto;
 
-    /* Content-sized, shrinking and scrolling before the info rail gets any room, up
-       to the cap below (see the info-rail flex below). */
-    flex: 0 1 auto;
+    /* Takes the whole column but for what the info rail below needs, so the list
+       always runs down to the topmost card and no space is left unaccounted for.
+       It scrolls only once it has genuinely filled that room (see the info-rail
+       flex below, which sizes to its cards rather than to the leftovers). */
+    flex: 1 1 auto;
     min-height: 0;
 
     /* Thin, unobtrusive scrollbar — matches .conversation-message-list */
     scrollbar-width: thin;
     scrollbar-color: var(--overlay-light-10) transparent;
-}
-
-/* A long list scrolls at 70% of the column rather than taking all of it, leaving
-   the info rail below a share to show cards in. Keyed on whether the rail has any
-   card ELIGIBLE to show, not on how many it managed to mount: mounting depends on
-   the space this cap creates, so the mounted count would feed back into itself.
-   With every card hidden or empty there is nothing to reserve for, the cap lifts,
-   and the list uses the whole column. */
-conversation-bar .conversation-bar:has(info-rail[data-has-cards]) .conversation-tabs {
-    max-height: 70%;
 }
 
 conversation-bar .conversation-tab,
@@ -978,15 +970,18 @@ conversation-bar .info-cards-button[aria-expanded="true"] {
 
 /* ----------------------------------------------------------------------------
    Ambient info rail (web/js/components/info-rail.js) — a stack of info cards
-   (Tips, Git status, …) filling the empty sidebar space above the Bin, shown only
-   while the tabs leave room for them. The rail is the flex child that grows into
-   whatever the conversation list doesn't use (flex: 1 1 0), so its own height IS
-   the available space — no measuring of siblings. A tall list is capped at 70% of
-   the column and scrolls (see .conversation-tabs above) while the rail has cards to
-   show, so it keeps a share to show them in; with nothing to show it shrinks to its
-   "i" row (basis 0) and the list takes the lot. The button and the cards
-   bottom-align so they rest just above the Bin, so overflow:hidden cuts the top
-   card's top — the one card the component will mount without room for it all. Deliberately low-key: no per-card
+   (Tips, Git status, …) sitting above the Bin. The rail sizes to its own cards
+   (flex: 0 0 auto) and the conversation list takes everything above it (see
+   .conversation-tabs), so the list always runs right down to the topmost card:
+   it scrolls only when the column is genuinely full, never beside dead space.
+   The max-height is the one thing the cards don't get to win: the rail may take
+   at most half the column, so a short window still shows a usable list. That
+   budget is also what info-rail.js measures against (it reads this resolved
+   max-height), so the share lives here and nowhere else — and the count cap that
+   keeps the rail modest in a tall window is MAX_CARDS in the component.
+   The button and the cards bottom-align so they rest just above the Bin, so
+   overflow:hidden cuts the top card's top — the one card the component will
+   mount without room for it all. Deliberately low-key: no per-card
    background or shadow — just muted text on the sidebar panel, with a hairline
    divider between adjacent cards for gentle zoning (see .info-card + .info-card).
    .app-main sets a monospace font-family that the sidebar inherits, so the
@@ -1002,24 +997,30 @@ conversation-bar info-rail {
     flex-direction: column;
     justify-content: flex-end;
     gap: 0.5rem;
-    flex: 1 1 0;
     overflow: hidden;
     box-sizing: border-box;
     margin: 0 0.4rem;
     padding: 0.5rem 0 0.85rem;
     font-family: var(--font-ui);
 
-    /* Keep the "i" row even when the tabs take the column: as the flex:1 child the
-       rail would otherwise shrink to nothing and take the info-cards menu — the
-       only way back for cards hidden via their × — with it. 1.5rem button plus the
-       rail's own 1.35rem of padding (border-box). */
-    min-height: 2.85rem;
+    /* Sized by its content, so the rail asks for exactly the cards it is showing
+       and the list above gets everything else — with no card it is its "i" row,
+       and with none installed (or under test) that row hides and it is nothing. */
+    flex: 0 0 auto;
+
+    /* The cards' one hard limit. Below this the component drops cards from the
+       tail rather than the rail growing, so a short window keeps a usable list.
+       info-rail.js reads this resolved value as its budget. */
+    max-height: 50%;
 }
 
-/* Nothing to reserve when the menu itself is gone (no cards installed, or test
-   mode): the rail collapses to nothing again and the tabs get the whole column. */
+/* Nothing to show at all: the menu hides itself when no cards are installed (or
+   under test), and a rail holding a hidden button is still holding its padding —
+   dead space above the Bin. It gives that up too, so the list takes the column
+   right down to the Bin. (Cards hidden one by one via their × don't come here: the
+   menu stays, because it is the way back.) */
 conversation-bar info-rail:has(info-cards-button[hidden]) {
-    min-height: 0;
+    padding: 0;
 }
 
 /* Set while the top card overflows the rail. The stack is bottom-aligned, so the
