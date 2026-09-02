@@ -23,6 +23,11 @@ import (
 // defaultMaxOutputTokens is Anthropic's standard per-request output limit.
 const defaultMaxOutputTokens = 8192
 
+// stopReasonRefusal is the stop reason a safety classifier produces. It arrives
+// as an ordinary HTTP 200 whose turn carries no content, so it is distinguished
+// from a blank turn only by this value and the stop_details beside it.
+const stopReasonRefusal = "refusal"
+
 // toolUseAccumulator tracks a tool_use block being assembled from streaming chunks
 type toolUseAccumulator struct {
 	id          string
@@ -47,24 +52,24 @@ type thinkingAccumulator struct {
 // growing prefix. An unchanged context render is byte-identical turn to turn and
 // caches; a genuine change to it busts from its position, which is the intended
 // cost of pinning something live.
-func transformMessages(messages []provider.Message) []anthropicsdk.MessageParam {
+func transformMessages(messages []provider.Message) []anthropicsdk.BetaMessageParam {
 	// Use shared message transformation (defined in messages.go)
 	apiMessages := TransformToAPIMessages(messages)
 	if len(apiMessages) == 0 {
 		return nil
 	}
 
-	result := make([]anthropicsdk.MessageParam, 0, len(apiMessages))
+	result := make([]anthropicsdk.BetaMessageParam, 0, len(apiMessages))
 
 	for _, msg := range apiMessages {
-		var role anthropicsdk.MessageParamRole
+		var role anthropicsdk.BetaMessageParamRole
 		if msg.Role == "user" {
-			role = anthropicsdk.MessageParamRoleUser
+			role = anthropicsdk.BetaMessageParamRoleUser
 		} else {
-			role = anthropicsdk.MessageParamRoleAssistant
+			role = anthropicsdk.BetaMessageParamRoleAssistant
 		}
 
-		var blocks []anthropicsdk.ContentBlockParamUnion
+		var blocks []anthropicsdk.BetaContentBlockParamUnion
 		for _, block := range msg.Content {
 			sdkBlock := convertBlockToSDK(block)
 			if sdkBlock == nil {
@@ -74,7 +79,7 @@ func transformMessages(messages []provider.Message) []anthropicsdk.MessageParam 
 		}
 
 		if len(blocks) > 0 {
-			result = append(result, anthropicsdk.MessageParam{
+			result = append(result, anthropicsdk.BetaMessageParam{
 				Role:    role,
 				Content: blocks,
 			})
@@ -86,19 +91,19 @@ func transformMessages(messages []provider.Message) []anthropicsdk.MessageParam 
 }
 
 // convertBlockToSDK converts an APIContentBlock to an SDK content block.
-func convertBlockToSDK(block APIContentBlock) *anthropicsdk.ContentBlockParamUnion {
+func convertBlockToSDK(block APIContentBlock) *anthropicsdk.BetaContentBlockParamUnion {
 	switch block.Type {
 	case "text":
-		b := anthropicsdk.NewTextBlock(block.Text)
+		b := anthropicsdk.NewBetaTextBlock(block.Text)
 		return &b
 
 	case "thinking":
-		thinkingBlock := anthropicsdk.ThinkingBlockParam{
+		thinkingBlock := anthropicsdk.BetaThinkingBlockParam{
 			Type:      "thinking",
 			Thinking:  block.Thinking,
 			Signature: block.Signature,
 		}
-		return &anthropicsdk.ContentBlockParamUnion{
+		return &anthropicsdk.BetaContentBlockParamUnion{
 			OfThinking: &thinkingBlock,
 		}
 
@@ -112,22 +117,32 @@ func convertBlockToSDK(block APIContentBlock) *anthropicsdk.ContentBlockParamUni
 		if block.Input == nil {
 			input = map[string]any{}
 		}
-		b := anthropicsdk.NewToolUseBlock(block.ID, input, block.Name)
+		b := anthropicsdk.NewBetaToolUseBlock(block.ID, input, block.Name)
 		return &b
 
 	case "tool_result":
-		b := anthropicsdk.NewToolResultBlock(block.ToolUseID, block.Content, block.IsError)
+		b := anthropicsdk.NewBetaToolResultBlock(block.ToolUseID, block.Content, block.IsError)
 		return &b
 
 	case "image":
 		// The shared transform only emits base64 image sources. The CLI path
 		// serializes APIContentBlock to JSON directly; the SDK path needs the
-		// block mapped into the SDK's image-block union.
+		// block mapped into the SDK's image-block union. Built out rather than
+		// taken from a constructor because the beta surface ships no image-block
+		// helper — the shape is the non-beta one with the Beta types.
 		if block.Source == nil {
 			return nil
 		}
-		b := anthropicsdk.NewImageBlockBase64(block.Source.MediaType, block.Source.Data)
-		return &b
+		return &anthropicsdk.BetaContentBlockParamUnion{
+			OfImage: &anthropicsdk.BetaImageBlockParam{
+				Source: anthropicsdk.BetaImageBlockParamSourceUnion{
+					OfBase64: &anthropicsdk.BetaBase64ImageSourceParam{
+						Data:      block.Source.Data,
+						MediaType: anthropicsdk.BetaBase64ImageSourceMediaType(block.Source.MediaType),
+					},
+				},
+			},
+		}
 
 	default:
 		return nil
@@ -178,32 +193,32 @@ func (c *Client) Name() string {
 // convertToolChoice maps the provider-agnostic ToolChoice onto the Anthropic
 // SDK union. Returns ok=false for nil/auto (the default — the model decides),
 // so the caller leaves params.ToolChoice unset.
-func convertToolChoice(tc *provider.ToolChoice) (anthropicsdk.ToolChoiceUnionParam, bool) {
+func convertToolChoice(tc *provider.ToolChoice) (anthropicsdk.BetaToolChoiceUnionParam, bool) {
 	if tc == nil {
-		return anthropicsdk.ToolChoiceUnionParam{}, false
+		return anthropicsdk.BetaToolChoiceUnionParam{}, false
 	}
 	switch tc.Mode {
 	case provider.ToolChoiceTool:
 		if tc.Name == "" {
-			return anthropicsdk.ToolChoiceUnionParam{}, false
+			return anthropicsdk.BetaToolChoiceUnionParam{}, false
 		}
-		return anthropicsdk.ToolChoiceParamOfTool(tc.Name), true
+		return anthropicsdk.BetaToolChoiceParamOfTool(tc.Name), true
 	case provider.ToolChoiceAny:
-		return anthropicsdk.ToolChoiceUnionParam{OfAny: &anthropicsdk.ToolChoiceAnyParam{}}, true
+		return anthropicsdk.BetaToolChoiceUnionParam{OfAny: &anthropicsdk.BetaToolChoiceAnyParam{}}, true
 	case provider.ToolChoiceNone:
-		return anthropicsdk.ToolChoiceUnionParam{OfNone: &anthropicsdk.ToolChoiceNoneParam{}}, true
+		return anthropicsdk.BetaToolChoiceUnionParam{OfNone: &anthropicsdk.BetaToolChoiceNoneParam{}}, true
 	default: // auto / unknown
-		return anthropicsdk.ToolChoiceUnionParam{}, false
+		return anthropicsdk.BetaToolChoiceUnionParam{}, false
 	}
 }
 
 // convertTools converts provider.ToolDefinition to Anthropic SDK format
-func convertTools(tools []provider.ToolDefinition) []anthropicsdk.ToolUnionParam {
+func convertTools(tools []provider.ToolDefinition) []anthropicsdk.BetaToolUnionParam {
 	if len(tools) == 0 {
 		return nil
 	}
 
-	result := make([]anthropicsdk.ToolUnionParam, 0, len(tools))
+	result := make([]anthropicsdk.BetaToolUnionParam, 0, len(tools))
 	for _, tool := range tools {
 		// Extract properties and required from the input schema
 		var schemaMap map[string]any
@@ -233,15 +248,15 @@ func convertTools(tools []provider.ToolDefinition) []anthropicsdk.ToolUnionParam
 		}
 
 		// Create ToolInputSchemaParam with extracted fields
-		schema := anthropicsdk.ToolInputSchemaParam{
+		schema := anthropicsdk.BetaToolInputSchemaParam{
 			Type:       "object",
 			Properties: properties,
 			Required:   required,
 		}
 
 		// Create the tool union param with full ToolParam including description
-		result = append(result, anthropicsdk.ToolUnionParam{
-			OfTool: &anthropicsdk.ToolParam{
+		result = append(result, anthropicsdk.BetaToolUnionParam{
+			OfTool: &anthropicsdk.BetaToolParam{
 				Name:        tool.Name,
 				Description: anthropicsdk.String(tool.Description),
 				InputSchema: schema,
@@ -281,10 +296,11 @@ func convertTools(tools []provider.ToolDefinition) []anthropicsdk.ToolUnionParam
 // Two breakpoints, well within Anthropic's limit of four. Below the model's
 // minimum cacheable size the breakpoints are silently ignored by the API, so
 // always emitting them is safe.
-func (c *Client) buildMessageParams(req provider.MessageRequest) anthropicsdk.MessageNewParams {
+func (c *Client) buildMessageParams(req provider.MessageRequest) anthropicsdk.BetaMessageNewParams {
 	// transformMessages also places the rolling cache breakpoint (before any
 	// volatile standing-context tail — see its doc comment).
 	messages := transformMessages(req.Messages)
+	messages = closeTrailingPrefill(c.model, messages)
 
 	// The capability snapshot (c.maxOutputTokens) may carry a *derived* reserve
 	// when the model resolved from window only — e.g. a static-map id the live
@@ -309,7 +325,7 @@ func (c *Client) buildMessageParams(req provider.MessageRequest) anthropicsdk.Me
 	if req.MaxOutputTokens > 0 && req.MaxOutputTokens < maxTokens {
 		maxTokens = req.MaxOutputTokens
 	}
-	params := anthropicsdk.MessageNewParams{
+	params := anthropicsdk.BetaMessageNewParams{
 		Model:     anthropicsdk.Model(c.model),
 		MaxTokens: maxTokens,
 		Messages:  messages,
@@ -318,17 +334,26 @@ func (c *Client) buildMessageParams(req provider.MessageRequest) anthropicsdk.Me
 	// System prompt as a single cached block (stable prefix — see the cache
 	// layout note on buildMessageParams).
 	if req.SystemPrompt != "" {
-		sys := anthropicsdk.TextBlockParam{Text: req.SystemPrompt, Type: "text"}
-		sys.CacheControl = anthropicsdk.NewCacheControlEphemeralParam()
-		params.System = []anthropicsdk.TextBlockParam{sys}
+		sys := anthropicsdk.BetaTextBlockParam{Text: req.SystemPrompt, Type: "text"}
+		sys.CacheControl = anthropicsdk.NewBetaCacheControlEphemeralParam()
+		params.System = []anthropicsdk.BetaTextBlockParam{sys}
 	}
 
 	// Add tools if provided
 	if len(req.Tools) > 0 {
 		params.Tools = convertTools(req.Tools)
 		// Honour a forced tool choice set by a plugin. Only meaningful when
-		// tools are present.
-		if tc, ok := convertToolChoice(req.ToolChoice); ok {
+		// tools are present, and only on models that accept one — the rest
+		// answer a forced choice with a 400, so it is dropped here and the turn
+		// runs unforced. That matches how a provider which cannot honour a
+		// forced choice is already treated a layer up: the prompt still asks for
+		// the call, and losing the constraint costs a turn where sending it
+		// costs the request.
+		choice := req.ToolChoice
+		if forcesTool(choice) && !supportsForcedToolChoice(c.model) {
+			choice = nil
+		}
+		if tc, ok := convertToolChoice(choice); ok {
 			params.ToolChoice = tc
 		}
 	}
@@ -339,32 +364,148 @@ func (c *Client) buildMessageParams(req provider.MessageRequest) anthropicsdk.Me
 	// not recognise. Temperature is never set here, which both forms require.
 	if SupportsThinking(c.model) && thinkingModeForModel(c.model) == thinkingAdaptive {
 		// Adaptive thinking, steered by output_config.effort rather than a token
-		// budget. display is set explicitly because it defaults to "omitted" on
-		// newer models, which returns thinking blocks stripped of their text —
-		// Juggler shows that text. The model bounds its own thinking against
-		// max_tokens, so the budget clamp has no equivalent here, and this form
-		// is compatible with a forced tool_choice.
-		if effort, ok := anthropicThinkingEfforts[req.ThinkingLevel]; ok {
-			params.Thinking = anthropicsdk.ThinkingConfigParamUnion{
-				OfAdaptive: &anthropicsdk.ThinkingConfigAdaptiveParam{
-					Display: anthropicsdk.ThinkingConfigAdaptiveDisplaySummarized,
-				},
-			}
-			params.OutputConfig = anthropicsdk.OutputConfigParam{Effort: effort}
+		// budget. The model bounds its own thinking against max_tokens, so the
+		// budget clamp has no equivalent here, and this form is compatible with a
+		// forced tool_choice.
+		//
+		// block_binding rides whatever config goes out. Every signed thinking
+		// block from every earlier turn is replayed on each request, and each is
+		// bound to the exact prefix it was created under — the system prompt, the
+		// tools array, and every message before it. Juggler moves that prefix on
+		// entirely ordinary paths: a pinned file re-rendered live, a tool arriving
+		// mid-conversation, a compaction fold, a deleted item. The default for a
+		// block whose prefix moved is a 400 that fails the whole request;
+		// drop_block discards just that block and lets the turn run. Reasoning
+		// continuity is worth less than the turn, and a dropped block is not
+		// billed either way.
+		adaptive := &anthropicsdk.BetaThinkingConfigAdaptiveParam{
+			BlockBinding: anthropicsdk.BetaThinkingBlockBindingParam{
+				PrefixMismatchBehavior: anthropicsdk.BetaThinkingPrefixMismatchBehaviorDropBlock,
+			},
+		}
+
+		// display is set explicitly because it defaults to "omitted" on newer
+		// models, which returns thinking blocks stripped of their text — Juggler
+		// shows that text.
+		effort, levelAsksForThinking := anthropicThinkingEfforts[req.ThinkingLevel]
+		switch {
+		case levelAsksForThinking:
+			// A level was chosen, so the reasoning was asked for. "summarized"
+			// carries the progress updates between tool calls as well.
+			adaptive.Display = anthropicsdk.BetaThinkingConfigAdaptiveDisplaySummarized
+			params.OutputConfig = anthropicsdk.BetaOutputConfigParam{Effort: effort}
+
+		case thinkingAlwaysOn(c.model):
+			// "off" on a model that thinks regardless. The default here is
+			// "omitted", which returns every thinking block emptied — so an
+			// agentic turn that runs for minutes between tool calls shows
+			// nothing at all and reads as a hang. "updates" returns only the
+			// short progress lines the model writes between tool calls and
+			// still withholds the reasoning, which is the distinction "off"
+			// was asking for: not "say nothing", but "spare me the working
+			// out".
+			adaptive.Display = anthropicsdk.BetaThinkingConfigAdaptiveDisplayUpdates
+			params.Betas = append(params.Betas, anthropicsdk.AnthropicBetaThinkingDisplayUpdates2026_08_18)
+		}
+
+		// A model that can be quiet is left alone at "off": omitting the config
+		// is how that is said, and sending one would talk it into thinking it
+		// would otherwise have skipped. A model that always thinks has no such
+		// reading — it thinks either way — so the config still goes out at "off"
+		// to carry block_binding, which is the whole point of sending it.
+		if levelAsksForThinking || thinkingAlwaysOn(c.model) {
+			params.Thinking = anthropicsdk.BetaThinkingConfigParamUnion{OfAdaptive: adaptive}
+			params.Betas = append(params.Betas, anthropicsdk.AnthropicBetaThinkingBindingControls2026_08_01)
 		}
 	} else if budget, ok := thinkingBudgetForLevel(c.model, req.ThinkingLevel, maxTokens); ok && !forcesTool(req.ToolChoice) {
 		// Manual thinking. Anthropic forbids a forced tool_choice (type "tool" or
 		// "any") together with this form — a hard 400 — so a forced-tool turn
 		// wins and drops thinking for that turn.
-		params.Thinking = anthropicsdk.ThinkingConfigParamOfEnabled(budget)
+		params.Thinking = anthropicsdk.BetaThinkingConfigParamOfEnabled(budget)
 	}
 
 	return params
 }
 
+// continuationPrompt is the user turn sent in place of an assistant prefill, on
+// models that reject one. It is wire-only — nothing writes it into the
+// conversation document, so it is never shown and never stored.
+const continuationPrompt = "Continue."
+
+// closeTrailingPrefill appends a user turn when the request would otherwise end
+// on an assistant message and the model rejects a prefill.
+//
+// A request ending on an assistant message asks the model to continue writing
+// that message. Two ordinary paths produce that shape: an explicit Continue,
+// whose marker carries a run record and emits no wire message of its own, and an
+// autonomous turn, which can come to rest on a thinking-tailed assistant message
+// with no user message after it. On a model that takes prefills both are free;
+// on one that does not, both are a 400, so the continuation is stated instead of
+// implied.
+//
+// Appending after transformMessages leaves the rolling cache breakpoint on the
+// assistant tail, so this turn sits outside the cached prefix. That costs a
+// couple of tokens and keeps the breakpoint on the growing prefix where it
+// belongs.
+func closeTrailingPrefill(model string, messages []anthropicsdk.BetaMessageParam) []anthropicsdk.BetaMessageParam {
+	if len(messages) == 0 || supportsAssistantPrefill(model) {
+		return messages
+	}
+	if messages[len(messages)-1].Role != anthropicsdk.BetaMessageParamRoleAssistant {
+		return messages
+	}
+	return append(messages, anthropicsdk.BetaMessageParam{
+		Role:    anthropicsdk.BetaMessageParamRoleUser,
+		Content: []anthropicsdk.BetaContentBlockParamUnion{anthropicsdk.NewBetaTextBlock(continuationPrompt)},
+	})
+}
+
+// refusalNotice composes the durable transcript notice for a turn the model
+// declined, returning ok=false for every other stop reason.
+//
+// The failure this prevents is a misreport rather than a crash: a refusal
+// carrying no text produces no assistant text and no tool call, which is exactly
+// the shape of a barren turn, so without this the strategy loop retries the same
+// request three times and then files a deliberate decision under "no further
+// response". Naming the policy area is also the only way the user can tell a
+// refusal from an outage.
+func refusalNotice(stopReason string, details anthropicsdk.BetaRefusalStopDetails) (provider.StreamChunk, bool) {
+	if stopReason != stopReasonRefusal {
+		return provider.StreamChunk{}, false
+	}
+
+	lead := "The model declined this request."
+	var content strings.Builder
+	content.WriteString(lead)
+	content.WriteString("\n\n")
+	// The category and the explanation go in verbatim under the plain-English
+	// lead. The explanation is the provider's own words and is documented as
+	// unstable, so it is shown as given and never parsed.
+	if category := string(details.Category); category != "" {
+		fmt.Fprintf(&content, "Policy area: %s\n", category)
+	}
+	if details.Explanation != "" {
+		content.WriteString(details.Explanation + "\n")
+	}
+	content.WriteString("\nA refused request is refused the same way again, so this turn stopped rather than retrying.")
+
+	return provider.StreamChunk{
+		Type: provider.ContentBlockTypeStatus,
+		// Rides the spinner for the rest of the turn; the notice is what survives it.
+		Content: "Request declined",
+		Metadata: map[string]any{
+			"noticeSummary": lead,
+			"noticeContent": content.String(),
+			"noticeSource":  "anthropic",
+		},
+	}, true
+}
+
 // forcesTool reports whether a ToolChoice compels the model to call a tool
-// (mode "tool" or "any"). Only these two modes conflict with manual thinking;
-// "auto"/"none"/nil do not, and adaptive thinking accepts every mode.
+// (mode "tool" or "any"). These are the two modes that conflict with manual
+// thinking, and the two that supportsForcedToolChoice can withhold entirely;
+// "auto"/"none"/nil do neither. The manual-thinking conflict is about the wire
+// form and applies to no adaptive model, so both tests are applied separately.
 func forcesTool(tc *provider.ToolChoice) bool {
 	return tc != nil && (tc.Mode == provider.ToolChoiceTool || tc.Mode == provider.ToolChoiceAny)
 }
@@ -394,11 +535,11 @@ var anthropicThinkingBudgets = map[string]int64{
 // model that takes the adaptive form at all (4.6 and later). Mapping any level
 // to "xhigh" would 400 on Sonnet and Opus 4.6, and there is no sixth level to
 // carry it without one of the five losing its meaning.
-var anthropicThinkingEfforts = map[string]anthropicsdk.OutputConfigEffort{
-	"low":    anthropicsdk.OutputConfigEffortLow,
-	"medium": anthropicsdk.OutputConfigEffortMedium,
-	"high":   anthropicsdk.OutputConfigEffortHigh,
-	"max":    anthropicsdk.OutputConfigEffortMax,
+var anthropicThinkingEfforts = map[string]anthropicsdk.BetaOutputConfigEffort{
+	"low":    anthropicsdk.BetaOutputConfigEffortLow,
+	"medium": anthropicsdk.BetaOutputConfigEffortMedium,
+	"high":   anthropicsdk.BetaOutputConfigEffortHigh,
+	"max":    anthropicsdk.BetaOutputConfigEffortMax,
 }
 
 // thinkingBudgetForLevel maps a thinking level to an Anthropic budget_tokens
@@ -450,7 +591,7 @@ func thinkingBudgetForLevel(model, level string, maxTokens int64) (int64, bool) 
 // short message of lost prefix is far cheaper than the whole conversation.
 //
 // No-op on empty input.
-func setRollingCacheBreakpoint(messages []anthropicsdk.MessageParam) {
+func setRollingCacheBreakpoint(messages []anthropicsdk.BetaMessageParam) {
 	if len(messages) == 0 {
 		return
 	}
@@ -458,7 +599,7 @@ func setRollingCacheBreakpoint(messages []anthropicsdk.MessageParam) {
 		content := messages[i].Content
 		for j := len(content) - 1; j >= 0; j-- {
 			if cc := content[j].GetCacheControl(); cc != nil {
-				*cc = anthropicsdk.NewCacheControlEphemeralParam()
+				*cc = anthropicsdk.NewBetaCacheControlEphemeralParam()
 				return
 			}
 		}
@@ -493,8 +634,11 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 	sess, streamCtx := utils.NewStreamSession(ctx, "anthropic", callback)
 	defer sess.Close()
 
-	// Create streaming request - this preserves block generation order
-	stream := c.client.Messages.NewStreaming(streamCtx, params)
+	// Create streaming request - this preserves block generation order.
+	// The beta surface is the same v1/messages endpoint; it is taken because
+	// several request fields Juggler sends exist only on the beta params
+	// (see buildMessageParams), and the response carries the matching extras.
+	stream := c.client.Beta.Messages.NewStreaming(streamCtx, params)
 	defer func() { _ = stream.Close() }() // release the underlying TLS conn on every return path
 
 	// Track accumulated blocks in generation order
@@ -539,6 +683,20 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 			if event.Message.Usage.InputTokens > 0 {
 				inputTokens = int(event.Message.Usage.InputTokens)
 			}
+			// Thinking blocks the API removed before the model saw them. Read
+			// here and not from message_delta: the array is final in
+			// message_start, and the delta carries it only when a server-side
+			// model fallback replaced it mid-stream. Reported at all only
+			// because the request asks for it (thinking-binding-controls);
+			// without that beta the same blocks are dropped in silence.
+			// Logged rather than surfaced: dropping is the outcome we asked
+			// for over a failed request, it costs nothing on the bill, and the
+			// turn is unharmed — but a conversation dropping blocks every turn
+			// means Juggler is moving a prefix it could hold still, and this
+			// is the only place that is visible.
+			for _, dropped := range event.Message.InputTransformations {
+				jlog.Trace("[anthropic] thinking block dropped at %s: %s", dropped.Path, dropped.Reason)
+			}
 
 		case "content_block_start":
 			// Finalize any previous block before starting new one
@@ -559,6 +717,15 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 					id:   event.ContentBlock.ID,
 					name: event.ContentBlock.Name,
 				}
+			default:
+				// The stream carries block types this client does not assemble
+				// (compaction, container upload, MCP tool use/result, fallback,
+				// redacted thinking). None of them can arrive unless a request
+				// asks for the feature that produces it, and none is requested
+				// here — so reaching this is a signal that the request shape or
+				// the API changed, not a case to handle inline. Dropping it
+				// silently is what would make that change invisible.
+				jlog.Trace("[anthropic] unhandled content block type %q", event.ContentBlock.Type)
 			}
 
 		case "content_block_delta":
@@ -602,6 +769,11 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 				if currentThinking != nil {
 					currentThinking.signature += event.Delta.Signature
 				}
+			default:
+				// Citations and compaction deltas both belong to features this
+				// client does not request. Logged for the same reason as the
+				// block-start default above.
+				jlog.Trace("[anthropic] unhandled content block delta type %q", event.Delta.Type)
 			}
 
 		case "content_block_stop":
@@ -635,6 +807,13 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 			// Extract stop_reason and output token count
 			if event.Delta.StopReason != "" {
 				stopReason = string(event.Delta.StopReason)
+				// A refusal arrives as a 200 with no content, so it reads as a
+				// blank turn unless it is named here.
+				if notice, ok := refusalNotice(stopReason, event.Delta.StopDetails); ok {
+					if _, err := callback(notice); err != nil {
+						return nil, fmt.Errorf("callback error: %w", err)
+					}
+				}
 			}
 			if event.Usage.OutputTokens > 0 {
 				outputTokens = int(event.Usage.OutputTokens)
@@ -802,8 +981,8 @@ func (c *Client) streamMessage(ctx context.Context, req provider.MessageRequest,
 	}, nil
 }
 
-// ListModelsWithInfo returns detailed information about available models from Anthropic API
-// Note: Anthropic API doesn't expose context window info, so we use hardcoded fallbacks
+// ListModelsWithInfo returns detailed information about available models from
+// the Anthropic Models API.
 func (c *Client) ListModelsWithInfo(ctx context.Context) ([]provider.ModelInfo, error) {
 	// Use the Anthropic Models API to list available models
 	page, err := c.client.Models.List(ctx, anthropicsdk.ModelListParams{})
@@ -811,36 +990,77 @@ func (c *Client) ListModelsWithInfo(ctx context.Context) ([]provider.ModelInfo, 
 		return nil, fmt.Errorf("failed to list models from Anthropic: %w", err)
 	}
 
-	var modelInfos []provider.ModelInfo
+	modelInfos := make([]provider.ModelInfo, 0, len(page.Data))
 	for _, model := range page.Data {
-		// Anthropic API doesn't provide context window info, use hardcoded fallback
-		contextWindow := GetContextWindow(model.ID)
-
-		var inputModalities []string
-		if SupportsImageInput(model.ID) {
-			inputModalities = []string{"text", "image"}
-		}
-
-		var thinkingLevels []string
-		var defaultThinkingLevel string
-		if SupportsThinking(model.ID) {
-			thinkingLevels = anthropicThinkingLevels
-			defaultThinkingLevel = "off"
-		}
-
-		modelInfos = append(modelInfos, provider.ModelInfo{
-			ID:                   model.ID,
-			DisplayName:          utils.FirstNonEmpty(model.DisplayName, utils.ModelDisplayName(model.ID)),
-			ContextWindow:        contextWindow,
-			MaxOutputTokens:      GetMaxOutputTokens(model.ID),
-			FromAPI:              false, // Hardcoded fallback
-			InputModalities:      inputModalities,
-			ThinkingLevels:       thinkingLevels,
-			DefaultThinkingLevel: defaultThinkingLevel,
-		})
+		modelInfos = append(modelInfos, modelInfoFromAPI(model))
 	}
 
 	return modelInfos, nil
+}
+
+// modelInfoFromAPI converts one Models API entry into a provider.ModelInfo,
+// preferring what the API states about a model over what the static catalog in
+// models.go infers from its id.
+//
+// The response carries max_input_tokens, max_tokens and a per-model capabilities
+// object, so the window, the output ceiling, image input and thinking support are
+// all answerable without pattern-matching the id. That matters because the
+// catalog can only recognise families and generations it was told about, and it
+// answers for the ones it has not with a conservative default — a 200k window
+// and an 8k output ceiling — which is silently wrong for any newer model rather
+// than visibly absent.
+//
+// The catalog is the fallback for whatever a response omits, which is what an
+// older API version, a proxy, or a trimmed response looks like. Each field falls
+// back on its own: a response stating limits but no capabilities still has its
+// limits believed.
+func modelInfoFromAPI(model anthropicsdk.ModelInfo) provider.ModelInfo {
+	// FromAPI tracks the window specifically, matching the convention the other
+	// providers use for it — it drives whether the UI presents the context size
+	// as measured or as an assumption.
+	contextWindow, fromAPI := int(model.MaxInputTokens), model.MaxInputTokens > 0
+	if !fromAPI {
+		contextWindow = GetContextWindow(model.ID)
+	}
+
+	maxOutputTokens := int(model.MaxTokens)
+	if maxOutputTokens <= 0 {
+		maxOutputTokens = GetMaxOutputTokens(model.ID)
+	}
+
+	caps := model.Capabilities
+	capsPresent := model.JSON.Capabilities.Valid()
+
+	acceptsImages := SupportsImageInput(model.ID)
+	if capsPresent && caps.JSON.ImageInput.Valid() {
+		acceptsImages = caps.ImageInput.Supported
+	}
+	var inputModalities []string
+	if acceptsImages {
+		inputModalities = []string{"text", "image"}
+	}
+
+	supportsThinking := SupportsThinking(model.ID)
+	if capsPresent && caps.JSON.Thinking.Valid() {
+		supportsThinking = caps.Thinking.Supported
+	}
+	var thinkingLevels []string
+	var defaultThinkingLevel string
+	if supportsThinking {
+		thinkingLevels = anthropicThinkingLevels
+		defaultThinkingLevel = "off"
+	}
+
+	return provider.ModelInfo{
+		ID:                   model.ID,
+		DisplayName:          utils.FirstNonEmpty(model.DisplayName, utils.ModelDisplayName(model.ID)),
+		ContextWindow:        contextWindow,
+		MaxOutputTokens:      maxOutputTokens,
+		FromAPI:              fromAPI,
+		InputModalities:      inputModalities,
+		ThinkingLevels:       thinkingLevels,
+		DefaultThinkingLevel: defaultThinkingLevel,
+	}
 }
 
 // Info returns provider metadata

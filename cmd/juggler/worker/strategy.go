@@ -551,6 +551,19 @@ func (r *run) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVe
 		}
 	}
 
+	// A refusal is a decision, not a blank turn. It arrives as a 200 whose turn
+	// may carry no text at all, which is indistinguishable by shape from the
+	// barren case below — so without this the same request is re-sent and
+	// refused three times over, each round billed, before the barren cap files a
+	// deliberate answer under "no further response". The provider already
+	// composed the notice naming the policy area, so resting is all that is left.
+	if response.StopReason == "refusal" {
+		r.batcher.Flush()
+		if !r.turnProducedAction(response) {
+			return turnDone
+		}
+	}
+
 	// A turn that produced no action (no assistant text, no tool_use)
 	// leaves the user with nothing new to see. Some providers
 	// intermittently emit empty end_turn for transient reasons; retry

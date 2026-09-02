@@ -24,7 +24,7 @@ func sampleTools() []provider.ToolDefinition {
 // cachePrefixJSON serializes the cacheable prompt prefix (tools + system, in
 // Anthropic's cache order) so two turns' prefixes can be compared byte-for-byte.
 // Identical prefix ⇒ the prompt cache would hit; divergent ⇒ cold start.
-func cachePrefixJSON(t *testing.T, p anthropicsdk.MessageNewParams) string {
+func cachePrefixJSON(t *testing.T, p anthropicsdk.BetaMessageNewParams) string {
 	t.Helper()
 	prefix := struct {
 		Tools  any `json:"tools"`
@@ -97,7 +97,7 @@ func TestRollingCacheBreakpointOnLastMessageOnly(t *testing.T) {
 
 // countEphemeralBreakpoints returns the total number of ephemeral cache_control
 // breakpoints across all message content blocks.
-func countEphemeralBreakpoints(messages []anthropicsdk.MessageParam) int {
+func countEphemeralBreakpoints(messages []anthropicsdk.BetaMessageParam) int {
 	n := 0
 	for _, m := range messages {
 		for _, blk := range m.Content {
@@ -174,7 +174,7 @@ func signedThinking(content string) provider.Message {
 // breakpointAt returns the (message, block) index of the single ephemeral
 // message-level breakpoint, or (-1, -1) when there is none. It fails the test if
 // more than one exists — exactly one is the invariant the whole scheme rests on.
-func breakpointAt(t *testing.T, messages []anthropicsdk.MessageParam) (int, int) {
+func breakpointAt(t *testing.T, messages []anthropicsdk.BetaMessageParam) (int, int) {
 	t.Helper()
 	msgIdx, blkIdx := -1, -1
 	for i, m := range messages {

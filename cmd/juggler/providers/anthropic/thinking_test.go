@@ -16,7 +16,7 @@ import (
 // thinkingWire marshals a thinking param and returns it as a generic map, so
 // assertions name wire keys ("type", "budget_tokens") rather than depending on
 // field order in the encoded JSON.
-func thinkingWire(t *testing.T, thinking anthropicsdk.ThinkingConfigParamUnion) map[string]any {
+func thinkingWire(t *testing.T, thinking anthropicsdk.BetaThinkingConfigParamUnion) map[string]any {
 	t.Helper()
 	encoded, err := json.Marshal(thinking)
 	if err != nil {
@@ -366,14 +366,24 @@ func TestClaudeVersion(t *testing.T) {
 	}
 }
 
-// TestSupportsThinking pins the model-capability classifier.
+// TestSupportsThinking pins the model-capability classifier. It keys on the
+// generation, not on a list of family names: a family-keyed list answers "no"
+// for a family it has never been told about, which is how Fable and Mythos
+// arrived as generation-5 models with adaptive thinking always on and no effort
+// control anywhere in the UI. An id naming no generation stays "no" — withholding
+// a control is recoverable, offering one the model rejects is a 400.
 func TestSupportsThinking(t *testing.T) {
 	yes := []string{
 		"claude-sonnet-4-5-20250929", "claude-sonnet-4", "claude-opus-4-1-20250805",
 		"claude-4-sonnet", "claude-4.5-sonnet", "claude-3-7-sonnet-20250219", "claude-3.7-sonnet",
+		// Generation 5, including the families no marker list names.
+		"claude-fable-5-1", "claude-mythos-5-1", "claude-fable-5", "claude-opus-5", "claude-sonnet-5",
+		// A generation beyond anything this catalog knows still qualifies.
+		"claude-sonnet-9-9-20301231",
 	}
 	no := []string{
 		"claude-3-5-sonnet-20241022", "claude-3-opus-20240229", "claude-3-haiku-20240307",
+		"claude-mythos-preview", "",
 	}
 	for _, m := range yes {
 		if !SupportsThinking(m) {
