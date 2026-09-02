@@ -415,10 +415,10 @@ func TestSyncFanoutCrossConversationIsolation(t *testing.T) {
 	wB.Start(context.Background())
 	defer wB.Stop()
 
-	caIn := make(chan []byte, 1<<12)
-	wA.SetCallback("ca", func(m []byte) { caIn <- m })
-	cbIn := make(chan []byte, 1<<12)
-	wB.SetCallback("cb", func(m []byte) { cbIn <- m })
+	ca := newMsgChan()
+	wA.SetCallback("ca", ca.callback)
+	cb := newMsgChan()
+	wB.SetCallback("cb", cb.callback)
 
 	// A client on conv-A injects an item via an incremental yjs-sync built from
 	// a fresh, self-contained doc (single append, no foreign dependencies).
@@ -428,10 +428,10 @@ func TestSyncFanoutCrossConversationIsolation(t *testing.T) {
 	syncPayload, _ := json.Marshal(YjsSyncMessage{Type: "yjs-sync", Bytes: probe.GetStateUpdate(before)})
 	wA.Send("yjs-sync", syncPayload)
 
-	// Barrier both workers (inbound is FIFO; an ack proves the prior message on
-	// that worker was fully handled).
-	barrier(t, wA, caIn, "barrier-A")
-	barrier(t, wB, cbIn, "barrier-B")
+	// Barrier both workers (inbound is FIFO, so an ack proves the prior message
+	// on that worker was fully handled) and read what each client got on the way.
+	quiesce(t, wA, ca)
+	leaked := framesUntilBarrier(t, wB, cb)
 
 	if !workerDocHasItem(wA, "leak-probe") {
 		t.Fatal("conv-A worker did not apply the probe item")
@@ -439,44 +439,8 @@ func TestSyncFanoutCrossConversationIsolation(t *testing.T) {
 	if workerDocHasItem(wB, "leak-probe") {
 		t.Fatal("LEAK: conv-B worker doc contains conv-A's item — cross-conversation broadcast")
 	}
-
-	// conv-B's client must have received no yjs-sync at all.
-	for {
-		select {
-		case raw := <-cbIn:
-			var m struct {
-				Type string `json:"type"`
-			}
-			if json.Unmarshal(raw, &m) == nil && m.Type == "yjs-sync" {
-				t.Fatal("LEAK: conv-B client received a yjs-sync from conv-A's mutation")
-			}
-		default:
-			return
-		}
-	}
-}
-
-// barrier sends a ping with a unique ackId and blocks until the matching ack is
-// observed on the given stream, draining other frames.
-func barrier(t *testing.T, w *ConversationWorker, in chan []byte, ackID string) {
-	t.Helper()
-	payload, _ := json.Marshal(map[string]string{"ackId": ackID})
-	w.Send("ping", payload)
-	deadline := time.After(10 * time.Second)
-	for {
-		select {
-		case raw := <-in:
-			var m struct {
-				Type  string `json:"type"`
-				AckID string `json:"ackId"`
-			}
-			if json.Unmarshal(raw, &m) == nil && m.Type == "ack" && m.AckID == ackID {
-				return
-			}
-		case <-deadline:
-			t.Fatalf("timed out on barrier %s", ackID)
-			return
-		}
+	if leaked.saw("yjs-sync") {
+		t.Fatal("LEAK: conv-B client received a yjs-sync from conv-A's mutation")
 	}
 }
 

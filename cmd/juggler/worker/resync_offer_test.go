@@ -19,27 +19,8 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
-	"time"
 )
-
-// sawResyncOffer reports whether a resync-offer turned up on a stream within a
-// short grace window.
-func sawResyncOffer(mc *msgChan) bool {
-	deadline := time.After(500 * time.Millisecond)
-	for {
-		select {
-		case raw := <-mc.ch:
-			var msg ResyncOfferMessage
-			if json.Unmarshal(raw, &msg) == nil && msg.Type == "resync-offer" {
-				return true
-			}
-		case <-deadline:
-			return false
-		}
-	}
-}
 
 // TestReattachOffersRatherThanPushingState is the regression test for the
 // reported failure. The seed must not put the document on the wire: a
@@ -50,14 +31,15 @@ func TestReattachOffersRatherThanPushingState(t *testing.T) {
 
 	engine := newMsgChan()
 	w.SetCallback("engine", engine.callback)
-	drainUntilQuiet(engine)
+	quiesce(t, w, engine)
 
 	w.SendFromClient("engine", "resync-to-origin", nil)
 
-	if !sawResyncOffer(engine) {
+	frames := framesUntilBarrier(t, w, engine)
+	if !frames.saw("resync-offer") {
 		t.Fatal("reattach sent no resync-offer; the engine is never told the conversation is loaded here")
 	}
-	if sawYjsSync(engine) {
+	if frames.saw("yjs-sync") {
 		t.Fatal("reattach pushed document state; the engine must be offered the conversation, not sent it")
 	}
 }
@@ -75,11 +57,11 @@ func TestAnEngineAnsweringTheOfferGetsOnlyADelta(t *testing.T) {
 	w.Document().AppendMessage(ConversationItem{
 		Type: ItemTypeAssistant, ItemID: "missed", Content: missedContent,
 	})
-	drainUntilQuiet(engine)
+	quiesce(t, w, engine)
 
 	// Reattach, then answer the offer the way the engine does.
 	w.SendFromClient("engine", "resync-to-origin", nil)
-	if !sawResyncOffer(engine) {
+	if !framesUntilBarrier(t, w, engine).saw("resync-offer") {
 		t.Fatal("reattach sent no resync-offer to answer")
 	}
 	sendResyncRequest(t, w, "engine", engineDoc.GetStateVector())
@@ -105,12 +87,12 @@ func TestAnEngineWithNoDocumentStillReachesFullState(t *testing.T) {
 
 	engine := newMsgChan()
 	w.SetCallback("engine", engine.callback)
-	drainUntilQuiet(engine)
+	quiesce(t, w, engine)
 
 	// A restarted engine ignores the offer and loads the conversation the
 	// ordinary way, which is an init with an empty vector.
 	w.SendFromClient("engine", "resync-to-origin", nil)
-	if !sawResyncOffer(engine) {
+	if !framesUntilBarrier(t, w, engine).saw("resync-offer") {
 		t.Fatal("reattach sent no resync-offer")
 	}
 
@@ -142,7 +124,7 @@ func TestReattachOfAnUninitializedWorkerSaysNothing(t *testing.T) {
 
 	w.SendFromClient("engine", "resync-to-origin", nil)
 
-	if sawResyncOffer(engine) {
+	if framesUntilBarrier(t, w, engine).saw("resync-offer") {
 		t.Fatal("a worker with no document loaded offered one anyway")
 	}
 }

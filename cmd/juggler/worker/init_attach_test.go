@@ -60,37 +60,6 @@ func waitForYjsSync(t *testing.T, mc *msgChan) []byte {
 	}
 }
 
-// drainUntilQuiet empties a client stream and waits for it to stay empty, so a
-// later assertion about what a client did or did not receive cannot be answered
-// by traffic from before it. Needed because a doc write of its own broadcasts
-// to every registered client, on the batcher's schedule rather than inline.
-func drainUntilQuiet(mc *msgChan) {
-	for {
-		select {
-		case <-mc.ch:
-		case <-time.After(400 * time.Millisecond):
-			return
-		}
-	}
-}
-
-// sawYjsSync reports whether a yjs-sync turned up on a stream within a short
-// grace window. Used for the negative case, so it must not fail on absence.
-func sawYjsSync(mc *msgChan) bool {
-	deadline := time.After(500 * time.Millisecond)
-	for {
-		select {
-		case raw := <-mc.ch:
-			var msg YjsSyncMessage
-			if json.Unmarshal(raw, &msg) == nil && msg.Type == "yjs-sync" {
-				return true
-			}
-		case <-deadline:
-			return false
-		}
-	}
-}
-
 // startAttachableWorker returns a running, initialized worker holding one item,
 // plus a client doc already in step with it.
 func startAttachableWorker(t *testing.T) (*ConversationWorker, *ConversationDocument) {
@@ -128,11 +97,9 @@ func TestAttachWithStateVectorAnswersTheSenderWithADelta(t *testing.T) {
 	w.Document().AppendMessage(ConversationItem{
 		Type: ItemTypeAssistant, ItemID: "missed", Content: missedContent,
 	})
-	// That write fans out to both registered clients on its own. Let it settle
-	// and clear it, so what each client receives below is the attach and only
-	// the attach.
-	drainUntilQuiet(asker)
-	drainUntilQuiet(bystander)
+	// That write fans out to both registered clients on its own. Clear it, so
+	// what each client receives below is the attach and only the attach.
+	quiesce(t, w, asker, bystander)
 
 	w.SendFromClient("client-asking", "init", initPayload(t, "conv-attach", client.GetStateVector()))
 
@@ -146,7 +113,7 @@ func TestAttachWithStateVectorAnswersTheSenderWithADelta(t *testing.T) {
 	if !docHasContent(client, missedContent) {
 		t.Fatal("the delta did not carry the op the client was missing")
 	}
-	if sawYjsSync(bystander) {
+	if framesUntilBarrier(t, w, bystander).saw("yjs-sync") {
 		t.Fatal("the attaching client's catch-up was broadcast; it must be addressed to that client alone")
 	}
 }

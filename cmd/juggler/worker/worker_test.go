@@ -26,6 +26,86 @@ func newMsgChan() *msgChan { return &msgChan{ch: make(chan []byte, 1000)} }
 
 func (m *msgChan) callback(msg []byte) { m.ch <- msg }
 
+// frameLog is the sequence of message types one client received.
+type frameLog []string
+
+// saw reports whether a frame of this type is in the log.
+func (f frameLog) saw(msgType string) bool {
+	for _, frame := range f {
+		if frame == msgType {
+			return true
+		}
+	}
+	return false
+}
+
+// barrierSeq numbers the barriers. A barrier's ack is broadcast to every
+// client, so a stream can hold acks belonging to barriers run against another
+// client, and a drain that stopped at the first ack it saw would stop short of
+// the traffic it was there to read.
+var barrierSeq atomic.Int64
+
+const barrierAckPrefix = "test-barrier-"
+
+// framesUntilBarrier returns the type of every frame a client received up to
+// the point where the worker had dealt with everything queued before this call
+// — the frames the test's last action caused, and nothing else. It drains the
+// traffic still owed to that client, so the next call reports only what
+// happened after this one.
+//
+// The barrier is the test-harness ping: it runs on the run loop behind every
+// message queued ahead of it, flushes the outbound sync batcher inline, and
+// only then sends its ack, which each client's mailbox delivers in that same
+// order. So what a client did or did not receive is decided by ordering. A
+// quiet window cannot decide it: the broadcast a client is owed is produced by
+// the run loop and the batcher on their own goroutines, and a loaded machine
+// starves those for longer than any window worth waiting for — which is how a
+// document push that never happened came to be reported as one that did.
+func framesUntilBarrier(t *testing.T, w *ConversationWorker, mc *msgChan) frameLog {
+	t.Helper()
+	ackID := fmt.Sprintf("%s%d", barrierAckPrefix, barrierSeq.Add(1))
+	payload, err := json.Marshal(map[string]string{"ackId": ackID})
+	if err != nil {
+		t.Fatalf("marshalling the barrier ping: %v", err)
+	}
+	w.Send("ping", payload)
+
+	var seen frameLog
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case raw := <-mc.ch:
+			var msg struct {
+				Type  string `json:"type"`
+				AckID string `json:"ackId"`
+			}
+			if json.Unmarshal(raw, &msg) != nil {
+				continue
+			}
+			switch {
+			case msg.AckID == ackID:
+				return seen
+			case strings.HasPrefix(msg.AckID, barrierAckPrefix):
+				// Another client's barrier passing through this stream.
+			default:
+				seen = append(seen, msg.Type)
+			}
+		case <-deadline:
+			t.Fatalf("barrier %s never came back; the worker's outbound path is stuck", ackID)
+			return nil
+		}
+	}
+}
+
+// quiesce drains every named client of the traffic already owed to it, so a
+// later assertion cannot be answered by a frame from before it.
+func quiesce(t *testing.T, w *ConversationWorker, clients ...*msgChan) {
+	t.Helper()
+	for _, mc := range clients {
+		framesUntilBarrier(t, w, mc)
+	}
+}
+
 // waitForType blocks until a message with the given "type" field arrives or timeout.
 func (m *msgChan) waitForType(t *testing.T, msgType string) map[string]any {
 	t.Helper()

@@ -162,7 +162,7 @@ func TestResyncExchangesBothDirections(t *testing.T) {
 		t.Fatalf("marshalling yjs-sync: %v", err)
 	}
 	w.SendFromClient("client-1", "yjs-sync", syncPayload)
-	barrier(t, w, mc.ch, "barrier-resync")
+	quiesce(t, w, mc)
 
 	if !workerDocHasItem(w, "client-offline") {
 		t.Fatal("the edit made while the socket was down never reached the worker")
@@ -206,7 +206,7 @@ func TestResyncAnswersEvenWithNothingToSend(t *testing.T) {
 		t.Fatalf("marshalling yjs-sync: %v", err)
 	}
 	w.SendFromClient("client-1", "yjs-sync", syncPayload)
-	barrier(t, w, mc.ch, "barrier-resync-uptodate")
+	quiesce(t, w, mc)
 
 	if !workerDocHasItem(w, "client-offline") {
 		t.Fatal("an up-to-date client's offline edit never reached the worker")
