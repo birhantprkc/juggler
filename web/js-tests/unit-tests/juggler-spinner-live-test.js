@@ -21,7 +21,8 @@
 import { TOOL_STATES } from '../../sdk/lib/message.js';
 import { runningToolsInTree } from '../../js/model/thread-navigation.js';
 import LLMState from '../../js/services/llm-state.js';
-import '../../js/components/juggler-spinner.js'; // registers the custom element
+// The side-effect import registers the custom element.
+import { __resetDropBudgetForTests } from '../../js/components/juggler-spinner.js';
 
 /**
  * @typedef {object} TestResult
@@ -568,6 +569,12 @@ export async function runTests() {
   // that directly and instantly.
   //
   // Runs last: it spends the session's allowance, so nothing after it can arm.
+  //
+  // The allowance is per WINDOW, and a lane's tests share one, so an earlier
+  // test that ran a turn may already have spent it — which would leave nothing
+  // to arm here and read as a breach of a budget that was in fact working.
+  // Take it back before counting.
+  __resetDropBudgetForTests();
   const inert = mount(false); mounted.push(inert);
   const dropA = mount(true); mounted.push(dropA);
   const dropB = mount(true); mounted.push(dropB);

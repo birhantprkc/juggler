@@ -42,7 +42,7 @@ import './pinboard-content.js';
 /** @typedef {import('juggler/pinboard-item-type').PinActiveContext} PinActiveContext */
 
 /** Material "open in new" icon, for the control that gives the board a window. */
-const POPOUT_ICON_PATH = 'M200-120q-33 0-56.5-23.5T120-200v-560q0-33 23.5-56.5T200-840h240v80H200v560h560v-240h80v240q0 33-23.5 56.5T760-120H200Zm440-400v-120H520v-80h120v-120h80v120h120v80H720v120h-80Z';
+const POPOUT_ICON_PATH = 'M120-120v-320h80v184l504-504H520v-80h320v320h-80v-184L256-200h184v80H120Z';
 
 /**
  * The last segment of a path, whichever separator the platform uses.

@@ -23,7 +23,7 @@
  * @module unit-tests/transaction-panel-test
  */
 
-import { assert } from '../utilities/test-helpers.js';
+import { assert, waitFor } from '../utilities/test-helpers.js';
 import { renderTransactionDetail } from '../../js/components/transaction-detail-renderer.js';
 import { ColumnSelectionState } from '../../js/utils/column-selection.js';
 import '../../js/components/properties-panel.js';
@@ -36,10 +36,22 @@ import '../../js/components/properties-panel.js';
  */
 
 /**
- * Yield twice, so a queued `details` toggle task has run.
- * @returns {Promise<void>} Resolves after two macrotasks.
+ * Open a row and wait for the body its `toggle` handler builds.
+ *
+ * The browser dispatches `toggle` on a task of its own, so there is no fixed
+ * number of ticks that means "it has run" — under load the event arrives
+ * several behind, and yielding a set number of times reads that as a body
+ * that was never built.
+ * @param {HTMLDetailsElement} row - The row to open.
+ * @returns {Promise<void>} Resolves once the body is there, or gives up so the
+ *   caller's assertion can report the absence itself.
  */
-const settle = () => new Promise((resolve) => setTimeout(() => setTimeout(resolve, 0), 0));
+const openRow = async (row) => {
+  row.open = true;
+  await waitFor(() => !!row.querySelector('.tx-row-body'), {
+    description: 'the opened row to build its body',
+  }).catch(() => {});
+};
 
 /**
  * A round-trip blob with one of everything the view has to render.
@@ -213,16 +225,14 @@ export async function runTests(_ctx) {
     const collapsed = rows[0];
     assert(!collapsed.querySelector('.tx-row-body'),
       'a collapsed row must not build its body until it is opened');
-    /** @type {HTMLDetailsElement} */ (collapsed).open = true;
-    await settle();
+    await openRow(/** @type {HTMLDetailsElement} */ (collapsed));
     assert(!!collapsed.querySelector('.tx-row-body'), 'opening a row builds its body');
   });
 
   await run('multi-line text renders as text, not as an escaped one-liner', async () => {
     const host = render(makeBlob());
     const systemRow = /** @type {HTMLDetailsElement} */ (host.querySelector('.tx-row'));
-    systemRow.open = true;
-    await settle();
+    await openRow(systemRow);
     const text = systemRow.querySelector('.tx-text');
     assert(!!text, 'the system prompt renders as a text block');
     assert(text.textContent.includes('\n'), 'its line breaks survive');

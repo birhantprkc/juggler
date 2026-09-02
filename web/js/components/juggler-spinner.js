@@ -140,6 +140,23 @@ const TUNING = Object.freeze({
 let dropsThisSession = 0;
 
 /**
+ * Hand the session its fumble allowance back, for tests.
+ *
+ * The browser suite reuses one JS realm across the sequence of tests a lane
+ * runs, and the app arms a fumble on the rising edge of any turn — so any
+ * earlier test that ran a turn can spend this window's single allowance before
+ * the spinner's own tests get to it, leaving them nothing to arm and no way to
+ * tell that from a broken budget. Whether it happens turns on load: an armed
+ * fumble refunds itself if its spinner is torn down before it fires, so a slow
+ * run is one where the spinner is more likely to still be there at four
+ * seconds. Not called in production, where spending the allowance once is the
+ * entire point.
+ */
+export function __resetDropBudgetForTests() {
+  dropsThisSession = 0;
+}
+
+/**
  * Whether the user has asked for reduced motion.
  * @returns {boolean} True when the reduce preference is set.
  */

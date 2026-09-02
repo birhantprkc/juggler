@@ -34,6 +34,20 @@ const OVERSCAN_ROWS = 20;
 const INITIAL_ROWS = 120;
 
 /**
+ * Attempts at the first row measurement that are made on the next tick rather
+ * than after a wait. A block is appended by its caller in the same task as it
+ * is built, so it has almost always landed by then, and a wait here would leave
+ * the block claiming to be INITIAL_ROWS tall for that whole time.
+ */
+const MEASURE_IMMEDIATE_ATTEMPTS = 4;
+
+/** Gap between the attempts after those, for a block put in the document later. */
+const MEASURE_RETRY_MS = 50;
+
+/** How many attempts the first measurement gets before it gives up. */
+const MEASURE_ATTEMPTS = 40;
+
+/**
  * Build one rendered line.
  * @param {string} text - The line's source text
  * @param {number} number - Line number to show in the gutter
@@ -153,19 +167,28 @@ function mountWindowed(code, lines, language, lineNumberStart) {
   /** @type {HTMLElement|null} */
   let scroller = null;
 
+  let everConnected = false;
+
   const update = () => {
     const el = ref.deref();
-    // The element is gone, or was detached without its teardown being run:
-    // this is the safety net, not the intended path.
-    if (!el || !el.isConnected) {
+    // Collected, or removed after having been in the document without its
+    // teardown being run: this is the safety net, not the intended path.
+    if (!el || (everConnected && !el.isConnected)) {
       stop();
       return;
     }
+    // Built but not appended yet — a block is assembled detached and put in the
+    // document by its caller, so this is the ordinary state at mount. There is
+    // nothing to measure until it lands, and it must not be mistaken for one
+    // that has been thrown away.
+    if (!el.isConnected) return;
+    everConnected = true;
 
     if (!rowHeight) {
       const sample = el.querySelector('.ci-line');
       rowHeight = sample ? sample.getBoundingClientRect().height : 0;
-      // Not laid out yet — a later scroll or resize will measure.
+      // Laid out to nothing so far — the retry below, or a later scroll or
+      // resize, will measure.
       if (!rowHeight) return;
     }
     // Keep looking until one is found: on the first pass nothing may have
@@ -185,7 +208,7 @@ function mountWindowed(code, lines, language, lineNumberStart) {
   const onScroll = () => update();
 
   // Width changes re-wrap nothing (lines never wrap) but do change how many
-  // rows fit, and this is also how the first, post-layout measurement arrives.
+  // rows fit.
   const resizeObserver = new ResizeObserver((entries) => {
     const width = entries[0]?.contentRect.width ?? 0;
     // Only react to a real width change: redrawing keeps total height constant,
@@ -195,7 +218,11 @@ function mountWindowed(code, lines, language, lineNumberStart) {
     update();
   });
 
+  /** @type {ReturnType<typeof setTimeout>|undefined} */
+  let measureTimer;
+
   const stop = () => {
+    clearTimeout(measureTimer);
     resizeObserver.disconnect();
     window.removeEventListener('scroll', onScroll, true);
     window.removeEventListener('resize', onScroll);
@@ -206,6 +233,26 @@ function mountWindowed(code, lines, language, lineNumberStart) {
   window.addEventListener('scroll', onScroll, true);
   window.addEventListener('resize', onScroll);
   resizeObserver.observe(code);
+
+  // Until a row has been measured the spacers stand at nothing, so the block is
+  // INITIAL_ROWS tall and the scrollbar agrees: a long file shown cut short.
+  // Getting out of that state cannot be left to a notification. The block is
+  // not in the document yet, so there is nothing to measure here; and the
+  // observer's first delivery rides the rendering update step, which a hidden
+  // or unpainted page can defer indefinitely. A timer rides nothing, so ask on
+  // one until a row measures — which needs only that the block has landed and
+  // been laid out, whether or not anything has painted.
+  let attempts = 0;
+  const measure = () => {
+    if (rowHeight) return;
+    update();
+    if (rowHeight || ++attempts >= MEASURE_ATTEMPTS) return;
+    measureTimer = setTimeout(
+      measure,
+      attempts < MEASURE_IMMEDIATE_ATTEMPTS ? 0 : MEASURE_RETRY_MS,
+    );
+  };
+  measure();
 
   return () => {
     stop();

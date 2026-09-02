@@ -18,7 +18,7 @@
  * @module unit-tests/pinboard-shell-test
  */
 
-import { assert } from '../utilities/test-helpers.js';
+import { assert, waitFor } from '../utilities/test-helpers.js';
 import pinboardStore from '../../js/services/pinboard-store.js';
 import pinboardView from '../../js/services/pinboard-view.js';
 import pinboardItemRegistry from '../../js/registries/pinboard-item-registry.js';
@@ -1038,7 +1038,13 @@ export async function runTests(_ctx) {
         );
         assert(openButton.getAttribute('aria-label') === 'Open file', 'the first control opens the file');
         openButton.click();
-        await settle();
+        // The press hands the path to the op, hears the refusal and only then
+        // raises the notice, so there is no single tick to wait for. A timeout
+        // is swallowed so the assertion below reports the absent notice, which
+        // says what was actually wanted.
+        await waitFor(() => !!document.querySelector('modal-dialog'), {
+          description: 'the refused open to be reported',
+        }).catch(() => {});
 
         const notice = document.querySelector('modal-dialog');
         assert(!!notice, 'a refused open must be reported, not swallowed');

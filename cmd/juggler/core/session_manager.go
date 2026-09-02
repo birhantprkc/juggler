@@ -42,8 +42,12 @@ type SessionManager struct {
 	writeChan    chan sessionTask
 	shutdownChan chan struct{}
 	shutdownOnce sync.Once
-	scratchDir   string // non-empty in no-project mode; removed on Shutdown
-	projectPath  string
+	// goroutines counts the actor and the background helpers started with the
+	// manager, so Shutdown can wait for the last of them to stop touching the
+	// project directory before it returns.
+	goroutines  sync.WaitGroup
+	scratchDir  string // non-empty in no-project mode; removed on Shutdown
+	projectPath string
 	// binSizeKick nudges the background bin-size monitor to recompute now
 	// (buffered/size-1: sends are non-blocking and coalesce).
 	binSizeKick chan struct{}
@@ -118,9 +122,10 @@ func startManager(store *FileSessionStore, projectPath, scratchDir string) *Sess
 		projectPath:  projectPath,
 		binSizeKick:  make(chan struct{}, 1),
 	}
-	go m.run()
-	go m.runBinSizeMonitor(store)
-	go m.sweepOrphanedEmptyingDirs(store)
+	m.goroutines.Add(3)
+	go func() { defer m.goroutines.Done(); m.run() }()
+	go func() { defer m.goroutines.Done(); m.runBinSizeMonitor(store) }()
+	go func() { defer m.goroutines.Done(); m.sweepOrphanedEmptyingDirs(store) }()
 	return m
 }
 
@@ -223,9 +228,17 @@ func (m *SessionManager) run() {
 
 // Shutdown gracefully shuts down the actor goroutine and removes any
 // ephemeral scratch directory created for no-project mode.
+//
+// It is a barrier: once it returns, no goroutine of this manager will write
+// into the project directory again. Callers depend on that — the project switch
+// releases the project's lock immediately afterwards, and a task still in flight
+// would write into a directory whose next owner is already there.
 func (m *SessionManager) Shutdown() {
 	m.shutdownOnce.Do(func() {
 		close(m.shutdownChan)
+		// A task already picked off the queue runs to completion, so waiting is
+		// the only thing that makes the last write ordered before the return.
+		m.goroutines.Wait()
 		if m.scratchDir != "" {
 			os.RemoveAll(m.scratchDir)
 		}
