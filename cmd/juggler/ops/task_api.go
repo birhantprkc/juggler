@@ -87,20 +87,20 @@ func StopBackgroundTasks(projectRoot, reason string, grace time.Duration) int {
 	resp := make(chan registryResp, 1)
 	registryCh <- registryOp{kind: "killMatching", projectRoot: projectRoot, errMsg: reason, resp: resp}
 	result := <-resp
-	cmds := result.cmds
-	if len(cmds) == 0 {
+	stopping := result.stopping
+	if len(stopping) == 0 {
 		return result.stopped
 	}
 
 	// One grace for the batch rather than one each: they were all signalled
-	// together, so they are all equally far through it. Aliveness is deliberately
-	// not polled — cmd.ProcessState is written by the spawner's Wait, and reading
-	// it here would race that. Killing a group that has already gone is harmless.
+	// together, so they are all equally far through it. Each escalation then
+	// skips itself if its task was reaped during the grace — by then the pid it
+	// would name belongs to whoever the OS gave it to next.
 	if grace > 0 {
 		time.Sleep(grace)
 	}
-	for _, cmd := range cmds {
-		killProcessGroup(cmd)
+	for _, task := range stopping {
+		task.forceKillGroup()
 	}
 	return result.stopped
 }

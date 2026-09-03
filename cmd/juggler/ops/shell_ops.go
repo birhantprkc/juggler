@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -113,6 +114,11 @@ type BackgroundShell struct {
 	StartTime time.Time
 	cancel    context.CancelFunc
 
+	// reaped is closed by the spawner goroutine the moment cmd.Wait returns —
+	// the moment the process's pid stops naming it (see stoppingTask). Nothing
+	// closes it for a command that never started.
+	reaped chan struct{}
+
 	// ProjectRoot is the project this shell was spawned under — the directory it
 	// runs in. The registry is process-global and outlives a project switch, so
 	// without this a task started in one project stays readable and killable from
@@ -186,10 +192,10 @@ type registryResp struct {
 	observer BackgroundTaskObserver
 	current  bool
 	stopped  int
-	// cmds are processes that have been signalled and still need their process
+	// stopping are tasks that have been signalled and still need their process
 	// group taken if they ignore it. Handed out so the escalation runs off the
 	// registry goroutine.
-	cmds []*exec.Cmd
+	stopping []stoppingTask
 }
 
 var registryCh = make(chan registryOp, 16)
@@ -272,7 +278,7 @@ func runShellRegistry() {
 			// no root is named. The records stay in the map: a task that was
 			// stopped is a task that ended, and its terminal state is what the
 			// snapshot observer and any later read should see.
-			var cmds []*exec.Cmd
+			var stopping []stoppingTask
 			stopped := 0
 			for _, shell := range shells {
 				if shell.status != "running" {
@@ -286,8 +292,8 @@ func runShellRegistry() {
 				// cancelled here and the command is built with CommandContext, so
 				// it dies at Start rather than escaping. It counts as stopped:
 				// what was stopped is the task, not necessarily a process.
-				if cmd := signalShellStop(shell); cmd != nil {
-					cmds = append(cmds, cmd)
+				if task := signalShellStop(shell); task != nil {
+					stopping = append(stopping, *task)
 				}
 				shell.status = "failed"
 				shell.errMsg = op.errMsg
@@ -296,7 +302,7 @@ func runShellRegistry() {
 			}
 			// Escalation is the caller's: it happens off the actor so a slow
 			// process group cannot stall every other task's reads behind it.
-			op.resp <- registryResp{cmds: cmds, stopped: stopped}
+			op.resp <- registryResp{stopping: stopping, stopped: stopped}
 
 		case "getState":
 			shell := shells[op.id]
@@ -363,10 +369,8 @@ func runShellRegistry() {
 			// process group if it doesn't exit promptly. The AfterFunc escalation
 			// is non-blocking, so the registry goroutine stays responsive to other
 			// ops. (Mirrors executeStreaming's cancel path.)
-			if cmd := signalShellStop(shell); cmd != nil {
-				time.AfterFunc(2*time.Second, func() {
-					killProcessGroup(cmd)
-				})
+			if task := signalShellStop(shell); task != nil {
+				time.AfterFunc(2*time.Second, task.forceKillGroup)
 			}
 
 			shell.status = "failed"
@@ -378,14 +382,53 @@ func runShellRegistry() {
 	}
 }
 
+// killGroupHook lets a test observe every force-kill escalation without altering
+// what production does. It is atomic because escalations are scheduled on
+// timers, so one armed by an earlier test can still be in flight when the next
+// installs its own hook. Production never sets it.
+var killGroupHook atomic.Value // func(*exec.Cmd)
+
+// killGroup force-kills a command's whole process tree.
+func killGroup(cmd *exec.Cmd) {
+	if hook, _ := killGroupHook.Load().(func(*exec.Cmd)); hook != nil {
+		hook(cmd)
+		return
+	}
+	killProcessGroup(cmd)
+}
+
+// stoppingTask is a command that has been asked to stop, paired with the channel
+// its spawner closes once cmd.Wait has returned.
+//
+// A force-kill names a whole process TREE by one pid, and a pid means what the
+// killer thinks only until the process is reaped: Wait releases the handle that
+// reserves the number, and the OS is then free to hand the same number to
+// something else — Windows recycles pids within seconds, so `taskkill /T` would
+// take down that stranger and its children. Every escalation that runs on a
+// timer, seconds after the polite stop, therefore goes through forceKillGroup.
+type stoppingTask struct {
+	cmd    *exec.Cmd
+	reaped <-chan struct{}
+}
+
+// forceKillGroup takes the task's process group, unless it has already been
+// reaped and its pid is no longer ours to name.
+func (task stoppingTask) forceKillGroup() {
+	select {
+	case <-task.reaped:
+	default:
+		killGroup(task.cmd)
+	}
+}
+
 // signalShellStop cancels a running shell's context and asks its process to
-// stop, returning the command so the caller can escalate to the process group.
+// stop, returning the task so the caller can escalate to the process group.
 // Only call from the registry goroutine.
 //
 // It must NOT call cmd.Wait(): the startBackground goroutine is the sole owner
 // of Wait (and reaps the process there), so a second Wait on the same *exec.Cmd
 // would be a data race. Signalling is safe from here; reaping is not.
-func signalShellStop(shell *BackgroundShell) *exec.Cmd {
+func signalShellStop(shell *BackgroundShell) *stoppingTask {
 	if shell.cancel != nil {
 		shell.cancel()
 	}
@@ -394,7 +437,7 @@ func signalShellStop(shell *BackgroundShell) *exec.Cmd {
 	}
 	cmd := shell.cmd
 	_ = cmd.Process.Signal(syscall.SIGTERM)
-	return cmd
+	return &stoppingTask{cmd: cmd, reaped: shell.reaped}
 }
 
 // getBackgroundShell retrieves a background shell by ID
@@ -888,6 +931,7 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 
 	// Create background shell entry (mutable state initialized here,
 	// owned by registry goroutine once registered)
+	reaped := make(chan struct{})
 	shell := &BackgroundShell{
 		ID:          shellID,
 		ConvID:      convID,
@@ -896,6 +940,7 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 		StartTime:   time.Now(),
 		ProjectRoot: ops.scope.Root(),
 		cancel:      cancel,
+		reaped:      reaped,
 		status:      "running",
 	}
 
@@ -945,7 +990,9 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 
 		cmdDone := make(chan error, 1)
 		go func() {
-			cmdDone <- cmd.Wait()
+			waitErr := cmd.Wait()
+			close(reaped) // from here the pid may name something else
+			cmdDone <- waitErr
 			pipeWriter.Close()
 		}()
 
@@ -982,7 +1029,7 @@ func (ops *ShellOperations) startBackground(params map[string]any) (any, error) 
 			// polite SIGTERM from the kill op, which takes the group itself if the
 			// task ignores it; this branch just bounds the wait for that to land.
 			if ctx.Err() == context.DeadlineExceeded {
-				killProcessGroup(cmd)
+				stoppingTask{cmd: cmd, reaped: reaped}.forceKillGroup()
 			}
 			select {
 			case err = <-cmdDone:
@@ -1137,7 +1184,7 @@ func (ops *ShellOperations) execute(ctx context.Context, params map[string]any) 
 	select {
 	case <-execCtx.Done():
 		// Timeout or caller cancellation - kill the process group (all children).
-		killProcessGroup(cmd)
+		killGroup(cmd)
 		<-done // Wait for the goroutine to finish
 		output.closeSpill()
 		if execCtx.Err() == context.DeadlineExceeded {
@@ -1316,10 +1363,14 @@ func (ops *ShellOperations) ExecuteStreaming(
 		return
 	}
 
-	// Channel to signal command completion
+	// Channel to signal command completion, and the channel that closes the
+	// moment the process is reaped and its pid stops naming it (see stoppingTask).
 	cmdDone := make(chan error, 1)
+	reaped := make(chan struct{})
 	go func() {
-		cmdDone <- cmd.Wait()
+		waitErr := cmd.Wait()
+		close(reaped)
+		cmdDone <- waitErr
 		pipeWriter.Close()
 	}()
 
@@ -1443,10 +1494,10 @@ func (ops *ShellOperations) ExecuteStreaming(
 		// Context cancelled or timeout - send SIGTERM for graceful shutdown
 		if cmd.Process != nil {
 			_ = cmd.Process.Signal(syscall.SIGTERM)
-			// Give process time to clean up, then force kill the group.
-			time.AfterFunc(ops.killGraceOrDefault(), func() {
-				killProcessGroup(cmd)
-			})
+			// Give process time to clean up, then force kill the group — unless it
+			// has gone by then and its pid names a stranger.
+			task := stoppingTask{cmd: cmd, reaped: reaped}
+			time.AfterFunc(ops.killGraceOrDefault(), task.forceKillGroup)
 		}
 		// Bound the wait for the process to exit. Normally cmd.Wait() returns
 		// promptly once SIGTERM/SIGKILL lands and cmdDone fires. But because
