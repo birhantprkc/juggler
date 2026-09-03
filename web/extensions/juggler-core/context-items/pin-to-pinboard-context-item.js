@@ -90,7 +90,7 @@ class PinToPinboardContextItem extends ContextItem {
   };
 
   static getBadgeOptions() {
-    return { color: 'file', icon: 'icon-document' };
+    return { color: 'meta', icon: 'icon-document' };
   }
 
   static getTypeName() {
@@ -201,6 +201,44 @@ class PinToPinboardContextItem extends ContextItem {
     }
     const terminal = this.resolveTerminalStatus(actionStatus, 'Could not pin that');
     return { typeName, summary: terminal.summary, status: terminal.status };
+  }
+
+  /**
+   * Properties panel for a `pin_to_pinboard` action. Show the pin type and one
+   * labeled row per argument the type was given, rather than the raw tool-call
+   * JSON. Owns its whole display, so the generic Result section is suppressed.
+   * @override
+   * @param {HTMLElement} wrapper - Section wrapper to append details into
+   * @param {import('juggler/context-item').ToolActionRenderContext} ctx - Render context
+   * @returns {{skipResultSection: boolean}} Suppress the generic result dump
+   */
+  renderToolActionDetails(wrapper, ctx) {
+    const { input, helpers, toolAction } = ctx;
+    const raw = toolAction && toolAction.get ? toolAction.get('result') : null;
+    const result = raw && raw.toJSON ? raw.toJSON() : (raw || {});
+    const data = (result.fullResult && result.fullResult.result) || {};
+
+    const type = String(data.type || input.type || '').trim();
+    helpers.addSubsection(wrapper, 'Type', type || 'unknown', 'properties-panel-code');
+
+    // Prefer the normalized parameters the pin was actually created with.
+    const parameters = (data.parameters && typeof data.parameters === 'object' ? data.parameters : input.parameters) || {};
+    const entries = parameters && typeof parameters === 'object' && !Array.isArray(parameters)
+      ? Object.entries(parameters)
+      : [];
+    if (!entries.length) {
+      helpers.addSubsection(wrapper, 'Parameters', 'None.', 'properties-panel-text');
+    }
+    for (const [name, value] of entries) {
+      const label = name.charAt(0).toUpperCase() + name.slice(1);
+      if (value !== null && typeof value === 'object') {
+        helpers.addSubsection(wrapper, label, JSON.stringify(value, null, 2), 'properties-panel-code', { language: 'json' });
+      } else {
+        helpers.addSubsection(wrapper, label, String(value), 'properties-panel-code');
+      }
+    }
+
+    return { skipResultSection: true };
   }
 }
 
