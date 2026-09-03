@@ -130,6 +130,9 @@ class ConversationBar extends JugglerElement {
 
     /** @type {number|null} @private Pending frame for a coalesced render (see _scheduleRender) */
     this._renderFrame = null;
+
+    /** @type {boolean} @private A render arrived while dragging and is owed on release */
+    this._renderDeferred = false;
   }
 
   connectedCallback() {
@@ -591,6 +594,17 @@ class ConversationBar extends JugglerElement {
       this._renderFrame = null;
     }
 
+    // A drag has the strip arranged as the drop would leave it, and is holding
+    // one tab under the pointer. Rendering now would snatch them back, add a
+    // tab the gesture never saw, or remove one it is measuring against — so a
+    // change arriving mid-gesture is drawn when the drag lets go. Deferred
+    // whole rather than skipping the reorder pass alone: creation and removal
+    // move the strip just as surely as reordering does.
+    if (this._dragging) {
+      this._renderDeferred = true;
+      return;
+    }
+
     if (!this._session) {
       this.innerHTML = '<div class="conversation-bar-empty">No session loaded</div>';
       return;
@@ -760,20 +774,16 @@ class ConversationBar extends JugglerElement {
     // place — re-inserting a node restarts CSS animations on it (used by the
     // tab status bar pulse), so we skip moves that don't change position.
     //
-    // A drag has the strip arranged as the drop would leave it, and is holding
-    // one tab under the pointer. Reconciling against Map order mid-gesture
-    // would snatch them back, so the arrangement is left to the drag until it
-    // lets go — which ends by committing that order, or restoring this one.
-    if (!this._dragging) {
-      let expected = addButton.nextSibling;
-      for (const conv of conversations) {
-        const tab = this._cachedElements.get(conv.id);
-        if (!tab) continue;
-        if (tab !== expected) {
-          tabsMenu.insertBefore(tab, expected);
-        }
-        expected = tab.nextSibling;
+    // A drag never reaches here — render() returns early for the whole of one —
+    // so this always reconciles against a strip nobody is holding.
+    let expected = addButton.nextSibling;
+    for (const conv of conversations) {
+      const tab = this._cachedElements.get(conv.id);
+      if (!tab) continue;
+      if (tab !== expected) {
+        tabsMenu.insertBefore(tab, expected);
       }
+      expected = tab.nextSibling;
     }
 
     // Remove tabs for deleted conversations
@@ -1515,7 +1525,12 @@ class ConversationBar extends JugglerElement {
     const listTabs = () => /** @type {HTMLElement[]} */ (
       Array.from(this.querySelectorAll('.conversation-tab:not(.drag-ghost)'))
     );
-    const startOrder = listTabs().map((t) => t.dataset.conversationId || '');
+
+    // The strip is claimed from the press, not from the moment the gesture
+    // passes its slop threshold. A bump or a remote reorder landing in between
+    // would rearrange the tabs under a finger already down, leaving the drag
+    // measuring against one strip and the user looking at another.
+    this._dragging = true;
 
     startReorderDrag(e, {
       item: tab,
@@ -1533,6 +1548,15 @@ class ConversationBar extends JugglerElement {
       onDragStart: () => { this._dragging = true; },
       onDragEnd: ({ dragged }) => {
         this._dragging = false;
+        // Draw whatever arrived while the strip was held — including, after a
+        // move, the order this drag has just committed. The commit runs first
+        // and its notify lands while _dragging is still true, so without this
+        // the strip keeps the drag's arrangement until some later, unrelated
+        // event happens to repaint it.
+        if (this._renderDeferred) {
+          this._renderDeferred = false;
+          this.render();
+        }
         if (!dragged) return;
         // The release that ends a drag also produces a click, which would
         // otherwise switch to whatever the tab landed on.
@@ -1542,9 +1566,19 @@ class ConversationBar extends JugglerElement {
       onCommit: ({ toIndex }) => {
         const draggedId = tab.dataset.conversationId;
         if (!draggedId || !this._session) return;
-        const filtered = startOrder.filter((id) => id !== draggedId);
-        if (toIndex >= filtered.length) this._session.moveConversationToEnd(draggedId);
-        else this._session.reorderConversation(draggedId, /** @type {string} */ (filtered[toIndex]));
+        // Read the strip as it stands at the drop. toIndex counts the tabs
+        // without the dragged one, which is exactly what the gesture measured
+        // against a moment ago — an index into a list captured at pointerdown
+        // names a different neighbour the instant anything joins or leaves.
+        const others = listTabs()
+          .filter((t) => t !== tab)
+          .map((t) => t.dataset.conversationId || '');
+        const beforeId = others[toIndex];
+        if (beforeId && this._session.conversations.has(beforeId)) {
+          this._session.reorderConversation(draggedId, beforeId);
+        } else {
+          this._session.moveConversationToEnd(draggedId);
+        }
       },
     });
   }

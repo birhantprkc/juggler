@@ -408,8 +408,12 @@ func (m *SessionManager) LoadConversationBinary(convID string) ([]byte, error) {
 // manifest by the next reorder from another — reinstating a tab that names no
 // conversation, cannot be renamed, and cannot be duplicated. A conversation
 // enters the order by being created or restored, never by being mentioned here.
-func (m *SessionManager) ReorderConversations(order []string) error {
-	_, err := runWrite(m, func(s *sessionState) (struct{}, error) {
+// Returns the merged manifest order, which is what clients must be told: the
+// posted order is one viewer's snapshot of its own tabs, and echoing that back
+// tells every other viewer to forget any conversation the sender had not heard
+// of yet.
+func (m *SessionManager) ReorderConversations(order []string) ([]string, error) {
+	return runWrite(m, func(s *sessionState) ([]string, error) {
 		known := make([]string, 0, len(order))
 		for _, id := range order {
 			if _, ok := s.store.ConvDir(id); ok {
@@ -417,9 +421,9 @@ func (m *SessionManager) ReorderConversations(order []string) error {
 			}
 		}
 		s.session.ConversationOrder = mergeConversationOrder(s.session.ConversationOrder, known)
-		return struct{}{}, s.store.Save(s.session)
+		merged := append([]string(nil), s.session.ConversationOrder...)
+		return merged, s.store.Save(s.session)
 	})
-	return err
 }
 
 // mergeConversationOrder re-slots the ids named in `desired` (in desired

@@ -736,23 +736,41 @@ class Session {
   }
 
   /**
-   * Apply a `conversations-changed` op="reordered" event. Rebuilds the
-   * conversations Map in the server-provided order. Idempotent: if the
-   * local order already matches (we were the originator), no-op.
-   * @param {string[]} order - New conversation id order from the server
+   * Apply a `conversations-changed` op="reordered" event.
+   *
+   * The arriving order is treated as a PARTIAL reorder, matching what the
+   * server does to the manifest (core.mergeConversationOrder): the ids it names
+   * are re-slotted, in the sequence given, into the positions those ids
+   * currently occupy, and every other tab stays exactly where it is. It is
+   * never the whole truth about this bar — order is persisted by posting the
+   * tab list and echoed back to every viewer including the sender, so an echo
+   * in flight describes the bar as it was when the post left, and a tab created
+   * in that window appears in neither. Taking the echo literally is what sends
+   * a brand-new tab to the bottom.
+   *
+   * Idempotent: an echo that changes nothing notifies nothing.
+   * @param {string[]} order - Conversation ids the server has reordered
    * @returns {void}
    */
   applyConversationsReordered(order) {
     if (!Array.isArray(order)) return;
 
-    // Fast path: order matches what we already have → originator echo.
     const localKeys = Array.from(this.conversations.keys());
-    if (order.length === localKeys.length &&
-        order.every((id, i) => localKeys[i] === id)) {
-      return;
-    }
 
-    this._setConversationOrder(order);
+    // Only ids this realm actually holds can be placed. One we don't have yet
+    // arrives with its own created/restored event.
+    const queue = order.filter((id, i) => this.conversations.has(id) && order.indexOf(id) === i);
+    if (queue.length === 0) return;
+
+    const named = new Set(queue);
+    let qi = 0;
+    // Every slot `named` matches is filled from `queue`, and the two are built
+    // from the same ids, so the read is always in range.
+    const merged = localKeys.map((id) => (named.has(id) ? /** @type {string} */ (queue[qi++]) : id));
+
+    if (merged.every((id, i) => localKeys[i] === id)) return;
+
+    this._setConversationOrder(merged);
     this._notify('conversation:reordered', {});
   }
 
@@ -1276,12 +1294,54 @@ class Session {
 
 
   /**
+   * Ask for a conversation to be hydrated, by whichever route this session has.
+   *
+   * The load queue is built by {@link Session#_doLoad} from the server's
+   * conversationOrder, so a session that opened with no conversations has none.
+   * It can still acquire unhydrated stubs afterwards — a restore, or another
+   * viewer's create — and those show a spinner until something asks for the
+   * load. Routing every ask through here means the absence of a queue costs
+   * concurrency limiting, not the load itself.
+   *
+   * The direct call is the one the queue would have made. Worker-manager's
+   * `_creating` map dedupes concurrent requests for an id, so a click while a
+   * load is already in flight joins it rather than starting a second.
+   * @param {string} conversationId - Conversation to hydrate
+   * @param {{retry?: boolean}} [opts] - `retry` re-attempts a load that errored
+   * @returns {Promise<void>} Resolves once the load settles
+   * @private
+   */
+  async _requestConversationLoad(conversationId, { retry = false } = {}) {
+    const conv = this.conversations.get(conversationId);
+    if (!conv || conv.loadState === 'loaded') return;
+
+    if (this._loadQueue) {
+      if (retry) this._loadQueue.retry(conversationId);
+      else this._loadQueue.prioritize(conversationId);
+      return;
+    }
+
+    if (conv.loadState === 'loading') return;
+    conv.setLoadState('loading');
+    try {
+      await workerManager.loadExistingConversation(conversationId, this);
+      this.conversations.get(conversationId)?.setLoadState('loaded');
+    } catch (error) {
+      console.error(`[Session] Load failed for ${conversationId}:`, error);
+      // Retain the id so saveImmediately keeps it in conversationOrder; the
+      // next reload will retry.
+      this.retainUnloadedConversationId?.(conversationId);
+      this.conversations.get(conversationId)?.setLoadState('error');
+    }
+  }
+
+  /**
    * Re-attempt a conversation load that previously errored. Wired to the
    * conversation panel's "Retry" button.
    * @param {string} conversationId
    */
   retryConversationLoad(conversationId) {
-    this._loadQueue?.retry(conversationId);
+    this._requestConversationLoad(conversationId, { retry: true });
   }
 
   /**
@@ -1295,11 +1355,10 @@ class Session {
     const conv = this.conversations.get(conversationId);
     if (!conv) return;
     if (conv.loadState === 'loaded') return;
-    if (!this._loadQueue) return;
-    if (conv.loadState === 'unloaded') {
-      this._loadQueue.prioritize(conversationId);
-    } else if (conv.loadState === 'error') {
-      this._loadQueue.retry(conversationId);
+    const requested = this._requestConversationLoad(conversationId, { retry: conv.loadState === 'error' });
+    if (!this._loadQueue) {
+      await requested;
+      return;
     }
     try {
       await this._loadQueue.whenLoaded(conversationId);
@@ -2275,6 +2334,12 @@ class Session {
    * @returns {Promise<void>}
    */
   async refreshFromServer() {
+    // Taken before the GET, because the GET is already part of the window: only
+    // ids held when the refresh began can be judged against the manifest it
+    // returns. Anything that arrives after this line is newer than what was
+    // read, and this rebuild has no opinion about it.
+    const knownAtEntry = new Set(this.conversations.keys());
+
     const data = await this._apiService.getSession();
     if (!data.conversationOrder) return;
 
@@ -2309,6 +2374,11 @@ class Session {
     }
     if (data.messageHistory) this.messageHistory = data.messageHistory.map(normalizeHistoryEntry);
 
+    // The manifest, not the rebuild's own success, says what still exists:
+    // judging by `reordered` would destroy a conversation the server still
+    // lists whose load merely failed.
+    const serverIds = new Set(serverOrder);
+
     // Preserve existing conversations in the server's order
     /** @type {import('./conversation.js').default[]} */
     const newlyLoaded = [];
@@ -2316,28 +2386,38 @@ class Session {
       const existing = this.conversations.get(id);
       if (existing) {
         reordered.set(id, existing);
-      } else {
-        // New conversation from another view (or restored locally) — load
-        // it and announce via 'conversation:created' below so conversation-bar
-        // creates the <conversation-tab> host element.
-        try {
-          const conv = await workerManager.loadExistingConversation(id, this);
-          reordered.set(id, conv);
-          newlyLoaded.push(conv);
-        } catch (error) {
-          console.error(`[Session] Failed to load new conversation ${id}:`, error);
-        }
+        // A stub nothing is hydrating stays on the spinner until the user
+        // clicks it. The manifest just said the conversation is real, so ask.
+        if (existing.loadState === 'unloaded') this._requestConversationLoad(id);
+        continue;
+      }
+      // New conversation from another view (or restored locally) — load
+      // it and announce via 'conversation:created' below so conversation-bar
+      // creates the <conversation-tab> host element.
+      try {
+        const conv = await workerManager.loadExistingConversation(id, this);
+        reordered.set(id, conv);
+        newlyLoaded.push(conv);
+      } catch (error) {
+        console.error(`[Session] Failed to load new conversation ${id}:`, error);
       }
     }
 
     // Destroy conversations that were deleted in the other view
     for (const [id, conv] of this.conversations) {
-      if (!reordered.has(id)) {
-        await workerManager.destroyConversationAndWorker(conv);
-      }
+      if (serverIds.has(id) || !knownAtEntry.has(id)) continue;
+      await workerManager.destroyConversationAndWorker(conv);
     }
 
-    this.conversations = reordered;
+    // Fold in whatever arrived while the loads above were awaiting. Both paths
+    // that can insert during a refresh — a create and a restore — claim the head
+    // of the bar, so that is where they go back, in the order they arrived.
+    const arrivals = Array.from(this.conversations)
+      .filter(([id]) => !reordered.has(id) && !knownAtEntry.has(id));
+
+    this.conversations = arrivals.length > 0
+      ? new Map([...arrivals, ...reordered])
+      : reordered;
 
     // Announce each newly-loaded conv so subscribers (notably the
     // conversation-bar) build the inner <conversation-tab> host element.
@@ -2388,12 +2468,10 @@ class Session {
 
     // Bump the user's selection to the front of the load queue so a
     // still-loading or errored conv hydrates before background work.
-    if (this._loadQueue) {
-      if (conv.loadState === 'unloaded') {
-        this._loadQueue.prioritize(conversationId);
-      } else if (conv.loadState === 'error') {
-        this._loadQueue.retry(conversationId);
-      }
+    if (conv.loadState === 'unloaded') {
+      this._requestConversationLoad(conversationId);
+    } else if (conv.loadState === 'error') {
+      this._requestConversationLoad(conversationId, { retry: true });
     }
 
     // Fetch context window if conversation has a model but no context window

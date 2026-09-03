@@ -107,6 +107,11 @@ import { runTests as runSearchActionTests } from '../unit-tests/search-action-te
 import { runTests as runToolCancellationTests } from '../unit-tests/tool-cancellation-test.js';
 import { runTests as runUnboundedAwaitTests } from '../unit-tests/unbounded-await-test.js';
 import { runTests as runConversationReleaseTests } from '../unit-tests/conversation-release-test.js';
+import { runTests as runLoadQueueRecycleTests } from '../unit-tests/load-queue-recycle-test.js';
+import { runTests as runUnloadedTabHydrationTests } from '../unit-tests/unloaded-tab-hydration-test.js';
+import { runTests as runRefreshMergeTests } from '../unit-tests/refresh-merge-test.js';
+import { runTests as runTabOrderMergeTests } from '../unit-tests/tab-order-merge-test.js';
+import { runTests as runTabDragOrderTests } from '../unit-tests/tab-drag-order-test.js';
 import { runTests as runToolExecutionOrderTests } from '../unit-tests/tool-execution-order-test.js';
 import { runTests as runToolActionRenderTests } from '../unit-tests/tool-action-render-test.js';
 import { runTests as runJugglerSpinnerLiveTests } from '../unit-tests/juggler-spinner-live-test.js';
@@ -417,6 +422,11 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:tool-cancellation', run: runToolCancellationTests },
   { name: 'unit:unbounded-await', run: runUnboundedAwaitTests },
   { name: 'unit:conversation-release', run: runConversationReleaseTests },
+  { name: 'unit:load-queue-recycle', run: runLoadQueueRecycleTests },
+  { name: 'unit:unloaded-tab-hydration', run: runUnloadedTabHydrationTests },
+  { name: 'unit:refresh-merge', run: runRefreshMergeTests },
+  { name: 'unit:tab-order-merge', run: runTabOrderMergeTests },
+  { name: 'unit:tab-drag-order', run: runTabDragOrderTests },
   { name: 'unit:tool-execution-order', run: runToolExecutionOrderTests },
   { name: 'unit:tool-action-render', run: runToolActionRenderTests },
   { name: 'unit:juggler-spinner-live', run: runJugglerSpinnerLiveTests },

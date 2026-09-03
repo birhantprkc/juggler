@@ -27,6 +27,7 @@ import { fetchJson } from './http.js';
  * @property {string} conversationId - Associated conversation ID
  * @property {boolean} ready - Whether worker has initialized
  * @property {Array<Function>} readyCallbacks - Callbacks waiting for ready state
+ * @property {Array<(err: Error) => void>} [readyRejectors] - Waiters to fail if the worker reports an error instead of becoming ready
  * @property {object|null} [metadata] - Metadata extracted from ready message (for existing conversations)
  * @property {boolean} [loadFromDisk] - Whether this entry was spawned with loadFromDisk:true
  * @property {{loadFromDisk?: boolean, [key: string]: unknown}} serialized - The conversation data this entry was spawned with, kept so its init can be re-sent (see reinitPendingConversations)
@@ -321,6 +322,7 @@ class WorkerManager {
       conversationId,
       ready: false,
       readyCallbacks: [],
+      readyRejectors: [],
       loadFromDisk: !!serializedConversation.loadFromDisk,
       serialized: serializedConversation
     };
@@ -967,6 +969,7 @@ class WorkerManager {
             callback(entry.metadata);
           }
           entry.readyCallbacks = [];
+          entry.readyRejectors = [];
 
           // Activate bidirectional sync. Skip the initial state broadcast
           // for load-from-disk: the worker already has the full state
@@ -1179,8 +1182,19 @@ class WorkerManager {
       }
 
       case 'error':
-        // Just log error - conversation will handle via Yjs state
         console.error(`[WorkerManager] Worker error for ${conversationId}:`, data.message, data.stack);
+        // An error arriving before ready IS the answer to the init: the worker
+        // could not load the conversation and will send nothing further. Fail
+        // the waiters now so the panel offers Retry, instead of leaving them to
+        // time out a minute later on a spinner that was never going to end.
+        // After ready, the conversation carries its own errors through Yjs.
+        if (entry && !entry.ready && entry.readyRejectors?.length) {
+          const rejectors = entry.readyRejectors;
+          entry.readyRejectors = [];
+          entry.readyCallbacks = [];
+          const err = new Error(data.message ? String(data.message) : `Worker error for ${conversationId}`);
+          for (const reject of rejectors) reject(err);
+        }
         break;
 
       case 'validation-error': {
@@ -1491,6 +1505,13 @@ class WorkerManager {
       entry.readyCallbacks.push((/** @type {object|null} */ metadata) => {
         clearTimeout(timer);
         resolve(metadata || null);
+      });
+      // A worker that fails its init reports an error and then says nothing.
+      // Without this the wait runs to its full timeout, and the user watches a
+      // spinner for a minute over a failure the server already described.
+      (entry.readyRejectors ??= []).push((/** @type {Error} */ err) => {
+        clearTimeout(timer);
+        reject(err);
       });
     });
   }

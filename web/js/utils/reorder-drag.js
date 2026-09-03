@@ -398,8 +398,16 @@ export function startReorderDrag(event, options) {
     // arrives, and every CSS animation on the element restarts. So a press that
     // stayed a click, and a drag that wandered back into its own slot, both
     // leave the DOM strictly untouched.
+    // The anchor is read at the press and the strip is not ours alone: the item
+    // that followed this one can have been removed by the time the gesture is
+    // abandoned, and insertBefore against a node that is no longer a child
+    // throws. Everything below is the tidying up — the clone, the classes, the
+    // listeners, the owner's drag flag — so a throw here would leave the strip
+    // stranded mid-gesture for good. Fall back to the end of the strip, which
+    // is where a home anchor that no longer exists now is.
     if (active && !moved && item.nextSibling !== homeNext) {
-      homeParent?.insertBefore(item, homeNext);
+      const anchor = homeNext && homeNext.parentNode === homeParent ? homeNext : null;
+      homeParent?.insertBefore(item, anchor);
     }
     cleanUp();
 

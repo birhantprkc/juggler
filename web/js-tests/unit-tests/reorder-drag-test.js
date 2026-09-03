@@ -87,9 +87,10 @@ function mountStrip({ count, wrap, width = ITEM_W }) {
  * @param {'x'|'y'|'xy'} opts.axis - Which way the clone follows.
  * @param {Array<{x: number, y: number}>} opts.moves - Pointer positions to visit, in client coordinates.
  * @param {'up'|'cancel'|'none'} [opts.end] - How the gesture finishes.
- * @returns {{commits: Array<{fromIndex: number, toIndex: number}>, handle: any}} What was committed, and the gesture handle.
+ * @param {() => void} [opts.afterMoves] - Runs once the pointer has travelled, before the gesture ends — for disturbing the strip mid-gesture.
+ * @returns {{commits: Array<{fromIndex: number, toIndex: number}>, ends: Array<{dragged: boolean, moved: boolean}>, handle: any}} What was committed, how it ended, and the gesture handle.
  */
-function drag({ item, strip, host, wrap, axis, moves, end = 'up' }) {
+function drag({ item, strip, host, wrap, axis, moves, end = 'up', afterMoves }) {
   item.setPointerCapture = () => {};
   item.releasePointerCapture = () => {};
 
@@ -99,6 +100,8 @@ function drag({ item, strip, host, wrap, axis, moves, end = 'up' }) {
 
   /** @type {Array<{fromIndex: number, toIndex: number}>} */
   const commits = [];
+  /** @type {Array<{dragged: boolean, moved: boolean}>} */
+  const ends = [];
   const handle = startReorderDrag(
     /** @type {any} */ ({ clientX: startX, clientY: startY, pointerId: 1 }),
     {
@@ -112,6 +115,7 @@ function drag({ item, strip, host, wrap, axis, moves, end = 'up' }) {
       wrap,
       classes: { ghost: 'rd-ghost', source: 'rd-source', dragging: 'rd-dragging' },
       onCommit: ({ fromIndex, toIndex }) => commits.push({ fromIndex, toIndex }),
+      onDragEnd: ({ dragged, moved }) => ends.push({ dragged, moved }),
     }
   );
 
@@ -120,13 +124,14 @@ function drag({ item, strip, host, wrap, axis, moves, end = 'up' }) {
       pointerId: 1, buttons: 1, clientX: move.x, clientY: move.y, bubbles: true,
     }));
   }
+  afterMoves?.();
   if (end !== 'none') {
     const last = moves[moves.length - 1] || { x: startX, y: startY };
     document.dispatchEvent(new PointerEvent(end === 'up' ? 'pointerup' : 'pointercancel', {
       pointerId: 1, clientX: last.x, clientY: last.y, bubbles: true,
     }));
   }
-  return { commits, handle };
+  return { commits, ends, handle };
 }
 
 /**
@@ -190,6 +195,40 @@ export async function runTests() {
   // back — which is what insertBefore does even when the node is already there —
   // loses the click entirely and restarts every animation on the element. A
   // press that never became a drag moved nothing, so it has nothing to undo.
+  // A gesture that abandons its move puts the item back where it came from,
+  // in front of whatever followed it at the press. That neighbour can be gone
+  // by then — the conversation it named was binned in another window — and
+  // insertBefore against a node that is no longer a child throws. Everything
+  // after it is the tidying up: the clone would stay on screen and the owner's
+  // "a drag is in progress" flag would never be lowered, so the strip would
+  // stop reconciling for the rest of the session.
+  run('a home anchor removed mid-drag still lets the gesture finish', () => {
+    const { strip, host, items, teardown } = mountStrip({ count: 3, wrap: false });
+    try {
+      const item = /** @type {HTMLElement} */ (items[0]);
+      const follower = /** @type {HTMLElement} */ (items[1]);
+      const rest = item.getBoundingClientRect();
+      const home = { x: rest.left + rest.width / 2, y: rest.top + rest.height / 2 };
+
+      const { ends } = drag({
+        item, strip, host, wrap: false, axis: 'y',
+        // Out past the threshold, then back into its own slot, so the gesture
+        // is armed but commits nothing and takes the restore path.
+        moves: [{ x: home.x, y: home.y + ITEM_H * 1.5 }, home],
+        afterMoves: () => follower.remove(),
+      });
+
+      assert(ends.length === 1, 'the gesture must report that it ended');
+      assert(!host.querySelector('.rd-ghost'),
+        'the clone must be cleaned up even though the item could not be put back');
+      assert(!item.classList.contains('rd-source'),
+        'the dragged item must be shown again even though its anchor was gone');
+      assert(document.body.contains(item), 'the dragged item must still be in the document');
+    } finally {
+      teardown();
+    }
+  });
+
   run('a press that never became a drag leaves the DOM alone', () => {
     const { strip, host, items, teardown } = mountStrip({ count: 3, wrap: false });
     const observer = new MutationObserver(() => {});

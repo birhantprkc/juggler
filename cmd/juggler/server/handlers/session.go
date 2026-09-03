@@ -1097,7 +1097,8 @@ func (api *SessionAPI) HandleReorderConversations(w http.ResponseWriter, r *http
 		return
 	}
 
-	if err := api.manager().ReorderConversations(req.Order); err != nil {
+	merged, err := api.manager().ReorderConversations(req.Order)
+	if err != nil {
 		WriteError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1105,6 +1106,6 @@ func (api *SessionAPI) HandleReorderConversations(w http.ResponseWriter, r *http
 	w.WriteHeader(http.StatusNoContent)
 
 	if api.broadcaster != nil {
-		api.broadcaster.BroadcastConversationsReordered(req.Order)
+		api.broadcaster.BroadcastConversationsReordered(merged)
 	}
 }

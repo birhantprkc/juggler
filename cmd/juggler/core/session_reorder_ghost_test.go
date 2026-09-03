@@ -48,8 +48,12 @@ func TestReorderConversations_DoesNotResurrectBinnedConv(t *testing.T) {
 	}
 
 	// A viewer that still shows the binned tab posts its whole list.
-	if err := mgr.ReorderConversations([]string{binned, keep}); err != nil {
+	merged, err := mgr.ReorderConversations([]string{binned, keep})
+	if err != nil {
 		t.Fatalf("reorder: %v", err)
+	}
+	if slices.Contains(merged, binned) {
+		t.Fatalf("ghost: reorder returned the binned conv %s to be broadcast (merged=%v)", binned, merged)
 	}
 
 	order := mgr.GetSession().ConversationOrder
@@ -90,10 +94,16 @@ func TestReorderConversations_StillReordersLiveConvs(t *testing.T) {
 	}
 
 	want := []string{b, c, a}
-	if err := mgr.ReorderConversations(want); err != nil {
+	merged, err := mgr.ReorderConversations(want)
+	if err != nil {
 		t.Fatalf("reorder: %v", err)
 	}
 	if got := mgr.GetSession().ConversationOrder; !slices.Equal(got, want) {
 		t.Fatalf("reorder of live conversations = %v, want %v", got, want)
+	}
+	// The returned order is what every viewer is told, so it has to be the
+	// manifest's, not an echo of what the caller happened to post.
+	if !slices.Equal(merged, want) {
+		t.Fatalf("reorder returned %v to be broadcast, want %v", merged, want)
 	}
 }

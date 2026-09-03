@@ -271,7 +271,19 @@ func (s *Server) runRealtimeClientLoop(ctx context.Context, client RealtimeClien
 						client.SendRaw(envelope)
 					}
 				}
-				s.workerManager.HandleMessageWithClient(wm.ConversationID, client.ClientID(), wm.WorkerMsgType, wm.Payload, sendCallback)
+				if !s.workerManager.HandleMessageWithClient(wm.ConversationID, client.ClientID(), wm.WorkerMsgType, wm.Payload, sendCallback) {
+					// The manager declined to create a worker for this id: it
+					// is binned, or its folder is gone. No worker exists to
+					// answer, so say so — a client that sent an init is waiting
+					// on a "ready" that is never coming, and silence leaves it
+					// on a spinner until its own timeout expires.
+					if payload, err := json.Marshal(map[string]any{
+						"type":    "error",
+						"message": "Couldn't open this conversation: the server no longer has it.",
+					}); err == nil {
+						sendCallback(payload)
+					}
+				}
 
 			default:
 				jlog.Error("Realtime: unrecognized message type %q", generic.Type)

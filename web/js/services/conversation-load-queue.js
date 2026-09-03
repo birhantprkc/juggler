@@ -90,11 +90,20 @@ class ConversationLoadQueue {
    * Drop a pending id (e.g. when a still-loading conversation is deleted).
    * An already-in-flight load runs to completion; worker termination is
    * the worker manager's job.
+   *
+   * The id is forgotten entirely, verdict included. A cancel accompanies the
+   * conversation leaving the session — binned, or released — and the same id
+   * can come back (restored from the bin) as a fresh unloaded stub wanting a
+   * fresh worker. Remembering the old verdict makes prioritize() and _enqueue()
+   * decline that stub as already-loaded, and nothing else writes loadState: the
+   * tab spins on 'unloaded' with no load behind it and no timeout to end it.
    * @param {string} id
    */
   cancel(id) {
     const idx = this._pending.indexOf(id);
     if (idx !== -1) this._pending.splice(idx, 1);
+    this._loaded.delete(id);
+    this._errored.delete(id);
     const waiters = this._waiters.get(id);
     if (waiters) {
       const err = new Error(`Conversation ${id} load cancelled`);
