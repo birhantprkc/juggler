@@ -474,6 +474,17 @@ export async function runTests(_ctx) {
       'create_thread keeps the Thread badge');
   });
 
+  await run('a compaction fold says so on its tile', () => {
+    // The fold is spliced where the folded history began, wearing the same
+    // generic Thread lozenge as work the user asked for — so the one row that
+    // reports the conversation being rewritten read as an ordinary sub-thread.
+    const fold = {
+      get: (/** @type {string} */ key) => ({ type: 'thread', boundedCompaction: true })[key]
+    };
+    assert(badgeForItem(fold).typeName === 'Compacted',
+      `a folded history tile must name itself, got ${badgeForItem(fold).typeName}`);
+  });
+
   await run('the panel header badge links to the owning capability', () => {
     const panel = /** @type {any} */ (document.createElement('properties-panel'));
     const header = panel._createHeader('Read', { color: 'blue', iconClass: 'icon-read', pluginId: 'read-file' });

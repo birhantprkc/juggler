@@ -7,6 +7,8 @@ package worker
 import (
 	"encoding/json"
 
+	"juggler/cmd/juggler/providers/provider"
+
 	ycrdt "github.com/skyterra/y-crdt"
 )
 
@@ -833,6 +835,22 @@ func (w *ConversationWorker) reportRunToParentLocked(threadItemID string, thread
 	parentArr.Insert(ycrdt.Number(int(parentArr.GetLength())), ycrdt.ArrayAny{conversationItemToYMap(receipt)})
 }
 
+// threadTokenFigures sizes what a sub-thread built against what it handed back:
+// its whole transcript, and the answer the parent receives as one tool_result.
+//
+// Both come from the same wire estimator, which is what makes the pair worth
+// showing — the ratio between them is the point, not either number on its own.
+// It is an estimate rather than a billed count on purpose: a billed total would
+// need every one of the thread's transaction blobs read off disk at settle,
+// under the document lock, and blobs are swept once nothing references them.
+func threadTokenFigures(items []ConversationItem, result string) (int64, int64) {
+	contextTokens := estimateItemsWireTokens(items, items)
+	resultTokens := provider.EstimateMessageRequestTokenBreakdown(provider.MessageRequest{
+		Messages: []provider.Message{{Type: "user", Content: result}},
+	}, 0).Total
+	return contextTokens, resultTokens
+}
+
 // settleThreadRun records how the run that just ended on threadItemID came out:
 // runStatus/runResult onto the message that started it, and — for a run that
 // came to rest — the same text onto the thread as its current summary.
@@ -902,6 +920,7 @@ func (w *ConversationWorker) settleThreadRun(threadItemID string, cancelled bool
 		starterID, _ = open[len(open)-1].Get("itemId").(string)
 		starterCall, _ = open[len(open)-1].Get("runToolUseId").(string)
 	}
+	contextTokens, resultTokens := threadTokenFigures(items, result)
 	w.doc.transactTracked(func(_ *ycrdt.Transaction) {
 		for _, m := range open {
 			m.Set("runStatus", status)
@@ -910,6 +929,8 @@ func (w *ConversationWorker) settleThreadRun(threadItemID string, cancelled bool
 		if summarises && result != threadResult {
 			threadYMap.Set("result", result)
 		}
+		threadYMap.Set("contextTokens", ycrdt.Number(contextTokens))
+		threadYMap.Set("resultTokens", ycrdt.Number(resultTokens))
 		w.reportRunToParentLocked(threadItemID, threadYMap, starterID, starterCall, status, result)
 	})
 	ycrdtMu.Unlock()

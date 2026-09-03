@@ -7,6 +7,7 @@ import { stripThinkingTags } from './content-utils.js';
 import { escapeHtml } from '../../sdk/lib/html.js';
 import { hasPendingApprovalInTree, hasUnsettledToolInTree } from '../model/thread-navigation.js';
 import { canonicalThread, itemGoal, itemRunRecord, isTrailingViewOf } from '../model/thread-alias.js';
+import { formatTokens } from './format.js';
 
 /**
  * What a thread tile shows: the result of the ONE run that item stands for.
@@ -32,6 +33,44 @@ export function getThreadDisplayContent(threadYMap, siblingArray) {
   if (record) return { text: record.result };
   const result = threadYMap.get('result');
   return { text: (typeof result === 'string') ? result : '' };
+}
+
+/**
+ * @typedef {object} ThreadCostFigures
+ * @property {number} context - Estimated size of the thread's own transcript.
+ * @property {number} returned - Estimated size of the answer it handed back.
+ * @property {string} text - The pair, for the resting tile.
+ * @property {string} title - The same pair, said in full.
+ */
+
+/**
+ * What a sub-thread's own context came to, against what it handed back.
+ *
+ * The two are worth showing together because the ratio between them is the
+ * whole economics of delegating: the child does not inherit the parent
+ * transcript and returns one tool_result, so a child that reads a great many
+ * files costs its caller the answer alone. Both figures are stamped on the
+ * thread when a run settles, so a tile needs no fetch to show them — and an
+ * alias reads them off the thread it is a view of, since they describe the
+ * transcript rather than one call into it.
+ *
+ * Null until a run has settled: absent figures show nothing, never a zero.
+ * @param {any} threadYMap - The thread item Y.Map (canonical or alias).
+ * @param {any} [siblingArray] - The array the item stands in.
+ * @returns {ThreadCostFigures|null} The pair, or null when there is none.
+ */
+export function threadCostFigures(threadYMap, siblingArray) {
+  const thread = canonicalThread(threadYMap, siblingArray) || threadYMap;
+  const context = Number(thread?.get?.('contextTokens')) || 0;
+  const returned = Number(thread?.get?.('resultTokens')) || 0;
+  if (context <= 0 || returned <= 0) return null;
+  return {
+    context,
+    returned,
+    text: `${formatTokens(context)} used · ${formatTokens(returned)} returned`,
+    title: `This thread's own context ran to about ${formatTokens(context)} tokens; `
+      + `the conversation that called it pays only the ${formatTokens(returned)} it returned.`,
+  };
 }
 
 /**

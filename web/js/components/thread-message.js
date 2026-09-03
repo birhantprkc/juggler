@@ -4,7 +4,7 @@
 
 import { wrapWithIcon } from '../utils/icon-message-renderer.js';
 import { badgeForItem } from '../utils/item-badge.js';
-import { getThreadStatus, getThreadDisplayContent, paintThreadSummary, paintThreadStatusText } from '../utils/thread-display.js';
+import { getThreadStatus, getThreadDisplayContent, paintThreadSummary, paintThreadStatusText, threadCostFigures } from '../utils/thread-display.js';
 import { applyCollapsible } from '../utils/collapsible.js';
 import { canonicalThread } from '../model/thread-alias.js';
 
@@ -132,6 +132,34 @@ class ThreadMessage extends HTMLElement {
     return btn;
   }
 
+  /**
+   * Write the cost pair onto a tile, or take it off one that no longer has it.
+   * It closes the tile rather than joining the header row: the header is the
+   * icon, the lozenge and the goal, and a figure squeezed in beside them is
+   * read as part of the goal.
+   * @param {Element|null} article - The tile's article element.
+   * @param {import('../utils/thread-display.js').ThreadCostFigures|null} cost
+   * @private
+   */
+  _paintCost(article, cost) {
+    if (!article) return;
+    let el = article.querySelector('.thread-cost');
+    if (!cost) {
+      el?.remove();
+      article.removeAttribute('title');
+      return;
+    }
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'thread-cost';
+      // Into the body, which carries the indent to the lozenge; the article
+      // itself would sit the figures flush under the icon.
+      (article.querySelector('.thread-body') || article).appendChild(el);
+    }
+    el.textContent = cost.text;
+    article.setAttribute('title', cost.title);
+  }
+
   render() {
     const status = this._item ? getThreadStatus(this._item, this._live) : null;
     // The tile shows a Stop button when the subtree has something to stop —
@@ -152,6 +180,10 @@ class ThreadMessage extends HTMLElement {
     // paintThreadSummary's own decision, read rather than re-derived, because
     // this component caches its structural mode on the outcome.
     const showsSummary = !!status?.showSummary;
+    // What the thread cost against what it handed back, on a tile that is at
+    // rest: mid-run the figures describe the run before this one, and a stale
+    // pair is worse than none.
+    const cost = showsSummary && this._item ? threadCostFigures(this._item) : null;
 
     // Structural mode: only changes when summary/status surface or spinner
     // presence flips. Within a mode we update text in place so the spinner
@@ -168,7 +200,7 @@ class ThreadMessage extends HTMLElement {
     const key = !this._item
       ? 'empty'
       : showsSummary
-        ? `summary:${status?.goal}:${result}`
+        ? `summary:${status?.goal}:${result}:${cost?.text || ''}`
         : `status:${status?.kind}:${status?.goal}:${status?.message}:${status?.spinner ? 1 : 0}`;
 
     if (this._mode !== mode) {
@@ -205,6 +237,7 @@ class ThreadMessage extends HTMLElement {
       paintThreadSummary(summaryDiv, result, status ? { status } : undefined);
       body.appendChild(summaryDiv);
       article.appendChild(body);
+      this._paintCost(article, cost);
 
       // Stop affordance: when the subtree has live work to stop (running /
       // pending / paused) the user can stop it straight from the parent tile —
@@ -245,6 +278,7 @@ class ThreadMessage extends HTMLElement {
     const goalEl = this.querySelector('.thread-goal');
     const goal = status?.goal || '';
     if (goalEl && goalEl.textContent !== goal) goalEl.textContent = goal;
+    this._paintCost(this.querySelector('article.thread-item'), cost);
 
     const summaryDiv = /** @type {HTMLElement|null} */ (this.querySelector('.thread-summary'));
     if (!summaryDiv) return;

@@ -815,6 +815,44 @@ func insertThreadWithOpts(w *ConversationWorker, opts threadOpts) string {
 	return threadItemID
 }
 
+// TestSettledRunRecordsWhatItCostAndReturned pins the two figures the tile
+// makes the delegation economics legible with. A sub-thread does not inherit
+// the parent transcript and hands back only its final answer, so a child that
+// reads a great deal costs the parent almost nothing — but nothing said so, and
+// users talked themselves out of delegating because of it. Both figures are
+// stamped at settle so no tile needs a fetch to show them.
+func TestSettledRunRecordsWhatItCostAndReturned(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+
+	threadID := insertThreadWithOpts(w, threadOpts{goal: "Read the files", userMessage: "read them"})
+	w.turn.thread.itemID = threadID
+	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(threadID)
+
+	w.currentRun().appendTargetMessage(ConversationItem{
+		Type: ItemTypeAssistant, ItemID: generateItemID(), Content: strings.Repeat("file contents ", 4000),
+	})
+	w.currentRun().appendTargetMessage(ConversationItem{
+		Type: ItemTypeAssistant, ItemID: generateItemID(), Content: "Auth lives in auth.go.",
+	})
+	w.settleThreadRun(threadID, false)
+
+	ymap := w.doc.GetThreadYMap(threadID)
+	ycrdtMu.Lock()
+	contextTokens, okContext := ymap.Get("contextTokens").(ycrdt.Number)
+	resultTokens, okResult := ymap.Get("resultTokens").(ycrdt.Number)
+	ycrdtMu.Unlock()
+	if !okContext || !okResult {
+		t.Fatal("a settled run must record what the thread's own context cost and what it handed back")
+	}
+	if contextTokens < 10_000 {
+		t.Fatalf("contextTokens = %v, want the whole transcript the child built", contextTokens)
+	}
+	if resultTokens <= 0 || resultTokens > contextTokens/100 {
+		t.Fatalf("resultTokens = %v against context %v, want only the answer handed to the parent", resultTokens, contextTokens)
+	}
+}
+
 // TestSettledRunSummarisesThread pins who owns the thread's summary: the run
 // that comes to rest, and nothing else. The summary is the last thing the
 // thread said, so it needs no author and no protection — a later run simply

@@ -195,6 +195,51 @@ export async function runTests(_ctx) {
     }
   });
 
+  await run('the open picker says a change reaches the turn already running', async () => {
+    await seedRecents([]);
+    const el = makeSelector();
+    try {
+      el.conversation = { isTurnActive: () => true, setModelConfig: () => {} };
+      el.open();
+      const note = el._picker?.querySelector('.model-picker-note');
+      assert(!!note && !note.hidden, 'a running turn must be acknowledged in the picker');
+      assert((note.textContent || '').includes('next request'),
+        `the note must say when the change takes effect, got ${JSON.stringify(note.textContent)}`);
+    } finally {
+      el.close();
+      el.remove();
+    }
+  });
+
+  await run('an idle conversation gets no note', async () => {
+    await seedRecents([]);
+    const el = makeSelector();
+    try {
+      el.conversation = { isTurnActive: () => false, setModelConfig: () => {} };
+      el.open();
+      const note = el._picker?.querySelector('.model-picker-note');
+      assert(!note || note.hidden, 'an idle picker must not carry a turn note');
+    } finally {
+      el.close();
+      el.remove();
+    }
+  });
+
+  await run('a busy sub-thread is judged on its own turn, not the conversation', async () => {
+    await seedRecents([]);
+    const el = makeSelector();
+    try {
+      el.conversation = { isTurnActive: () => false, setModelConfig: () => {} };
+      el._messageThread = { isProcessing: true, modelConfig: null };
+      el.open();
+      const note = el._picker?.querySelector('.model-picker-note');
+      assert(!!note && !note.hidden, 'the bound thread is the scope the write lands in');
+    } finally {
+      el.close();
+      el.remove();
+    }
+  });
+
   await run('hidden models are kept out of the model list', async () => {
     await seedRecents([]);
     const providers = PROVIDERS();

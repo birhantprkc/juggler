@@ -3050,6 +3050,15 @@ thread-message .thread-summary.not-summarised {
     font-style: italic;
 }
 
+/* What the thread's own context came to against what it returned, closing the
+   tile under the summary. Quiet by design: it is a fact about the tile, read
+   once and then only when someone wonders what delegating costs. */
+thread-message .thread-cost {
+    margin-top: 0.25rem;
+    font-size: 0.6875rem;
+    color: var(--text-secondary);
+}
+
 /* Tool group — a folded run of consecutive tool rows. Its composition summary is
    a plain `.message-text` title, so it inherits the shared icon-row band and
    typography from the rules above and needs nothing here; it's also a container

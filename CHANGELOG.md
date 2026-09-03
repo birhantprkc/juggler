@@ -19,6 +19,10 @@ of changes; this project follows semantic versioning.
 - Extensions can embed a local server in a pin, and start a background task with no deadline
 - Auto-compaction now triggers on measured token counts, never estimates, and no longer loops
 - Compaction summaries merge into one thread instead of stacking, and leave a notice at the tail
+- A summarized tool result no longer leaves its row looking as though it were still running
+- Compaction now says what it kept, badges its summary tile, and no longer steals your column
+- The model picker says a change reaches the turn already running, so there is no need to stop it
+- A sub-thread tile shows what its own context cost against what it returned to the conversation
 
 ## [0.5.9] - 2026-08-29
 

@@ -535,6 +535,11 @@ func (r *run) compactToFit(limitErr *provider.ContextLimitExceededError, modelCo
 		Items:                  nestedJSON,
 		Result:                 resultJSON,
 		FoldedRuns:             foldedRunsIn(items[prefixStart:prefixEnd]),
+		// The fold is spliced where the folded history began, far above a reader
+		// parked at the tail, and a thread item is the auto-select fallback: left
+		// selectable it takes the column out from under whoever is reading. The
+		// browser /compact fold opts out for the same reason.
+		NoAutoSelect: true,
 	}
 	// Persist the operation's accounting durably on the thread item itself — the
 	// doc is the inspectable record of what the fold cost.
@@ -580,10 +585,13 @@ func (r *run) insertCompactionNotice(foldedItems int) {
 	r.appendTargetMessage(ConversationItem{
 		Type:   ItemTypeNotice,
 		ItemID: generateItemID(),
-		// The row's whole text: what happened and how much of it.
-		Summary: fmt.Sprintf("Compacted the conversation: %d earlier items were folded into a summary to fit the context window", foldedItems),
+		// The row's whole text: what happened, how much of it, and the one thing
+		// a reader watching their context fill actually wants to know.
+		Summary: fmt.Sprintf("Folded %d earlier items into a summary thread. Nothing was discarded.", foldedItems),
 		Content: fmt.Sprintf("The conversation neared the model's context window, so the oldest %d items were folded into a summary thread, "+
-			"which stands where the folded history began. The recent conversation stays verbatim; undo restores the original items.", foldedItems),
+			"which stands where the folded history began. It keeps those items verbatim; undo restores them.\n\n"+
+			"Not folded: standing context (the system prompt, agents files and memory), the recent conversation, "+
+			"and the invocation that set a sub-thread's task.", foldedItems),
 		Source:    source,
 		Timestamp: time.Now().Format(time.RFC3339),
 	})
@@ -620,15 +628,16 @@ func (r *run) shrinkOversizedTrailingToolResults(limitErr *provider.ContextLimit
 
 	for i := trailing.start; i < trailing.end; i++ {
 		item := items[i]
-		var resultPayload struct {
-			Content string `json:"content"`
-			IsError bool   `json:"isError"`
+		var resultBlob map[string]any
+		if err := json.Unmarshal(item.Result, &resultBlob); err != nil {
+			continue
 		}
-		if err := json.Unmarshal(item.Result, &resultPayload); err != nil || resultPayload.Content == "" {
+		resultContent, _ := resultBlob["content"].(string)
+		if resultContent == "" {
 			continue
 		}
 		contentEst := provider.EstimateMessageRequestTokenBreakdown(provider.MessageRequest{
-			Messages: []provider.Message{{Type: "user", Content: resultPayload.Content}},
+			Messages: []provider.Message{{Type: "user", Content: resultContent}},
 		}, 0).Total
 		if contentEst <= recoverySummaryFloorTokens {
 			continue
@@ -647,7 +656,7 @@ func (r *run) shrinkOversizedTrailingToolResults(limitErr *provider.ContextLimit
 			providerOverhead: limitErr.Breakdown.ProviderOverheadTokens,
 		}
 		reducer := r.newBoundedReducer(compactionKindShrink, *pinnedModel, budget)
-		shrunk, err := reducer.run([]string{resultPayload.Content})
+		shrunk, err := reducer.run([]string{resultContent})
 		if err != nil {
 			if errors.Is(err, errBoundedCompactionCancelled) {
 				r.recordCompactionOutcome(compactionKindShrink, "cancelled", shrunk, map[string]any{"toolUseId": item.ToolUseID})
@@ -660,10 +669,12 @@ func (r *run) shrinkOversizedTrailingToolResults(limitErr *provider.ContextLimit
 			r.recordCompactionOutcome(compactionKindShrink, "cancelled", shrunk, map[string]any{"toolUseId": item.ToolUseID})
 			return &BoundedCompactionCancelledError{Result: shrunk}
 		}
-		if err := r.updateTargetItemByID(item.ItemID, "result", map[string]any{
-			"content": recoveryShrunkResultMarker + shrunk.Summary,
-			"isError": resultPayload.IsError,
-		}); err != nil {
+		// Only the wire-visible content changes. The rest of the blob rides
+		// through untouched: the transcript row reads its completed state off
+		// result.fullResult, so replacing the field wholesale would leave a
+		// finished tool call rendering as though it were still running.
+		resultBlob["content"] = recoveryShrunkResultMarker + shrunk.Summary
+		if err := r.updateTargetItemByID(item.ItemID, "result", resultBlob); err != nil {
 			return &BoundedCompactionError{
 				Reason: BoundedCompactionSourceChanged, Message: "tool result disappeared during context recovery: " + err.Error(),
 				Calls: shrunk.Calls, Spend: shrunk.EstimatedSpend, Window: reducer.budget.window, Usage: shrunk.Usage,

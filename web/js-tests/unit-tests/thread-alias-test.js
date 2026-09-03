@@ -17,7 +17,7 @@
 import { assert } from '../utilities/test-helpers.js';
 import { isAlias, canonicalThread, itemGoal, itemRunRecord, itemRunSettled, threadRunRecords,
   promoteThreadView } from '../../js/model/thread-alias.js';
-import { getThreadDisplayContent, getThreadStatus } from '../../js/utils/thread-display.js';
+import { getThreadDisplayContent, getThreadStatus, threadCostFigures } from '../../js/utils/thread-display.js';
 
 /**
  * @param {unknown} e
@@ -473,6 +473,34 @@ export async function runTests() {
       'a thread nobody else views promotes nothing');
     passed++;
   } catch (e) { failed++; errors.push(`thread view promotion: ${msg(e)}`); }
+
+  // --- the delegation economics a tile makes legible ---
+  // A sub-thread does not inherit the parent transcript and hands back only its
+  // final answer, so a child that reads 40k of files costs its caller a few
+  // hundred tokens. Both figures are stamped on the thread at settle; an alias
+  // reads them off the thread it is a view of, not off itself.
+  try {
+    const { root, canonical, aliases } = session([
+      { toolUseId: 'tu-1', prompt: 'read them all', status: 'rest', result: 'Auth lives in auth.go.' },
+      { toolUseId: 'tu-2', prompt: 'and again', status: 'rest', result: 'The server calls it.' }
+    ]);
+    assert(threadCostFigures(canonical) === null,
+      'a thread that has recorded nothing shows no figures rather than zeroes');
+
+    canonical.set('contextTokens', 41000);
+    canonical.set('resultTokens', 700);
+    const figures = threadCostFigures(canonical);
+    assert(figures?.context === 41000 && figures?.returned === 700,
+      `the tile reads both stamped figures; got ${JSON.stringify(figures)}`);
+    assert(figures.text === '41k used · 700 returned',
+      `the resting tile states the pair; got ${JSON.stringify(figures.text)}`);
+    assert(figures.title.includes('41k') && figures.title.includes('700'),
+      `the hover explains the pair; got ${JSON.stringify(figures.title)}`);
+
+    assert(threadCostFigures(aliases[0], root)?.context === 41000,
+      'an alias reports the figures of the thread it views');
+    passed++;
+  } catch (e) { failed++; errors.push(`thread cost figures: ${msg(e)}`); }
 
   return { passed, failed, errors };
 }

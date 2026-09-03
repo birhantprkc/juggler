@@ -3736,6 +3736,16 @@ model-tuning:empty {
     margin-top: 0.625rem;
 }
 
+/* The host's note, closing the left column under the dials. It sets no display
+   of its own so the `hidden` attribute still hides it — and a hidden note draws
+   neither the column's hairline nor its gap, exactly as an untunable model's
+   empty dials don't. */
+.model-picker-note {
+    font-size: 0.75rem;
+    line-height: 1.4;
+    color: var(--text-secondary);
+}
+
 /* Recently-used model rows. Stack name over provider so neither truncates: the
    model name wraps if long, and the provider/description drops to its own line
    rather than being ellipsised against the name on a single row — the left

@@ -261,6 +261,80 @@ func TestHandleContextOverflowFoldLeavesTailNotice(t *testing.T) {
 	}
 }
 
+// TestHandleContextOverflowFoldReceiptSaysWhatSurvived covers the reassurance
+// half of the receipt. A reader who watches their context fill assumes the
+// oldest thing to go is the brief, so a notice that reports only how much was
+// folded confirms the fear it should answer: what the fold kept is the fact
+// worth stating, and the folded items themselves are kept for undo.
+func TestHandleContextOverflowFoldReceiptSaysWhatSurvived(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.currentRun().storeState(StateProcessing)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.doc.InsertMessage(0, recoveryTestItems()...)
+	pinned := &ModelConfig{Provider: "original", Model: "rejected"}
+	_, stub := newRecoveryStub(t, pinned)
+	w.llmCallFunc = stub
+
+	recovery := &compactionAttempts{}
+	if res := w.currentRun().handleContextOverflow(advisoryLimitErr(true), true, false, recovery, pinned, advisoryLimitErr(true)); res.verdict != overflowBypassAndRetry {
+		t.Fatalf("verdict = %v, want overflowBypassAndRetry", res.verdict)
+	}
+
+	items := w.doc.GetItems()
+	notice := items[len(items)-1]
+	if notice.Type != ItemTypeNotice {
+		t.Fatalf("last item = %q, want the tail notice: %s", notice.Type, itemIDs(items))
+	}
+	if !strings.Contains(notice.Summary, "4 earlier items") {
+		t.Fatalf("notice summary = %q, want the folded item count", notice.Summary)
+	}
+	if !strings.Contains(notice.Summary, "Nothing was discarded") {
+		t.Fatalf("notice summary = %q, want the row itself to say nothing was lost", notice.Summary)
+	}
+	for _, kept := range []string{"standing context", "memory", "undo"} {
+		if !strings.Contains(notice.Content, kept) {
+			t.Fatalf("notice content = %q, want it to name what survived the fold (%q)", notice.Content, kept)
+		}
+	}
+}
+
+// TestHandleContextOverflowFoldDoesNotStealSelection pins the receipt's manners.
+// The summary thread is spliced where the folded history BEGAN, far above a
+// reader parked at the tail, and it is a thread item — the auto-select
+// fallback. Without the opt-out the browser /compact fold already sets, an
+// automatic fold yanks the reader into the folded column mid-turn.
+func TestHandleContextOverflowFoldDoesNotStealSelection(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.currentRun().storeState(StateProcessing)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.doc.InsertMessage(0, recoveryTestItems()...)
+	pinned := &ModelConfig{Provider: "original", Model: "rejected"}
+	_, stub := newRecoveryStub(t, pinned)
+	w.llmCallFunc = stub
+
+	recovery := &compactionAttempts{}
+	w.currentRun().handleContextOverflow(advisoryLimitErr(true), true, false, recovery, pinned, advisoryLimitErr(true))
+
+	items := w.doc.GetItems()
+	if items[0].Type != ItemTypeThread || !items[0].BoundedCompaction {
+		t.Fatalf("items[0] = %+v, want the summary thread", items[0])
+	}
+	// Read off the Y.Map, which is what the browser reads: the flag is a control
+	// key rather than a serialized ConversationItem field.
+	ymap := w.doc.GetThreadYMap(items[0].ItemID)
+	if ymap == nil {
+		t.Fatal("summary thread Y.Map not found")
+	}
+	ycrdtMu.Lock()
+	noAutoSelect, _ := ymap.Get("noAutoSelect").(bool)
+	ycrdtMu.Unlock()
+	if !noAutoSelect {
+		t.Fatal("the summary thread must not be an auto-select candidate")
+	}
+}
+
 // TestHandleContextOverflowUnanchoredOverHardWindowStillFolds keeps the
 // silent-truncation guard: an unanchored estimate that exceeds the hard window
 // itself (not just the soft ceiling) may still fold — it is the only protection
@@ -1167,6 +1241,66 @@ func TestContextRecoveryShrinksOversizedTrailingToolResult(t *testing.T) {
 	}
 	if payload.IsError {
 		t.Fatal("shrunk result must preserve isError=false")
+	}
+}
+
+// TestContextRecoveryShrinkKeepsResultRenderingFields pins the UI-only half of
+// an in-place shrink: the wire-visible content is replaced, everything else in
+// the result blob survives. The transcript row reads its completed state off
+// result.fullResult, so a shrink that dropped that field would leave a finished
+// tool call rendering as though it were still running.
+func TestContextRecoveryShrinkKeepsResultRenderingFields(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.currentRun().storeState(StateProcessing)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+
+	giantResult, _ := json.Marshal(map[string]any{
+		"content": strings.Repeat("r", 15_000),
+		"isError": false,
+		"fullResult": map[string]any{
+			"actionId":    "read-file",
+			"success":     true,
+			"displayData": map[string]any{"path": "/tmp/big.txt"},
+		},
+	})
+	items := recoveryTestItems()[:3]
+	items = append(items, ConversationItem{
+		Type: ItemTypeToolAction, ItemID: "ta-giant", ToolUseID: "tu-giant", ToolName: "read_file",
+		ToolInput: json.RawMessage(`{"path":"/tmp/big.txt"}`),
+		State:     StateCompleted, Result: giantResult, TransactionID: "txn-giant",
+	})
+	w.doc.InsertMessage(0, items...)
+	pinned := &ModelConfig{Provider: "test", Model: "test"}
+	_, stub := newRecoveryStub(t, pinned)
+	w.llmCallFunc = stub
+
+	if _, err := w.currentRun().compactToFit(recoveryLimitErr(), pinned); err != nil {
+		t.Fatal(err)
+	}
+
+	got := w.doc.GetItems()
+	tool := got[len(got)-1]
+	var payload struct {
+		Content    string         `json:"content"`
+		IsError    bool           `json:"isError"`
+		FullResult map[string]any `json:"fullResult"`
+	}
+	if err := json.Unmarshal(tool.Result, &payload); err != nil {
+		t.Fatalf("shrunk result does not unmarshal: %v", err)
+	}
+	if !strings.HasPrefix(payload.Content, recoveryShrunkResultMarker) {
+		t.Fatalf("shrunk result lacks the marker: %.80q", payload.Content)
+	}
+	if payload.FullResult == nil {
+		t.Fatal("shrink dropped result.fullResult, so the transcript row falls back to a running state")
+	}
+	if payload.FullResult["success"] != true || payload.FullResult["actionId"] != "read-file" {
+		t.Fatalf("fullResult = %v, want the original rendering fields", payload.FullResult)
+	}
+	display, _ := payload.FullResult["displayData"].(map[string]any)
+	if display["path"] != "/tmp/big.txt" {
+		t.Fatalf("fullResult.displayData = %v, want the original display payload", payload.FullResult["displayData"])
 	}
 }
 

@@ -249,6 +249,11 @@ export function typeNameForItem(item, ctx = {}) {
     case 'thinking': return 'Thinking';
     case 'assistant': return 'Assistant Message';
     case 'thread': {
+      // A compaction fold is a thread by construction, but it is not work the
+      // user asked for: it stands where the folded history began and is the way
+      // in to the folded items, so it says what it is rather than wearing the
+      // generic lozenge of an ordinary sub-thread.
+      if (item?.get?.('boundedCompaction')) return 'Compacted';
       // Delegated threads label as their delegating tool (e.g. "Web Fetch")
       // rather than the generic "Thread"; mirrors the tool-action label path but
       // uses the static type label (no per-call tool result to feed getStatusUI).

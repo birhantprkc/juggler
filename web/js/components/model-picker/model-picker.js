@@ -12,8 +12,9 @@
  * `change` carrying a whole config (or null for the none row).
  *
  * Two columns on a desktop. The left one is a stack of labelled sections, each
- * closed by a hairline: the chosen model's card, its `<model-tuning>` dials,
- * Recent, and the host's actions. The right one is the full list — every
+ * closed by a hairline: the chosen model's card, its `<model-tuning>` dials, any
+ * note the host wants read at the moment of choosing, Recent, and the host's
+ * actions. The right one is the full list — every
  * provider under a header whose tri-state toggle cycles none / top / all, then
  * the host's none row ("No model", "Inherit from parent", "Automatic").
  *
@@ -106,6 +107,13 @@ class ModelPicker extends JugglerElement {
      * @type {Record<string, 'none'|'top'|'all'>} @private
      */
     this._viewState = this._loadViewState();
+    /**
+     * A line the host wants read at the moment of choosing — the composer uses
+     * it to say a change reaches the turn already running. Empty renders
+     * nothing, so a picker with nothing to add costs no space.
+     * @type {string} @private
+     */
+    this._note = '';
     /** @type {boolean} @private - Whether the first render has run. */
     this._rendered = false;
     /** @type {string|null} @private - Last row markup written, so an identical refresh leaves the scroll alone. */
@@ -189,6 +197,19 @@ class ModelPicker extends JugglerElement {
   set footerActions(actions) {
     this._footerActions = actions || [];
     if (this._rendered) this.render();
+  }
+
+  /** @param {string} note - A line to read under the dials; empty shows none. */
+  set note(note) {
+    const next = note || '';
+    if (next === this._note) return;
+    this._note = next;
+    if (this._rendered) this._renderNote();
+  }
+
+  /** @returns {string} The host's note. */
+  get note() {
+    return this._note;
   }
 
   /** @param {boolean} loading - True while the provider list is still being fetched. */
@@ -731,6 +752,7 @@ class ModelPicker extends JugglerElement {
             <div class="model-picker-detail">
                 ${this._lastCardHTML}
                 <model-tuning></model-tuning>
+                <div class="model-picker-note"${this._note ? '' : ' hidden'}>${escapeHtml(this._note)}</div>
             </div>
             <div class="model-picker-recent">${this._lastRecentHTML}</div>
             <div class="model-picker-list">
@@ -766,6 +788,19 @@ class ModelPicker extends JugglerElement {
     this._syncTuning();
     this._renderRecent();
     this._renderList();
+  }
+
+  /**
+   * Show or hide the host's note. The element is always present and toggled
+   * rather than rebuilt: an open picker is refreshed constantly, and adding or
+   * removing a node is a resize the positioning observer has to answer.
+   * @private
+   */
+  _renderNote() {
+    const note = /** @type {HTMLElement|null} */ (this.querySelector('.model-picker-note'));
+    if (!note) return;
+    note.textContent = this._note;
+    note.hidden = !this._note;
   }
 
   /**

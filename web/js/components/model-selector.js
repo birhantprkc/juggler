@@ -40,6 +40,17 @@ import './model-picker/model-picker.js';
  * @typedef {import('./model-picker/model-picker.js').PickerModel} ModelInfo
  */
 
+/**
+ * What the picker says while the bound scope has a turn in flight.
+ *
+ * The model config is read from the document on every request build, never
+ * captured at turn start, so a write lands on the running turn's next call.
+ * Nothing in the picker was ever disabled mid-turn, but neither did anything
+ * say so, and the safe reading of an undefined control is "stop the turn first"
+ * — which costs the work already done.
+ */
+const RUNNING_TURN_NOTE = 'A turn is running. A change takes effect on its next request — no need to stop it.';
+
 class ModelSelector extends HTMLElement {
   constructor() {
     super();
@@ -333,6 +344,22 @@ class ModelSelector extends HTMLElement {
     this._picker.noneLabel = this._noneLabel();
     this._picker.loading = this.loadingProviders;
     this._picker.value = this._currentConfig;
+    this._picker.note = this._turnNote();
+  }
+
+  /**
+   * The note the picker carries, which is a note only while the scope this
+   * selector writes into is mid-turn. Judged thread-first, exactly as the write
+   * is: a sub-thread's picker answers for that thread, and a busy sibling is
+   * not this thread's turn.
+   * @returns {string} The note, or '' when nothing is running.
+   * @private
+   */
+  _turnNote() {
+    const running = this._messageThread
+      ? !!this._messageThread.isProcessing
+      : !!this.conversation?.isTurnActive();
+    return running ? RUNNING_TURN_NOTE : '';
   }
 
   /** @private */
@@ -348,6 +375,7 @@ class ModelSelector extends HTMLElement {
     picker.value = this._currentConfig;
     picker.noneLabel = this._noneLabel();
     picker.loading = this.loadingProviders;
+    picker.note = this._turnNote();
     picker.footerActions = [
       { id: 'providers', label: 'Manage LLM providers…', iconClass: 'menu-settings-icon' },
       { id: 'defaults', label: 'Manage default models…', iconClass: 'menu-settings-icon' },
