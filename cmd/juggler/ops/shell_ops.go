@@ -370,7 +370,7 @@ func runShellRegistry() {
 			// is non-blocking, so the registry goroutine stays responsive to other
 			// ops. (Mirrors executeStreaming's cancel path.)
 			if task := signalShellStop(shell); task != nil {
-				time.AfterFunc(2*time.Second, task.forceKillGroup)
+				time.AfterFunc(killEscalationGrace, task.forceKillGroup)
 			}
 
 			shell.status = "failed"
@@ -591,6 +591,9 @@ const (
 	// wedged the pipe, which would otherwise block the return indefinitely — long
 	// past the command's deadline.
 	streamReapGrace = 7 * time.Second
+	// killEscalationGrace is how long the registry's kill op waits after the
+	// polite SIGTERM before taking the task's process group.
+	killEscalationGrace = 2 * time.Second
 )
 
 func (ops *ShellOperations) probeDeadlineOrDefault() time.Duration {

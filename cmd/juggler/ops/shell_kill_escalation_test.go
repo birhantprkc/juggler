@@ -23,6 +23,15 @@ import (
 // These tests count escalations rather than their effect: an escalation aimed at
 // a reaped pid is indistinguishable from a correct one once it has landed, and
 // its victim is whatever inherited the number.
+//
+// What is asserted throughout is the ORDER of the two events, never how far
+// apart the machine put them. An escalation is only wrong once the reap has
+// happened, so every "must not escalate" test below waits for the reap and says
+// so; one that arrives after its escalation was due leaves nothing to assert,
+// because taking the group there is exactly right. The suite runs
+// race-instrumented alongside three other packages spawning processes of their
+// own, where a reap that lost a race by milliseconds says nothing about the
+// code.
 
 // countEscalations installs a hook that counts force-kill escalations and
 // deliberately does not perform them — provoking the defect for real would kill
@@ -36,18 +45,49 @@ func countEscalations(t *testing.T) func() int {
 	return func() int { return int(count.Load()) }
 }
 
+// reapedChan hands back the channel a task's spawner closes the moment cmd.Wait
+// returns, which is the instant the task's pid stops naming it.
+func reapedChan(t *testing.T, taskID string) <-chan struct{} {
+	t.Helper()
+	shell := getBackgroundShell(taskID)
+	if shell == nil {
+		t.Fatalf("task %s is not in the registry", taskID)
+	}
+	return shell.reaped
+}
+
+// waitForEscalation blocks until a force-kill escalation has been counted, or
+// fails with why one was owed. Escalations run on timers, so how soon one lands
+// after it falls due is a property of the machine.
+func waitForEscalation(t *testing.T, escalations func() int, owed string) {
+	t.Helper()
+	deadline := time.After(stopBudget)
+	for escalations() < 1 {
+		select {
+		case <-deadline:
+			t.Fatalf("%s (0 escalations in %v)", owed, stopBudget)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
 // TestStreamingCancelDoesNotForceKillAReapedPid covers ExecuteStreaming's
-// cancel path. The command's only process dies with the context and is reaped
-// long before the kill grace elapses, so by the time the escalation is due there
-// is nothing of ours left to take.
+// cancel path. `exec` replaces the shell, so the command's whole tree is a
+// single process: it dies with the context and nothing is left holding the
+// output pipe, so cmd.Wait returns at once and by the time the escalation is due
+// there is nothing of ours left to take.
 func TestStreamingCancelDoesNotForceKillAReapedPid(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX-only shell command")
 	}
 
 	shellOps := NewShellOperations(NewPathScope(t.TempDir(), nil))
-	shellOps.killGrace = 100 * time.Millisecond
-	shellOps.reapGrace = 300 * time.Millisecond
+	// The kill grace is what the reap has to beat, so give it seconds rather
+	// than the milliseconds a loaded runner can spend on scheduling alone. The
+	// reap grace is longer still, so the return below is always cmd.Wait and
+	// never the cap that gives up on it.
+	shellOps.killGrace = 2 * time.Second
+	shellOps.reapGrace = stopBudget
 	escalations := countEscalations(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -61,15 +101,24 @@ func TestStreamingCancelDoesNotForceKillAReapedPid(t *testing.T) {
 		}
 	}()
 
+	cancelled := make(chan time.Time, 1)
 	go func() {
 		time.Sleep(100 * time.Millisecond)
+		cancelled <- time.Now()
 		cancel()
 	}()
-	shellOps.ExecuteStreaming(ctx, "shell-cancel", "", "sleep 5", "", 10000, out)
+	shellOps.ExecuteStreaming(ctx, "shell-cancel", "", "exec sleep 5", "", 10000, out)
 	<-drained
 
+	// ExecuteStreaming returns once cmd.Wait has, so this is what the reap took.
+	reapTook := time.Since(<-cancelled)
+	if reapTook >= shellOps.killGrace {
+		t.Skipf("the process was still un-reaped %v after the cancel, with its escalation due at %v: taking the group there is correct, so there is nothing to assert",
+			reapTook, shellOps.killGrace)
+	}
+
 	// Well past the kill grace the escalation was armed for.
-	time.Sleep(shellOps.killGrace + 400*time.Millisecond)
+	time.Sleep(shellOps.killGrace - reapTook + 400*time.Millisecond)
 	if n := escalations(); n != 0 {
 		t.Fatalf("cancelled command was force-killed %d time(s) after its process had been reaped; that pid can name something else by then", n)
 	}
@@ -109,9 +158,7 @@ func TestStreamingCancelStillForceKillsWhatOutlivesTheGrace(t *testing.T) {
 	shellOps.ExecuteStreaming(ctx, "shell-cancel-child", "", "sleep 5 & sleep 5", "", 10000, out)
 	<-drained
 
-	if n := escalations(); n < 1 {
-		t.Fatalf("a process group still holding the pipe past the kill grace was never force-killed (%d escalations)", n)
-	}
+	waitForEscalation(t, escalations, "a process group still holding the pipe past the kill grace was never force-killed")
 }
 
 // startLoneProcessTask spawns a background task whose whole tree is a single
@@ -134,14 +181,14 @@ func startLoneProcessTask(t *testing.T, root, convID string) string {
 		t.Fatalf("startBackground returned no task_id: %+v", res)
 	}
 	t.Cleanup(func() { KillTask(id) })
-	waitForOutput(t, id, "ready", 5*time.Second)
+	waitForOutput(t, id, "ready", stopBudget)
 	return id
 }
 
 // TestKilledBackgroundTaskIsNotForceKilledAfterItIsReaped covers the registry's
 // delayed escalation behind a user's Stop. The task's process dies with its
 // cancelled context immediately and its spawner reaps it, so the escalation
-// scheduled for two seconds later has no target of ours.
+// scheduled for killEscalationGrace later has no target of ours.
 func TestKilledBackgroundTaskIsNotForceKilledAfterItIsReaped(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX-only shell command")
@@ -149,12 +196,22 @@ func TestKilledBackgroundTaskIsNotForceKilledAfterItIsReaped(t *testing.T) {
 
 	id := startLoneProcessTask(t, t.TempDir(), "conv-kill")
 	escalations := countEscalations(t)
+	reaped := reapedChan(t, id)
 
 	if !KillTask(id) {
 		t.Fatalf("KillTask did not stop a running task")
 	}
-	time.Sleep(2500 * time.Millisecond) // past the registry's two-second escalation
+	killedAt := time.Now()
 
+	select {
+	case <-reaped:
+	case <-time.After(killEscalationGrace):
+		t.Skipf("the killed task was still un-reaped when its escalation fell due after %v: taking the group there is correct, so there is nothing to assert",
+			killEscalationGrace)
+	}
+
+	// Past the registry's escalation, timed from the kill that armed it.
+	time.Sleep(killEscalationGrace + 500*time.Millisecond - time.Since(killedAt))
 	if n := escalations(); n != 0 {
 		t.Fatalf("killed task was force-killed %d time(s) after its process had been reaped; that pid can name something else by then", n)
 	}
@@ -175,11 +232,8 @@ func TestKilledBackgroundTaskStillForceKillsSurvivors(t *testing.T) {
 	if !KillTask(id) {
 		t.Fatalf("KillTask did not stop a running task")
 	}
-	time.Sleep(2500 * time.Millisecond) // past the registry's two-second escalation
 
-	if n := escalations(); n < 1 {
-		t.Fatalf("a task whose child survived the polite stop was never force-killed (%d escalations)", n)
-	}
+	waitForEscalation(t, escalations, "a task whose child survived the polite stop was never force-killed")
 }
 
 // TestStopBackgroundTasksDoesNotForceKillReapedPids covers the project-switch
@@ -191,11 +245,17 @@ func TestStopBackgroundTasksDoesNotForceKillReapedPids(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	startLoneProcessTask(t, root, "conv-stop")
+	id := startLoneProcessTask(t, root, "conv-stop")
 	escalations := countEscalations(t)
+	reaped := reapedChan(t, id)
 
 	if stopped := StopBackgroundTasks(root, "Stopped when the project changed", time.Second); stopped != 1 {
 		t.Fatalf("expected to stop 1 task, stopped %d", stopped)
+	}
+	select {
+	case <-reaped:
+	default:
+		t.Skip("the task was still un-reaped when the stop's grace expired: taking its group there is correct, so there is nothing to assert")
 	}
 	if n := escalations(); n != 0 {
 		t.Fatalf("stopped task was force-killed %d time(s) after its process had been reaped; that pid can name something else by then", n)
