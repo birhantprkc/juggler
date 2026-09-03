@@ -39,18 +39,27 @@ export async function runTests(_ctx) {
     messageThread: {},
   }));
 
-  await test('the schema exposes type-owned parameters rather than raw pin config', () => {
+  await test('the schema stays open to any installed pinboard item type', () => {
     const [definition] = PinToPinboardContextItem.getToolDefinitions();
     assert(definition.name === 'pin_to_pinboard', 'the tool should have its stable public name');
-    assert(definition.input_schema.properties.type.enum.join(',') === 'file', 'file should be the supported first type');
-    assert(definition.input_schema.properties.parameters.properties.path,
-      'file parameters should declare their path');
+    assert(!definition.input_schema.properties.type.enum,
+      'type must not be a closed enum — an extension-installed type has no entry to add itself to');
+    assert(definition.input_schema.properties.parameters.type === 'object',
+      'parameters should accept whatever shape the requested type expects');
+    assert(!definition.input_schema.properties.parameters.properties,
+      'parameters must not be pinned to one type\'s shape (file\'s, or any other\'s)');
     assert(!definition.input_schema.properties.config, 'persisted pin config must not be public input');
   });
 
   await test('validation dispatches to the selected type', async () => {
-    assert(!(await item.validate({ type: 'url', parameters: { url: 'http://localhost:3000' } })).valid,
-      'a type without an installed adapter should be rejected');
+    assert(!(await item.validate({ type: '', parameters: { url: 'http://localhost:3000' } })).valid,
+      'a missing type should be rejected');
+    assert(!(await item.validate({ type: 'url', parameters: 'not-an-object' })).valid,
+      'a type\'s parameters must still be an object');
+    const generic = await item.validate({ type: 'url', parameters: { url: 'http://localhost:3000' } });
+    assert(generic.valid, 'a type with no bespoke adapter — e.g. one an extension installed — should still be accepted');
+    assert(generic.params?.parameters?.url === 'http://localhost:3000',
+      'the generic adapter should forward parameters unchanged');
     assert(!(await item.validate({ type: 'file', parameters: {} })).valid,
       'file parameters need a path');
     const valid = await item.validate({ type: 'file', parameters: { path: ' ./docs//report.html ' } });
@@ -81,6 +90,28 @@ export async function runTests(_ctx) {
         'the File pin should preserve that its path did not come from a user gesture');
       assert(requestBody.reveal.pin === firstID, 'the added pin should be the one requested for reveal');
       assert(requestBody.reveal.from === 'conversation-one', 'the reveal should be attributed to its conversation');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  await test('execute forwards an extension-installed type\'s own parameters as its config', async () => {
+    const originalFetch = globalThis.fetch;
+    /** @type {any} */
+    let requestBody = null;
+    globalThis.fetch = /** @type {any} */ (async (_url, options) => {
+      requestBody = JSON.parse(options.body);
+      const op = requestBody.operations[0];
+      return { ok: true, json: async () => ({ pins: [{ id: op.id, type: op.type, config: op.config }] }) };
+    });
+    try {
+      const result = await item.execute({ type: 'cmajor-patch', parameters: { patch: 'synths/pluck.cmajorpatch' } });
+      assert(requestBody.operations[0].type === 'cmajor-patch', 'an installed type with no bespoke adapter should still be selected');
+      assert(requestBody.operations[0].config.patch === 'synths/pluck.cmajorpatch',
+        'that type\'s own parameters should reach it unexamined — its normalizeConfig validates them, not this tool');
+      assert(requestBody.operations[0].config.agentRequested === true,
+        'the generic adapter should still mark the pin as agent-requested');
+      assert(result.type === 'cmajor-patch', 'execute should report back the requested type');
     } finally {
       globalThis.fetch = originalFetch;
     }

@@ -9,8 +9,9 @@ import { normalizeFilePinParameters } from '../lib/file-pin-config.js';
 
 /**
  * Type-specific adapters from the tool's public parameters to persisted pin
- * config. The tool never accepts raw provider config: adding a pin kind means
- * adding its schema, validation and translation here.
+ * config, for a type that needs bespoke normalization or identity. Anything
+ * not listed here still works, via GENERIC_ADAPTER below — this is an
+ * optimization for `file`, not a gate on what the tool accepts.
  */
 const PIN_TYPES = Object.freeze({
   file: {
@@ -32,6 +33,32 @@ const PIN_TYPES = Object.freeze({
     identity: (/** @type {Record<string, any>} */ parameters) => parameters.path,
   },
 });
+
+/**
+ * Fallback for any pinboard item type not listed in PIN_TYPES — including
+ * every type an extension installs on its own. `parameters` is forwarded
+ * unexamined as the pin's config; that type's own `normalizeConfig` (called
+ * when the pin is mounted, see `pinboard-item-type.js`) is what validates and
+ * shapes it, so this tool never needs to know a type's config shape.
+ */
+const GENERIC_ADAPTER = {
+  normalize: (/** @type {Record<string, any>} */ parameters) => (
+    parameters && typeof parameters === 'object' && !Array.isArray(parameters) ? parameters : null
+  ),
+  toConfig: (/** @type {Record<string, any>} */ parameters) => ({
+    ...parameters,
+    agentRequested: true,
+  }),
+  identity: (/** @type {Record<string, any>} */ parameters) => JSON.stringify(parameters),
+};
+
+/**
+ * @param {string} type - Requested pin type.
+ * @returns {typeof PIN_TYPES.file|typeof GENERIC_ADAPTER|null} The adapter to use, or null for no type.
+ */
+function adapterFor(type) {
+  return PIN_TYPES[/** @type {keyof typeof PIN_TYPES} */ (type)] || (type ? GENERIC_ADAPTER : null);
+}
 
 /**
  * Mint the stable id for an agent-requested pin. A repeated call with the same
@@ -77,16 +104,18 @@ class PinToPinboardContextItem extends ContextItem {
     return [{
       name: 'pin_to_pinboard',
       category: 'write',
-      description: `Attach something to the user’s Pinboard and bring it into view. Parameters depend on the requested type. This is a one-way display action: you cannot list or read the user’s existing pins. Currently supported: ${Object.values(PIN_TYPES).map((adapter) => adapter.description).join(' ')} Repeating the same request reveals the existing pin instead of adding another.`,
+      description: `Attach something to the user’s Pinboard and bring it into view. Parameters depend on the requested type. This is a one-way display action: you cannot list or read the user’s existing pins. Built in: ${Object.values(PIN_TYPES).map((adapter) => adapter.description).join(' ')} Any other pinboard item type the user has installed as an extension is also accepted — use its id as \`type\` and give it whatever parameters that type expects; it validates its own config. Repeating the same request reveals the existing pin instead of adding another.`,
       input_schema: {
         type: 'object',
         properties: {
           type: {
             type: 'string',
-            enum: Object.keys(PIN_TYPES),
-            description: 'What kind of Pinboard item to add. Currently: `file`.',
+            description: 'Which kind of Pinboard item to add: `file`, or the id of any other pinboard item type the user has installed.',
           },
-          parameters: PIN_TYPES.file.schema,
+          parameters: {
+            type: 'object',
+            description: `Parameters for the requested type. ${PIN_TYPES.file.schema.description} For any other type, pass whatever parameters that type's pin expects.`,
+          },
         },
         required: ['type', 'parameters'],
       },
@@ -100,7 +129,7 @@ class PinToPinboardContextItem extends ContextItem {
    */
   async validate(toolInput) {
     const type = typeof toolInput?.type === 'string' ? toolInput.type.trim() : '';
-    const adapter = PIN_TYPES[/** @type {keyof typeof PIN_TYPES} */ (type)];
+    const adapter = adapterFor(type);
     if (!adapter) {
       return { valid: false, error: `Unsupported pin type: ${type || '<missing>'}` };
     }
@@ -119,7 +148,7 @@ class PinToPinboardContextItem extends ContextItem {
    * @returns {Promise<Record<string, unknown>>} Added pin descriptor.
    */
   async execute(params) {
-    const adapter = PIN_TYPES[/** @type {keyof typeof PIN_TYPES} */ (params.type)];
+    const adapter = adapterFor(params.type);
     const parameters = adapter?.normalize(params.parameters);
     if (!adapter || !parameters) throw new Error(`Unsupported pin type: ${params.type}`);
 
