@@ -17,6 +17,8 @@ of changes; this project follows semantic versioning.
 - The cache-miss caution now follows the model each thread actually ran, and clears again in sub-threads
 - Pinboard items can stay live while you read another tab, instead of starting over on the way back
 - Extensions can embed a local server in a pin, and start a background task with no deadline
+- Auto-compaction now triggers on measured token counts, never estimates, and no longer loops
+- Compaction summaries merge into one thread instead of stacking, and leave a notice at the tail
 
 ## [0.5.9] - 2026-08-29
 

@@ -16,13 +16,24 @@
 // progress, rather than after it has finished and a summary is of no use to
 // anyone.
 //
+// Which overflows are believed is the trigger discipline. A provider rejection
+// is authoritative. An advisory counts only when its number is anchored to a
+// provider-measured prefix (MeasuredPrefix) or when even the estimate exceeds
+// the hard window — the character estimator overcounts real transcripts by 2x
+// or more, so an unanchored soft-ceiling advisory earns one guard-bypassed
+// dispatch instead of a fold, and the provider's answer settles it: a billed
+// count that re-anchors admission, or a rejection that re-enters here.
+//
 // The ladder handleContextOverflow runs, in order: hand a folded /compact thread
 // to its summarizer; honour the off switch; shrink an oversized trailing tool
 // result in place (a live tool_use/tool_result pair must survive, so it can
-// never be folded); then fold the leading run of history into a summary thread,
-// keeping the largest verbatim suffix that still leaves the reducer room to
-// work. Progress is judged structurally — by the shape of the durable items,
-// never by a token estimate — and one incident is bounded by
+// never be folded); then fold the leading run of history — prior summaries
+// condensed to goal+result so they never stack — into one summary thread,
+// keeping a verbatim suffix within recoverySuffixBudgetFraction of the usable
+// window so the fold buys real headroom. Progress is judged structurally — by
+// the shape of the durable items, never by a token estimate — and the retry
+// after progress dispatches guard-bypassed, so the provider rather than the
+// estimator judges whether the fold sufficed. One incident is bounded by
 // maxContextRecoveryAttempts.
 package worker
 
@@ -46,6 +57,16 @@ const (
 	// maxContextRecoveryAttempts permits several progressive folds while keeping
 	// provider retries small and independent from the reducer's internal call cap.
 	maxContextRecoveryAttempts = 4
+
+	// recoverySuffixBudgetFraction is the share of the usable history budget
+	// (window minus envelope, reserve and summary floor) a fold may spend on the
+	// verbatim suffix it keeps. Recovery triggers at the admission ceiling or at
+	// the provider's wall, so a fold that retains everything that merely fits
+	// the window puts the retried request straight back at the trigger a few
+	// turns later; spending half buys real headroom per incident. The newest
+	// unit is exempt (see the suffix walk): a live tool batch that fits the
+	// window at all must stay verbatim.
+	recoverySuffixBudgetFraction = 0.5
 )
 
 // recoverySignature captures the objective structural shape of the target
@@ -55,9 +76,9 @@ const (
 // id lands here, marking genuine progress that count and size can coincidentally
 // match across two different attempts (e.g. a shrink-only pass landing on the
 // same wire size as the prior fold). Keying off the summary id is safe because
-// recoveryUnitFoldable pins existing summaries out of the fold range — the id
-// only moves when brand-new history is summarized, never when an existing
-// summary is re-wrapped (that can no longer happen).
+// compactToFit refuses a fold range holding nothing but existing summaries —
+// the id only moves when brand-new history is summarized, never by re-wrapping
+// summaries alone.
 type recoverySignature struct {
 	retainedItems int
 	foldBoundary  string
@@ -67,6 +88,10 @@ type recoverySignature struct {
 type contextRecoveryResult struct {
 	Changed   bool
 	Signature recoverySignature
+	// FoldedItems is how many durable items the pass folded into a summary
+	// thread — zero for shrink-only progress. The ladder uses it to leave the
+	// incident's tail notice.
+	FoldedItems int
 }
 
 type compactionAttempts struct {
@@ -113,14 +138,14 @@ func providerAuthoredContextError(overflow error) error {
 type overflowVerdict int
 
 const (
-	// overflowRetry: durable history changed its objective shape; rebuild the
-	// request and retry the turn.
-	overflowRetry overflowVerdict = iota
 	// overflowStop: the incident resolved without a turn error (a folded thread
 	// summarized, or the reduce was cancelled); end the run quietly.
-	overflowStop
-	// overflowBypassAndRetry: nothing more can be reduced under an advisory
-	// estimate; dispatch one request-local guard bypass, then retry.
+	overflowStop overflowVerdict = iota
+	// overflowBypassAndRetry: rebuild the request and dispatch it once with the
+	// guard bypassed, letting the provider judge it. Returned both after a fold
+	// (the fold invalidated the measured anchor, so guarded admission would
+	// re-judge the compacted history with the raw estimator) and when nothing
+	// more can be reduced under an advisory estimate.
 	overflowBypassAndRetry
 	// overflowTerminal: give up and report err as the turn's error.
 	overflowTerminal
@@ -193,6 +218,22 @@ func (r *run) handleContextOverflow(
 		return overflowResult{verdict: overflowTerminal, err: err}
 	}
 
+	// Trigger discipline: an unanchored advisory is the character estimator's
+	// word alone, and the estimator overcounts real transcripts by a factor of
+	// two or more — acting on it summarizes conversations at half their real
+	// ceiling. An estimate may convict only what it says cannot fit the hard
+	// window at all (the one protection a silently-truncating provider gets);
+	// the soft ceiling belongs to measured numbers. Everything else dispatches
+	// once with the guard bypassed and lets the provider judge: an accepted
+	// dispatch re-anchors admission with its billed count, and a rejection
+	// re-enters here as an authoritative overflow.
+	if isAdvisory && !limit.MeasuredPrefix &&
+		provider.SaturatingAdd(limit.EstimatedInputTokens, limit.OutputReserveTokens) <= limit.ContextWindowTokens {
+		r.log.Info("[context guard] unanchored estimate %d+%d fits window %d; dispatching bypassed for a measured verdict",
+			limit.EstimatedInputTokens, limit.OutputReserveTokens, limit.ContextWindowTokens)
+		return overflowResult{verdict: overflowBypassAndRetry}
+	}
+
 	// Ordinary root / subthread turn: summarize or shrink durable history, then
 	// rebuild and retry only when its objective shape changed. When the attempt
 	// budget is spent, the terminal move depends on the overflow kind.
@@ -223,8 +264,18 @@ func (r *run) handleContextOverflow(
 		}
 		return overflowResult{verdict: overflowTerminal, err: err}
 	}
+	// Structural progress: the fold (or shrink) just proved with pessimistic
+	// per-item estimates that the retained history fits the window, and it also
+	// invalidated the measured-prefix anchor — so the one wrong move is to hand
+	// the retry back to guarded admission, whose unanchored estimate overcounts
+	// the very transcript the fold produced. Dispatch bypassed and let the
+	// provider judge: an accepted retry re-anchors admission with its billed
+	// count, and a rejection re-enters here with the attempt budget as the bound.
 	if retry, _ := recovery.advance(result, overflowErr); retry {
-		return overflowResult{verdict: overflowRetry}
+		if result.FoldedItems > 0 {
+			r.insertCompactionNotice(result.FoldedItems)
+		}
+		return overflowResult{verdict: overflowBypassAndRetry}
 	}
 	if isAdvisory {
 		r.log.Info("[context guard] %s=%d reserve=%d window=%d; dispatching one irreducible fallback", limit.InputBasis(), limit.EstimatedInputTokens, limit.OutputReserveTokens, limit.ContextWindowTokens)
@@ -346,9 +397,17 @@ func (r *run) compactToFit(limitErr *provider.ContextLimitExceededError, modelCo
 		skip++
 	}
 
-	// Walk units backward, maximizing the verbatim suffix subject to leaving
-	// the reducer a workable window. A pinned unit stops the walk — the fold
-	// boundary may not cross it.
+	// Walk units backward, keeping a verbatim suffix within the fold's retain
+	// budget. fullBudget is everything the window can hold after the fixed
+	// envelope, the output reserve and the reducer's summary floor; the walk
+	// spends only recoverySuffixBudgetFraction of it, so the fold creates
+	// headroom instead of stopping at the very pressure that triggered it. The
+	// newest unit alone is granted the full budget: a live tool batch that fits
+	// the window must survive verbatim (folding it would sever the open tool
+	// pair; shrinking is reserved for results that can never fit at all). A
+	// pinned unit stops the walk — the fold boundary may not cross it.
+	fullBudget := window - envelope - reserve - recoverySummaryFloorTokens
+	suffixBudget := int64(float64(fullBudget) * recoverySuffixBudgetFraction)
 	k := len(units)
 	var suffixEst int64
 	for k > skip {
@@ -356,7 +415,11 @@ func (r *run) compactToFit(limitErr *provider.ContextLimitExceededError, modelCo
 		if !foldable(unit) {
 			break
 		}
-		if window-envelope-(suffixEst+unit.est) < reserve+recoverySummaryFloorTokens {
+		budget := suffixBudget
+		if k == len(units) {
+			budget = fullBudget
+		}
+		if suffixEst+unit.est > budget {
 			break
 		}
 		suffixEst += unit.est
@@ -366,13 +429,12 @@ func (r *run) compactToFit(limitErr *provider.ContextLimitExceededError, modelCo
 		return contextRecoveryOutcome(before, items), nil
 	}
 	// The suffix walk stops at the first pinned unit from the back, but another
-	// pinned unit (an earlier compaction summary) can still sit deeper inside
-	// [skip, k) with fresh, foldable history on both sides of it. The fold is a
-	// single contiguous range, so folding across that summary would swallow and
-	// nest it. Clamp k to the first pinned unit at or after skip, so the fold
-	// covers only the leading contiguous run of fresh history and leaves the
-	// prior summary (and everything after it) untouched — later passes fold the
-	// runs beyond it. units[skip] is foldable by construction, so k stays > skip.
+	// pinned unit (an in-flight unsummarized fold, an earlier invocation
+	// message) can still sit deeper inside [skip, k) with foldable history on
+	// both sides of it. The fold is a single contiguous range, so clamp k to
+	// the first pinned unit at or after skip — the fold covers only the leading
+	// contiguous run and leaves the pin (and everything after it) untouched.
+	// units[skip] is foldable by construction, so k stays > skip.
 	for p := skip; p < k; p++ {
 		if !foldable(units[p]) {
 			k = p
@@ -398,6 +460,20 @@ func (r *run) compactToFit(limitErr *provider.ContextLimitExceededError, modelCo
 
 	prefixStart := units[skip].start
 	prefixEnd := units[k-1].end
+	// A range holding nothing but already-summarized compaction threads would
+	// only re-summarize existing summaries — nothing fresh, no progress
+	// (mirrors the manual fold's guard, and keeps the foldBoundary progress
+	// signal honest: a new summary id always means brand-new history folded).
+	hasFresh := false
+	for _, it := range items[prefixStart:prefixEnd] {
+		if !summarizedCompactionThread(it) {
+			hasFresh = true
+			break
+		}
+	}
+	if !hasFresh {
+		return contextRecoveryOutcome(before, items), nil
+	}
 	prefixRecords := records[prefixStart:prefixEnd]
 	// The hidden compaction calls are independent requests against the full
 	// context window: providerOverhead accounts for the provider's fixed overhead
@@ -424,18 +500,24 @@ func (r *run) compactToFit(limitErr *provider.ContextLimitExceededError, modelCo
 	}
 
 	// Recovery synthesizes the same folded-thread shape /compact produces rather
-	// than a bespoke flat summary item: the folded prefix is preserved verbatim
-	// as the thread's nested items (for undo/inspection and future re-folding), a
-	// synthesized prompt item is referenced by CompactionPromptItemID (and thereby
-	// excluded from canonical history), and the reducer's summary + accounting live
-	// on the thread. It renders to the wire through the same bounded-compaction
-	// thread path as a browser fold (buildThreadResultMap's inert framing).
+	// than a bespoke flat summary item: the folded prefix is preserved as the
+	// thread's nested items (for undo/inspection and future re-folding) — prior
+	// summarized compaction threads condensed to goal+result (condenseForRefold),
+	// everything else verbatim — a synthesized prompt item is referenced by
+	// CompactionPromptItemID (and thereby excluded from canonical history), and
+	// the reducer's summary + accounting live on the thread. It renders to the
+	// wire through the same bounded-compaction thread path as a browser fold
+	// (buildThreadResultMap's inert framing).
 	promptItem := ConversationItem{
 		Type:    ItemTypeUser,
 		ItemID:  promptID,
 		Content: defaultSummarizationPromptMarker,
 	}
-	nested := append(append([]ConversationItem{}, items[prefixStart:prefixEnd]...), promptItem)
+	nested := make([]ConversationItem, 0, prefixEnd-prefixStart+1)
+	for _, it := range items[prefixStart:prefixEnd] {
+		nested = append(nested, condenseForRefold(it))
+	}
+	nested = append(nested, promptItem)
 	nestedJSON, err := json.Marshal(nested)
 	if err != nil {
 		r.recordCompactionOutcome(compactionKindAuto, "error", result, map[string]any{"reason": string(BoundedCompactionSourceEncoding)})
@@ -478,7 +560,33 @@ func (r *run) compactToFit(limitErr *provider.ContextLimitExceededError, modelCo
 	})
 	r.log.Info("[compaction] folded %d items into a compaction summary (passes=%d calls=%d spend=%d window=%d suffix=%d tokens)",
 		prefixEnd-prefixStart, result.Passes, result.Calls, result.EstimatedSpend, window, suffixEst)
-	return contextRecoveryOutcome(before, r.getTargetItems()), nil
+	outcome := contextRecoveryOutcome(before, r.getTargetItems())
+	outcome.FoldedItems = prefixEnd - prefixStart
+	return outcome, nil
+}
+
+// insertCompactionNotice leaves a durable, wire-invisible record of an
+// automatic fold at the point in the conversation where it happened. The
+// summary thread itself is spliced where the folded history BEGAN — usually far
+// above the reader — so without this the tail shows no trace of the incident
+// beyond a transient status frame. Goes through appendTargetMessage like the
+// other turn notices; itemWireMessages has no case for notices, so the model
+// never reads it.
+func (r *run) insertCompactionNotice(foldedItems int) {
+	source := ""
+	if mc := r.resolveModelConfig(); mc != nil {
+		source = mc.Provider
+	}
+	r.appendTargetMessage(ConversationItem{
+		Type:   ItemTypeNotice,
+		ItemID: generateItemID(),
+		// The row's whole text: what happened and how much of it.
+		Summary: fmt.Sprintf("Compacted the conversation: %d earlier items were folded into a summary to fit the context window", foldedItems),
+		Content: fmt.Sprintf("The conversation neared the model's context window, so the oldest %d items were folded into a summary thread, "+
+			"which stands where the folded history began. The recent conversation stays verbatim; undo restores the original items.", foldedItems),
+		Source:    source,
+		Timestamp: time.Now().Format(time.RFC3339),
+	})
 }
 
 // recoveryShrunkResultMarker prefixes a tool result that was replaced by a
@@ -572,16 +680,21 @@ func (r *run) shrinkOversizedTrailingToolResults(limitErr *provider.ContextLimit
 // or the verbatim suffix: conversational items only. Standing context items
 // (rules, plans, system prompts) are pinned in place.
 //
-// An existing compaction summary thread is also pinned. Re-folding one would
-// nest summaries inside summaries and re-summarize already-summarized history —
-// each recovery pass deeper and more expensive than the last. Recovery folds
-// only fresh, never-summarized history; a prior summary renders on the wire as
-// its compact result text and stays put.
+// A prior summarized compaction thread is ordinary foldable content: a re-fold
+// nests it in its condensed goal+result form (condenseForRefold), never as a
+// recursive transcript, so the conversation converges to [standing context]
+// [one summary thread][recent tail] exactly as the browser /compact fold does.
+// Pinning prior summaries instead is the stacking failure mode: each pinned
+// summary fragments the next fold's contiguous range, so passes fold ever
+// thinner slivers while summaries accumulate at the top. Only an in-flight
+// fold that has not yet committed its summary is pinned
+// (pendingCompactionFold); the summary-only-range guard in compactToFit keeps
+// a re-fold from ever summarizing nothing but existing summaries.
 //
 // The caller applies one further pin this cannot see, because it is positional:
 // the thread's most recent invocation message (lastInvocationIndex).
 func recoveryUnitFoldable(item ConversationItem) bool {
-	if item.Type == ItemTypeThread && item.BoundedCompaction {
+	if pendingCompactionFold(item) {
 		return false
 	}
 	return isConversationalItemType(item.Type)

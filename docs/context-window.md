@@ -48,35 +48,46 @@ diverge.
 
 ## What is checked before each call
 
-Before any model call, Juggler conservatively estimates the full request
-envelope — messages, system prompt, tool definitions, images, framing, and
-provider overhead — and refuses to send when *estimate + reserve* exceeds the
-window. On most content the estimator is deliberately pessimistic: it
-over-counts dense text (hashes, base64, CJK, emoji) because it is not the
-provider's real tokenizer, so a borderline request is usually declined slightly
-early — the safe direction.
+Before any model call, Juggler sizes the full request envelope — messages,
+system prompt, tool definitions, images, framing, and provider overhead —
+preferring measurement over estimation: once a request has been billed, the
+provider's own input count anchors everything up to that point, and only the
+messages appended since are estimated. Crossing 85% of the window with an
+anchored number is the compaction trigger.
 
-It is **not** an unconditional upper bound, though. Content chopped into short
-(≤16-character) alphanumeric chunks by punctuation — UUIDs, dotted or
+An **unanchored** size — the first turn, or the turn after anything rewrote
+earlier messages — is a character-heuristic estimate that deliberately
+over-counts dense text (hashes, base64, CJK, emoji), often by a factor of two
+on real transcripts. Such an estimate is never allowed to trigger compaction
+on its own: unless it exceeds the hard window itself, the request is sent and
+the provider's answer settles it — a billed count that re-anchors the sizing,
+or a rejection that starts recovery.
+
+The estimator is not an unconditional upper bound either. Content chopped into
+short (≤16-character) alphanumeric chunks by punctuation — UUIDs, dotted or
 snake-case ids, hex columns, minified JSON keys — tokenizes denser than the
-estimate assumes and can be under-counted. Such a request may pass this check
+estimate assumes and can be under-counted. Such a request may pass the check
 and then be rejected by the provider itself; automatic recovery (below) is the
 backstop for exactly that case.
 
 ## Automatic recovery
 
-When a conversation still outgrows the window — the estimate drifts low, or the
-provider rejects the turn with its own context-overflow error — Juggler recovers
-once instead of failing the turn:
+When a conversation genuinely outgrows the window — a measured count crosses
+the ceiling, or the provider rejects the turn with its own context-overflow
+error — Juggler recovers instead of failing the turn:
 
 1. The status line shows *"Compacting"*.
 2. The oldest history is summarized into a compaction-summary item; the most
-   recent items stay verbatim. Tool calls and their results fold atomically,
-   so a pair is never split.
+   recent items stay verbatim, within a budget that leaves real headroom below
+   the trigger rather than stopping just under the window. Tool calls and
+   their results fold atomically, so a pair is never split, and any earlier
+   compaction summary is carried into the new one — summaries never stack.
 3. A tool result too large to ever fit is summarized in place (marked
    *"[tool result exceeded the model context window and was summarized]"*);
    the tool call and its summary stay paired and visible.
-4. The turn is retried once, and the loop continues.
+4. The turn is retried with the size guard bypassed — the compacted request is
+   judged by the provider, whose billed count re-anchors the sizing — and the
+   loop continues.
 
 If **your newest message alone** exceeds the window, recovery cannot help and
 you get a concise terminal error — nothing is folded. Edits made while a

@@ -247,8 +247,8 @@ func TestCompactionTapeRecords(t *testing.T) {
 	if outcome.Summary["outcome"] != "fold" {
 		t.Fatalf("compaction-outcome outcome = %v, want fold", outcome.Summary["outcome"])
 	}
-	if got := mustTapeNum(t, outcome, "foldedItems"); got != 3 {
-		t.Fatalf("compaction-outcome foldedItems = %d, want 3", got)
+	if got := mustTapeNum(t, outcome, "foldedItems"); got != 4 {
+		t.Fatalf("compaction-outcome foldedItems = %d, want 4", got)
 	}
 	// Outcome calls include the rejected original request attempt; the per-call
 	// events above counted hidden dispatches only.
@@ -447,7 +447,14 @@ func feedStrategyContextAndTools(w *ConversationWorker) {
 	}
 }
 
-func TestContextGuardRecoveryProgressReevaluatesWithoutBypass(t *testing.T) {
+// TestContextGuardRecoveryRetryDispatchesBypassed pins the post-fold contract:
+// a fold invalidates the measured-prefix anchor, so re-entering guarded
+// admission would judge the compacted history with the raw character estimator
+// — the same overcounting that fires spurious triggers, and the engine of the
+// old fold/advise/fold loop. The retry after structural progress therefore
+// dispatches with the guard bypassed and the provider is the judge: its billed
+// count re-anchors admission, or its rejection re-enters recovery.
+func TestContextGuardRecoveryRetryDispatchesBypassed(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
 	w.currentRun().storeState(StateProcessing)
@@ -456,6 +463,7 @@ func TestContextGuardRecoveryProgressReevaluatesWithoutBypass(t *testing.T) {
 	go feedStrategyContextAndTools(w)
 
 	visibleCalls, hiddenCalls := 0, 0
+	retryBypassed := false
 	w.llmCallFunc = func(_ context.Context, raw json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
 		var req hiddenLLMRequest
 		if err := json.Unmarshal(raw, &req); err != nil {
@@ -472,22 +480,26 @@ func TestContextGuardRecoveryProgressReevaluatesWithoutBypass(t *testing.T) {
 			return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "short"}}}, nil
 		}
 		visibleCalls++
-		if req.BypassContextGuard {
-			t.Fatal("progressive recovery retry unexpectedly bypassed guard")
-		}
 		if visibleCalls == 1 {
+			if req.BypassContextGuard {
+				t.Fatal("initial guarded request bypassed")
+			}
 			limit := recoveryLimitErr()
 			return nil, &provider.ContextCompactionAdvisory{
 				EstimatedInputTokens: limit.EstimatedInputTokens, OutputReserveTokens: limit.OutputReserveTokens,
 				ContextWindowTokens: limit.ContextWindowTokens, Breakdown: limit.Breakdown,
 			}
 		}
+		retryBypassed = req.BypassContextGuard
 		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "recovered"}}, StopReason: "end_turn"}, nil
 	}
 
 	w.currentRun().runStrategyLoop("latest question", false)
 	if visibleCalls != 2 || hiddenCalls == 0 {
 		t.Fatalf("visible/hidden calls = %d/%d, want 2 and at least 1", visibleCalls, hiddenCalls)
+	}
+	if !retryBypassed {
+		t.Fatal("post-fold retry re-entered guarded admission; it must dispatch bypassed for a measured verdict")
 	}
 	for _, item := range w.doc.GetItems() {
 		if item.Type == ItemTypeError {

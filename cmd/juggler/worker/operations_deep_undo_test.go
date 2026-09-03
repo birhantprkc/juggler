@@ -65,8 +65,8 @@ func assertRecoveryFoldUndoableAtDepth(t *testing.T, depth int) {
 	if _, err := w.currentRun().compactToFit(recoveryLimitErr(), pinned); err != nil {
 		t.Fatal(err)
 	}
-	if got := w.doc.GetItemsFromArray(arr); len(got) != 5 || !got[0].BoundedCompaction {
-		t.Fatalf("post-fold depth-%d items = %s, want a summary thread plus four suffix items", depth, itemIDs(got))
+	if got := w.doc.GetItemsFromArray(arr); len(got) != 4 || !got[0].BoundedCompaction {
+		t.Fatalf("post-fold depth-%d items = %s, want a summary thread plus three suffix items", depth, itemIDs(got))
 	}
 
 	// One undo restores every pre-fold item in order and removes the summary
@@ -92,7 +92,7 @@ func assertRecoveryFoldUndoableAtDepth(t *testing.T, depth int) {
 	if !w.tracker.Redo() {
 		t.Fatalf("recovery fold at depth %d was not redoable", depth)
 	}
-	if re := w.doc.GetItemsFromArray(arr); len(re) != 5 || !re[0].BoundedCompaction {
+	if re := w.doc.GetItemsFromArray(arr); len(re) != 4 || !re[0].BoundedCompaction {
 		t.Fatalf("after redo at depth %d: %s, want the fold re-applied as one unit", depth, itemIDs(re))
 	}
 }

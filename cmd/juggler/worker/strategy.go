@@ -412,9 +412,6 @@ func (r *run) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVe
 			case overflowStop:
 				r.t.txnID = ""
 				return turnDone
-			case overflowRetry:
-				r.t.txnID = ""
-				return turnContinue
 			case overflowBypassAndRetry:
 				st.bypassContextGuard = true
 				r.t.txnID = ""

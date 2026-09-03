@@ -36,8 +36,9 @@ func recoveryTestItems() []ConversationItem {
 	for i := 0; i < 4; i++ {
 		items = append(items, ConversationItem{
 			Type: ItemTypeUser, ItemID: fmt.Sprintf("old-%d", i),
-			// Sized through the estimator (~2300 tokens each): the suffix
-			// walk keeps old-3 plus the recents and folds exactly old-0..2.
+			// Sized through the estimator (~2300 tokens each): each old item
+			// alone busts the halved suffix budget, so the walk keeps only the
+			// recents and folds old-0..3.
 			Content: strings.Repeat("x", 2300),
 		})
 	}
@@ -143,6 +144,148 @@ func TestHandleContextOverflowGateOffAdvisoryBypasses(t *testing.T) {
 	}
 }
 
+// advisoryLimitErr builds a soft-ceiling advisory overflow: the 3,500-token
+// estimate plus the 300 reserve fits the 4,000-token hard window, so only the
+// 0.85 ceiling was crossed. measured says whether the estimate was projected
+// from a provider-billed prefix or from the character heuristic alone.
+func advisoryLimitErr(measured bool) *provider.ContextLimitExceededError {
+	return &provider.ContextLimitExceededError{
+		EstimatedInputTokens: 3_500,
+		OutputReserveTokens:  300,
+		ContextWindowTokens:  4_000,
+		MeasuredPrefix:       measured,
+		Breakdown: provider.RequestTokenEstimate{
+			Total: 3_500, MessageTokens: 3_300, ProviderOverheadTokens: 50,
+		},
+	}
+}
+
+// TestHandleContextOverflowUnanchoredAdvisoryBypasses pins the trigger
+// discipline: a soft-ceiling advisory whose basis is the character estimator
+// alone (no measured prefix) never starts a fold. The estimator overcounts
+// real transcripts by 2x or more, so an unanchored advisory routinely fires at
+// half the real ceiling; the answer is one guard-bypassed dispatch, whose
+// provider-billed count re-anchors admission — or whose rejection re-enters
+// recovery as an authoritative overflow.
+func TestHandleContextOverflowUnanchoredAdvisoryBypasses(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.currentRun().storeState(StateProcessing)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.doc.InsertMessage(0, recoveryTestItems()...)
+	hiddenCalls := 0
+	w.llmCallFunc = func(_ context.Context, _ json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
+		hiddenCalls++
+		return nil, errors.New("reducer must not run for an unanchored soft-ceiling advisory")
+	}
+	pinned := &ModelConfig{Provider: "test", Model: "test"}
+
+	before := len(w.doc.GetItems())
+	recovery := &compactionAttempts{}
+	res := w.currentRun().handleContextOverflow(advisoryLimitErr(false), true, false, recovery, pinned, advisoryLimitErr(false))
+
+	if hiddenCalls != 0 {
+		t.Fatalf("hidden reducer calls = %d, want 0 for an unanchored soft-ceiling advisory", hiddenCalls)
+	}
+	if res.verdict != overflowBypassAndRetry {
+		t.Fatalf("verdict = %v, want overflowBypassAndRetry", res.verdict)
+	}
+	if res.err != nil {
+		t.Fatalf("bypass carried an error: %v", res.err)
+	}
+	if got := len(w.doc.GetItems()); got != before {
+		t.Fatalf("durable items changed %d -> %d; an unanchored estimate must not rewrite history", before, got)
+	}
+}
+
+// TestHandleContextOverflowAnchoredAdvisoryFolds is the counterpart: the same
+// soft-ceiling advisory, projected from a measured prefix, does fold — the
+// provider's own billed count crossing the ceiling is the one estimate-side
+// trigger automatic compaction trusts.
+func TestHandleContextOverflowAnchoredAdvisoryFolds(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.currentRun().storeState(StateProcessing)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.doc.InsertMessage(0, recoveryTestItems()...)
+	pinned := &ModelConfig{Provider: "original", Model: "rejected"}
+	calls, stub := newRecoveryStub(t, pinned)
+	w.llmCallFunc = stub
+
+	recovery := &compactionAttempts{}
+	res := w.currentRun().handleContextOverflow(advisoryLimitErr(true), true, false, recovery, pinned, advisoryLimitErr(true))
+
+	if res.verdict != overflowBypassAndRetry {
+		t.Fatalf("verdict = %v, want overflowBypassAndRetry after a measured-ceiling fold", res.verdict)
+	}
+	if *calls == 0 {
+		t.Fatal("no hidden calls — the fold reducer never ran")
+	}
+	items := w.doc.GetItems()
+	if len(items) == 0 || items[0].Type != ItemTypeThread || !items[0].BoundedCompaction {
+		t.Fatalf("items[0] = %+v, want a bounded-compaction summary thread", items[0])
+	}
+}
+
+// TestHandleContextOverflowFoldLeavesTailNotice pins the fold's visible trace:
+// the summary thread is spliced where the folded history began — usually far
+// above the reader — so the incident also leaves a durable notice at the TAIL,
+// at the point in the conversation where it happened. The notice is a normal
+// ItemTypeNotice, so it never reaches the wire.
+func TestHandleContextOverflowFoldLeavesTailNotice(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.currentRun().storeState(StateProcessing)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.doc.InsertMessage(0, recoveryTestItems()...)
+	pinned := &ModelConfig{Provider: "original", Model: "rejected"}
+	_, stub := newRecoveryStub(t, pinned)
+	w.llmCallFunc = stub
+
+	recovery := &compactionAttempts{}
+	res := w.currentRun().handleContextOverflow(advisoryLimitErr(true), true, false, recovery, pinned, advisoryLimitErr(true))
+	if res.verdict != overflowBypassAndRetry {
+		t.Fatalf("verdict = %v, want overflowBypassAndRetry", res.verdict)
+	}
+
+	items := w.doc.GetItems()
+	last := items[len(items)-1]
+	if last.Type != ItemTypeNotice {
+		t.Fatalf("last item = %q, want a compaction notice at the tail: %s", last.Type, itemIDs(items))
+	}
+	if !strings.Contains(last.Summary, "4 earlier items") {
+		t.Fatalf("notice summary = %q, want the folded item count", last.Summary)
+	}
+	if last.Content == "" {
+		t.Fatal("notice carries no detail content")
+	}
+}
+
+// TestHandleContextOverflowUnanchoredOverHardWindowStillFolds keeps the
+// silent-truncation guard: an unanchored estimate that exceeds the hard window
+// itself (not just the soft ceiling) may still fold — it is the only protection
+// a provider that truncates instead of rejecting ever gets.
+func TestHandleContextOverflowUnanchoredOverHardWindowStillFolds(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.currentRun().storeState(StateProcessing)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	w.doc.InsertMessage(0, recoveryTestItems()...)
+	pinned := &ModelConfig{Provider: "original", Model: "rejected"}
+	calls, stub := newRecoveryStub(t, pinned)
+	w.llmCallFunc = stub
+
+	recovery := &compactionAttempts{}
+	res := w.currentRun().handleContextOverflow(recoveryLimitErr(), true, false, recovery, pinned, recoveryLimitErr())
+
+	if res.verdict != overflowBypassAndRetry {
+		t.Fatalf("verdict = %v, want overflowBypassAndRetry — over-window estimates still fold, then the provider judges the retry", res.verdict)
+	}
+	if *calls == 0 {
+		t.Fatal("no hidden calls — the fold reducer never ran")
+	}
+}
+
 func TestContextRecoveryFoldsRootPrefixPreservesSuffix(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
@@ -161,8 +304,8 @@ func TestContextRecoveryFoldsRootPrefixPreservesSuffix(t *testing.T) {
 	}
 
 	items := w.doc.GetItems()
-	if len(items) != 5 {
-		t.Fatalf("items after fold = %d, want summary plus four verbatim suffix items", len(items))
+	if len(items) != 4 {
+		t.Fatalf("items after fold = %d, want summary plus three verbatim suffix items", len(items))
 	}
 	folded := items[0]
 	if folded.Type != ItemTypeThread || !folded.BoundedCompaction {
@@ -171,10 +314,10 @@ func TestContextRecoveryFoldsRootPrefixPreservesSuffix(t *testing.T) {
 	if got := threadResultString(folded); got != "recovered prefix summary" {
 		t.Fatalf("folded thread result = %q", got)
 	}
-	if !strings.Contains(folded.Summary, "3 earlier items") {
+	if !strings.Contains(folded.Summary, "4 earlier items") {
 		t.Fatalf("folded summary line = %q, want the folded prefix count", folded.Summary)
 	}
-	wantIDs := []string{"old-3", "recent-0", "recent-1", "recent-2"}
+	wantIDs := []string{"recent-0", "recent-1", "recent-2"}
 	for i, want := range wantIDs {
 		if items[i+1].ItemID != want {
 			t.Fatalf("items[%d].ItemID = %q, want verbatim suffix item %q", i+1, items[i+1].ItemID, want)
@@ -215,10 +358,10 @@ func TestContextRecoveryFoldsSubthreadPrefix(t *testing.T) {
 		t.Fatalf("root items = %+v, want only the untouched thread item", root)
 	}
 	items := w.doc.GetItemsFromArray(arr)
-	if len(items) != 5 || items[0].Type != ItemTypeThread {
-		t.Fatalf("nested items after fold = %d (first %q), want summary thread plus four suffix items", len(items), items[0].Type)
+	if len(items) != 4 || items[0].Type != ItemTypeThread {
+		t.Fatalf("nested items after fold = %d (first %q), want summary thread plus three suffix items", len(items), items[0].Type)
 	}
-	wantIDs := []string{"old-3", "recent-0", "recent-1", "recent-2"}
+	wantIDs := []string{"recent-0", "recent-1", "recent-2"}
 	for i, want := range wantIDs {
 		if items[i+1].ItemID != want {
 			t.Fatalf("nested items[%d].ItemID = %q, want %q", i+1, items[i+1].ItemID, want)
@@ -357,20 +500,25 @@ func boundedSummaryItem(t *testing.T, id, summary string) ConversationItem {
 	}
 }
 
-// TestContextRecoveryPinsPriorSummaryFoldingOnlyFreshHistory reproduces the
-// post-first-fold layout — a compaction summary followed by fresh history — and
-// pins the fix: recovery folds only the fresh prefix into a NEW sibling summary
-// and never swallows (nests) or re-summarizes the existing one. Before the fix
-// the prior summary was ordinary foldable content, so each recovery wrapped it
-// in a deeper summary, re-summarizing already-summarized history pass after
-// pass — the runaway nesting this guards against.
-func TestContextRecoveryPinsPriorSummaryFoldingOnlyFreshHistory(t *testing.T) {
+// TestContextRecoveryRefoldSwallowsPriorSummary pins the anti-stacking
+// contract, matching the browser /compact fold's convergence invariant: a
+// recovery fold SWALLOWS a prior summarized compaction thread — nested in its
+// condensed goal+result form (condenseForRefold), never as a recursive
+// transcript — so consecutive incidents leave exactly ONE summary thread
+// instead of a growing stack. The stack was the runaway mode this replaces:
+// each pinned prior summary fragmented the next fold's contiguous range into
+// slivers ("records 5–6 only" summaries), while summaries accumulated at the
+// top of the conversation, each pass slower and less effective than the last.
+func TestContextRecoveryRefoldSwallowsPriorSummary(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
 	w.currentRun().storeState(StateProcessing)
 	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
 
 	prior := boundedSummaryItem(t, "prior-summary", "prior summary")
+	// A raw folded transcript on the prior summary: the re-fold must nest the
+	// CONDENSED form, so this payload must not survive into the new thread.
+	prior.Items = json.RawMessage(`[{"type":"user","itemId":"ancient-0","content":"ancient history"}]`)
 	w.doc.InsertMessage(0, append([]ConversationItem{prior}, recoveryTestItems()...)...)
 	pinned := &ModelConfig{Provider: "original", Model: "rejected"}
 	_, stub := newRecoveryStub(t, pinned)
@@ -385,28 +533,41 @@ func TestContextRecoveryPinsPriorSummaryFoldingOnlyFreshHistory(t *testing.T) {
 	}
 
 	got := w.doc.GetItems()
-	// [prior summary, NEW summary(old-0..2), old-3, recent-0..2]
-	if len(got) != 6 {
-		t.Fatalf("items after fold = %d, want prior summary + new summary + four verbatim suffix items: %s", len(got), itemIDs(got))
+	var summaries []ConversationItem
+	for _, it := range got {
+		if it.Type == ItemTypeThread && it.BoundedCompaction {
+			summaries = append(summaries, it)
+		}
 	}
-	if got[0].ItemID != "prior-summary" || !got[0].BoundedCompaction {
-		t.Fatalf("items[0] = %q (bounded=%v), want the prior summary untouched at the front", got[0].ItemID, got[0].BoundedCompaction)
+	if len(summaries) != 1 {
+		t.Fatalf("summary threads after re-fold = %d (%s), want exactly one — summaries must never stack", len(summaries), itemIDs(got))
 	}
-	if threadResultString(got[0]) != "prior summary" {
-		t.Fatalf("prior summary result = %q, want it unchanged (never re-summarized)", threadResultString(got[0]))
+	fresh := summaries[0]
+	if fresh.ItemID == "prior-summary" {
+		t.Fatal("the fold kept the prior summary as the boundary instead of creating a new one")
 	}
-	fresh := got[1]
-	if fresh.Type != ItemTypeThread || !fresh.BoundedCompaction || fresh.ItemID == "prior-summary" {
-		t.Fatalf("items[1] = %q (bounded=%v), want a NEW summary distinct from the prior one", fresh.ItemID, fresh.BoundedCompaction)
+	if got[0].ItemID != fresh.ItemID {
+		t.Fatalf("items[0] = %q, want the single summary thread leading: %s", got[0].ItemID, itemIDs(got))
 	}
+
 	var nested []ConversationItem
 	if err := json.Unmarshal(fresh.Items, &nested); err != nil {
 		t.Fatalf("new summary nested items do not decode: %v", err)
 	}
-	for _, n := range nested {
-		if n.ItemID == "prior-summary" {
-			t.Fatal("the prior summary was nested inside the new summary — re-fold not prevented")
+	var condensed *ConversationItem
+	for i := range nested {
+		if nested[i].ItemID == "prior-summary" {
+			condensed = &nested[i]
 		}
+	}
+	if condensed == nil {
+		t.Fatalf("the prior summary was dropped instead of nested condensed: %s", itemIDs(nested))
+	}
+	if threadResultString(*condensed) != "prior summary" {
+		t.Fatalf("condensed prior summary result = %q, want its summary text carried forward", threadResultString(*condensed))
+	}
+	if len(condensed.Items) != 0 {
+		t.Fatalf("condensed prior summary still carries its folded transcript (%d bytes) — recursive nesting", len(condensed.Items))
 	}
 }
 
@@ -482,18 +643,18 @@ func TestContextRecoveryPreservesFoldedThreadItemOrder(t *testing.T) {
 	if err := json.Unmarshal(folded.Items, &nested); err != nil {
 		t.Fatalf("folded thread nested items do not decode: %v", err)
 	}
-	// Three verbatim prefix items (old-0..2) in source order, then the prompt.
-	if len(nested) != 4 {
-		t.Fatalf("nested items = %d, want the three folded items plus the prompt", len(nested))
+	// Four verbatim prefix items (old-0..3) in source order, then the prompt.
+	if len(nested) != 5 {
+		t.Fatalf("nested items = %d, want the four folded items plus the prompt", len(nested))
 	}
-	for i, want := range []string{"old-0", "old-1", "old-2"} {
+	for i, want := range []string{"old-0", "old-1", "old-2", "old-3"} {
 		if nested[i].ItemID != want {
 			t.Fatalf("nested[%d].ItemID = %q, want %q (nested order reversed?)", i, nested[i].ItemID, want)
 		}
 	}
-	prompt := nested[3]
+	prompt := nested[4]
 	if prompt.ItemID != folded.CompactionPromptItemID || prompt.Content != defaultSummarizationPromptMarker {
-		t.Fatalf("nested[3] = {id:%q content:%.20q}, want the summarization prompt (%q) last",
+		t.Fatalf("nested[4] = {id:%q content:%.20q}, want the summarization prompt (%q) last",
 			prompt.ItemID, prompt.Content, folded.CompactionPromptItemID)
 	}
 }
@@ -525,8 +686,8 @@ func TestContextRecoveryFoldIsAtomicallyUndoable(t *testing.T) {
 	if _, err := w.currentRun().compactToFit(recoveryLimitErr(), pinned); err != nil {
 		t.Fatal(err)
 	}
-	if got := w.doc.GetItems(); len(got) != 5 || !got[0].BoundedCompaction {
-		t.Fatalf("post-fold items = %s, want a summary thread plus four suffix items", itemIDs(got))
+	if got := w.doc.GetItems(); len(got) != 4 || !got[0].BoundedCompaction {
+		t.Fatalf("post-fold items = %s, want a summary thread plus three suffix items", itemIDs(got))
 	}
 
 	// The fold is the top undo group: one undo restores every pre-fold item in
@@ -552,7 +713,7 @@ func TestContextRecoveryFoldIsAtomicallyUndoable(t *testing.T) {
 	if !w.tracker.Redo() {
 		t.Fatal("recovery fold was not redoable")
 	}
-	if re := w.doc.GetItems(); len(re) != 5 || !re[0].BoundedCompaction {
+	if re := w.doc.GetItems(); len(re) != 4 || !re[0].BoundedCompaction {
 		t.Fatalf("after redo: %s, want the fold re-applied as one unit", itemIDs(re))
 	}
 }
@@ -755,8 +916,8 @@ func TestContextRecoveryPinsLeadingContextItems(t *testing.T) {
 		t.Fatalf("hidden calls = %d, want map(s) plus final", *calls)
 	}
 	got := w.doc.GetItems()
-	if len(got) != 6 {
-		t.Fatalf("items = %d, want pinned rule plus summary plus four suffix items", len(got))
+	if len(got) != 5 {
+		t.Fatalf("items = %d, want pinned rule plus summary plus three suffix items", len(got))
 	}
 	if got[0].ItemID != "rule-0" {
 		t.Fatalf("items[0] = %q, want the pinned rule item untouched", got[0].ItemID)
@@ -764,8 +925,8 @@ func TestContextRecoveryPinsLeadingContextItems(t *testing.T) {
 	if got[1].Type != ItemTypeThread || !got[1].BoundedCompaction {
 		t.Fatalf("items[1] = %q (bounded=%v), want the summary thread inserted after the pinned run", got[1].Type, got[1].BoundedCompaction)
 	}
-	if !strings.Contains(got[1].Summary, "3 earlier items") {
-		t.Fatalf("folded summary line = %q, want only the three foldable old items counted", got[1].Summary)
+	if !strings.Contains(got[1].Summary, "4 earlier items") {
+		t.Fatalf("folded summary line = %q, want only the four foldable old items counted", got[1].Summary)
 	}
 }
 
@@ -848,8 +1009,8 @@ func TestContextRecoveryTrailingToolShrinkCountsAsProgress(t *testing.T) {
 
 // TestContextRecoveryRetriesRejectedTurnAboveAdvisoryLimit drives the full strategy loop:
 // the first real request is rejected by the provider, recovery folds the old
-// history into the doc, and the loop retries even though the rebuilt request's
-// advisory estimate still exceeds the reported context window.
+// history into the doc, and the loop retries with the guard bypassed — the
+// provider, not the local estimator, judges the folded transcript.
 func TestContextRecoveryRetriesRejectedTurnAboveAdvisoryLimit(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
@@ -878,7 +1039,7 @@ func TestContextRecoveryRetriesRejectedTurnAboveAdvisoryLimit(t *testing.T) {
 
 	realCalls, hiddenCalls := 0, 0
 	firstTurnMessages, retriedTurnMessages := -1, -1
-	retriedEstimate := int64(0)
+	retryBypassed := false
 	w.llmCallFunc = func(_ context.Context, raw json.RawMessage, sink func(StreamChunk)) (*LLMResponse, error) {
 		var req hiddenLLMRequest
 		if err := json.Unmarshal(raw, &req); err != nil {
@@ -897,7 +1058,7 @@ func TestContextRecoveryRetriesRejectedTurnAboveAdvisoryLimit(t *testing.T) {
 			return nil, recoveryLimitErr()
 		}
 		retriedTurnMessages = len(req.Messages)
-		retriedEstimate = provider.EstimateMessageRequestTokenBreakdown(providerRequest(req), 0).Total
+		retryBypassed = req.BypassContextGuard
 		// Visible turns assemble the assistant message from streamed chunks;
 		// mirror the provider's stream before delivering the final response.
 		sink(StreamChunk{Type: provider.ContentBlockTypeText, Content: "recovered answer"})
@@ -915,11 +1076,11 @@ func TestContextRecoveryRetriesRejectedTurnAboveAdvisoryLimit(t *testing.T) {
 	if hiddenCalls < 2 {
 		t.Fatalf("hidden calls = %d, want map(s) plus final", hiddenCalls)
 	}
-	if firstTurnMessages != 5 || retriedTurnMessages != 3 {
-		t.Fatalf("turn messages %d -> %d, want 5 rejected, 3 after the fold", firstTurnMessages, retriedTurnMessages)
+	if firstTurnMessages != 5 || retriedTurnMessages != 2 {
+		t.Fatalf("turn messages %d -> %d, want 5 rejected, 2 after the fold (summary plus the live user message)", firstTurnMessages, retriedTurnMessages)
 	}
-	if retriedEstimate+300 <= 2_000 {
-		t.Fatalf("retried advisory estimate = %d + 300, want above 2000", retriedEstimate)
+	if !retryBypassed {
+		t.Fatal("post-fold retry re-entered guarded admission; it must dispatch bypassed")
 	}
 
 	items := w.doc.GetItems()
@@ -978,16 +1139,13 @@ func TestContextRecoveryShrinksOversizedTrailingToolResult(t *testing.T) {
 	}
 
 	got := w.doc.GetItems()
-	if len(got) != 3 {
-		t.Fatalf("items = %d, want prefix summary plus old-2 plus the intact tool batch", len(got))
+	if len(got) != 2 {
+		t.Fatalf("items = %d, want prefix summary plus the intact tool batch", len(got))
 	}
-	if got[0].Type != ItemTypeThread || !got[0].BoundedCompaction || !strings.Contains(got[0].Summary, "2 earlier items") {
-		t.Fatalf("items[0] = %q (%q), want the two oldest items folded into a summary thread", got[0].Type, got[0].Summary)
+	if got[0].Type != ItemTypeThread || !got[0].BoundedCompaction || !strings.Contains(got[0].Summary, "3 earlier items") {
+		t.Fatalf("items[0] = %q (%q), want the three old items folded into a summary thread", got[0].Type, got[0].Summary)
 	}
-	if got[1].ItemID != "old-2" {
-		t.Fatalf("items[1] = %q, want verbatim suffix item old-2", got[1].ItemID)
-	}
-	tool := got[2]
+	tool := got[1]
 	if tool.ItemID != "ta-giant" || tool.ToolUseID != "tu-giant" || tool.State != StateCompleted {
 		t.Fatalf("tool item = %+v, want the original completed pair intact", tool)
 	}
@@ -1502,14 +1660,14 @@ func TestContextRecoveryFoldPathToleratesLargeProviderOverhead(t *testing.T) {
 	}
 
 	got := w.doc.GetItems()
-	if len(got) != 3 {
-		t.Fatalf("items after fold = %d, want summary plus the two verbatim suffix items", len(got))
+	if len(got) != 2 {
+		t.Fatalf("items after fold = %d, want summary plus the newest verbatim item", len(got))
 	}
-	if got[0].Type != ItemTypeThread || !got[0].BoundedCompaction || !strings.Contains(got[0].Summary, "3 earlier items") {
-		t.Fatalf("items[0] = %q (%q), want the three oldest folded into a summary thread", got[0].Type, got[0].Summary)
+	if got[0].Type != ItemTypeThread || !got[0].BoundedCompaction || !strings.Contains(got[0].Summary, "4 earlier items") {
+		t.Fatalf("items[0] = %q (%q), want the four oldest folded into a summary thread", got[0].Type, got[0].Summary)
 	}
-	if got[1].ItemID != "item-3" || got[2].ItemID != "item-4" {
-		t.Fatalf("verbatim suffix = %q,%q, want item-3,item-4", got[1].ItemID, got[2].ItemID)
+	if got[1].ItemID != "item-4" {
+		t.Fatalf("verbatim suffix = %q, want item-4", got[1].ItemID)
 	}
 }
 
