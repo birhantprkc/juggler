@@ -146,7 +146,6 @@ class ThreadMessage extends HTMLElement {
     let el = article.querySelector('.thread-cost');
     if (!cost) {
       el?.remove();
-      article.removeAttribute('title');
       return;
     }
     if (!el) {
@@ -157,7 +156,6 @@ class ThreadMessage extends HTMLElement {
       (article.querySelector('.thread-body') || article).appendChild(el);
     }
     el.textContent = cost.text;
-    article.setAttribute('title', cost.title);
   }
 
   render() {

@@ -40,7 +40,6 @@ export function getThreadDisplayContent(threadYMap, siblingArray) {
  * @property {number} context - Estimated size of the thread's own transcript.
  * @property {number} returned - Estimated size of the answer it handed back.
  * @property {string} text - The pair, for the resting tile.
- * @property {string} title - The same pair, said in full.
  */
 
 /**
@@ -68,8 +67,6 @@ export function threadCostFigures(threadYMap, siblingArray) {
     context,
     returned,
     text: `${formatTokens(context)} used · ${formatTokens(returned)} returned`,
-    title: `This thread's own context ran to about ${formatTokens(context)} tokens; `
-      + `the conversation that called it pays only the ${formatTokens(returned)} it returned.`,
   };
 }
 

@@ -494,8 +494,6 @@ export async function runTests() {
       `the tile reads both stamped figures; got ${JSON.stringify(figures)}`);
     assert(figures.text === '41k used · 700 returned',
       `the resting tile states the pair; got ${JSON.stringify(figures.text)}`);
-    assert(figures.title.includes('41k') && figures.title.includes('700'),
-      `the hover explains the pair; got ${JSON.stringify(figures.title)}`);
 
     assert(threadCostFigures(aliases[0], root)?.context === 41000,
       'an alias reports the figures of the thread it views');
