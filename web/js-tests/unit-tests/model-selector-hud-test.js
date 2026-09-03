@@ -6,11 +6,19 @@
  * Model-selector cycling HUD behavior regressions, plus the list rules the HUD
  * is a view of. The rows live in `<model-picker>`; the freeze/refresh mechanics
  * live in the `<model-selector>` host that presents it.
+ *
+ * The same picker has two ways in that must not be confused: ⌥⌘M shows it as a
+ * HUD for the length of a hold, and ⇧⌥⌘M opens it and leaves it open. One Shift
+ * apart, so the last case here presses the second chord with the first one's
+ * cycler live.
  * @module unit-tests/model-selector-hud-test
  */
 
 import { assert } from '../utilities/test-helpers.js';
 import recentModels from '../../js/services/recent-models.js';
+import keyShortcutManager from '../../js/services/key-shortcut-manager.js';
+import { registerConversationShortcuts } from '../../js/services/shortcut-bindings.js';
+import { ModelCycler } from '../../js/services/model-cycler.js';
 import '../../js/components/model-selector.js';
 import '../../js/components/model-picker/model-picker.js';
 
@@ -272,6 +280,61 @@ export async function runTests(_ctx) {
     const picker = makePicker({ providers });
     assert(!picker.querySelector('.provider-menu-header'),
       'a provider with nothing left to offer must not render a header');
+  });
+
+  await run('⇧⌥⌘M opens the picker from a text field and leaves it open', async () => {
+    await seedRecents([]);
+    // A bare textarea, not a real `composer-box`: that element is defined by the
+    // time this suite runs and would render its own contents over the fixture.
+    // What is being asserted here is the press, so the field only has to be a
+    // field — the shortcut resolves the one selector in the document.
+    const box = document.createElement('div');
+    const area = document.createElement('textarea');
+    box.appendChild(area);
+    document.body.appendChild(box);
+    const el = makeSelector();
+    box.appendChild(el);
+    assert(document.querySelectorAll('model-selector').length === 1,
+      'exactly one selector, so there is no doubt which one the chord acted on');
+    // The model cycler owns the un-Shifted twin of this chord, on a capture
+    // listener of its own that runs ahead of the command table — so it has to be
+    // live for the press to prove the two chords are actually apart.
+    const cycler = new ModelCycler();
+    cycler.init();
+    // The manager is a singleton that outlives this suite in the lane's realm,
+    // so put back exactly the handlers that were there before.
+    const before = new Set(keyShortcutManager._handlers.keys());
+    registerConversationShortcuts(/** @type {any} */ ({}));
+    try {
+      area.focus();
+      assert(document.activeElement === area,
+        'a text field holds focus for the press — the shortcut is allowInInput'
+        + ` — active is <${document.activeElement?.nodeName.toLowerCase()}>`);
+      area.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'm', code: 'KeyM', metaKey: true, ctrlKey: true, altKey: true, shiftKey: true,
+        bubbles: true, cancelable: true,
+      }));
+      assert(el.dropdownOpen === true, 'the chord opens the picker from inside a text field');
+      assert(!!el._picker, 'a live picker is presented');
+      // Releasing the modifiers is what dismisses the CYCLING HUD. This is the
+      // other door: nothing about letting go of the keys closes it.
+      for (const key of ['Shift', 'Alt', 'Meta', 'Control']) {
+        document.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true }));
+      }
+      assert(el.dropdownOpen === true, 'letting go of the keys must leave it open');
+      document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape', bubbles: true, cancelable: true,
+      }));
+      assert(el.dropdownOpen === false, 'Escape is the way out');
+    } finally {
+      for (const id of [...keyShortcutManager._handlers.keys()]) {
+        if (!before.has(id)) keyShortcutManager._handlers.delete(id);
+      }
+      cycler.destroy();
+      el.close();
+      box.remove();
+      document.querySelectorAll('.model-picker').forEach(node => node.remove());
+    }
   });
 
   return { passed, failed, errors };

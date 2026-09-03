@@ -39,9 +39,14 @@ function commandModifierKey() {
  * thinking shortcuts silently drove the root conversation even when the cursor
  * sat in a sub-thread composer. These gestures fire window-wide, so focus may
  * be outside any composer; the fallbacks cover that.
+ *
+ * Exported because every model shortcut has to answer the same question — the
+ * same chip+picker pair is hosted by the composer, the settings defaults tab and
+ * the command editor, so "which one did they mean" cannot be a `querySelector`
+ * at each call site.
  * @returns {any} The model-selector element, or null.
  */
-function getModelSelector() {
+export function getModelSelector() {
   // Prefer the focused composer's own column.
   const focused = /** @type {HTMLElement|null} */ (document.activeElement);
   const box = focused && typeof focused.closest === 'function'

@@ -26,6 +26,9 @@ of changes; this project follows semantic versioning.
 - Pause now stops the column it was pressed in and everything under it, siblings included
 - A pause holds until you lift it, and the footer says Paused with a Resume button
 - Pause now ends a rate-limit wait instead of letting it retry
+- Switching model no longer carries a paid serving tier onto the model you switched to
+- A Recent model row now restores exactly the pair it shows, standard serving included
+- Shift-Option-Command-M opens the model picker and leaves it open, to read rather than cycle
 
 ## [0.5.9] - 2026-08-29
 

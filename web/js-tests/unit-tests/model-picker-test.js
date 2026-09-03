@@ -12,11 +12,13 @@
  *
  *   1. The bottom row's label belongs to the HOST — "No model", "Inherit from
  *      parent" and "Automatic" are the same row meaning different things.
- *   2. A `change` carries a WHOLE config, and a serving tier survives a change
- *      to a DIFFERENT model only when that model advertises it — carrying it
- *      blindly would start billing a premium rate the new model was never
- *      chosen for. Re-picking the model already in effect, or clicking a Recent
- *      row that recorded a tier, keeps it whatever the catalog currently says.
+ *   2. A `change` carries a WHOLE config, and a serving tier does not survive a
+ *      change to a DIFFERENT model — carrying it would start billing a premium
+ *      rate the new model was never chosen for, and that the new model also
+ *      offers one is not a decision to buy it. The tier is kept only across a
+ *      re-pick of the model already in effect, whatever the catalog currently
+ *      says. A Recent row is the exception on both counts: it restores the exact
+ *      pair it displays, which includes clearing a tier back to Standard.
  *   3. Typing filters, and it expands collapsed providers while it does — a
  *      match hidden inside a collapsed provider is a match the user can't reach.
  *   4. Escape closes the picker and goes no further: popup-manager's Escape
@@ -327,6 +329,31 @@ function clickModel(picker, modelId) {
 }
 
 /**
+ * Click a model row in the scrolling list — a bare model name, carrying no
+ * stored dials. Scoped to the list column on purpose: Recent is written first in
+ * document order, so an unscoped lookup finds the Recent row for the same model
+ * and tests the opposite rule.
+ * @param {any} picker
+ * @param {string} modelId
+ */
+function clickListModel(picker, modelId) {
+  const row = picker.querySelector(`.model-picker-rows .menu-item[data-model="${modelId}"]`);
+  assert(!!row, `no list row for model "${modelId}"`);
+  row.click();
+}
+
+/**
+ * Click a row in the Recent block.
+ * @param {any} picker
+ * @param {string} modelId
+ */
+function clickRecentModel(picker, modelId) {
+  const row = picker.querySelector(`.model-picker-recent .menu-item[data-model="${modelId}"]`);
+  assert(!!row, `no Recent row for model "${modelId}"`);
+  row.click();
+}
+
+/**
  * Send a keydown the way the browser would — from whatever has focus, so the
  * picker's document-capture handler is what claims it.
  * @param {string} key
@@ -405,15 +432,18 @@ export async function runTests(_ctx) {
         `unset dials are absent keys, not empty strings — got ${JSON.stringify(seen)}`);
     });
 
-    await run('a serving tier carries to a model that advertises it', () => {
+    await run('a serving tier is dropped by a model that advertises it too', () => {
+      // The expensive half of the rule. That the model being switched TO also
+      // sells a premium tier says nothing about whether this user wants to pay
+      // for it on this model — only the click that bought it does.
       const picker = makePicker({ value: { provider: 'p', model: 'm', serviceTier: 'priority' } });
       /** @type {any} */
       let seen = null;
       picker.addEventListener('change', (/** @type {any} */ e) => { seen = e.detail; });
-      clickModel(picker, 'other');
+      clickListModel(picker, 'other');
       assert(seen.model === 'other', `picked the wrong row: ${JSON.stringify(seen)}`);
-      assert(seen.serviceTier === 'priority',
-        `a tier the new model offers must survive the switch, got ${JSON.stringify(seen)}`);
+      assert(!('serviceTier' in seen),
+        `a bare name click must not carry a premium tier onto a different model — got ${JSON.stringify(seen)}`);
     });
 
     await run('a serving tier is dropped by a model that does not advertise it', () => {
@@ -421,7 +451,7 @@ export async function runTests(_ctx) {
       /** @type {any} */
       let seen = null;
       picker.addEventListener('change', (/** @type {any} */ e) => { seen = e.detail; });
-      clickModel(picker, 'plain');
+      clickListModel(picker, 'plain');
       assert(seen.model === 'plain', `picked the wrong row: ${JSON.stringify(seen)}`);
       assert(!('serviceTier' in seen),
         `switching models must never start paying a premium the model was not chosen for — got ${JSON.stringify(seen)}`);
@@ -441,7 +471,7 @@ export async function runTests(_ctx) {
       /** @type {any} */
       let seen = null;
       picker.addEventListener('change', (/** @type {any} */ e) => { seen = e.detail; });
-      clickModel(picker, 'm');
+      clickListModel(picker, 'm');
       assert(seen.serviceTier === 'priority',
         `re-picking the same model must not erase its tier, got ${JSON.stringify(seen)}`);
     });
@@ -465,39 +495,43 @@ export async function runTests(_ctx) {
       }
     });
 
-    await run('re-picking the SAME model keeps a tier the catalog has forgotten', () => {
-      // An entry advertising nothing is the ordinary cold / failed-fetch state.
-      // Clicking the row for the model already in effect is not a decision to
-      // stop paying for it.
-      const cold = [{
-        name: 'p',
-        displayName: 'Provider',
-        available: true,
-        modelsWithContext: [{ id: 'm', displayName: 'Model', contextWindow: 1000 }],
-      }];
-      const picker = makePicker({ providers: cold, value: { provider: 'p', model: 'm', serviceTier: 'priority' } });
-      /** @type {any} */
-      let seen = null;
-      picker.addEventListener('change', (/** @type {any} */ e) => { seen = e.detail; });
-      clickModel(picker, 'm');
-      assert(seen.serviceTier === 'priority',
-        `re-picking the same model must not erase its tier, got ${JSON.stringify(seen)}`);
-    });
-
-    await run('a Recent row restores the tier it recorded', async () => {
-      await seedRecents([{ provider: 'p', model: 'm', serviceTier: 'priority' }]);
+    await run('a Recent row recorded at Standard clears the tier in effect', async () => {
+      // The row says Standard, so clicking it must MEAN Standard. A row that
+      // stayed silent about having no tier would read as "leave the tier alone",
+      // which is the one thing it cannot mean — the row is a whole pair.
+      await seedRecents([{ provider: 'p', model: 'm' }]);
       try {
-        const picker = makePicker();
+        const picker = makePicker({ value: { provider: 'p', model: 'm', serviceTier: 'priority' } });
         const row = picker.querySelector('.recent-model');
         assert(!!row, 'the seeded entry must render a Recent row');
-        assert(row.getAttribute('data-service-tier') === 'priority',
-          'the row carries its stored tier so a click can restore it');
+        assert(row.getAttribute('data-service-tier') === '',
+          `a Standard entry states its tier as empty, got ${JSON.stringify(row.getAttribute('data-service-tier'))}`);
         /** @type {any} */
         let seen = null;
         picker.addEventListener('change', (/** @type {any} */ e) => { seen = e.detail; });
         row.click();
+        assert(!('serviceTier' in seen),
+          `a Standard Recent row must clear the tier, not keep it — got ${JSON.stringify(seen)}`);
+      } finally {
+        await clearRecents();
+      }
+    });
+
+    await run('the two row kinds differ: the list row clears what a Recent row sets', async () => {
+      // Same model, same picker, opposite meanings — a bare name is "this model,
+      // default dials", a Recent row is "this exact pair".
+      await seedRecents([{ provider: 'p', model: 'other', serviceTier: 'priority' }]);
+      try {
+        const picker = makePicker({ value: { provider: 'p', model: 'm', serviceTier: 'priority' } });
+        /** @type {any} */
+        let seen = null;
+        picker.addEventListener('change', (/** @type {any} */ e) => { seen = e.detail; });
+        clickListModel(picker, 'other');
+        assert(!('serviceTier' in seen),
+          `the list row is a bare name and drops the tier, got ${JSON.stringify(seen)}`);
+        clickRecentModel(picker, 'other');
         assert(seen.serviceTier === 'priority',
-          `a Recent row re-applies the pair it recorded, got ${JSON.stringify(seen)}`);
+          `the Recent row restores the tier it displays, got ${JSON.stringify(seen)}`);
       } finally {
         await clearRecents();
       }

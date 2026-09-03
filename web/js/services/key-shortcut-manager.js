@@ -421,7 +421,11 @@ const SHORTCUT_DEFS = [
     category: 'Conversations',
     // ⌥⌘M / Ctrl+Alt+M — bare ⌘M is macOS minimize, so the Option is load-bearing.
     // Dispatched externally by the hold-to-cycle model controller.
-    defaultBinding: { mod: true, alt: true, key: 'm' },
+    // shift:false is load-bearing too: an omitted shift is *tolerant* (see
+    // eventMatchesBinding), so ⇧⌥⌘M would match this as well as open-model-picker
+    // — and the cycler matches on its own capture listener, ahead of the command
+    // table. Pinning shift off keeps the two chords apart.
+    defaultBinding: { mod: true, alt: true, shift: false, key: 'm' },
     allowInInput: true,
     external: true,
   },
@@ -435,6 +439,21 @@ const SHORTCUT_DEFS = [
     defaultBinding: { mod: true, alt: true, key: 't' },
     allowInInput: true,
     external: true,
+  },
+  {
+    id: 'open-model-picker',
+    label: 'Open model picker',
+    description: 'Open the model picker and leave it open, so the list can be read '
+      + 'rather than cycled. Type to filter, arrows to move, Enter to pick, Escape to close.',
+    category: 'Conversations',
+    // ⇧⌥⌘M / Ctrl+Alt+Shift+M — the Shift-ed twin of the model cycler's chord,
+    // which pins shift:false so exactly one of the two fires. The Option is
+    // inherited from that pairing and is load-bearing anyway: bare ⌘M is macOS
+    // minimize.
+    defaultBinding: { mod: true, alt: true, shift: true, key: 'm' },
+    // Pressed from the composer, which is where the model being picked is about
+    // to be used.
+    allowInInput: true,
   },
 ];
 

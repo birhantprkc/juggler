@@ -20,6 +20,7 @@ import {
   toggleActiveFileEditing,
 } from './conversation-commands.js';
 import { markSeen } from './tips-manager.js';
+import { getModelSelector } from './model-cycler.js';
 import findBar from '../components/find-bar.js';
 
 /**
@@ -78,6 +79,19 @@ export function registerConversationShortcuts(session) {
     if (!column) return false;
     findBar.open(column);
     markSeen('find-in-conversation');
+    return true;
+  });
+  // Opens the model picker and leaves it open — the counterpart to ⌥⌘M, which
+  // shows the same picker as a HUD that closes with the modifiers. The picker
+  // takes the keyboard itself once open (filter, arrows, Enter, Escape) from a
+  // document-capture listener, so nothing further is wired here. Targets the
+  // same selector the cyclers do: the focused column's, so a sub-thread composer
+  // drives its own. Falls through (returns false) where there is no selector at
+  // all — the project picker, an empty window.
+  keyShortcutManager.register('open-model-picker', () => {
+    const selector = getModelSelector();
+    if (!selector) return false;
+    selector.open();
     return true;
   });
   keyShortcutManager.install();

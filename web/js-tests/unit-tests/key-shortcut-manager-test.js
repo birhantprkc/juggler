@@ -93,7 +93,7 @@ export async function runTests(_ctx) {
     for (const id of ['jump-to-attention', 'new-conversation', 'bin-conversation',
       'toggle-file-editing', 'pause-conversation', 'undo', 'redo', 'zoom-in', 'zoom-out',
       'show-shortcuts', 'toggle-tool-grouping', 'strategy-switch', 'cycle-model',
-      'cycle-thinking']) {
+      'cycle-thinking', 'open-model-picker']) {
       assert(ids.includes(id), `expected shortcut "${id}" in the table`);
     }
   });
@@ -225,6 +225,31 @@ export async function runTests(_ctx) {
     // And the wrong physical key must not match even with the modifiers right.
     assert(!eventMatchesBinding(cycleModel, evt({ ...modProp, altKey: true, key: 'µ', code: 'KeyN' })),
       'a different code must not match');
+  });
+
+  // Cycling the model (⌥⌘M) and opening the picker (⇧⌥⌘M) are one Shift apart,
+  // and an omitted shift is TOLERANT — so cycle-model pins shift:false or the
+  // Shift-ed chord fires both. It would win, too: the cycler matches on its own
+  // capture listener, ahead of the command table.
+  await run('Shift disambiguates cycling the model from opening the picker', () => {
+    const cycle = keyShortcutManager.getBinding('cycle-model');
+    const open = keyShortcutManager.getBinding('open-model-picker');
+    assert(open.mod && open.alt && open.shift === true && open.key === 'm',
+      'open-model-picker is Mod+Alt+Shift+M');
+    const shifted = evt({ ...modProp, altKey: true, shiftKey: true, key: 'm', code: 'KeyM' });
+    assert(eventMatchesBinding(open, shifted), '⇧⌥⌘M should open the picker');
+    assert(!eventMatchesBinding(cycle, shifted), '⇧⌥⌘M must not also reach the cycler');
+    const plain = evt({ ...modProp, altKey: true, key: 'm', code: 'KeyM' });
+    assert(eventMatchesBinding(cycle, plain), '⌥⌘M should still cycle the model');
+    assert(!eventMatchesBinding(open, plain), '⌥⌘M must not open the picker');
+  });
+
+  await run('open-model-picker fires from a text field, dispatched by the manager', () => {
+    const def = keyShortcutManager.all().find((d) => d.id === 'open-model-picker');
+    assert(!!def && def.allowInInput === true,
+      'the composer is where it is pressed, so it must fire inside an input');
+    assert(!def.external,
+      'one press, one action — nothing here needs a hold gesture to dispatch it');
   });
 
   await run('an unwanted Alt modifier blocks the match', () => {
