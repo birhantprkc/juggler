@@ -299,11 +299,24 @@ export async function runTests(ctx) {
       // Long enough to be windowed, so the last line arrives by scrolling
       // rather than by being in the DOM already; the scroll extent is what says
       // the whole file is there.
+      //
+      // A window stands at its full height only once it has measured a row, and
+      // that measurement is a tick behind the content it measures — so the
+      // height is something the block settles on, not something it renders
+      // with. Poll for it on the same terms as the content above: an extent
+      // that never grows still fails, and reports what it was stuck at.
       const view = mounted.body.querySelector('.ci-code-lines');
       const rowHeight = mounted.body.querySelector('.ci-line')?.getBoundingClientRect().height || 0;
       assert(rowHeight > 0, 'could not measure a row');
-      assert(Math.abs((view?.getBoundingClientRect().height || 0) - total * rowHeight) < rowHeight * 2,
-        `the block is ${view?.getBoundingClientRect().height}px tall, want ${total} rows of ${rowHeight}px`);
+      const wanted = total * rowHeight;
+      const deadline = Date.now() + 5000;
+      let height = view?.getBoundingClientRect().height || 0;
+      while (Date.now() < deadline && Math.abs(height - wanted) >= rowHeight * 2) {
+        await new Promise((r) => { setTimeout(r, 20); });
+        height = view?.getBoundingClientRect().height || 0;
+      }
+      assert(Math.abs(height - wanted) < rowHeight * 2,
+        `the block is ${height}px tall, want ${total} rows of ${rowHeight}px`);
     } finally {
       mounted.teardown();
     }
