@@ -651,16 +651,21 @@ func (r *run) dispatchCallLLMOnThread(threadItemID string) {
 		return
 	}
 
-	// Polite stop (Pause): the user asked to rest before the next LLM turn. This
-	// is the sole entry into runStrategyLoop, and the reducer only reaches
-	// ActionCallLLM once every tool in the batch is terminal — so in-flight work
-	// has already drained and committed its real results (D1, D3). Consume the
-	// latch and take the shared promote-and-idle exit instead of driving a fresh
-	// turn; the transcript is a clean, resumable prefix. consumePolitePending
-	// Swap(false)s the latch so the NEXT, user-initiated turn isn't also
-	// suppressed (D6, V5), and drops the synced pending cue.
-	if r.consumePolitePending() {
-		r.restPromotingQueue(threadItemID)
+	// Polite stop (Pause): a mark stands over this thread, so it rests before the
+	// next LLM turn. This is the sole entry into runStrategyLoop, and the reducer
+	// only reaches ActionCallLLM once every tool in the batch is terminal — so
+	// in-flight work has already drained and committed its real results (D1, D3).
+	// Take the shared promote-and-idle exit instead of driving a fresh turn; the
+	// transcript is a clean, resumable prefix.
+	//
+	// The mark is left standing (only a human lifts one), so this branch is
+	// reached again every time the walk offers this thread — hence the guard:
+	// resting a thread that holds no claim and has nothing queued would write an
+	// idle frame per reconcile pass, for a thread already at rest.
+	if r.politeStopCovers(threadItemID) {
+		if r.threadActivity(threadItemID) != ActivityNone || r.hasPendingItems(threadItemID) {
+			r.restPromotingQueue(threadItemID)
+		}
 		return
 	}
 

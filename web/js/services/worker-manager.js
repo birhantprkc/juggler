@@ -578,25 +578,29 @@ class WorkerManager {
   }
 
   /**
-   * Request a polite stop (Pause): let the current step finish and record its
-   * real result, then rest at idle before the next LLM turn. Non-destructive —
-   * the worker latches this and cancels nothing. Distinct WS message type so the
-   * hot mid-turn wait-loop selects can branch on Type without parsing a payload.
+   * Request a polite stop (Pause) over a thread and everything below it: the
+   * work in flight there finishes and records its real result, then rests before
+   * the next LLM turn. Non-destructive — the worker marks this and cancels
+   * nothing. Distinct WS message type so the hot mid-turn wait-loop selects can
+   * branch on Type without parsing a payload.
    * @param {string} conversationId - Conversation ID
+   * @param {string} [threadItemId] - Thread the pause covers; '' (the default)
+   *   is the root, which stands over the whole conversation.
    */
-  pause(conversationId) {
-    this.sendToWorker(conversationId, { type: 'pause' });
+  pause(conversationId, threadItemId = '') {
+    this.sendToWorker(conversationId, { type: 'pause', threadItemId });
   }
 
   /**
-   * Cancel a pending polite stop (Pause): clear the worker's pause latch so the
-   * current turn continues to its next boundary instead of resting at idle. Sent
-   * when the Pause button is toggled back off before the pause takes effect.
-   * Symmetric to pause; a no-op on the worker if the latch was already consumed.
+   * Lift the Pause standing over a thread, so its work carries on to its next
+   * boundary instead of resting. Sent when the Pause button is toggled back off,
+   * and by Resume. Symmetric to pause; a no-op on the worker when no mark covers
+   * that thread.
    * @param {string} conversationId - Conversation ID
+   * @param {string} [threadItemId] - Thread whose covering marks are lifted.
    */
-  unpause(conversationId) {
-    this.sendToWorker(conversationId, { type: 'unpause' });
+  unpause(conversationId, threadItemId = '') {
+    this.sendToWorker(conversationId, { type: 'unpause', threadItemId });
   }
 
   /**

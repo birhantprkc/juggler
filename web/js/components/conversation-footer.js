@@ -11,7 +11,8 @@
  * @property {string} [nextSteps] - Optional next steps guidance
  * @property {boolean} [showDuplicateTab] - Whether to show the duplicate tab button (root thread only)
  * @property {string} [busyItemMessageId] - message-id of the busy thread item, enables clicking footer to select it
- * @property {boolean} [politePending] - A polite stop (Pause) is in progress: render the Pause button active until the worker rests
+ * @property {boolean} [politePending] - A polite stop (Pause) covering this column is still winding its work down: render the Pause button active
+ * @property {boolean} [politePaused] - A Pause covering this column has landed: this thread is at rest and runs nothing until it is lifted
  * @property {number} [runningTools] - How many tool-actions are executing right now; drives the spinner's club count
  * @property {number} [throughput] - Output tokens per second right now (0 when nothing is streaming); drives the spinner's speed
  * @property {number|null} [toolWaitMs] - How long the longest-running tool call has been running, or null when none is; drives the spinner's tool-wait ramp
@@ -491,6 +492,13 @@ class ConversationFooter extends HTMLElement {
             <footer-idle>
                 <div class="footer-idle-row footer-idle-main">
                     <div class="footer-idle-left">
+                        <div class="footer-paused hidden" role="status">
+                            <span class="footer-paused-label">Paused</span>
+                            <button class="message-action-btn footer-resume-btn" type="button" title="Lift the pause and carry on">
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M240-240v-480h66.67v480H240Zm169.33 0 390-240-390-240v480ZM476-363.67v-232.66L665-480 476-363.67ZM476-480Z"/></svg>
+                                Resume
+                            </button>
+                        </div>
                         <button class="message-action-btn add-context-item-btn hidden">
                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960"><path d="M440-120v-320H120v-80h320v-320h80v320h320v80H520v320h-80Z"/></svg>
                             Add Context Item
@@ -612,6 +620,14 @@ class ConversationFooter extends HTMLElement {
       });
     }
 
+    const resumeBtn = this.querySelector('.footer-resume-btn');
+    if (resumeBtn) {
+      resumeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._resumeOwnColumn();
+      });
+    }
+
     this._applyStatusOnly();
 
     if (this._messageThread) this._updateTokenDisplay();
@@ -637,13 +653,13 @@ class ConversationFooter extends HTMLElement {
   }
 
   /**
-   * Request a polite stop (Pause) for this conversation. Unlike Stop this is
-   * non-destructive and vantage-uniform: the current step finishes and records
-   * its result, then the worker rests at idle before the next LLM turn — nothing
-   * is cancelled and no run is settled. Routes through the same
-   * cancelLLMOperation entry with the polite flag. Passes `toggle: true` so a
-   * second click while the Pause is still pending turns it back off — the button
-   * is a toggle, unlike the shift+Escape shortcut which only ever requests a pause.
+   * Request a polite stop (Pause) for the thread this footer belongs to, and
+   * everything below it. Unlike Stop this is non-destructive: the work in flight
+   * finishes and records its result, then rests before the next LLM turn —
+   * nothing is cancelled and no run is settled. Scoped like Stop, through the
+   * same vantage-aware cancelLLMOperation. Passes `toggle: true` so a second
+   * click lifts the pause again — the button is a toggle, unlike the
+   * shift+Escape shortcut which only ever requests one.
    * @private
    */
   _pauseOwnColumn() {
@@ -653,6 +669,23 @@ class ConversationFooter extends HTMLElement {
       // @ts-ignore
       window.jugglerApp.cancelLLMOperation(threadItemId, { polite: true, toggle: true });
     }
+  }
+
+  /**
+   * Lift the Pause standing over this column and carry on from where it stopped.
+   *
+   * Both halves are needed. Lifting the mark only says the thread MAY run again:
+   * the pause left it at rest with nothing driving it, so a Resume that only
+   * un-paused would look like a button that does nothing. The continuation is
+   * what actually resumes the work — and it carries its own lift on the worker
+   * side, since an explicit send into a thread is an unambiguous "resume now".
+   * @private
+   */
+  _resumeOwnColumn() {
+    const conversation = this._messageThread?.conversation;
+    if (!conversation) return;
+    conversation.cancelPoliteStop(this._messageThread?.threadItemId ?? null);
+    this._messageThread.continue();
   }
 
   /**
@@ -757,10 +790,10 @@ class ConversationFooter extends HTMLElement {
         }
       }
       // Pause pending → render the Pause button in a visibly pending state while
-      // the current step finishes: the pause glyph is swapped for a spinner and
-      // the label reads "Pausing…". Purely a transient cue derived from the local
-      // optimistic flag; it clears the moment the worker reaches idle
-      // (state.politePending false), reverting to the plain Pause affordance.
+      // this column's work finishes: the pause glyph is swapped for a spinner and
+      // the label reads "Pausing…". It gives way to the idle row's "Paused" once
+      // the pause has landed, so the two together say what happened — a pending
+      // cue that merely disappeared was indistinguishable from a pause forgotten.
       const pauseBtn = this.querySelector('.footer-pause-btn');
       if (pauseBtn) {
         const pending = !!state.politePending;
@@ -790,6 +823,11 @@ class ConversationFooter extends HTMLElement {
       // Add Context Item is offered on every idle column, so the row is always
       // worth showing; the other two controls decide what else sits in it.
       toggle(idle, true);
+
+      // A landed Pause is the one thing an idle column has to say about itself:
+      // this thread has come to rest and will not run again until it is lifted.
+      const paused = !!state.politePaused;
+      toggle(this.querySelector('.footer-paused'), paused);
 
       toggle(continueBtn, !!state.canContinue);
       // Duplicate tab is offered only on a conversation's root thread

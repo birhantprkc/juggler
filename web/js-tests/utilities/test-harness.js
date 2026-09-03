@@ -1343,8 +1343,8 @@ export class IntegrationTestHarness {
       }
       if (condition.politePending !== undefined) {
         // Server-authoritative pause-pending cue: the worker publishes
-        // processingState.politePending while the latch is set on a busy frame,
-        // so this is what a reloaded client rehydrates from.
+        // processingState.politePending while a Pause is still winding covered
+        // work down, so this is what a reloaded client rehydrates from.
         const ps = this._conversation?.getMetadata('processingState');
         if ((ps?.politePending === true) !== condition.politePending) goalsMet = false;
       }

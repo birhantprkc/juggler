@@ -308,13 +308,13 @@ func (r *run) handleSendMessage(payload json.RawMessage) {
 		return
 	}
 
-	// Reaching here the worker is idle: an explicit send or Continue is an
-	// unambiguous "resume now" that clears any pending polite stop (Pause), so a
-	// latch that settled the worker but wasn't consumed can never suppress this
-	// user-initiated turn (D6, §10.5). Defensive: the boundary that drove idle
-	// already Swap(false)'d the latch, but a send arriving in the same idle
-	// window must win regardless.
-	r.clearPolitePending()
+	// Reaching here the worker is idle: an explicit send or Continue into this
+	// thread is an unambiguous "resume now", so it lifts any pause standing over
+	// it (D6, §10.5) — a mark outlives the rest it caused, and would otherwise
+	// suppress this user-initiated turn. Only the marks covering THIS thread go: a
+	// pause the user put on some other sub-agent is not something typing here
+	// asked to lift.
+	r.dropPoliteStopsCovering(msg.ThreadItemID)
 
 	// Guard: empty message (no text AND no attachments) with no incomplete
 	// tools = nothing to do. An explicit skills-only send is the exception — it
@@ -671,11 +671,13 @@ func (r *run) handleCancel(reason cancelReason) {
 		threadID = r.getProcessingThreadItemID()
 	}
 
-	// A hard cancel supersedes any pending polite stop (Pause): the user escalated
-	// from "finish then pause" to "stop now", so drop the latch before the
-	// destructive teardown below runs (D6, D7). Clearing it here also means the
-	// next turn after the cancel is never spuriously suppressed.
-	r.clearPolitePending()
+	// A hard cancel supersedes any polite stop (Pause) inside what it stops: the
+	// user escalated from "finish then pause" to "stop now", so those marks go
+	// before the destructive teardown below runs (D6, D7) and the turn after the
+	// cancel is never spuriously suppressed. Scoped like the cancel itself, and
+	// downward only — a pause standing OVER this thread is a request about the
+	// conversation, which stopping one thread inside it does not withdraw.
+	r.dropPoliteStopsUnder(threadID)
 
 	// Unwind any engine-driven strategy execution (e.g. plan onWorkerIdle's
 	// _driveExecution loop): the worker cancels the turn/tools below, but the
@@ -1202,8 +1204,9 @@ func (r *run) cancelAndWaitForIdle() bool {
 	}
 
 	// Undo is conversation-wide: address every live run directly rather than
-	// trusting the lossy top-level processing-state projection to choose one.
-	r.clearPolitePending()
+	// trusting the lossy top-level processing-state projection to choose one. The
+	// pause marks go with them — the intent behind every run is being withdrawn.
+	r.dropAllPoliteStops()
 	r.dispatchCancelStrategyExecution()
 	for _, live := range runs {
 		target := r.runFor(live.t)

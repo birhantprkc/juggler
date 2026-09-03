@@ -760,23 +760,29 @@ func parseRetryWaitFromMsg(msg string) time.Duration {
 }
 
 // RetryWaitResult reports how a waitForRetryDelay call ended.
-// At most one of Cancelled / NewMessage is true; both false means the timer
-// elapsed normally and the caller should retry the request.
+// At most one of Cancelled / NewMessage / Paused is true; all false means the
+// timer elapsed normally and the caller should retry the request.
 type RetryWaitResult struct {
 	Cancelled  bool // caller should return from runStrategyLoop
 	NewMessage bool // user sent a new message; caller should restart the outer strategy loop
+	Paused     bool // a polite stop landed on this thread; caller should end the turn at rest
 }
 
-// waitForRetryDelay parks for d, and reports the two things that can end the
-// backoff early: a cancel, and a fresh user message queued for this run's thread.
+// waitForRetryDelay parks for d, and reports the three things that can end the
+// backoff early: a cancel, a fresh user message queued for this run's thread, and
+// a polite stop (Pause) landing over it.
 //
-// The second is why retryWaiting exists. Every other wait a turn does ends on
-// its own — a response lands, a reply comes back — and a message that arrives
-// meanwhile is drained at the next turn boundary. A backoff has no such
-// boundary: the wait is dead time on a request the user has already superseded.
-// So the intake signals interject (see nudgeRetryWait), the backoff is abandoned
-// and the strategy loop restarts, promoting the queue at the top of the next
-// turn.
+// The last two are why retryWaiting exists. Every other wait a turn does ends on
+// its own — a response lands, a reply comes back — and anything that arrives
+// meanwhile is read at the next turn boundary. A backoff has no such boundary:
+// the wait is dead time before a request that the user has either superseded or
+// asked us not to make. So both signal interject (see nudgeRetryWait and
+// nudgePoliteStop) and the backoff is abandoned.
+//
+// A pause wins here even with partial output already streamed, unlike a queued
+// message: the reason a user reaches for Pause is most often the rate limiting
+// that put this run in a backoff in the first place, and honouring it only on a
+// clean attempt would refuse it exactly when it is meant.
 func (r *run) waitForRetryDelay(d time.Duration) RetryWaitResult {
 	// Chunks from the attempt that just failed can still be draining into the
 	// throttle; whichever way the wait ends, the document catches up with them.
@@ -799,6 +805,9 @@ func (r *run) waitForRetryDelay(d time.Duration) RetryWaitResult {
 			}
 
 		case <-r.t.interject:
+			if r.politeStopCovers(r.t.thread.itemID) {
+				return RetryWaitResult{Paused: true}
+			}
 			// Only redirect when no tokens have streamed yet (pure retry — no
 			// partial response). With partial output on screen the composer is
 			// still locked, so the queued message waits for the ordinary boundary.

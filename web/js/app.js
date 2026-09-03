@@ -1017,15 +1017,17 @@ class JugglerApp {
    *   we fall back to interrupting whichever sub-thread is the live processing
    *   column — so a bare Escape interrupts a running child rather than closing it.
    * @param {{polite?: boolean, toggle?: boolean, source?: string}} [opts] - When `polite` is true,
-   *   request a non-destructive Pause instead of a hard cancel: the current step
-   *   finishes and records its real result, then the worker rests at idle before
-   *   the next LLM turn. Nothing is cancelled, interrupted, or closed, so the
-   *   vantage routing below is skipped entirely (polite is vantage-uniform). When
-   *   `toggle` is also true (the Pause button, NOT shift+Escape), a polite request
-   *   that arrives while a Pause is already pending cancels it instead — clicking
-   *   Pause twice turns it back off. `source` names the gesture behind a hard
-   *   stop (`escape`, `stop button`) so the worker's log can attribute the
-   *   cancel; it reaches the log and nothing else.
+   *   request a non-destructive Pause instead of a hard cancel: the work in the
+   *   named column and everything below it finishes and records its real result,
+   *   then rests before the next LLM turn. Nothing is cancelled, interrupted or
+   *   closed, so the destructive vantage routing below is skipped — but the
+   *   vantage itself is not: a Pause is scoped exactly like a Stop, and an
+   *   unknown vantage means the whole conversation. When `toggle` is also true
+   *   (the Pause button, NOT shift+Escape), a polite request that arrives while a
+   *   Pause already covers that column lifts it instead — clicking Pause twice
+   *   turns it back off. `source` names the gesture behind a hard stop (`escape`,
+   *   `stop button`) so the worker's log can attribute the cancel; it reaches the
+   *   log and nothing else.
    */
   async cancelLLMOperation(focusedThreadId = undefined, { polite = false, toggle = false, source = 'stop' } = {}) {
     // The visible conversation is the one being cancelled.
@@ -1033,19 +1035,23 @@ class JugglerApp {
     if (!target) return;
     const { conversation } = target;
 
-    // Polite stop (Pause): non-destructive, vantage-uniform. Return BEFORE any
-    // destructive branch — it must not cancel approvals, kill actions, stamp a
-    // "Cancelled" message, or close sub-threads. The worker latches it and rests
-    // at idle at the next boundary; the local cue keeps the Pause button active.
+    // Polite stop (Pause): non-destructive. Return BEFORE any destructive branch
+    // — it must not cancel approvals, kill actions, stamp a "Cancelled" message,
+    // or close sub-threads. The worker marks the thread and rests it at the next
+    // boundary; the local cue keeps the Pause button active until that lands.
     if (polite) {
-      // Toggle sources (the Pause button) cancel a pause that is already pending:
-      // a second click turns Pause back off. Non-toggle sources (shift+Escape)
-      // only ever request a pause — pressing the shortcut again re-affirms the
-      // pending pause rather than cancelling it.
-      if (toggle && conversation.isPolitePending()) {
-        conversation.cancelPoliteStop();
+      // An unknown vantage (a bare shortcut, nobody having said which column)
+      // means the conversation: a pause is a request to stop spending, and the
+      // whole of it is the safe reading of an unaimed press.
+      const pauseThreadId = focusedThreadId ?? null;
+      // Toggle sources (the Pause button) lift a pause already covering this
+      // column: a second click turns Pause back off. Non-toggle sources
+      // (shift+Escape) only ever request a pause — pressing the shortcut again
+      // re-affirms it rather than lifting it.
+      if (toggle && conversation.politeStopState(pauseThreadId) !== 'none') {
+        conversation.cancelPoliteStop(pauseThreadId);
       } else {
-        conversation.requestPoliteStop();
+        conversation.requestPoliteStop(pauseThreadId);
         // Learn-by-doing: retire the onboarding tip the moment the shift+Escape
         // shortcut is actually used (not the Pause button, which is toggle:true).
         if (!toggle) markSeen('pause-conversation');

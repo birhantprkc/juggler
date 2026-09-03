@@ -44,8 +44,8 @@ func TestPoliteStop_ReducerRestsBeforeNextTurn(t *testing.T) {
 	// User typed a follow-up while the tool ran — parked in the pending queue.
 	w.enqueuePendingMessage("", UserMessageInput{Text: "queued follow-up"})
 
-	// The user pressed Pause: latch set before the reducer would re-drive.
-	w.politeStop.Store(true)
+	// The user pressed Pause: the mark is set before the reducer would re-drive.
+	w.markPoliteStop("")
 
 	// One scripted turn. If polite stop fails to suppress the re-dispatch this
 	// turn is consumed and an assistant reply lands — the regression signal.
@@ -87,9 +87,10 @@ func TestPoliteStop_ReducerRestsBeforeNextTurn(t *testing.T) {
 		t.Fatalf("polite stop failed to suppress the next turn: %d scripted responses left, want 1", n)
 	}
 
-	// The latch was consumed exactly once (so the next user-initiated turn runs).
-	if w.politeStop.Load() {
-		t.Error("politeStop latch not consumed after resting at idle")
+	// The mark still stands. A pause outlives the rest it caused — nothing may
+	// re-drive this thread until a human lifts it (D6: an explicit send does).
+	if !w.politeStopCovers("") {
+		t.Error("the pause mark was consumed by the boundary; a mark must stand until it is lifted")
 	}
 
 	// The worker rested at ordinary idle.
@@ -122,10 +123,10 @@ func TestPoliteStop_IdlePauseIsNoOp(t *testing.T) {
 	defer w.doc.Destroy()
 	w.currentRun().storeState(StateIdle)
 
-	w.handlePause()
+	w.handlePause("")
 
-	if w.politeStop.Load() {
-		t.Error("handlePause latched on an idle worker; an idle pause must be a no-op (V3)")
+	if w.hasPoliteStops() {
+		t.Error("handlePause marked an idle worker; an idle pause must be a no-op (V3)")
 	}
 }
 
@@ -139,10 +140,10 @@ func TestPoliteStop_HandlePauseLatchesWhenBusy(t *testing.T) {
 		"activity": ActivityAwaitingLLM, "threadItemId": "", "status": "processing_tools",
 	})
 
-	w.handlePause()
+	w.handlePause("")
 
-	if !w.politeStop.Load() {
-		t.Error("handlePause did not latch while the worker was busy (awaiting_llm)")
+	if !w.politeStopCovers("") {
+		t.Error("handlePause did not mark while the worker was busy (awaiting_llm)")
 	}
 }
 
@@ -154,10 +155,10 @@ func TestPoliteStop_SupersededByHardCancel(t *testing.T) {
 	defer w.doc.Destroy()
 	w.currentRun().storeState(StateIdle)
 
-	w.politeStop.Store(true)
+	w.markPoliteStop("")
 	w.currentRun().handleCancel(cancelReasonUnspecified)
 
-	if w.politeStop.Load() {
+	if w.hasPoliteStops() {
 		t.Error("hard cancel did not supersede the pending polite stop (D7)")
 	}
 }
@@ -172,13 +173,13 @@ func TestPoliteStop_ClearedByExplicitSend(t *testing.T) {
 	defer w.doc.Destroy()
 	w.currentRun().storeState(StateIdle)
 
-	w.politeStop.Store(true)
+	w.markPoliteStop("")
 
 	payload, _ := json.Marshal(map[string]any{"text": "resume with this"})
 	w.currentRun().handleSendMessage(payload)
 
-	if w.politeStop.Load() {
-		t.Error("explicit send did not clear the pending polite stop (D6 resume)")
+	if w.hasPoliteStops() {
+		t.Error("explicit send did not lift the polite stop covering the thread (D6 resume)")
 	}
 }
 
@@ -191,11 +192,11 @@ func TestPoliteStop_UnpauseClearsPendingLatch(t *testing.T) {
 	defer w.doc.Destroy()
 	w.currentRun().storeState(StateIdle)
 
-	w.politeStop.Store(true)
-	w.handleUnpause()
+	w.markPoliteStop("")
+	w.handleUnpause("")
 
-	if w.politeStop.Load() {
-		t.Error("handleUnpause did not clear the pending polite stop")
+	if w.hasPoliteStops() {
+		t.Error("handleUnpause did not lift the pending polite stop")
 	}
 }
 
@@ -207,10 +208,10 @@ func TestPoliteStop_UnpauseIsIdempotent(t *testing.T) {
 	defer w.doc.Destroy()
 	w.currentRun().storeState(StateIdle)
 
-	w.handleUnpause() // latch already false
+	w.handleUnpause("") // nothing marked
 
-	if w.politeStop.Load() {
-		t.Error("handleUnpause spuriously set the latch")
+	if w.hasPoliteStops() {
+		t.Error("handleUnpause spuriously marked a polite stop")
 	}
 }
 
@@ -228,64 +229,73 @@ func TestPoliteStop_PublishesPendingToProcessingState(t *testing.T) {
 		"activity": ActivityAwaitingLLM, "threadItemId": "", "status": "processing_tools",
 	})
 
-	w.handlePause()
+	w.handlePause("")
 
-	if !w.politeStop.Load() {
-		t.Fatal("handlePause did not latch while the worker was busy")
+	if !w.politeStopCovers("") {
+		t.Fatal("handlePause did not mark while the worker was busy")
 	}
 	if pending, _ := w.readProcessingState()["politePending"].(bool); !pending {
 		t.Error("handlePause did not publish politePending=true into the synced processingState")
 	}
 
-	w.handleUnpause()
+	w.handleUnpause("")
 
-	if w.politeStop.Load() {
-		t.Fatal("handleUnpause did not clear the latch")
+	if w.hasPoliteStops() {
+		t.Fatal("handleUnpause did not lift the mark")
 	}
 	if _, present := w.readProcessingState()["politePending"]; present {
 		t.Error("handleUnpause left a stale politePending in processingState")
 	}
 }
 
-// TestPoliteStop_ConsumeAndIdleDropPublishedPending verifies the published cue
-// tracks the latch across a turn: a busy status frame re-emits it (stateMap is
-// rebuilt from scratch each frame), consuming the latch at a boundary clears it,
-// and a resting idle frame never carries it even if the latch somehow lingers —
-// a pending pause is meaningless on an idle worker.
-func TestPoliteStop_ConsumeAndIdleDropPublishedPending(t *testing.T) {
-	w := NewConversationWorker("test-polite-consume-publish", "user:test")
+// TestPoliteStop_PendingBecomesPausedWhenTheWorkRests verifies the two states a
+// mark passes through, which is the whole of what the user is told. While the
+// covered thread is still working the frame says politePending — re-emitted on
+// every busy frame, since each is rebuilt from scratch. Once it rests the pending
+// cue goes and the mark reports `landed`: the conversation is Paused, and that
+// survives on an idle frame because a landed pause is BY DEFINITION on a resting
+// conversation. Without the landed half, resting is indistinguishable from the
+// pause having been forgotten — which is exactly how it read.
+func TestPoliteStop_PendingBecomesPausedWhenTheWorkRests(t *testing.T) {
+	w := NewConversationWorker("test-polite-publish-landed", "user:test")
 	defer w.doc.Destroy()
 	w.currentRun().storeState(StateIdle)
 	w.doc.SetMetadata("processingState", map[string]any{
 		"activity": ActivityCallingLLM, "threadItemId": "", "status": "streaming",
 	})
 
-	w.setPolitePending()
+	w.markPoliteStop("")
 	if p, _ := w.readProcessingState()["politePending"].(bool); !p {
-		t.Fatal("setPolitePending did not publish politePending")
+		t.Fatal("marking a polite stop did not publish politePending")
 	}
 
-	// A busy status frame must re-emit the flag from the latch — the frame is
-	// rebuilt from scratch, so without the re-emit the flag would flicker off.
 	w.currentRun().sendStatus("streaming", "")
-	if p, _ := w.readProcessingState()["politePending"].(bool); !p {
-		t.Error("busy sendStatus frame dropped politePending while the latch was set")
+	state := w.readProcessingState()
+	if p, _ := state["politePending"].(bool); !p {
+		t.Error("busy sendStatus frame dropped politePending while the mark stood")
+	}
+	if landed := publishedPoliteStopLanded(state, ""); landed != false {
+		t.Errorf("mark reported landed=%v while its thread was still calling the model", landed)
 	}
 
-	// Consuming at a turn boundary clears both the latch and the published flag.
-	if !w.consumePolitePending() {
-		t.Fatal("consumePolitePending reported the latch was already unset")
-	}
-	if _, present := w.readProcessingState()["politePending"]; present {
-		t.Error("consumePolitePending left politePending in processingState")
-	}
-
-	// Defensive: even with the latch forced back on, a resting idle frame must
-	// never publish a pending cue — there is nothing to pause at idle.
-	w.politeStop.Store(true)
+	// The run rests: the pause has landed.
 	w.currentRun().sendStatus("idle", "")
-	if _, present := w.readProcessingState()["politePending"]; present {
-		t.Error("idle sendStatus frame published politePending on a resting worker")
+	state = w.readProcessingState()
+	if _, present := state["politePending"]; present {
+		t.Error("resting frame still claims a pause is pending")
 	}
-	w.politeStop.Store(false)
+	if landed := publishedPoliteStopLanded(state, ""); landed != true {
+		t.Errorf("mark reported landed=%v on a resting conversation; the Paused state has no other source", landed)
+	}
+}
+
+// publishedPoliteStopLanded reads one mark's landed flag out of a published
+// frame, or nil when the frame carries no such mark.
+func publishedPoliteStopLanded(state map[string]any, threadItemID string) any {
+	stops, _ := state["politeStops"].(map[string]any)
+	entry, _ := stops[runKey(threadItemID)].(map[string]any)
+	if entry == nil {
+		return nil
+	}
+	return entry["landed"]
 }

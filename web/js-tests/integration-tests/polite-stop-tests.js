@@ -72,9 +72,15 @@ export const pauseRestsBeforeNextTurnTest = {
           items.map(i => i.type).join(', ')
       );
     }
-    // The optimistic pending cue self-clears once the worker reaches idle.
+    // The pause has stopped WINDING DOWN and has LANDED: the conversation is
+    // Paused, which is the state the footer names and the user acts on. A cue
+    // that merely disappeared at idle is indistinguishable from a pause that was
+    // forgotten, which is exactly how a long one read.
     if (conversation.isPolitePending()) {
-      throw new Error('politePending cue should have cleared once the worker rested at idle');
+      throw new Error('the pause still reports as pending after the worker rested at idle');
+    }
+    if (!conversation.isPolitePaused()) {
+      throw new Error('the conversation should report Paused once the worker rested with the pause standing');
     }
   }
 };
@@ -211,12 +217,10 @@ export const unpauseResumesNextTurnTest = {
  * reconstructs its conversation from that same doc — restores the "Pausing…" cue.
  *
  * The pivotal step is `wait-for-state { politePending: true }`: it reads the synced
- * `processingState`, not the local `_politePending` field, so it only passes if the
- * flag genuinely reached the doc — which is exactly what a reloaded client reads
- * back (`isPolitePending()` consults `processingState.politePending`, so a reset
- * local cue no longer hides the pending state). Once the tool completes and the
- * worker rests at idle, the published flag must clear so a later turn never
- * inherits a stale cue.
+ * `processingState`, not the local optimistic marks, so it only passes if the flag
+ * genuinely reached the doc — which is exactly what a reloaded client reads back.
+ * Once the tool completes and the worker rests, the pending flag gives way to the
+ * mark's `landed`: the conversation is Paused, and says so after a reload too.
  * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
  */
 export const pausePendingSurvivesReloadTest = {
@@ -259,14 +263,21 @@ export const pausePendingSurvivesReloadTest = {
           items.map(i => i.type).join(', ')
       );
     }
-    // Once the worker rests at idle the published cue must clear — a pending pause
-    // is meaningless on an idle worker, and a stale flag would wrongly show
-    // "Pausing…" after reload on a settled conversation.
+    // Once the worker rests, the pending cue must clear — nothing is winding down
+    // any more — and the mark must report `landed` in its place. Both halves are
+    // in the synced doc, so a reloading client reads the Paused state back rather
+    // than a settled-looking conversation with no trace of the pause.
     if (conversation.processingState?.politePending) {
       throw new Error('processingState.politePending should be cleared once the worker rested at idle');
     }
     if (conversation.isPolitePending()) {
       throw new Error('isPolitePending() should be false once the worker rested at idle');
+    }
+    if (conversation.processingState?.politeStops?.root?.landed !== true) {
+      throw new Error(
+        'the root pause mark should be published as landed once the worker rested: got ' +
+          JSON.stringify(conversation.processingState?.politeStops)
+      );
     }
   }
 };

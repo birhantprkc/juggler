@@ -23,6 +23,7 @@ import { ENGINE_DERIVED_ORIGIN } from '../utils/document-sync-manager.js';
 import {
   findThreadForArray,
   findParentInArray,
+  threadAncestry,
   walkThreads,
   findItemByIdRecursive,
   hasUnsettledToolInTree,
@@ -646,9 +647,11 @@ class Conversation {
 
   /**
    * Current worker processing state from the Yjs doc metadata.
-   * Includes `activity` ('' | 'calling_llm' | 'awaiting_llm'), `status`, and
-   * `politePending` (true while a Pause latch is set on a busy frame — the
-   * server-authoritative source for the "Pausing…" cue across reloads).
+   * Includes `activity` ('' | 'calling_llm' | 'awaiting_llm'), `status`, and the
+   * Pause projection — `politeStops` (one entry per paused thread, each
+   * reporting whether it has `landed`) and its conversation-wide `politePending`
+   * alias, the server-authoritative source for the "Pausing…" and "Paused" cues
+   * across reloads.
    * Read-only — the worker is the sole writer.
    * @returns {{activity?: string, status?: string, [key: string]: unknown} | undefined} Plain object snapshot of the worker's processingState, or undefined when nothing has been written yet
    */
@@ -1696,14 +1699,13 @@ class Conversation {
   _modelSelfHealAttempted = false;
 
   /**
-   * Optimistic "Pause pending" cue. True from a polite-stop request until the
-   * worker next settles to idle (see isPolitePending, which self-clears it).
-   * Local-only: it drives the Pause button's active appearance without a server
-   * round-trip. The settled state is ordinary idle — nothing distinguishes a
-   * paused conversation from any other idle one once the current step drains.
-   * @type {boolean}
+   * Optimistic Pause marks, keyed as the worker keys its own: `''` is the root
+   * thread, and every mark stands over its thread and everything nested below
+   * it. Local-only, and only until the worker's marks reach the doc — they are
+   * the truth, and `politeStopState` drops these the moment it can read one.
+   * @type {Set<string>}
    */
-  _politePending = false;
+  _politeStops = new Set();
 
   /**
    * Finish processing and clean up
@@ -1963,63 +1965,117 @@ class Conversation {
   }
 
   /**
-   * Request a polite stop (Pause): let the current step finish and record its
-   * real result, then rest at idle before the next LLM turn. Deliberately does
-   * NOT call stopProcessing / cancelAllActions / cancelAllPendingApprovals /
-   * addCancellationMessage — polite is uniformly non-destructive; it interrupts
-   * nothing and leaves every thread open. It only sends the `pause` message and
-   * flips the optimistic local cue so the Pause button renders active until the
-   * worker settles.
+   * Request a polite stop (Pause) over a thread and everything below it: the
+   * work in flight there finishes and records its real result, then rests before
+   * the next LLM turn. Deliberately does NOT call stopProcessing /
+   * cancelAllActions / cancelAllPendingApprovals / addCancellationMessage —
+   * polite is uniformly non-destructive; it interrupts nothing and leaves every
+   * thread open. It only sends the `pause` message and adds the optimistic local
+   * mark that renders the Pause button active until the worker's own lands.
+   * @param {string|null} [threadItemId] - The column the Pause came from; null
+   *   (the root) pauses the whole conversation.
    */
-  requestPoliteStop() {
+  requestPoliteStop(threadItemId = null) {
     if (!workerManager.isWorkerReady(this.id)) return;
-    workerManager.pause(this.id);
-    this._politePending = true;
+    const id = threadItemId || '';
+    workerManager.pause(this.id, id);
+    this._politeStops.add(id);
   }
 
   /**
-   * Cancel a pending polite stop (Pause) — the inverse of requestPoliteStop.
-   * Clears the worker's pause latch (so the current turn continues to its next
-   * boundary rather than resting at idle) and drops the optimistic local cue (so
-   * the Pause button reverts to its plain state). A no-op unless a polite stop is
-   * actually pending, which is what makes the button a toggle: press to pause,
-   * press again to un-pause. Deliberately NOT reachable from shift+Escape — that
-   * shortcut only ever requests a pause, never cancels one.
-   */
-  cancelPoliteStop() {
-    // Key off isPolitePending() (which consults the synced worker flag), not the
-    // raw local field — after a reload _politePending is false but the pause may
-    // still be genuinely pending in the synced processingState, and the toggle
-    // must still cancel it.
-    if (!this.isPolitePending()) return;
-    if (workerManager.isWorkerReady(this.id)) workerManager.unpause(this.id);
-    this._politePending = false;
-  }
-
-  /**
-   * Whether a polite stop is in progress. Server-authoritative: the worker
-   * publishes `processingState.politePending` while the pause latch is set on a
-   * busy frame, so this survives a page reload (the local `_politePending` cue is
-   * reset to false on reload). The synced flag is the truth; `_politePending` is
-   * only the optimistic pre-sync cue that covers the window between the click and
-   * the worker's first frame carrying the flag.
+   * Lift the Pause standing over a thread — the inverse of requestPoliteStop,
+   * and what makes the button a toggle: press to pause, press again to resume.
+   * A no-op unless a pause actually covers this thread.
    *
-   * Self-clears the local cue once the turn is no longer active — i.e. the worker
-   * reached the ordinary idle it rests at after the current step drains — so a
-   * later Continue never inherits a stale pending cue.
-   * @returns {boolean} true while a polite stop is pending (current step still finishing)
+   * It lifts ancestors' marks too, because that is the only honest reading of a
+   * press: a column covered by its parent's pause says Paused, and lifting the
+   * mark the label refers to is what the user is asking for. Deliberately NOT
+   * reachable from shift+Escape — that shortcut only ever requests a pause.
+   * @param {string|null} [threadItemId] - The column the press came from.
    */
-  isPolitePending() {
-    // Synced truth wins. Keep the local cue in step so paths that read
-    // _politePending directly stay consistent after a reload-driven rehydrate.
-    if (this.processingState?.politePending === true) {
-      this._politePending = true;
-      return true;
+  cancelPoliteStop(threadItemId = null) {
+    const id = threadItemId || '';
+    if (this.politeStopState(id) === 'none') return;
+    if (workerManager.isWorkerReady(this.id)) workerManager.unpause(this.id, id);
+    for (const mark of [...this._politeStops]) {
+      if (this._politeStopCovers(mark, id)) this._politeStops.delete(mark);
     }
-    if (this._politePending && !this.isTurnActive()) {
-      this._politePending = false;
+  }
+
+  /**
+   * What a Pause currently means for one column.
+   *
+   * Server-authoritative: the worker publishes its marks as
+   * `processingState.politeStops`, each reporting whether it has `landed` — so
+   * this survives a page reload, and a pause that has taken is distinguishable
+   * from one still winding down. The local marks are only the optimistic cue
+   * covering the window between the click and the worker's first frame carrying
+   * it; a local mark whose conversation is no longer running is dropped, since
+   * the request it stands for reached a worker with nothing to pause.
+   * @param {string|null} [threadItemId] - The column asking; null is the root.
+   * @returns {'none'|'pending'|'paused'} `pending` while covered work is still
+   *   finishing, `paused` once everything under the mark has come to rest.
+   */
+  politeStopState(threadItemId = null) {
+    const published = this.processingState?.politeStops;
+    const synced = /** @type {Record<string, {landed?: boolean}>|null} */ (
+      published && typeof published === 'object' ? published : null
+    );
+    // The overwhelmingly common case, and the one that must cost nothing: no
+    // pause anywhere, so no ancestry walk.
+    if (!synced && this._politeStops.size === 0) return 'none';
+
+    const chain = threadAncestry(this._rootMessageThread?.items ?? [], threadItemId || '');
+    let covered = false;
+    let landed = true;
+    for (const mark of chain) {
+      const entry = synced ? synced[mark === '' ? 'root' : mark] : null;
+      if (!entry) continue;
+      covered = true;
+      if (entry.landed !== true) landed = false;
     }
-    return this._politePending;
+    if (covered) {
+      // The worker's marks have arrived; the optimistic ones have done their job.
+      for (const mark of chain) this._politeStops.delete(mark);
+      return landed ? 'paused' : 'pending';
+    }
+    if (!chain.some((mark) => this._politeStops.has(mark))) return 'none';
+    if (!this.isTurnActive()) {
+      for (const mark of chain) this._politeStops.delete(mark);
+      return 'none';
+    }
+    return 'pending';
+  }
+
+  /**
+   * Whether a Pause is still winding this column's work down.
+   * @param {string|null} [threadItemId] - The column asking; null is the root.
+   * @returns {boolean} True while covered work is still finishing.
+   */
+  isPolitePending(threadItemId = null) {
+    return this.politeStopState(threadItemId) === 'pending';
+  }
+
+  /**
+   * Whether a Pause has landed over this column: everything under the mark has
+   * come to rest, and nothing runs here again until it is lifted.
+   * @param {string|null} [threadItemId] - The column asking; null is the root.
+   * @returns {boolean} True when this column is paused.
+   */
+  isPolitePaused(threadItemId = null) {
+    return this.politeStopState(threadItemId) === 'paused';
+  }
+
+  /**
+   * Whether a mark on one thread stands over another.
+   * @param {string} markThreadId - The thread the mark names ('' is the root).
+   * @param {string} threadItemId - The thread being asked about.
+   * @returns {boolean} True when the mark covers that thread.
+   * @private
+   */
+  _politeStopCovers(markThreadId, threadItemId) {
+    if (markThreadId === '') return true;
+    return threadAncestry(this._rootMessageThread?.items ?? [], threadItemId).includes(markThreadId);
   }
 
   /**

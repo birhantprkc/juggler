@@ -85,8 +85,6 @@ The top-level fields — `activity`, `threadItemId`, `claimedAt`, plus a copy of
 the spinner fields above — are a **projection** of whichever single run is live:
 the thread just touched if it still holds a claim, else a run actually calling
 the LLM, else one awaiting dispatch, breaking ties on the most recent claim.
-`politePending` is genuinely conversation-wide and is not projected from any
-run.
 
 Read the projection for "is this conversation doing anything" and for readers
 that can only act on one run (which column to reveal, which run a bare Escape
@@ -95,6 +93,36 @@ elapsed digit, a per-column busy check. A reader that asks the projection about
 a specific thread is wrong whenever a sibling is running. Every field is
 worker-written and rebuilt from scratch on load, so nothing here is durable
 state.
+
+#### `processingState.politeStops` — the Pause marks
+
+`politeStops` holds one entry per paused thread, keyed exactly as `runs` is
+(`"root"` for the root thread):
+
+```js
+politeStops: { "<threadItemId>": { landed } }
+```
+
+A mark stands over its thread **and everything nested below it**, so a mark on
+`"root"` is the whole conversation. Its thread and its descendants finish what is
+in flight and then rest before the next LLM turn; a mark is never consumed by the
+work it stops, only lifted by a human (the Pause toggle, a send or Continue into
+a covered thread, a hard cancel inside it, undo/redo).
+
+`landed` is the difference between the two things a user needs to tell apart:
+`false` while something under the mark still holds a claim (**Pausing…**), `true`
+once nothing does (**Paused**). It is therefore the one part of `processingState`
+that is meaningful on an idle frame — a landed pause is by definition on a
+resting conversation.
+
+Each covered run also carries `politePending: true` in its own `runs` entry, so a
+column renders its own state rather than the projection's; the top-level
+`politePending` is the conversation-wide alias, true while any covered run is
+still winding down.
+
+Like everything else here the marks are worker-owned and **not durable**: a
+worker that has just loaded is running nothing, and a pause restored onto it
+would suppress the user's next turn.
 
 `undoLog` and `metadata.undoState` are split deliberately: the log is a CRDT
 that survives sync; the state is the worker's view of "what can be

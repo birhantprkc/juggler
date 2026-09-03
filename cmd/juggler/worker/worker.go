@@ -320,23 +320,17 @@ type ConversationWorker struct {
 	// do here (kill its parked CLI subprocess; the warm session survives).
 	cancelLLMSession CancelLLMSessionFunc
 
-	// politeStop is the "Pause" latch: a non-destructive stop that lets all
-	// in-flight work (the current LLM stream, running tools, pending approvals)
-	// finish and record its real result, then rests at idle at the next
-	// boundary — before the model is invoked again. Set by a "pause" message
-	// (handlePause); consumed with Swap(false) at whichever
-	// boundary drives the worker to idle (dispatchCallLLMOnThread or the strategy
-	// loop's top-of-turn check). Nothing is marked Interrupted or Cancelled. It is
-	// cleared by an "unpause" message (the Pause button toggled back off before the
-	// latch was consumed — handleUnpause), cleared defensively
-	// by an explicit send (resume), and superseded by a hard cancel. Atomic so a
-	// pause arriving on the worker goroutine mid-wait is visible to the
-	// reducer/strategy boundaries without a lock. Mirrored into the synced
-	// processingState.politePending (via setPolitePending / clearPolitePending /
-	// consumePolitePending, re-emitted by sendStatus) so a client reloading
-	// mid-pause restores the "Pausing…" cue — the atomic is the source of truth,
-	// the published field its projection.
-	politeStop atomic.Bool
+	// politeStops holds the "Pause" marks: one per paused thread, each standing
+	// over that thread and everything nested below it. A covered thread finishes
+	// what is in flight (the current LLM stream, running tools, pending approvals)
+	// and rests at its next boundary, before the model is invoked again; nothing is
+	// marked Interrupted or Cancelled. A mark stands until a human lifts it, so no
+	// boundary consumes one. Set by a "pause" message and lifted by an "unpause", a
+	// send into the covered thread, a hard cancel over it, or undo/redo. An
+	// immutable map behind an atomic pointer, rewritten copy-on-write, so a pause
+	// arriving on the run goroutine is visible to the boundaries — which are turn
+	// goroutines — without a lock. See polite_stop.go, which owns every rule here.
+	politeStops atomic.Pointer[map[string]bool]
 
 	// mock is non-nil iff this worker is under test with scripted LLM
 	// responses installed. See mock_llm.go. Production binaries leave it nil.
@@ -1100,30 +1094,6 @@ func (r *run) recoverWorkerPanic(msgType string) {
 	r.sendError(fmt.Sprintf("Internal error: %v", panicValue), "")
 }
 
-// handlePause latches a polite stop when the worker is actually busy — whether
-// the pause arrives between turns or while one is streaming, since the run loop
-// keeps servicing the mailbox either way. When the worker is already idle it is a
-// no-op: latching then would strand the flag and suppress the next
-// user-initiated turn (verification item V3). Deliberately non-destructive: the
-// in-flight turn keeps its LLM call and its provider session, and consumes the
-// latch at its next boundary.
-func (w *ConversationWorker) handlePause() {
-	if !w.hasActiveRun() && w.anyRunState() == StateIdle {
-		return // nothing running — a pause is meaningless, don't strand the latch
-	}
-	w.setPolitePending()
-}
-
-// handleUnpause clears a pending polite stop (Pause) so the current turn carries
-// on to its next boundary instead of resting at idle. Sent from dispatchMessage
-// for an "unpause" message — the Pause button toggling itself back off while a
-// pause is still pending. Idempotent: dropping an already-clear latch is a
-// harmless no-op, so an unpause that races past the consuming boundary does
-// nothing (the turn was going to continue anyway).
-func (w *ConversationWorker) handleUnpause() {
-	w.clearPolitePending()
-}
-
 // handleMessage processes a single message from the main event loop.
 func (r *run) handleMessage(msg workerMessage) {
 	defer r.recoverWorkerPanic(msg.Type)
@@ -1165,10 +1135,10 @@ func (r *run) dispatchMessage(msg workerMessage) {
 		r.handleCancel(cancelReasonFromPayload(msg.Payload))
 
 	case "pause":
-		r.handlePause()
+		r.handlePause(threadItemIDFromPayload(msg.Payload))
 
 	case "unpause":
-		r.handleUnpause()
+		r.handleUnpause(threadItemIDFromPayload(msg.Payload))
 
 	case "provider-turn":
 		r.handleProviderTurn(msg.Payload)
@@ -1512,15 +1482,6 @@ func (r *run) writeProcessingState(status, message, code string) {
 	holdsClaim := statusHoldsClaim(status)
 	if holdsClaim {
 		stateMap["startedAt"] = r.t.processingStartedAt.Load()
-		// Mirror the polite-stop (Pause) latch into the synced state so a client
-		// reloading mid-pause restores the "Pausing…" cue. Only ever on a busy
-		// frame — a pending pause is meaningless at idle, so a latch stranded past
-		// a natural turn end (never consumed at a boundary) can't publish a cue on
-		// an idle worker. Re-emitting here keeps the flag across status transitions,
-		// since stateMap is rebuilt from scratch on every frame.
-		if r.politeStop.Load() {
-			stateMap["politePending"] = true
-		}
 	} else if status == "idle" && !r.actorStarted.Load() {
 		// Direct, no-actor tests retain the inline conversation-owned fence.
 		r.bumpTurnCounterAtIdle()

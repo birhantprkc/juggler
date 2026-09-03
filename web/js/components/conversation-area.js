@@ -2011,7 +2011,11 @@ class ConversationArea extends HTMLElement {
       nextSteps: this._nextSteps,
       showDuplicateTab,
       busyItemMessageId: itemBusy?.messageId,
-      politePending: !!this._conversation?.isPolitePending?.(),
+      // Asked of THIS column. A pause covers a thread and everything below it,
+      // so the conversation-wide answer would put "Pausing…" on every footer in
+      // the window — including the columns the press was not aimed at.
+      politePending: !!this._conversation?.isPolitePending?.(myThreadId),
+      politePaused: !!this._conversation?.isPolitePaused?.(myThreadId),
       runningTools,
       throughput,
       toolWaitMs,

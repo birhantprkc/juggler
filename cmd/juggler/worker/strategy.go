@@ -134,13 +134,15 @@ func (r *run) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVe
 	// the end-of-run "queued follow-up" continuation. In-flight tools from the
 	// prior turn are already committed to the doc, so promoting any queued
 	// messages and ending the run leaves a clean, resumable transcript;
-	// finishStrategyRun writes idle. consumePolitePending Swap(false)s the latch
-	// so the next user-initiated turn runs normally (D5, §10.4) and drops the
-	// synced pending cue. The reducer's dispatchCallLLMOnThread handles the
-	// between-turn (async-tool) case; this handles the case where the run never
-	// returned to the reducer at all.
-	if r.consumePolitePending() {
+	// finishStrategyRun writes idle. The mark is left standing — only a human
+	// lifts one (D5, §10.4) — which is also what stops this run's clean settlement
+	// re-driving its parent through signalParentThread: the parent's own dispatch
+	// asks the same question and rests too. The reducer's dispatchCallLLMOnThread
+	// handles the between-turn (async-tool) case; this handles the case where the
+	// run never returned to the reducer at all.
+	if r.politeStopCovers(r.t.thread.itemID) {
 		r.promotePendingItems(r.t.thread.itemID)
+		r.t.politelyStopped = true
 		return turnDone
 	}
 
@@ -275,6 +277,14 @@ func (r *run) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVe
 	response, err := r.callLLMWithRetry(llmRequest)
 	if errors.Is(err, ErrRestartStrategy) {
 		return turnContinue
+	}
+	// A pause abandoned the backoff before any request went out. Like the restart
+	// above this leaves no transaction to save — the attempt that failed already
+	// saved its own — so the turn simply ends and finishStrategyRun settles it.
+	if errors.Is(err, ErrPolitelyStopped) {
+		r.promotePendingItems(r.t.thread.itemID)
+		r.t.politelyStopped = true
+		return turnDone
 	}
 
 	duration := time.Since(startTime)
@@ -625,6 +635,27 @@ func (r *run) finishStrategyRun() {
 		return
 	}
 
+	// A run stopped by a Pause is not finished — it is paused. It keeps its open
+	// run record, so a caller parked on it stays parked and nothing downstream is
+	// re-driven: settling here would report an answer the thread was stopped
+	// before giving, and hand its parent (via signalParentThread) exactly the
+	// fresh turn the pause exists to prevent. Nothing is stamped Interrupted
+	// either. The thread is left as it stands, ready to carry on when the pause is
+	// lifted. The idle frame goes out with this run's thread context intact, so it
+	// drops only this thread's claim and leaves a parked parent's alone.
+	if r.t.politelyStopped {
+		r.t.politelyStopped = false
+		r.storeState(StateIdle)
+		r.releaseLLM(r.t.thread.itemID)
+		r.sendStatus("idle", "")
+		r.t.processingStartedAt.Store(0)
+		r.t.approvalWaitStartedAt.Store(0)
+		r.t.lastProgressWriteMs = 0
+		r.t.lastCacheMissNotice = ""
+		r.resetThreadContext()
+		return
+	}
+
 	wasCancelled := r.loadState() == StateCancelling
 	completedThreadID := r.t.thread.itemID // capture before clearing
 
@@ -853,6 +884,13 @@ func (r *run) callLLMWithRetry(req json.RawMessage) (*LLMResponse, error) {
 			r.t.txnID = ""
 			r.resetLLMRetryBudget()
 			return nil, ErrRestartStrategy
+		}
+		if res.Paused {
+			// The retry the pause prevented was never sent, so there is nothing to
+			// record and nothing to report: the turn ends at rest.
+			r.t.txnID = ""
+			r.resetLLMRetryBudget()
+			return nil, ErrPolitelyStopped
 		}
 
 		r.finalizeStreaming()

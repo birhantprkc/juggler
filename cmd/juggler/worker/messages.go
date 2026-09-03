@@ -65,6 +65,12 @@ var ErrCancelled = errors.New("cancelled")
 // iteration so the new message is included in the LLM context.
 var ErrRestartStrategy = errors.New("restart strategy")
 
+// ErrPolitelyStopped is returned by callLLMWithRetry when a Pause landed while
+// the turn sat in a retry backoff. The caller ends the turn as an ordinary rest:
+// nothing was sent, so the transcript is a clean prefix and there is no failure
+// to report — the run settles exactly as it would have at any other boundary.
+var ErrPolitelyStopped = errors.New("politely stopped")
+
 // ErrProviderUnavailable marks a turn that failed because the selected model's
 // provider isn't configured/usable (no API key, provider disabled, OAuth not
 // signed in). The LLM caller wraps its credential-resolution failure with this
@@ -297,6 +303,20 @@ const (
 // maxCancelReasonLen bounds a wire-supplied reason. The value is a log label,
 // so anything longer is a mistake or an attempt to pad the log.
 const maxCancelReasonLen = 64
+
+// threadItemIDFromPayload reads the thread a pause/unpause frame names, "" for
+// the root — which is also what an absent or malformed payload yields, since a
+// pause with no thread on it is the conversation-wide one the root's column
+// sends.
+func threadItemIDFromPayload(payload json.RawMessage) string {
+	var msg struct {
+		ThreadItemID string `json:"threadItemId"`
+	}
+	if len(payload) == 0 || json.Unmarshal(payload, &msg) != nil {
+		return ""
+	}
+	return msg.ThreadItemID
+}
 
 // cancelReasonFromPayload reads the reason off a cancel frame. Deliberately
 // total: an absent, malformed or empty payload yields cancelReasonUnspecified

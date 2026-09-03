@@ -96,6 +96,38 @@ export function findParentInArray(arr, targetId) {
 }
 
 /**
+ * The chain of threads standing over one thread, from the thread itself up to
+ * the root: `[threadItemId, …ancestors, '']`, where `''` is the root thread.
+ *
+ * A Pause mark names one thread and stands over everything nested below it, so
+ * this is what answers "does that mark cover this column". A thread the walk
+ * cannot find is read as top-level, which keeps a root mark covering it.
+ * @param {Array<*>} items - Root items array to search.
+ * @param {string} threadItemId - Thread to walk up from; '' is the root itself.
+ * @returns {string[]} Thread ids from the named thread up to the root.
+ */
+export function threadAncestry(items, threadItemId) {
+  if (!threadItemId) return [''];
+  /**
+   * @param {Array<*>} arr - Items to search.
+   * @param {string[]} path - Ids of the threads owning arr, innermost first.
+   * @returns {string[]|null} The chain, or null when this subtree lacks it.
+   */
+  const walk = (arr, path) => {
+    for (const item of arr || []) {
+      if (!item || typeof item.get !== 'function' || item.get('type') !== 'thread') continue;
+      const id = item.get('itemId');
+      if (id === threadItemId) return [id, ...path, ''];
+      const nested = item.get('items');
+      const found = nested ? walk(nested.toArray(), [id, ...path]) : null;
+      if (found) return found;
+    }
+    return null;
+  };
+  return walk(items, []) || [threadItemId, ''];
+}
+
+/**
  * Walk all thread items recursively, calling callback for each.
  * @param {Array<*>} items - Items to walk
  * @param {(threadYMap: any) => void} callback - Called with each thread Y.Map

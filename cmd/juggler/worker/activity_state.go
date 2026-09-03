@@ -240,6 +240,10 @@ func (w *ConversationWorker) patchRunIf(
 			} else {
 				runs[key] = entry
 			}
+			// A claim taken or released changes which threads a pause is still
+			// waiting on, so the pause projection is recomputed with the registry
+			// that carries it rather than left to the next status frame.
+			w.refreshPoliteStopsLocked(updated, runs)
 			storeRuns(updated, runs)
 			projectLiveRun(updated, threadItemID)
 		},
@@ -378,6 +382,7 @@ func (w *ConversationWorker) replaceProcessingState(
 	existing, _ := fromYcrdt(w.doc.metadata.Get("processingState")).(map[string]any)
 	runs := copyRuns(existing)
 	updateRuns(runs)
+	w.refreshPoliteStopsLocked(stateMap, runs)
 	storeRuns(stateMap, runs)
 	projectLiveRun(stateMap, touchedThreadID)
 	w.doc.setMetadata("processingState", stateMap)
@@ -416,51 +421,6 @@ func (r *run) reconcileProcessingStateOnLoad() {
 	if threadID, ok := r.findThreadWithIncompleteTool(); ok {
 		r.requestLLM(threadID)
 	}
-}
-
-// setPolitePending latches the polite-stop (Pause) AND mirrors it into the
-// synced processingState, so a client that reloads mid-pause restores the
-// "Pausing…" cue instead of reverting to a plain Pause button. The atomic latch
-// stays the source of truth (lock-free reads at the loop boundaries); the
-// published field is its projection. Routing every mutation through these three
-// helpers — plus sendStatus re-emitting the flag from the latch on each busy
-// frame (the frame is rebuilt from scratch) — keeps the two in lockstep.
-func (w *ConversationWorker) setPolitePending() {
-	w.politeStop.Store(true)
-	w.publishPolitePending(true)
-}
-
-// clearPolitePending drops the latch and its published projection. Used by the
-// Pause-button un-toggle (handleUnpause), the explicit-send resume, and the
-// hard-cancel supersede.
-func (w *ConversationWorker) clearPolitePending() {
-	w.politeStop.Store(false)
-	w.publishPolitePending(false)
-}
-
-// consumePolitePending clears the latch at a turn boundary and reports whether
-// it was set. Also drops the published projection immediately so the pending cue
-// disappears even in the window before the resting idle frame lands.
-func (w *ConversationWorker) consumePolitePending() bool {
-	if !w.politeStop.Swap(false) {
-		return false
-	}
-	w.publishPolitePending(false)
-	return true
-}
-
-// publishPolitePending projects the latch into processingState.politePending.
-// A no-op when processingState is absent (worker fully idle) — a pending pause
-// only exists while busy, and sendStatus re-adds the flag from the latch on the
-// next busy frame regardless.
-func (w *ConversationWorker) publishPolitePending(pending bool) {
-	w.patchProcessingState(func(m map[string]any) {
-		if pending {
-			m["politePending"] = true
-		} else {
-			delete(m, "politePending")
-		}
-	})
 }
 
 // hideElapsedAnchor removes startedAt from the doc's processingState. Clients

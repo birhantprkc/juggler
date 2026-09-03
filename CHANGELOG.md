@@ -23,6 +23,9 @@ of changes; this project follows semantic versioning.
 - Compaction now says what it kept, badges its summary tile, and no longer steals your column
 - The model picker says a change reaches the turn already running, so there is no need to stop it
 - A sub-thread tile shows what its own context cost against what it returned to the conversation
+- Pause now stops the column it was pressed in and everything under it, siblings included
+- A pause holds until you lift it, and the footer says Paused with a Resume button
+- Pause now ends a rate-limit wait instead of letting it retry
 
 ## [0.5.9] - 2026-08-29
 

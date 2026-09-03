@@ -56,6 +56,13 @@ type turnState struct {
 	// conversation-owned counter and undo finalization happen at retirement.
 	completedIdle bool
 
+	// politelyStopped marks a turn that ended because a Pause stands over its
+	// thread, as opposed to ending because the work was done. finishStrategyRun
+	// reads it to rest WITHOUT settling: a paused run is not finished, so it keeps
+	// its open run record and its caller stays parked. Owned by the turn goroutine
+	// that sets it, and read by that same goroutine as it unwinds.
+	politelyStopped bool
+
 	// lastProgressWriteMs throttles processing-state progress writes.
 	lastProgressWriteMs int64
 	// lastCacheMissNotice deduplicates cache-miss notices within this turn.

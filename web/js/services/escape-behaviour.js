@@ -310,21 +310,26 @@ function hardStop(focusedThreadId) {
 }
 
 /**
- * Request a polite stop (Pause): the current step finishes and records its real
- * result, then the worker rests at idle before the next LLM turn. Vantage-
- * uniform — nothing is cancelled, interrupted or closed. No `toggle`, so
- * pressing it again re-affirms the pause rather than turning it back off (that
- * is the footer Pause button's job).
- * @param {string|null} focusedThreadId - Vantage, ignored by the polite path.
+ * Request a polite stop (Pause): the work in this column and everything below it
+ * finishes and records its real result, then rests before the next LLM turn.
+ * Nothing is cancelled, interrupted or closed. No `toggle`, so pressing it again
+ * re-affirms the pause rather than lifting it (that is the footer Pause button's
+ * job).
+ * @param {string|null} focusedThreadId - Vantage the press came from; the pause
+ *   is scoped to it, exactly as a stop is.
  * @returns {void}
  */
 function politeStop(focusedThreadId) {
   app()?.cancelLLMOperation?.(focusedThreadId, { polite: true });
 }
 
-/** @returns {boolean} True when a Pause is already latched on the visible conversation. */
-function isPausePending() {
-  return app()?.getVisibleConversation?.()?.isPolitePending?.() === true;
+/**
+ * @param {string|null} focusedThreadId - Vantage the press came from.
+ * @returns {boolean} True when a Pause already stands over that column.
+ */
+function isPausePending(focusedThreadId) {
+  const state = app()?.getVisibleConversation?.()?.politeStopState?.(focusedThreadId ?? null);
+  return state === 'pending' || state === 'paused';
 }
 
 /**
@@ -402,7 +407,7 @@ function handleWhileRunning(event, mode, focusedThreadId, getComposer) {
       // Shift is the one-press escape hatch. Otherwise the pending Pause IS the
       // armed state — it survives a reload and shows in the footer, so the
       // ladder needs no gesture state of its own.
-      if (shift || isPausePending()) hardStop(focusedThreadId);
+      if (shift || isPausePending(focusedThreadId)) hardStop(focusedThreadId);
       else politeStop(focusedThreadId);
       return true;
 

@@ -1665,6 +1665,20 @@ footer-processing[data-message-id] {
     display: inline-block;
 }
 
+/* A landed Pause, on the idle row. The Pause button and its "Pausing…" cue are
+   gone by then — this is what tells the user the pause actually took, rather
+   than leaving them to read it off a conversation that merely went quiet. */
+.footer-paused {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.footer-paused-label {
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
+
 /* Undo offer: shown for a span delete, at the end of the column the items were
    removed from. Deliberately louder than the other footer rows — it is the one
    thing here that is only worth showing because something just disappeared. */

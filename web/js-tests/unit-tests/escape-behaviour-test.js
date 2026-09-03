@@ -59,7 +59,7 @@ function stubApp() {
     calls,
     shouldHandleEscape() { return stub.running; },
     getVisibleConversation() {
-      return { isPolitePending: () => stub.pausePending };
+      return { politeStopState: () => (stub.pausePending ? 'pending' : 'none') };
     },
     /**
      * @param {string|null} threadId - Vantage the stop came from.
