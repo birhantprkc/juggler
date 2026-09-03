@@ -30,6 +30,7 @@ import JugglerElement from './juggler-element.js';
 import pinboardStore from '../services/pinboard-store.js';
 import pinboardView from '../services/pinboard-view.js';
 import pinboardItemRegistry from '../registries/pinboard-item-registry.js';
+import wsService from '../services/websocket.js';
 import { REGISTRIES_RELOADED } from '../registries/reload-registries.js';
 import keyShortcutManager, { eventMatchesBinding } from '../services/key-shortcut-manager.js';
 import { markPopupOpen, isAnyPopupOpen } from '../utils/popup-manager.js';
@@ -80,6 +81,9 @@ class PinboardShell extends JugglerElement {
     this._build();
     this.addCleanup(pinboardStore.subscribe(() => this._syncVisibility()));
     this.addCleanup(pinboardView.subscribe(() => this._syncOpen()));
+    const onReveal = (/** @type {any} */ data) => this._onPinboardReveal(data);
+    wsService.on('pinboard-reveal', onReveal);
+    this.addCleanup(() => wsService.off('pinboard-reveal', onReveal));
     // Enabling or disabling an extension can be what gives the board its first
     // item type, or takes its last one away.
     this.onDocument(REGISTRIES_RELOADED, () => this._syncVisibility());
@@ -109,6 +113,22 @@ class PinboardShell extends JugglerElement {
         if (event.type === 'session:loaded' || event.type === 'project:changed') this._syncVisibility();
       })
     ));
+  }
+
+  /**
+   * Follow an advisory request to show a pin when it came from the conversation
+   * this viewer is watching and doing so would not cover a draft in progress.
+   * Detached boards ignore it: the agent targets the shared docked board, while
+   * a detached window is an arrangement the user made for its own purpose.
+   * @param {{board?: string, pin?: string, from?: string}} data - Reveal request.
+   * @private
+   */
+  _onPinboardReveal(data) {
+    if (isPinboardView() || data?.board !== 'main' || !data?.pin) return;
+    const from = data.from || '';
+    if (!from || !this._session?.shouldFollowRequest?.(from)) return;
+    if (!pinboardStore.getPin(data.pin)) return;
+    pinboardView.reveal(data.pin);
   }
 
   /**

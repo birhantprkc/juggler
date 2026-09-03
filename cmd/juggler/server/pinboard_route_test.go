@@ -27,8 +27,15 @@ import (
 // recordingBroadcaster captures the pinboard broadcasts a request produces,
 // each with the board it was about.
 type recordingBroadcaster struct {
-	boards [][]core.Pin
-	names  []string
+	boards  [][]core.Pin
+	names   []string
+	reveals []pinboardReveal
+}
+
+type pinboardReveal struct {
+	board string
+	pin   string
+	from  string
 }
 
 func (b *recordingBroadcaster) BroadcastSessionChanged()                          {}
@@ -39,6 +46,9 @@ func (b *recordingBroadcaster) BroadcastConversationFocus(id, from string)      
 func (b *recordingBroadcaster) BroadcastPinboardChanged(board string, pins []core.Pin) {
 	b.boards = append(b.boards, pins)
 	b.names = append(b.names, board)
+}
+func (b *recordingBroadcaster) BroadcastPinboardReveal(board, pin, from string) {
+	b.reveals = append(b.reveals, pinboardReveal{board: board, pin: pin, from: from})
 }
 
 // newPinboardTestServer wires the real session routes over a real (temp-dir)
@@ -141,6 +151,22 @@ func TestPinboardOperationsApplyAndBroadcast(t *testing.T) {
 	rec = pinboardRequest(t, s, http.MethodGet, "/api/session/pinboard", "")
 	if got := pinOrder(decodePins(t, rec)); got != "pin_b,pin_a" {
 		t.Fatalf("GET after edits: got %q want %q", got, "pin_b,pin_a")
+	}
+}
+
+func TestPinboardOperationsBroadcastRequestedReveal(t *testing.T) {
+	s, bc := newPinboardTestServer(t)
+
+	rec := pinboardRequest(t, s, http.MethodPost, "/api/session/pinboard/operations",
+		`{"operations":[{"op":"add","id":"pin_report","type":"file","config":{"path":"report.html"}}],"reveal":{"pin":"pin_report","from":"conversation-one"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST operations: got %d (%s), want 200", rec.Code, rec.Body.String())
+	}
+	if len(bc.reveals) != 1 {
+		t.Fatalf("expected exactly one reveal broadcast, got %d", len(bc.reveals))
+	}
+	if got := bc.reveals[0]; got != (pinboardReveal{board: core.MainBoardID, pin: "pin_report", from: "conversation-one"}) {
+		t.Fatalf("reveal broadcast: got %+v", got)
 	}
 }
 

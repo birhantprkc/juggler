@@ -457,7 +457,7 @@ class Session {
    * Apply a `conversations-changed` op="focus" event: switch this viewer to the
    * given conversation. Emitted by the server right after "created" when a
    * headless creator (the engine's new_conversation tool) asked viewers to
-   * follow. The request is advisory — {@link _shouldFollowFocus} decides, so a
+   * follow. The request is advisory — {@link shouldFollowRequest} decides, so a
    * viewer reading another tab or part-way through a message keeps its place.
    * When the switch is wanted but the conversation isn't switchable yet (its
    * "created" load is still in flight), park the id and let
@@ -469,7 +469,7 @@ class Session {
    */
   applyConversationFocus(id, from = '') {
     if (!id) return;
-    if (!this._shouldFollowFocus(from)) return;
+    if (!this.shouldFollowRequest(from)) return;
     if (this.conversations.has(id) && !this._remoteCreates.has(id)) {
       this.switchConversation(id);
     } else {
@@ -478,16 +478,15 @@ class Session {
   }
 
   /**
-   * Decide whether this viewer follows a "focus" request. A conversation asking
-   * to move the user is only allowed to do so when the user is actually watching
-   * it and has not started composing: switching away from a different tab, or
-   * out of a half-typed message, loses the user's place and their draft's
+   * Decide whether this viewer follows a request from a conversation. A request
+   * to move the user is only allowed when the user is actually watching that
+   * conversation and has not started composing: switching away from a different
+   * tab, or covering a half-typed message, loses the user's place and draft
    * context. An unattributed request (no `from`) is followed unconditionally.
-   * @param {string} from - Conversation that requested the switch.
-   * @returns {boolean} True when the switch should happen.
-   * @private
+   * @param {string} from - Conversation that requested the presentation change.
+   * @returns {boolean} True when the request may be followed.
    */
-  _shouldFollowFocus(from) {
+  shouldFollowRequest(from) {
     if (!from) return true;
     if (this.visibleConversationId !== from) return false;
     const tab = this.getConversation(from)?.getTabElement?.();
@@ -509,7 +508,7 @@ class Session {
     const pending = this._pendingFocus;
     if (!pending || pending.id !== id) return;
     this._pendingFocus = null;
-    if (this._shouldFollowFocus(pending.from)) {
+    if (this.shouldFollowRequest(pending.from)) {
       this.switchConversation(id);
     }
   }
@@ -1777,7 +1776,7 @@ class Session {
    *   viewer focus locally; distinct from `activate`, which switches THIS client.
    * @param {string} [options.focusFrom] - Conversation the focus request comes
    *   from. Each viewer follows only when it is watching that conversation with
-   *   an empty composer (see {@link _shouldFollowFocus}).
+   *   an empty composer (see {@link shouldFollowRequest}).
    * @returns {Promise<string>} New conversation ID
    */
   async createConversation(name, { activate = false, origin = 'unspecified', focus = false, focusFrom = '' } = {}) {

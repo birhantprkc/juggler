@@ -29,7 +29,7 @@ import { decodeHtmlEntities } from '../../../sdk/lib/html.js';
  * The focus request is attributed with `focusFrom` — this conversation's id — so
  * it never yanks the user out of unrelated work: a viewer follows only when it
  * is showing the conversation that asked and its composer is empty (see
- * `Session._shouldFollowFocus`). Anyone else just gains a new tab.
+ * `Session.shouldFollowRequest`). Anyone else just gains a new tab.
  *
  * The initial message is then seeded into the new conversation:
  *  - `autostart` (default): `sendMessage` posts the message AND starts the turn,

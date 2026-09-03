@@ -257,9 +257,13 @@ function applyOp(board, op) {
  */
 const sessionListeners = new Set();
 
-/** A session with just enough of one for the active-context snapshot. */
+/** Whether the fake conversation's composer currently holds a draft. */
+let composerHasText = false;
+
+/** A session with just enough of one for the active-context snapshot and reveal guard. */
 const fakeSession = {
   projectPath: '/tmp/probe-project',
+  visibleConversationId: 'conversation-one',
   subscribe: (/** @type {(event: any) => void} */ fn) => {
     sessionListeners.add(fn);
     return () => sessionListeners.delete(fn);
@@ -268,7 +272,13 @@ const fakeSession = {
     for (const fn of [...sessionListeners]) fn({ type });
   },
   getVisibleConversation: () => null,
-  getConversation: () => null,
+  getConversation: (/** @type {string} */ id) => id === 'conversation-one'
+    ? { getTabElement: () => ({ hasComposerText: () => composerHasText }) }
+    : null,
+  shouldFollowRequest(from) {
+    if (!from || this.visibleConversationId !== from) return false;
+    return !this.getConversation(from)?.getTabElement?.()?.hasComposerText?.();
+  },
 };
 
 /**
@@ -754,6 +764,45 @@ export async function runTests(_ctx) {
           'a remote removal must select the nearest surviving tab, not the empty state');
         assert(bodyText(shell) === 'probe:alpha', 'and mount it');
       } finally {
+        teardown();
+      }
+    });
+
+    await run('an agent reveal opens the requested pin for a viewer following its conversation', async () => {
+      const { teardown } = await mountShell([
+        { id: 'pin_a', type: 'probe', config: { label: 'alpha' } },
+        { id: 'pin_b', type: 'probe', config: { label: 'beta' } },
+      ]);
+      try {
+        composerHasText = false;
+        pinboardView.close();
+        wsService._emit('pinboard-reveal',
+          { board: 'main', pin: 'pin_b', from: 'conversation-one' });
+        assert(pinboardView.isOpen(), 'the reveal should open the docked board');
+        assert(pinboardView.getActivePinId() === 'pin_b', 'the reveal should select its pin');
+      } finally {
+        composerHasText = false;
+        teardown();
+      }
+    });
+
+    await run('an agent reveal does not interrupt another conversation or a draft', async () => {
+      const { teardown } = await mountShell([
+        { id: 'pin_a', type: 'probe', config: { label: 'alpha' } },
+        { id: 'pin_b', type: 'probe', config: { label: 'beta' } },
+      ]);
+      try {
+        pinboardView.close();
+        wsService._emit('pinboard-reveal',
+          { board: 'main', pin: 'pin_b', from: 'conversation-two' });
+        assert(!pinboardView.isOpen(), 'a different conversation must keep the board closed');
+
+        composerHasText = true;
+        wsService._emit('pinboard-reveal',
+          { board: 'main', pin: 'pin_b', from: 'conversation-one' });
+        assert(!pinboardView.isOpen(), 'a half-written message must keep the board closed');
+      } finally {
+        composerHasText = false;
         teardown();
       }
     });

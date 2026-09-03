@@ -125,6 +125,12 @@ type WorkerManager interface {
 // every viewer of it converge on the same order without replaying anyone's
 // operations. The name is what a viewer needs to ignore the boards it is not
 // showing — a project has several, and each document reads exactly one.
+//
+// `BroadcastPinboardReveal` is the separate, advisory presentation request that
+// may accompany an edit. `from` names the conversation that asked, so each
+// viewer can decline to move when it is elsewhere or has a draft in progress.
+// Keeping it separate from the composition event means ordinary pinboard edits
+// never acquire presentation side effects.
 type Broadcaster interface {
 	BroadcastSessionChanged()
 	BroadcastSessionMetadataChanged(metadata map[string]any)
@@ -132,6 +138,7 @@ type Broadcaster interface {
 	BroadcastConversationsReordered(order []string)
 	BroadcastConversationFocus(id, from string)
 	BroadcastPinboardChanged(board string, pins []core.Pin)
+	BroadcastPinboardReveal(board, pin, from string)
 }
 
 // NewSessionAPI creates a new session API handler. managerProvider must
@@ -246,6 +253,10 @@ func (api *SessionAPI) HandlePinboardOperations(w http.ResponseWriter, r *http.R
 	}
 	req, ok := DecodeJSON[struct {
 		Operations []core.PinboardOp `json:"operations"`
+		Reveal     *struct {
+			Pin  string `json:"pin"`
+			From string `json:"from,omitempty"`
+		} `json:"reveal,omitempty"`
 	}](w, r)
 	if !ok {
 		return
@@ -264,6 +275,18 @@ func (api *SessionAPI) HandlePinboardOperations(w http.ResponseWriter, r *http.R
 	WriteJSON(w, r, http.StatusOK, map[string]any{"board": board, "pins": pins})
 	if api.broadcaster != nil {
 		api.broadcaster.BroadcastPinboardChanged(board, pins)
+		if req.Reveal != nil {
+			pin := strings.TrimSpace(req.Reveal.Pin)
+			from := strings.TrimSpace(req.Reveal.From)
+			if from != "" {
+				for _, candidate := range pins {
+					if candidate.ID == pin {
+						api.broadcaster.BroadcastPinboardReveal(board, pin, from)
+						break
+					}
+				}
+			}
+		}
 	}
 }
 

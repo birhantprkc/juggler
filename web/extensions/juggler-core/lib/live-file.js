@@ -60,17 +60,19 @@ injectFileContentStyles();
  * can be torn down mid-read must check its own signal before using what comes
  * back rather than assuming this rejected.
  * @param {string} path - File or directory path. A trailing "/" means directory.
- * @param {{signal?: AbortSignal, noIgnore?: boolean, head?: number, whole?: boolean}} [options] - Abort
+ * @param {{signal?: AbortSignal, noIgnore?: boolean, head?: number, whole?: boolean, userInitiated?: boolean}} [options] - Abort
  *   signal for the file read, whether a directory listing ignores .gitignore, a line
- *   ceiling for a caller showing a preview rather than the whole file, and `whole` for
- *   a caller that wants every line. With neither the read op's own default cap
- *   applies, which is generous but is still a cap.
+ *   ceiling for a caller showing a preview rather than the whole file, whether the
+ *   path came from a user gesture, and `whole` for a caller that wants every line.
+ *   With neither the read op's own default cap applies, which is generous but is
+ *   still a cap.
  * @returns {Promise<LiveFileResult>} What disk said; `exists: false` on any failure.
  */
 export async function fetchLiveFile(path, options = {}) {
   if (!path) {
     return { path: '', isDirectory: false, exists: false, content: '' };
   }
+  const userInitiated = options.userInitiated !== false;
 
   // Completion paths conventionally carry a trailing slash for directories, but a
   // user may type or paste an absolute directory path without one. Probe first in
@@ -78,7 +80,7 @@ export async function fetchLiveFile(path, options = {}) {
   let isDirectory = path.endsWith('/');
   if (!isDirectory) {
     try {
-      const metadata = await stat({ path, userInitiated: true });
+      const metadata = await stat({ path, userInitiated });
       isDirectory = metadata.isDirectory === true;
     } catch (err) {
       // Preserve the read operation's error/result behavior when metadata is
@@ -89,7 +91,7 @@ export async function fetchLiveFile(path, options = {}) {
   if (isDirectory) {
     try {
       const treeParams = /** @type {Record<string, unknown>} */ (
-        { path, depth: 2, maxTokens: 4000, userInitiated: true });
+        { path, depth: 2, maxTokens: 4000, userInitiated });
       if (options.noIgnore) treeParams.noIgnore = true;
       const r = await getTree(treeParams);
       return {
@@ -112,7 +114,7 @@ export async function fetchLiveFile(path, options = {}) {
 
   try {
     /** @type {import('../../../js/services/ops-api.js').ReadFileLoadParams} */
-    const readParams = { path, userInitiated: true };
+    const readParams = { path, userInitiated };
     if (options.head && options.head > 0) readParams.head = options.head;
     else if (options.whole) readParams.maxLines = 0;
 
@@ -149,13 +151,14 @@ export async function fetchLiveFile(path, options = {}) {
  * file the user named from the Desktop, having just been shown its contents.
  * @param {LiveFileResult} result - A live read.
  * @param {string} absolutePath - The path to attribute the bytes to.
- * @param {{conversationId?: string}} [options] - Conversation the bytes are for, when there is one.
+ * @param {{conversationId?: string, userInitiated?: boolean}} [options] - Conversation
+ *   the bytes are for, and whether a user gesture approved paths outside the project.
  * @returns {import('juggler/file-source').FileSource} The file, ready to render or extract.
  */
 export function liveFileSource(result, absolutePath, options = {}) {
   return fileSourceFromReadResult(result, absolutePath || result.path || '', {
     conversationId: options.conversationId,
-    access: { userInitiated: true },
+    access: options.userInitiated === false ? {} : { userInitiated: true },
   });
 }
 
@@ -180,8 +183,8 @@ export function liveFileInfo(result) {
  * is, above — so `<file-view>` renders content alone.
  * @param {HTMLElement} container - The region to fill.
  * @param {LiveFileResult} result - A live read.
- * @param {{absolutePath?: string, conversationId?: string}} [options] - The path to
- *   attribute the bytes to, and the conversation they are for.
+ * @param {{absolutePath?: string, conversationId?: string, userInitiated?: boolean}} [options] - The path to
+ *   attribute the bytes to, the conversation they are for, and its path provenance.
  * @returns {void}
  */
 export function renderLiveFileBody(container, result, options = {}) {

@@ -630,10 +630,10 @@ never run in the engine, so there is no worker twin to think about.
 Know which of the three you actually want:
 
 - An **info card** is an ambient tile the sidebar may *drop* when it runs out of
-  room. A pin is guaranteed workspace the user asked for by name.
+  room. A pin is guaranteed workspace the user or agent asked to keep visible.
 - A **context item** belongs to a conversation and is visible to the model.
-  A pin is a view: pinning a file *shows* it, it does not put it in anyone's
-  context, and the model never learns it exists.
+  A pin is a one-way view: pinning a file *shows* it, but does not put it in
+  anyone's context. The agent may request a pin; it cannot list or read the board.
 
 ```javascript
 import PinboardItemType from 'juggler/pinboard-item-type';

@@ -7,6 +7,7 @@ import PinboardItemType from 'juggler/pinboard-item-type';
 import { basename } from 'juggler/item-utils';
 import { buildPickerPanel, createElement, injectStylesOnce } from 'juggler/ui';
 import { fetchLiveFile, renderLiveFileBody } from '../lib/live-file.js';
+import { absoluteFilePinPath, normalizeFilePinParameters } from '../lib/file-pin-config.js';
 
 injectStylesOnce('file-pin-styles', `
 .file-pin {
@@ -29,94 +30,18 @@ injectStylesOnce('file-pin-styles', `
 const REFRESH_DEBOUNCE_MS = 150;
 
 /**
- * Does this path already name a location on its own? A leading `/` everywhere,
- * and on Windows a drive path (`C:\…`, `C:/…`) or a UNC share (`\\server\share`)
- * — the backend reports native OS paths, so a pin made on Windows holds one, and
- * treating it as relative would glue it onto the project root and name a place
- * that does not exist.
- * @param {string} path - The path to judge.
- * @returns {boolean} True when the path names its own location.
- */
-function isAbsolutePath(path) {
-  return path.startsWith('/') || path.startsWith('\\\\') || /^[A-Za-z]:([\\/]|$)/.test(path);
-}
-
-/**
- * Collapse a path to one spelling: no repeated separators, no `.` segments, `..`
- * resolved where it can be, no trailing separator. Purely textual — there is no
- * project root in scope here, so a relative path stays relative.
- * @param {string} path - The path as it arrived.
- * @returns {string} The normalized path, or '' when there was nothing to normalize.
- */
-function normalizePathText(path) {
-  const trimmed = String(path || '').trim();
-  if (!trimmed) return '';
-  const absolute = trimmed.startsWith('/');
-  /** @type {string[]} */
-  const segments = [];
-  for (const segment of trimmed.split('/')) {
-    if (!segment || segment === '.') continue;
-    if (segment === '..') {
-      const last = segments[segments.length - 1];
-      if (last && last !== '..') {
-        segments.pop();
-        continue;
-      }
-      // Above an absolute root there is nowhere to go; a relative path keeps the
-      // `..` because only the project root can say what it means.
-      if (absolute) continue;
-    }
-    segments.push(segment);
-  }
-  const joined = segments.join('/');
-  if (absolute) return `/${joined}`;
-  return joined;
-}
-
-/**
- * Validate and normalize a File pin's config. Shared by the instance method the
- * host calls and the static one a source descriptor goes through, so a pin made
- * by pinning a file and a pin made from the picker are spelt the same way.
- * @param {Record<string, any>} config - The config to check.
- * @returns {{path: string, isDirectory?: boolean}|null} The normalized config, or null to reject it.
- */
-function normalizeFileConfig(config) {
-  const raw = typeof config?.path === 'string' ? config.path.trim() : '';
-  if (!raw) return null;
-  const path = normalizePathText(raw);
-  if (!path) return null;
-  // A trailing separator is how a completion says "directory", and it is the only
-  // hint available before anything is read.
-  const isDirectory = config?.isDirectory === true || (raw.length > 1 && raw.endsWith('/'));
-  return isDirectory ? { path, isDirectory: true } : { path };
-}
-
-/**
- * The path to read, resolved against the open project when the config holds a
- * relative one.
- * @param {Record<string, any>} config - The pin's config.
- * @param {import('juggler/pinboard-item-type').PinActiveContext} active - The active context.
- * @returns {string} An absolute path, or the config's path when there is no project.
- */
-function absolutePath(config, active) {
-  const path = config?.path || '';
-  if (!path || isAbsolutePath(path)) return path;
-  const root = (active?.project?.path || '').replace(/\/+$/, '');
-  return root ? `${root}/${path}` : path;
-}
-
-/**
  * FilePin — a file kept where it can be seen.
  *
  * The board holds the path and nothing else. Every render reads what is on disk
  * now, so the pin is never stale and never carries a copy of anyone's file
  * around in session state. Pinning a file shows it; it does not put it in a
- * conversation's context, and the model never sees it.
+ * conversation's context. The agent may request that a file be shown, but the
+ * board remains a one-way display surface rather than agent-readable context.
  *
- * The read is user-initiated by construction — the user named this file — so a
- * pin may point outside the project root, the same way an `@`-mention may. That
- * is what lets a pin on a sibling repo keep working; it is also why removing the
- * pin is the way to stop reading it.
+ * Pin reads are treated as display-initiated rather than model context reads. That
+ * remains true when the agent requested the pin: the bytes go only to the viewer,
+ * and the agent has no board-reading path. A pin may therefore point outside the
+ * project root, the same way a user-picked file or an `@`-mention may.
  * @class
  * @augments PinboardItemType
  */
@@ -184,8 +109,8 @@ class FilePin extends PinboardItemType {
 
     // Stored absolute, so the same file pinned from the picker and from a
     // properties panel is one pin rather than two spellings of one.
-    return normalizeFileConfig({
-      path: absolutePath({ path: chosen }, options.active),
+    return normalizeFilePinParameters({
+      path: absoluteFilePinPath({ path: chosen }, options.active),
       isDirectory: chosen.endsWith('/'),
     });
   }
@@ -195,7 +120,7 @@ class FilePin extends PinboardItemType {
    * @returns {Record<string, any>|null} The normalized config, or null to reject it.
    */
   normalizeConfig(config) {
-    return normalizeFileConfig(config);
+    return normalizeFilePinParameters(config);
   }
 
   /**
@@ -228,7 +153,7 @@ class FilePin extends PinboardItemType {
     const name = basename(path) || path;
     return {
       title: config.isDirectory ? `${name}/` : name,
-      path: absolutePath(config, active),
+      path: absoluteFilePinPath(config, active),
     };
   }
 
@@ -249,7 +174,7 @@ class FilePin extends PinboardItemType {
    * @returns {Record<string, any>|null} The config, or null if the path was unusable.
    */
   static configFromSource(source) {
-    return normalizeFileConfig(/** @type {Record<string, any>} */ (source));
+    return normalizeFilePinParameters(/** @type {Record<string, any>} */ (source));
   }
 
   /**
@@ -261,7 +186,7 @@ class FilePin extends PinboardItemType {
    */
   mount(container, pinContext) {
     let context = pinContext;
-    let target = absolutePath(context.pin.config, context.active);
+    let target = absoluteFilePinPath(context.pin.config, context.active);
 
     const body = createElement('div', 'file-pin');
     container.replaceChildren(body);
@@ -273,18 +198,21 @@ class FilePin extends PinboardItemType {
 
     const render = async () => {
       const mine = ++generation;
-      const path = absolutePath(context.pin.config, context.active);
+      const path = absoluteFilePinPath(context.pin.config, context.active);
+      const userInitiated = context.pin.config?.agentRequested !== true;
       body.replaceChildren(createElement('div', 'file-content-loading', 'Loading…'));
 
       const result = await fetchLiveFile(path, {
         signal: context.signal,
         whole: true,
+        userInitiated,
       });
       if (mine !== generation || context.signal.aborted) return;
 
       renderLiveFileBody(body, result, {
         absolutePath: path,
         conversationId: context.active?.conversation?.id,
+        userInitiated,
       });
 
       // The pin asks for the whole file, so this only speaks up when the read
@@ -312,7 +240,7 @@ class FilePin extends PinboardItemType {
 
     return {
       update: (next) => {
-        const nextTarget = absolutePath(next.pin.config, next.active);
+        const nextTarget = absoluteFilePinPath(next.pin.config, next.active);
         const conversationChanged = next.active?.conversation?.id !== context.active?.conversation?.id;
         context = next;
         if (nextTarget === target && !conversationChanged) return;

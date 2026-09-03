@@ -327,6 +327,21 @@ func (b serverBroadcaster) BroadcastPinboardChanged(board string, pins []core.Pi
 	})
 }
 
+// BroadcastPinboardReveal asks viewers to open one board on one pin. The request
+// is advisory: from identifies the conversation that made it, and each viewer
+// decides whether following it would interrupt unrelated work or a draft.
+func (b serverBroadcaster) BroadcastPinboardReveal(board, pin, from string) {
+	msg := map[string]any{
+		"type":  "pinboard-reveal",
+		"board": board,
+		"pin":   pin,
+	}
+	if from != "" {
+		msg["from"] = from
+	}
+	b.srv.broadcastToAll(msg)
+}
+
 // BroadcastConversationsChanged publishes a single op-tagged
 // conversation-list diff. `op` is one of "created", "deleted",
 // "renamed", "binned", "restored", "binned-deleted", "bin-emptied".

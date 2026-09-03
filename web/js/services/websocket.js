@@ -78,7 +78,7 @@ const RECONNECT_FIRST_DELAY_MS = 300;
 const RECONNECT_JITTER = 0.25;
 
 /**
- * @typedef {'open'|'close'|'error'|'message'|'session'|'file-change'|'project-changed'|'plugin-changed'|'retry'|'streaming-error'|'providers-update'|'providers-ready'|'shell-output'|'reconnect-attempt'|'engine-bridge'|'update-status'|'clients-changed'|'pinboard-changed'|'viewer-relay'} WSEventType
+ * @typedef {'open'|'close'|'error'|'message'|'session'|'file-change'|'project-changed'|'plugin-changed'|'retry'|'streaming-error'|'providers-update'|'providers-ready'|'shell-output'|'reconnect-attempt'|'engine-bridge'|'update-status'|'clients-changed'|'pinboard-changed'|'pinboard-reveal'|'viewer-relay'} WSEventType
  */
 
 /**
@@ -244,6 +244,7 @@ class WebSocketService {
       'update-status': [],
       'clients-changed': [],
       'pinboard-changed': [],
+      'pinboard-reveal': [],
       'viewer-relay': []
     };
   }
@@ -666,6 +667,16 @@ class WebSocketService {
       ws._emit('pinboard-changed', {
         board: typeof data.board === 'string' ? data.board : '',
         pins: Array.isArray(data.pins) ? data.pins : [],
+      });
+    },
+
+    // Advisory request to open one board on one pin. Composition arrives through
+    // pinboard-changed first; the shell applies the per-viewer interruption guard.
+    'pinboard-reveal': (ws, data) => {
+      ws._emit('pinboard-reveal', {
+        board: typeof data.board === 'string' ? data.board : '',
+        pin: typeof data.pin === 'string' ? data.pin : '',
+        from: typeof data.from === 'string' ? data.from : '',
       });
     },
 

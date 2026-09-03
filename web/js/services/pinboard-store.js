@@ -36,6 +36,7 @@
 
 import wsService from './websocket.js';
 import { fetchJson } from './http.js';
+import { applyPinboardOperations } from './pinboard-operations-api.js';
 import { boardId } from '../utils/view-mode.js';
 
 /**
@@ -144,11 +145,7 @@ wsService.on('project-changed', () => {
  */
 async function applyOperations(operations) {
   if (!operations.length) return _pins;
-  const data = await fetchJson(`/api/session/pinboard/operations?board=${encodeURIComponent(boardId())}`, {
-    method: 'POST',
-    body: { operations },
-    errorPrefix: '[Pinboard] Operation failed',
-  });
+  const data = await applyPinboardOperations(boardId(), operations);
   const pins = sanitize(data?.pins);
   adopt(pins);
   return pins;
