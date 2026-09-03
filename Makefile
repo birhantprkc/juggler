@@ -107,6 +107,19 @@ GOTEST=$(GOCMD) test
 # space survives the single-quoted `bash -c` wrappers in the test recipes below.
 RUN ?=
 GOTEST_RUN=$(if $(RUN),-run "$(RUN)" -v)
+# With RUN set every package is still compiled and run, so the ~40 that hold no
+# matching test narrate themselves under -v — a "no tests to run" warning, a
+# bare PASS and an `ok <pkg> [no tests to run]` each. That is the great majority
+# of the output of a one-test run, and it buries the test you asked about.
+# Silence exactly those lines (plus the `[no test files]` roll-call) and nothing
+# else, so a narrowed run prints the narrowed run. Only applied when RUN is set:
+# an unnarrowed run's per-package `ok` lines are its progress feed.
+#
+# It sits BEFORE the tee, so the log and the terminal hold the same text and
+# there is never a reason to go and read the log instead. `go test`'s own status
+# is read from PIPESTATUS[0] in the recipes, so grep selecting nothing (exit 1)
+# cannot be mistaken for a test failure.
+QUIET_UNMATCHED=$(if $(RUN),| grep --line-buffered -vE "^(testing: warning: no tests to run|PASS)$$|\[no tests to run\]$$|\[no test files\]$$")
 # The race detector needs cgo (a C compiler). CI and most Unix dev boxes have
 # one, so default -race on. A Windows dev box usually has no C toolchain, so cgo
 # can't build and `go test -race` fails outright with "requires cgo" — override
@@ -541,21 +554,30 @@ build: lint go-build
 ## a failure names which layer broke.
 ##
 ## Runs without `-v`, so the terminal stays quiet: a single `ok ... <time>`
-## line on success, and only the failing tests' output on failure. The same
-## output is teed to $(BUILD_DIR)/test*.log. No need to tee/tail/grep yourself.
+## line per package on success, and only the failing tests' output on failure.
+## Each layer announces itself, the first failing layer stops the run (so a
+## failure is the last thing on screen) and is named in a ✗ line under it. Run
+## it plain and read what it prints: the same text is teed to
+## $(BUILD_DIR)/test*.log purely for afterwards, and there is nothing in there
+## that was not on your terminal — no need to tee/tail/grep yourself.
 ##
 ## To iterate on ONE test, pass RUN='<regex>' (a `go test -run` pattern matched
 ## against test-function names); it also flips on -v so you see that test's
-## output. This is the sanctioned way to run a single integration/browser test —
-## never invoke `node`, the browser harness, or `go test` by hand.
+## output, and silences the packages holding no matching test (QUIET_UNMATCHED)
+## so what is left is the test you asked for. This is the sanctioned way to run
+## a single integration/browser test — never invoke `node`, the browser harness,
+## or `go test` by hand.
 ##   make test RUN='TestDiffView'            # one test, whichever layer it's in
 ##   make test RUN='TestDiffView/collapsed'  # one subtest
 ##   make test-go RUN='TestWorker'           # restrict to the fast unit layer
 test: test-go
 	@mkdir -p $(BUILD_DIR)
+	@echo "── integration + browser suite ──"
 	@bash -c 'set -o pipefail; \
-		$(GOTEST) -count=1 $(RACE) -timeout 15m $(GOTEST_RUN) ./tests/integration/... 2>&1 | tee $(BUILD_DIR)/test.log; \
-		exit $${PIPESTATUS[0]}'
+		$(GOTEST) -count=1 $(RACE) -timeout 15m $(GOTEST_RUN) ./tests/integration/... 2>&1 $(QUIET_UNMATCHED) | tee $(BUILD_DIR)/test.log; \
+		rc=$${PIPESTATUS[0]}; \
+		if [ $$rc -eq 0 ]; then echo "✓ all tests passed"; else echo "✗ the integration + browser suite failed — its output is above"; fi; \
+		exit $$rc'
 
 ## test-go: Run Go package unit tests (claudecode provider, worker, etc.).
 ## Scope is all of `./cmd/...` (~75s under -race; claudecode ~55s) — and
@@ -563,9 +585,12 @@ test: test-go
 ## only compiled (via lint) and never executed.
 test-go: go-build
 	@mkdir -p $(BUILD_DIR)
+	@echo "── Go package tests ──"
 	@bash -c 'set -o pipefail; \
-		$(GOTEST) -count=1 $(RACE) -timeout 5m $(GOTEST_RUN) ./cmd/... 2>&1 | tee $(BUILD_DIR)/test-go.log; \
-		exit $${PIPESTATUS[0]}'
+		$(GOTEST) -count=1 $(RACE) -timeout 5m $(GOTEST_RUN) ./cmd/... 2>&1 $(QUIET_UNMATCHED) | tee $(BUILD_DIR)/test-go.log; \
+		rc=$${PIPESTATUS[0]}; \
+		if [ $$rc -eq 0 ]; then echo "✓ Go package tests passed"; else echo "✗ the Go package tests failed — their output is above"; fi; \
+		exit $$rc'
 
 ## test-full: Run lint + all tests (pre-PR target).
 test-full: lint test

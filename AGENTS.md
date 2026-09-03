@@ -15,6 +15,25 @@ make build-windows  # Cross-compile bin/windows/*.exe (pure-Go, no cgo)
 
 `make build` and `make test` **must** pass before any task is complete.
 
+### Run them in the foreground
+
+They are ordinary commands that take a few minutes (`make test` is typically
+3–6). Run the bare command with a timeout long enough to cover it — 20 minutes
+— and wait for it to finish.
+
+**Never** start a build or test run as a background task, poll it, wait on its
+pid, or loop until the process exits. It gains nothing: you get the identical
+output several turns later, having spent those turns guessing an interval —
+too short burns turns, too long stalls the task, and "wait for the process to
+disappear" wedges on the first thing that outlives it. If a run genuinely
+exceeds the timeout, that is a hang worth reporting, not a reason to relaunch
+it detached.
+
+**Never pipe them through `tail`, `head`, `grep`, or `tee`.** The output is
+already the summary (see Tests below), and `tail` is the worst choice of the
+lot: a failure is written top-down, so truncating to the tail keeps the summary
+line you already had and cuts the assertion that says what broke.
+
 ## Linting
 
 - **`make lint` and `make lint-files` are the only sanctioned ways to lint.**
@@ -40,10 +59,17 @@ make build-windows  # Cross-compile bin/windows/*.exe (pure-Go, no cgo)
 ## Tests
 
 - `make test` runs the whole suite (Go unit + integration + browser) without
-  `-v`, so its output already is the summary; it is also teed to `bin/test.log`.
+  `-v`, so its output already is the summary: one `ok <pkg> <time>` line per
+  passing package, and on failure only the failing tests' own output. Each layer
+  announces itself, the first failing layer stops the run — so a failure is the
+  last thing on screen — and a `✗` line under it names the layer. The same text
+  is teed to `bin/test*.log` purely for afterwards; the log and the terminal
+  hold the same thing, so there is nothing to tail or grep.
 - **To run one specific test, pass `RUN='<regex>'`** — a `go test -run` pattern
   matched against test-function names. It also turns on `-v` so you see that
-  test's own output. This is the sanctioned way to iterate on a single test;
+  test's own output, and silences the packages that hold no matching test (which
+  under `-v` would otherwise announce themselves and bury the one you asked
+  for). This is the sanctioned way to iterate on a single test;
   **don't run `node`, the browser harness, or `go test` by hand** — the target
   builds the right binary, sets the flags CI uses, and tees the log for you.
   ```bash
