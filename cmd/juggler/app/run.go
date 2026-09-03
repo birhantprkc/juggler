@@ -186,6 +186,12 @@ func Run(cfg Config) int {
 		printBanner()
 	}
 
+	// Neither return below is reached when the launch owns the native app:
+	// beginShutdown calls app.Quit(), and [NSApp terminate:] ends the process
+	// without unwinding the stack. A one-shot run therefore exits from inside
+	// beginShutdown via a.exit(...), and App.exitProcess is the seam tests
+	// replace to observe the status. These returns serve the paths that do
+	// unwind, so a status set here must also be set on the exit path above.
 	if err := app.Run(); err != nil {
 		return 1
 	}

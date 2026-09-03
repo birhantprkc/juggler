@@ -12,8 +12,10 @@
  * The line says what the card is for, in the place the content will appear, so
  * the answer arrives where the question was asked.
  *
- * One line, centred, and no heading: the pin's name is already on its tab and in
- * the toolbar above it, and repeating it here would be the third time.
+ * Centred, and no heading: the pin's name is already on its tab and in the
+ * toolbar above it, and repeating it here would be the third time. One line for a
+ * card whose contents explain themselves; a sentence or two where the empty card
+ * is the only place the feature is ever explained.
  * @module lib/pin-empty
  */
 
@@ -36,8 +38,8 @@ injectStylesOnce('pin-empty-styles', `
 `);
 
 /**
- * The empty state for a pin: one centred line saying what will appear here.
- * @param {string} text - The line. A sentence, ending in a full stop.
+ * The empty state for a pin: centred text saying what will appear here.
+ * @param {string} text - A sentence or two, ending in a full stop.
  * @returns {HTMLElement} The element to put in the pin's body.
  */
 export function pinEmpty(text) {

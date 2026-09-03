@@ -143,7 +143,14 @@ class MemoryPin extends PinboardItemType {
 
       const { entries } = parseMemory(content);
       if (!entries.length) {
-        body.replaceChildren(pinEmpty('Facts worth keeping across conversations appear here.'));
+        // An empty board is where most people meet memory for the first time, so
+        // this says what the feature is rather than what the card would contain.
+        body.replaceChildren(pinEmpty(
+          'Facts the assistant keeps about this project, in .juggler/MEMORY.md. '
+          + 'Ask it to remember something — a build command, a convention, a decision '
+          + 'you would rather not explain twice — and every conversation after this one '
+          + 'starts with it already read.',
+        ));
         return;
       }
 

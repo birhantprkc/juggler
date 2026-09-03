@@ -1106,7 +1106,17 @@ class Session {
    *
    * The service is session-wide, so this works from an empty session and stays
    * correct as conversations come and go: a subscriber needs no re-wire when
-   * the first conversation arrives. Callers must subscribe after
+   * the first conversation arrives.
+   *
+   * This feed reads the `processingState` metadata key alone, so a change
+   * to the doc — a tool action going pending, say — produces no tick here. It
+   * is not interchangeable with `conversation:changed` (`subscribe`), which the
+   * items observer emits synchronously inside the writing Yjs transaction:
+   * drive doc-state logic from that one, and keep those handlers read-only and
+   * unbatched, since rAF or microtask coalescing discards the synchrony that
+   * makes them deterministic.
+   *
+   * Callers must subscribe after
    * {@link setServices} — which connection-manager calls before anything can
    * see the session — or they get an inert unsubscribe.
    * @param {(conversationId: string) => void} fn - Called with the changed id.

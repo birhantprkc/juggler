@@ -163,6 +163,20 @@ export async function runTests(ctx) {
     throw new Error(`the pin never said it (showed "${text}")`);
   }
 
+  /**
+   * Assert the pin is showing its empty state. What matters is that the card
+   * explains itself instead of rendering blank, and that it lists nothing — not
+   * the wording, which is copy and is free to change.
+   * @param {HTMLElement} body - The pin's body.
+   */
+  function assertEmptyState(body) {
+    const empty = body.querySelector('.pin-empty');
+    assert(empty && (empty.textContent || '').trim().length > 0,
+      `expected the empty state, got ${JSON.stringify(body.textContent)}`);
+    assert(body.querySelectorAll('.memory-entry').length === 0,
+      'the empty state should list no entries');
+  }
+
   const TWO_FACTS = '# Memory\n\n- [2026-06-14] Build is `make build`\n- [2026-06-15] Tests are `make test-all`\n';
 
   // --- the manifest and its gates ------------------------------------------
@@ -217,8 +231,7 @@ export async function runTests(ctx) {
   await test('no memory file yet is the ordinary case, not a failure', async () => {
     const m = mount(`${base}_never_written.md`);
     await settled(m.body);
-    assert((m.body.textContent || '').trim() === 'Facts worth keeping across conversations appear here.',
-      `expected the empty state, got ${JSON.stringify(m.body.textContent)}`);
+    assertEmptyState(m.body);
     m.teardown();
   });
 
@@ -226,8 +239,7 @@ export async function runTests(ctx) {
     const path = await writeMemory('heading_only', '# Memory\n\n');
     const m = mount(path);
     await settled(m.body);
-    assert((m.body.textContent || '').trim() === 'Facts worth keeping across conversations appear here.',
-      `expected the empty state, got ${JSON.stringify(m.body.textContent)}`);
+    assertEmptyState(m.body);
     m.teardown();
   });
 

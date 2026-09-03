@@ -708,6 +708,11 @@ export async function executeUIOperation(harness, op) {
       break;
     }
 
+    // Waits for progress events, which is not the same as waiting for the tool
+    // to have produced output: how many status and claim events precede the
+    // first byte is the engine's business and may change. Use
+    // 'wait-for-action-output' below when what you mean is "the tool has
+    // written something".
     case 'wait-for-progress': {
       if (!op.toolUseId) {
         throw new Error('wait-for-progress operation requires toolUseId');

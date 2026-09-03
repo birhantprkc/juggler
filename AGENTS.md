@@ -94,10 +94,6 @@ line you already had and cuts the assertion that says what broke.
   and the lanes inside one subprocess share a single content process — one JS
   heap, one main thread. Raising iframes while dropping windows to 1 serialises
   the suite onto that thread and produces cascades of arbitrary timeouts.
-- Don't use a `wait-for-progress` event count as a proxy for "the tool has
-  produced output" — how many status/claim events precede the first byte is the
-  engine's business. Wait on the output itself with `wait-for-action-output`
-  (`{ toolUseId, contains }`).
 - Suite timings are load-sensitive. A browser test that fails in a full run and
   passes alone is a load artefact, not a regression — re-run the exact subtest
   in isolation before investigating it.
@@ -119,9 +115,6 @@ line you already had and cuts the assertion that says what broke.
 
 ## Conventions
 
-- **No mutexes.** Use goroutines + channels. The one sanctioned `sync.Mutex` is
-  `ycrdtMu` in `cmd/juggler/worker/document.go` (y-crdt C binding isn't
-  goroutine-safe). Any other mutex is a regression.
 - **`docs/` is published user-facing docs only.** Assistant plans, notes, and
   scratch go in `scratch/` (git-ignored); promote to `docs/` only when it's for
   users.
@@ -152,33 +145,18 @@ Key invariants:
   maintain it in a reactive observer, not in click handlers.
 - **Window geometry is per-project session state**, stored server-side in the
   session and exposed at `GET/PUT /api/session/window-state`.
-- **Sub-threads reach the LLM by two dispatch paths.** Threads stamped
-  `needsStrategyRun` (compaction/handoff folds, plugin inserts) are picked up by
-  `checkForNewThreads`, one per reconcile pass; delegated children (any
-  `delegatesToSubthread` tool, via `tryDelegateTool`) set no such flag and are
-  dispatched only by the walk in `tryReconcile` (`thread_reducer.go`). A change
-  to one proves nothing about the other — test both.
-- **A launch that owns the native app loses its exit status unless it exits
-  first**: `beginShutdown` → `app.Quit()` → `[NSApp terminate:]` ends the
-  process without unwinding, so the return in `run.go` is unreachable. One-shot
-  runs exit from inside `beginShutdown` via `a.exit(...)`; `App.exitProcess` is
-  the test seam.
-- **`ProviderStatus.Available` means "can serve a turn right now"** (gated by
-  the provider's `ReadinessCheck`); `Credentialed` means "the user supplied what
-  was asked". Settings toggles read `credentialed`, never `available`, or a
-  lapsed CLI sign-in renders the switch off and blames the user for it. A
-  `ReadinessCheck` must fail open on an unanswerable probe — otherwise a
-  disabled provider can never run the turn that would re-enable it.
+- **Sub-threads reach the LLM by two dispatch paths** that share no code, so a
+  change to one proves nothing about the other. Both are described at
+  `tryReconcile` (`thread_reducer.go`); test both.
+- A `ReadinessCheck` must fail open on an unanswerable probe — otherwise a
+  disabled provider can never run the turn that would re-enable it. (How that
+  lands on `Available` vs `Credentialed`: `ProviderStatus`, `providers_api.go`.)
 
 ## Web UI
 
-- **Event feeds are not interchangeable.** `session.onLLMStatusChange` fires
-  only off the `processingState` metadata key, so a doc change (a tool action
-  going pending) produces no status tick. Drive doc-state logic from
-  `conversation:changed` (`session.subscribe`), which the items observer emits
-  synchronously inside the writing Yjs transaction. Handlers there stay
-  read-only and unbatched — rAF/microtask coalescing throws away the synchrony
-  that makes them deterministic.
+- **Event feeds are not interchangeable** — `onLLMStatusChange` and
+  `conversation:changed` answer different questions. Which to use, and why
+  handlers on the latter stay read-only and unbatched: `session.js`.
 - **An automatic scroll may never increase `|scrollTop|`** (distance from the
   end) in the column-reverse `#message-list`; auto-selection can land on a
   non-tail row and yank the view backwards. `conversation-area`'s reader anchor
