@@ -281,7 +281,7 @@ class ExecuteContextItem extends ContextItem {
       required: ['command']
     };
 
-    const description = 'Executes a given bash command in a persistent shell session with optional timeout. Use this for terminal operations like git, npm, docker, etc.';
+    const description = 'Executes a given bash command with optional timeout. Use this for terminal operations like git, npm, docker, etc. Each call runs in a fresh shell rooted at the project directory — no working directory, environment variable or shell state carries over between calls, so a leading `cd` applies only to the command it is part of, and relative paths are resolved against the project directory.';
 
     return [
       {
