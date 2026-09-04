@@ -55,6 +55,20 @@ type streamingState struct {
 	thinkingWrittenLen  int
 	lastTextWriteMs     int64
 	lastThinkingWriteMs int64
+
+	// Input usage the provider reported mid-stream for the round-trip in
+	// flight. A cancelled round-trip writes a transaction blob like any other,
+	// and this is the only account it can give of the prompt it sent: the
+	// end-of-turn numbers never arrive for a call that was stopped. Held for
+	// the whole round-trip — a tool_use or provider-state chunk finalizes the
+	// streamed blocks mid-call and must not take the measurement with them.
+	//
+	// cachedReported keeps the blob's nil-versus-zero contract: a provider that
+	// reported no cache figure is unknown, which is not the same answer as a
+	// measured miss.
+	inputTokens    int
+	cachedTokens   int
+	cachedReported bool
 }
 
 // queueStreamChunk sends a streaming chunk to this run's dedicated channel.
@@ -198,7 +212,16 @@ func (r *run) processStreamChunk(chunk StreamChunk) {
 		// footer's anchor reads the most recent transaction blob's
 		// `inputTokens` on demand instead. Spinner text is purely
 		// cosmetic and tolerates noisy provider numbers.
+		//
+		// The same figures are kept on the run, where a cancel can still reach
+		// them: the blob a cancelled round-trip writes has no other source for
+		// what the call sent.
 		if chunk.InputTokens > 0 {
+			r.t.streaming.inputTokens = chunk.InputTokens
+			if chunk.CachedTokens > 0 {
+				r.t.streaming.cachedTokens = chunk.CachedTokens
+				r.t.streaming.cachedReported = true
+			}
 			r.mergeProcessingTokens(0, chunk.InputTokens, chunk.CachedTokens)
 		}
 	case provider.ContentBlockTypeStatus:
@@ -608,6 +631,12 @@ func (r *run) finalizeStreaming() {
 // partialCancelledResponse assembles whatever text/thinking content was mid-stream
 // when the user cancelled, so the transaction blob records the truncated output.
 // Returns nil if nothing had been emitted yet.
+//
+// It carries the round-trip's input usage too, where the provider reported any.
+// A cancelled call is a call that was paid for, and its blob is the last one in
+// the thread — so it is the one the footer anchors on. Recording nothing there
+// leaves the footer with an anchor that reports nothing, which it cannot draw at
+// all: the count vanishes for a conversation whose every earlier turn has one.
 func (r *run) partialCancelledResponse() *LLMResponse {
 	// The blob and the transcript must show the same truncated output, so the
 	// document catches up with the accumulated content before it is read off.
@@ -620,7 +649,26 @@ func (r *run) partialCancelledResponse() *LLMResponse {
 	if r.t.streaming.textContent != "" {
 		blocks = append(blocks, LLMResponseBlock{Type: provider.ContentBlockTypeText, Content: r.t.streaming.textContent})
 	}
-	return &LLMResponse{StopReason: "cancelled", Blocks: blocks}
+	response := &LLMResponse{
+		StopReason:  "cancelled",
+		Blocks:      blocks,
+		InputTokens: r.t.streaming.inputTokens,
+	}
+	if r.t.streaming.cachedReported {
+		response.CachedTokens = provider.Reported(r.t.streaming.cachedTokens)
+	}
+	return response
+}
+
+// resetStreamingUsage drops the input usage measured for the round-trip that has
+// just ended, so the next one starts with no measurement of its own rather than
+// inheriting the previous call's. Part of the iteration boundary in the strategy
+// loop, alongside the content resets — deliberately not part of
+// finalizeStreaming, which also runs mid-call.
+func (r *run) resetStreamingUsage() {
+	r.t.streaming.inputTokens = 0
+	r.t.streaming.cachedTokens = 0
+	r.t.streaming.cachedReported = false
 }
 
 // waitForLLMResponse waits for an LLM response while processing stream chunks

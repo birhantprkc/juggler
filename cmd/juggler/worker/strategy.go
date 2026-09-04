@@ -226,10 +226,12 @@ func (r *run) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVe
 
 	// Reset streaming state for this iteration — must reset message IDs
 	// AND content so each iteration creates new messages rather than
-	// updating previous ones.
+	// updating previous ones. The usage measurement goes with them: it
+	// describes the call that just ended, not the one about to be made.
 	r.finalizeStreaming()
 	r.resetStreamingText()
 	r.resetStreamingThinking()
+	r.resetStreamingUsage()
 
 	if r.loadState() == StateCancelling {
 		return turnDone

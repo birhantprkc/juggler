@@ -406,10 +406,66 @@ export const footerCacheUnknownTest = {
   }
 };
 
+// ============================================================================
+// TEST 6: a newest blob that reports no usage falls back to one that does.
+// ============================================================================
+
+/**
+ * Not every round-trip can say what it sent. A turn that errored before the
+ * provider reported usage writes a blob with no input count at all, and a
+ * provider that reports usage only at the end of a call has nothing to record
+ * for a call that was stopped. Those blobs are real and they are the newest in
+ * the thread, so they are what the footer anchors on.
+ *
+ * A count that vanishes is the worst reading of that: the context did not empty,
+ * and every item in the transcript still shows its own tokens. The meter walks
+ * back to the most recent round-trip that measured its prompt and shows that
+ * instead — the last known size of this conversation, which is what the pill is
+ * for.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const footerFallsBackPastUnmeasuredTurnTest = {
+  name: 'footer-falls-back-past-unmeasured-turn',
+  description: 'When the newest transaction blob reports no input tokens, the footer falls back to the most recent round-trip that did, instead of showing nothing.',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    textResponse('first.', { inputTokens: 3000, outputTokens: 20, cachedTokens: 2000 }),
+    // Reports nothing — the shape a stopped or failed round-trip leaves behind.
+    textResponse('second.', { inputTokens: 0, outputTokens: 0 })
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'one' },
+    { type: 'send-message', message: 'two' }
+  ],
+
+  expectedItems: [
+    { type: 'system-prompt' },
+    { type: 'user', content: 'one' },
+    { type: 'assistant', content: 'first.' },
+    { type: 'user', content: 'two' },
+    { type: 'assistant', content: 'second.' }
+  ],
+
+  async customAssertions(conversation) {
+    const td = findTokenDisplay(conversation);
+    if (!td) return; // headless
+
+    forceContextWindow(conversation, 200000);
+
+    // The second turn's blob has no count. The first turn's has 3000, which
+    // formats as "3k" — that is what the pill must settle on.
+    await waitFor(() => /\b3k\b/.test(td.textContent || ''), 4000,
+      'footer falls back to the last round-trip that reported its input tokens');
+  }
+};
+
 export const tests = [
   footerShowsBlobTokensTest,
   footerHidesAfterRewindTest,
   footerCacheWarnTest,
   footerCacheHiddenWhileProcessingTest,
-  footerCacheUnknownTest
+  footerCacheUnknownTest,
+  footerFallsBackPastUnmeasuredTurnTest
 ];

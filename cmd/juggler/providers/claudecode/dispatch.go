@@ -509,22 +509,24 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 	c.activeSession.lastUsedAt = time.Now()
 
 	if turn.StopReason == "tool_use" {
-		// Mid-LLM-turn pause. We must NOT report the fresh input or cache-READ
-		// here: the same warm prefix is re-read by every chained API call in the
-		// turn and shows up again at end_turn, so counting it per pause would
-		// inflate the turn's totals 10-40× (the 8754k-vs-200k-window blow-up).
+		// Mid-LLM-turn pause. It reports its usage exactly as the end_turn arm
+		// below does, because it is a round-trip like any other: the prompt it
+		// sent is fresh + cache read + cache write, and cache read / cache write
+		// are the subsets of that.
 		//
-		// Cache-CREATION is the exception, and reporting it is what keeps a
-		// cache regression visible. The API bills each prompt segment's cache
-		// write exactly once across the whole turn — a later call reads it
-		// (cache_read), never re-writes it — so summing cache_creation across
-		// every tool_use pause and the final end_turn reconstructs the real
-		// ingested size with no double-count. Surfacing it means a cold-start
-		// re-ingest (huge cache_creation) lands in the per-conversation
-		// [turn tokens] line as input>0 / 0% hit instead of a benign all-zero
-		// row that hides the burn; a genuinely warm pause writes ~nothing and
-		// stays quiet. Fresh input and cache-read stay zero for the reasons
-		// above; the representative prompt size is still emitted at end_turn.
+		// Every consumer of these numbers describes ONE round-trip — the
+		// transaction blob behind the footer pill, the admission anchor, the
+		// [turn tokens] line — and none of them sums InputTokens across the
+		// round-trips of a turn, so a per-pause count inflates nothing. The
+		// cumulative blow-up that once made a turn read 40× its window came from
+		// the result envelope's session-wide totals, and turnResult.usageFromStream
+		// is what holds those back.
+		//
+		// Reporting less than the call sent is not the safe side of that: a
+		// paused round-trip is where an agentic turn comes to rest, so it is the
+		// blob the footer anchors on, and a pill that states the cache-creation
+		// delta as the context size understates a quarter-million-token prompt as
+		// a few thousand.
 		var pending []pendingToolMeta
 		for _, block := range turn.Blocks {
 			if block.Type != provider.ContentBlockTypeToolUse {
@@ -560,7 +562,8 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 			c.dropSession(req.ConversationID)
 			return &provider.StreamResult{
 				StopReason:       "error",
-				InputTokens:      turn.CacheWriteTokens,
+				InputTokens:      turn.InputTokens + turn.CacheReadTokens + turn.CacheWriteTokens,
+				CachedTokens:     provider.Reported(turn.CacheReadTokens),
 				CacheWriteTokens: provider.Reported(turn.CacheWriteTokens),
 			}, &transientCLIError{msg: "claude CLI stopped for tool_use but emitted no usable tool call"}
 		}
@@ -588,14 +591,13 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 		// c.activeSession (set in-place above) — no broadcast needed.
 		jlog.Debug("Session paused: %d pending tool IDs (uuid=%s, partial in=%d out=%d cacheWrite=%d)",
 			len(pending), c.activeSession.sessionUUID, turn.InputTokens, turn.OutputTokens, turn.CacheWriteTokens)
-		// Report only the fresh cache-creation of this parked call (see the long
-		// note above): non-double-counted, and it keeps a cold-start re-ingest
-		// visible in the [turn tokens] line instead of an all-zero row.
-		// CachedTokens stays nil: the cache-read of a parked call is deliberately
-		// not reported here (it would double-count against the end_turn total).
+		// The whole prompt this call sent, with its cache subsets (see the note
+		// above). Output stays unreported: the pause interrupts an API call whose
+		// output tokens are still growing, and end_turn carries the final count.
 		return &provider.StreamResult{
 			StopReason:       turn.StopReason,
-			InputTokens:      turn.CacheWriteTokens,
+			InputTokens:      turn.InputTokens + turn.CacheReadTokens + turn.CacheWriteTokens,
+			CachedTokens:     provider.Reported(turn.CacheReadTokens),
 			CacheWriteTokens: provider.Reported(turn.CacheWriteTokens),
 		}, nil
 	}

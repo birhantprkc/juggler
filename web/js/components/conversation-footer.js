@@ -22,11 +22,13 @@
 /**
  * ConversationFooter - footer element at the end of a conversation.
  *
- * Token counts are read on-demand from the transaction blob of the most
- * recent assistant message in this thread (see findLastAssistantTxnId).
- * Nothing is persisted in Yjs: the blob on disk is the only record.
- * A small per-element cache keyed by transactionId avoids refetching
- * on every items-array event.
+ * Token counts are read on-demand from the transaction blob of the most recent
+ * assistant message in this thread that measured its own prompt — usually the
+ * last one, walking back past round-trips that reported no input usage (see
+ * findAssistantTxnIds and MAX_ANCHOR_LOOKBACK). Nothing is persisted in Yjs:
+ * the blob on disk is the only record. A small per-element cache keyed by
+ * transactionId avoids refetching on every items-array event, and holds null
+ * for a blob that resolved with nothing to report so it is asked for once.
  *
  * ## Status-only mode
  *
@@ -37,12 +39,20 @@
  * owner scopes to the run's own rows — and disappears entirely when the run is
  * settled.
  */
-import { findLastAssistantTxnId, findLastAssistantItemId } from '../utils/transaction-anchor.js';
+import { findAssistantTxnIds, findLastAssistantItemId } from '../utils/transaction-anchor.js';
 import { formatRelativeDateTime } from '../utils/format.js';
 import providersCache from '../services/providers-cache.js';
 import { openSettings } from '../services/settings-launcher.js';
 
 const TOKEN_UPDATE_DEBOUNCE_MS = 2000;
+
+/**
+ * How many round-trips back the meter will look for one that measured its
+ * prompt. Each step past the newest costs a blob read, and a measurement much
+ * older than that describes a context the conversation has since moved on from —
+ * at which point showing nothing is the more honest answer.
+ */
+const MAX_ANCHOR_LOOKBACK = 5;
 
 /** Magnifier over a document: inspect this conversation's log file. */
 const LOG_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M458-280q18 0 35.5-4.5T526-298l98 98 56-56-98-98q9-15 13.5-32.5T600-422q0-58-41-98t-99-40q-58 0-99 41t-41 99q0 58 40 99t98 41Zm2-80q-25 0-42.5-17.5T400-420q0-25 17.5-42.5T460-480q25 0 42.5 17.5T520-420q0 25-17.5 42.5T460-360ZM240-80q-33 0-56.5-23.5T160-160v-640q0-33 23.5-56.5T240-880h320l240 240v480q0 33-23.5 56.5T720-80H240Zm280-520v-200H240v640h480v-440H520ZM240-800v200-200 640-640Z"/></svg>';
@@ -347,8 +357,8 @@ class ConversationFooter extends HTMLElement {
 
   /**
    * Async-fetch the transaction blob for `txnId` (no-op if already
-   * cached or in flight); on success, cache the numbers and
-   * re-render so the footer picks them up.
+   * cached or in flight); once it resolves, cache what it says and
+   * re-render so the footer picks it up.
    * @private
    * @param {string} txnId
    */
@@ -360,34 +370,40 @@ class ConversationFooter extends HTMLElement {
     const convId = thread?.conversation?.id;
     if (!convId) return;
     this._pendingTxnId = txnId;
-    let success = false;
+    let resolved = false;
     try {
       const { default: workerManager } = await import('../services/worker-manager.js');
       const blob = /** @type {any} */ (await workerManager.getTransaction(convId, txnId));
-      const inputTokens = Number(blob?.inputTokens) || 0;
-      // The blob omits the key entirely when the provider reported no cache
-      // usage for the call, and carries a real 0 when it reported a miss. The
-      // two are different answers, so the absent key becomes null rather than
-      // a zero the meter would draw as "all of this was new".
-      const reportedCached = blob?.cachedTokens;
-      const cachedTokens = reportedCached === undefined || reportedCached === null
-        ? null
-        : Number(reportedCached) || 0;
-      const inputTokensApproximate = blob?.inputTokensApproximate === true;
-      if (inputTokens > 0) {
-        // Only cache positive results. The blob may not exist yet:
-        // the worker stamps transactionId on the streaming assistant
-        // item BEFORE SaveBlob runs at end-of-turn, so the footer's
-        // first fetch can race the save. Leaving the cache empty
-        // lets the next conversation:changed event retry.
-        this._blobTokenCache.set(txnId, { inputTokens, cachedTokens, inputTokensApproximate });
-        success = true;
+      // A blob that is not on disk is not an answer. The worker stamps
+      // transactionId on the streaming assistant item BEFORE SaveBlob runs at
+      // end-of-turn, so the first fetch of the newest anchor can race the save;
+      // leaving the cache empty lets the next conversation:changed event retry.
+      if (blob && typeof blob === 'object') {
+        const inputTokens = Number(blob.inputTokens) || 0;
+        // The blob omits the key entirely when the provider reported no cache
+        // usage for the call, and carries a real 0 when it reported a miss. The
+        // two are different answers, so the absent key becomes null rather than
+        // a zero the meter would draw as "all of this was new".
+        const reportedCached = blob.cachedTokens;
+        const cachedTokens = reportedCached === undefined || reportedCached === null
+          ? null
+          : Number(reportedCached) || 0;
+        const inputTokensApproximate = blob.inputTokensApproximate === true;
+        // A blob that exists and reports no input tokens IS an answer: that
+        // round-trip never measured its prompt. Caching the absence is what
+        // lets the meter walk past it to one that did — and what stops the
+        // fetch repeating on every event for the life of the footer, which for
+        // a megabyte-sized failed-turn blob is not a free thing to repeat.
+        this._blobTokenCache.set(txnId, inputTokens > 0
+          ? { inputTokens, cachedTokens, inputTokensApproximate }
+          : null);
+        resolved = true;
       }
     } catch {
       // Network/RPC failure — don't cache. Next render retries.
     } finally {
       if (this._pendingTxnId === txnId) this._pendingTxnId = '';
-      if (success && this.isConnected && this._messageThread === thread) {
+      if (resolved && this.isConnected && this._messageThread === thread) {
         this._updateTokenDisplay();
       }
     }
@@ -440,13 +456,24 @@ class ConversationFooter extends HTMLElement {
     // Anchor cache hit → render synchronously. Miss → kick a background
     // fetch and leave the existing display alone; clearing to zero while the
     // blob request is in flight causes the footer count to flicker/hide.
-    const txnId = findLastAssistantTxnId(this._messageThread?.items);
+    //
+    // The newest round-trip is the right anchor whenever it measured its own
+    // prompt, and most do. One that did not — stopped before its provider
+    // reported usage, or failed outright — has nothing to say about the size of
+    // this conversation, and the conversation did not shrink because a turn was
+    // interrupted. So the walk continues back to the most recent round-trip
+    // that does have a number, and the meter states that.
+    const txnIds = findAssistantTxnIds(this._messageThread?.items, MAX_ANCHOR_LOOKBACK);
     let anchor = null;
-    if (txnId) {
-      if (this._blobTokenCache.has(txnId)) anchor = this._blobTokenCache.get(txnId);
-      else {
-        this._ensureBlobLoaded(txnId);
+    for (const id of txnIds) {
+      if (!this._blobTokenCache.has(id)) {
+        this._ensureBlobLoaded(id);
         return;
+      }
+      const resolved = this._blobTokenCache.get(id);
+      if (resolved) {
+        anchor = resolved;
+        break;
       }
     }
 

@@ -29,6 +29,36 @@ export function findLastAssistantTxnId(items) {
 }
 
 /**
+ * The same anchors, newest first: the transactionIds of a thread's assistant
+ * messages, most recent first, stopping at `limit`.
+ *
+ * The most recent round-trip is not always one that can say what it sent — a
+ * turn stopped before its provider reported usage, or one that failed, writes a
+ * blob with no input count. A consumer that needs a measurement rather than
+ * simply the latest round-trip walks back from the newest until it finds one,
+ * which is what the limit bounds: each step costs a blob read, and a
+ * measurement many turns old describes a context that has since moved on.
+ * @param {Array<{get?: (key: string) => any}>} items - Y.Array items (or empty)
+ * @param {number} [limit] - How many to return at most
+ * @returns {string[]} transactionIds, newest first; empty if the thread has none
+ */
+export function findAssistantTxnIds(items, limit = 1) {
+  /** @type {string[]} */
+  const found = [];
+  if (!items || limit <= 0) return found;
+  for (let i = items.length - 1; i >= 0 && found.length < limit; i--) {
+    const get = items[i]?.get?.bind(items[i]);
+    if (!get) continue;
+    if (get('type') !== 'assistant') continue;
+    const txnId = String(get('transactionId') || '');
+    // One round-trip lands several assistant messages when its output is split,
+    // and they share its id — the blob behind them is the same blob.
+    if (txnId && !found.includes(txnId)) found.push(txnId);
+  }
+  return found;
+}
+
+/**
  * The same anchor, named by item rather than by round-trip: the id of the most
  * recent assistant message that has a transaction behind it. The transaction
  * panel is a lens on a selected item, so anything wanting to *open* that
