@@ -8,7 +8,7 @@ import { readFile, writeFile } from 'juggler/ops';
 import { formatDisplayPath, normalizeFilePath, basename } from 'juggler/item-utils';
 import { labeledSubsection } from 'juggler/ui';
 import { fileSourceFromText } from 'juggler/file-source';
-import { checkFileFreshness, recordWrittenHash, restageBaseline, acquirePathLock } from './read-history.js';
+import { recordWrittenHash, restageBaseline, acquirePathLock } from './read-history.js';
 import { absolutePathKey } from './path-approval.js';
 
 /** @type {Record<string, string>} */
@@ -142,10 +142,8 @@ class WriteFileContextItem extends EditBase {
     let existingContent;
     /** @type {string|undefined} */
     let existingHash;
-    let fileExists = false;
     try {
       const result = await readFile({ path });
-      fileExists = result.exists === true;
       if (result.exists && result.content !== undefined) {
         existingContent = result.content;
       }
@@ -156,17 +154,15 @@ class WriteFileContextItem extends EditBase {
       // No existing file to diff against; the approval UI shows a content preview.
     }
 
-    // Read-before-overwrite guard (mirrors the edit tool's read-before-edit
-    // guard in replace-text): refuse to clobber an existing file the model has
-    // never looked at this session, or whose bytes changed on disk since it
-    // was last read — a blind overwrite silently destroys content the model
-    // has never seen. Creating a new file needs no such history.
-    if (fileExists) {
-      const freshness = checkFileFreshness(this.conversation, this.session, path, existingHash, 'overwrite');
-      if (!freshness.ok) {
-        return { valid: false, error: freshness.error };
-      }
-    }
+    // A whole-file write carries no read-before-overwrite precondition, unlike
+    // the edit tool's guard in replace-text. The two differ in what their
+    // approval UI shows: getApprovalConfig below diffs the file's CURRENT bytes
+    // against the proposed ones, so the user sees every byte an overwrite
+    // destroys and can judge the loss directly, whereas an edit's approval
+    // shows only the changed hunk and reveals nothing about the rest of the
+    // file. Requiring a read here would only make the model spend a round trip
+    // restating content the human is about to see in full anyway; expectedHash
+    // below still guards the window between that approval and the commit.
 
     // Pre-approval dry-run: ask the backend whether the write would actually
     // succeed (parent dir creatable, target writable, target not a directory,

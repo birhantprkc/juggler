@@ -6,12 +6,14 @@
 /**
  * Tests the read-before-mutate freshness guard (Claude Code-style).
  *
- * The edit tool refuses to modify — and the write tool refuses to overwrite —
- * a file the model hasn't looked at this session, or whose bytes changed on
- * disk since the model last saw them. Freshness is derived entirely from the
- * durable conversation transcript (context-items/read-history.js): successful
- * read/write/edit/batch_read tool-actions (whose recorded results carry the
- * backend's contentHash) and pinned/at-mentioned file-content items.
+ * The edit tool refuses to modify a file the model hasn't looked at this
+ * session, or whose bytes changed on disk since the model last saw them. The
+ * write tool is exempt — a whole-file overwrite shows the user a full
+ * before/after diff at approval, so the loss is visible without a prior read.
+ * Freshness is derived entirely from the durable conversation transcript
+ * (context-items/read-history.js): successful read/write/edit/batch_read
+ * tool-actions (whose recorded results carry the backend's contentHash) and
+ * pinned/at-mentioned file-content items.
  *
  * These tests seed that transcript state directly rather than executing reads
  * in-process — which is also the point: freshness is doc-derived, so a read
@@ -365,31 +367,45 @@ export async function runTests(_ctx) {
   });
 
   // =========================================================================
-  // Write tool: overwriting an EXISTING never-read file is refused (a blind
-  // overwrite destroys content the model has never seen); overwriting a stale
-  // file is refused; creating a new file or overwriting a seen one is allowed.
+  // Write tool: a whole-file overwrite has no freshness precondition, so
+  // neither a never-read file nor one whose bytes moved since the last read is
+  // refused. The approval diff renders the file's CURRENT contents against the
+  // proposed ones, so the user sees every byte the write destroys — the human
+  // is the guard here. The edit tool keeps the guard because its approval UI
+  // shows only the changed hunk.
   // =========================================================================
-  await test('never-read overwrite refused', async () => {
+  await test('never-read overwrite allowed', async () => {
     const conversation = await createTestConversation(session);
     await writeFileOp({ path: 'guard-clobber.txt', content: 'precious\n' });
 
     const write = mkItem(WriteClass, conversation);
     const res = await write.validate({ file_path: 'guard-clobber.txt', content: 'gone\n' });
-    assert(res.valid === false, `never-read overwrite must be refused, got ${JSON.stringify(res)}`);
-    assert(/has not been read/i.test(res.error || ''),
-      `error should tell the model to read first: ${res.error}`);
+    assert(res.valid === true, `never-read overwrite must be allowed, got ${JSON.stringify(res)}`);
   });
 
-  await test('stale overwrite refused', async () => {
+  await test('stale overwrite allowed', async () => {
     const conversation = await createTestConversation(session);
     await writeFileOp({ path: 'guard-clobber-stale.txt', content: 'precious\n' });
     seedSeen(conversation, 'read', 'guard-clobber-stale.txt', BOGUS_HASH);
 
     const write = mkItem(WriteClass, conversation);
     const res = await write.validate({ file_path: 'guard-clobber-stale.txt', content: 'gone\n' });
-    assert(res.valid === false, `stale overwrite must be refused, got ${JSON.stringify(res)}`);
-    assert(/changed on disk/i.test(res.error || ''),
-      `error should say the file changed: ${res.error}`);
+    assert(res.valid === true, `stale overwrite must be allowed, got ${JSON.stringify(res)}`);
+  });
+
+  await test('never-read overwrite still diffs against current bytes', async () => {
+    const conversation = await createTestConversation(session);
+    await writeFileOp({ path: 'guard-clobber-diff.txt', content: 'precious\n' });
+
+    const write = mkItem(WriteClass, conversation);
+    const res = await write.validate({ file_path: 'guard-clobber-diff.txt', content: 'gone\n' });
+    assert(res.valid === true, `never-read overwrite must be allowed, got ${JSON.stringify(res)}`);
+    const approval = await write.getApprovalConfig(res.params || {});
+    const diff = /** @type {any} */ (approval)?.display?.diffData;
+    assert(diff?.oldContent === 'precious\n',
+      `approval diff must show the bytes being destroyed, got ${JSON.stringify(diff?.oldContent)}`);
+    assert(diff?.newContent === 'gone\n',
+      `approval diff must show the replacement, got ${JSON.stringify(diff?.newContent)}`);
   });
 
   await test('new-file write allowed', async () => {
@@ -464,29 +480,16 @@ export async function runTests(_ctx) {
       written.contentHash
     );
 
-    const write = mkItem(WriteClass, otherConversation);
-    const res = await write.validate({
+    const edit = mkItem(EditClass, otherConversation);
+    const res = await edit.validate({
       file_path: 'guard-conversation-isolation.txt',
-      content: 'clobbered\n'
+      old_string: 'private',
+      new_string: 'clobbered'
     });
     assert(res.valid === false,
       `another conversation must not inherit write authorization, got ${JSON.stringify(res)}`);
     assert(/not been read this session/i.test(res.error || ''),
       `error should require a read in this conversation: ${res.error}`);
-  });
-
-  await test('same-turn sibling overwrite passes via written-hash record', async () => {
-    __resetWrittenHashesForTest();
-    const conversation = await createTestConversation(session);
-    const v0 = await writeFileOp({ path: 'guard-sibling-w.txt', content: 'precious\n' });
-    seedSeen(conversation, 'read', 'guard-sibling-w.txt', v0.contentHash);
-
-    const v1 = await writeFileOp({ path: 'guard-sibling-w.txt', content: 'changed\n' });
-    recordWrittenHash(conversation, session, 'guard-sibling-w.txt', v1.contentHash);
-
-    const write = mkItem(WriteClass, conversation);
-    const res = await write.validate({ file_path: 'guard-sibling-w.txt', content: 'again\n' });
-    assert(res.valid === true, `sibling overwrite should pass once its hash is recorded, got ${JSON.stringify(res)}`);
   });
 
   // =========================================================================

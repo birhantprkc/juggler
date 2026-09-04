@@ -75,7 +75,7 @@ class ReplaceTextContextItem extends EditBase {
       required: ['file_path', 'old_string', 'new_string']
     };
 
-    const description = 'Performs exact string replacements in files. The edit will FAIL if old_string is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use replace_all to change every instance.';
+    const description = 'Performs exact string replacements in files. Read the file first — an edit is refused if this conversation has not read it, or if its contents changed on disk since. The edit will FAIL if old_string is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use replace_all to change every instance.';
 
     return [
       {
@@ -155,7 +155,7 @@ class ReplaceTextContextItem extends EditBase {
     // read/write/edit/batch_read or a pinned file — so it survives relaunch,
     // extra clients, and both realms. Checked before the dryRun so a never-read
     // file gets the read-first message rather than a search-mismatch one.
-    const neverRead = checkFileFreshness(this.conversation, this.session, params.path, undefined, 'edit');
+    const neverRead = checkFileFreshness(this.conversation, this.session, params.path, undefined);
     if (!neverRead.ok) {
       return { valid: false, error: neverRead.error };
     }
@@ -208,7 +208,7 @@ class ReplaceTextContextItem extends EditBase {
       // search-not-found guidance, so check freshness against the hash the
       // backend reports alongside the structured error.
       const failedHash = /** @type {any} */ (result).contentHash;
-      const staleOnFail = checkFileFreshness(this.conversation, this.session, params.path, failedHash, 'edit');
+      const staleOnFail = checkFileFreshness(this.conversation, this.session, params.path, failedHash);
       if (!staleOnFail.ok) {
         return { valid: false, error: staleOnFail.error };
       }

@@ -30,6 +30,7 @@ of changes; this project follows semantic versioning.
 - Switching model no longer carries a paid serving tier onto the model you switched to
 - A Recent model row now restores exactly the pair it shows, standard serving included
 - Shift-Option-Command-M opens the model picker and leaves it open, to read rather than cycle
+- Whole-file writes no longer need a prior read, since their approval shows the full diff
 
 ## [0.5.9] - 2026-08-29
 
