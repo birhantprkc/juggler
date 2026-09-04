@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-04
+
 - New Pinboard feature, accessible from a header bar button. This shows pinned files, plan, todos, memory, git, changed files and running tasks. Multiple pinboards can be detached in windows or browser tabs
 - Open file and Reveal now say when the system refuses, instead of appearing to do nothing
 - Reveal now selects the file in the Linux file manager rather than only opening its folder
