@@ -24,6 +24,7 @@
  */
 
 import { textResponse } from '../utilities/integration-test-runner.js';
+import providersCache from '../../js/services/providers-cache.js';
 
 /**
  * Poll for a predicate to become true. The footer fetches the
@@ -52,6 +53,18 @@ function findTokenDisplay(conversation) {
   const tab = /** @type {any} */ (conversation).getTabElement?.();
   if (!tab) return null;
   return /** @type {HTMLElement|null} */ (tab.querySelector('conversation-footer token-display'));
+}
+
+/**
+ * Locate the `<conversation-footer>` element rendered for this conversation.
+ * Returns null in headless mode (no tab element) so tests can early-out.
+ * @param {import('../../model/conversation.js').default} conversation
+ * @returns {HTMLElement|null} The conversation-footer element, or null in headless mode.
+ */
+function findFooter(conversation) {
+  const tab = /** @type {any} */ (conversation).getTabElement?.();
+  if (!tab) return null;
+  return /** @type {HTMLElement|null} */ (tab.querySelector('conversation-footer'));
 }
 
 /**
@@ -461,11 +474,330 @@ export const footerFallsBackPastUnmeasuredTurnTest = {
   }
 };
 
+// ============================================================================
+// TEST 7: mid-turn, a live reading that lapses must not fall back to the anchor.
+// ============================================================================
+
+/**
+ * The live reading is not continuous. The worker stamps a run's `inputTokens`
+ * from a provider usage chunk — once per round-trip — and every subsequent
+ * status frame deletes it again, so for most of a multi-step turn the thread has
+ * no live figure at all.
+ *
+ * The meter must hold the last thing it measured through those gaps. Falling
+ * back to the previous turn's blob makes the pill alternate between two numbers
+ * for the length of the turn, and the number it alternates to is the smaller,
+ * older one — so a meter watched during a long turn reads as though the context
+ * were repeatedly emptying and refilling.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const footerHoldsLiveCountThroughGapTest = {
+  name: 'footer-holds-live-count-through-gap',
+  description: 'While a turn runs, a live usage reading that lapses between usage chunks must leave the meter where it was, not flip it back to the previous turn\'s blob.',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    textResponse('first.', { inputTokens: 3000, outputTokens: 20, cachedTokens: 2000 })
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'one' }
+  ],
+
+  expectedItems: [
+    { type: 'system-prompt' },
+    { type: 'user', content: 'one' },
+    { type: 'assistant', content: 'first.' }
+  ],
+
+  async customAssertions(conversation) {
+    const td = findTokenDisplay(conversation);
+    const footer = /** @type {any} */ (findFooter(conversation));
+    if (!td || !footer) return; // headless
+
+    forceContextWindow(conversation, 200000);
+
+    // Settle on the finished turn's blob: 3000 → "3k".
+    await waitFor(() => /\b3k\b/.test(td.textContent || ''), 4000,
+      'footer settles on the completed turn\'s blob before the next turn starts');
+
+    // A turn on a provider that reports authoritative per-step usage.
+    const conv = /** @type {any} */ (conversation);
+    conv.isThreadProcessing = () => true;
+    footer._modelStreamsLiveUsage = () => true;
+
+    // Its first usage chunk lands: 250000 → "250k".
+    conv.llmState.getLiveInputUsage = () => ({ inputTokens: 250000, cachedTokens: null });
+    footer._updateTokenDisplay();
+    if (!/\b250k\b/.test(td.textContent || '')) {
+      throw new Error(`Live usage must drive the meter mid-turn; got ${JSON.stringify(td.textContent)}`);
+    }
+
+    // The next status frame drops the transient counters, so there is no live
+    // reading again until the round-trip after this one reports. Nothing about
+    // the conversation shrank, so nothing about the meter may.
+    conv.llmState.getLiveInputUsage = () => null;
+    footer._updateTokenDisplay();
+    if (!/\b250k\b/.test(td.textContent || '')) {
+      throw new Error(`Meter must hold the last live reading across a gap; got ${JSON.stringify(td.textContent)}`);
+    }
+  }
+};
+
+// ============================================================================
+// TEST 8: a column rebuild re-hands the same thread and must not reset the meter.
+// ============================================================================
+
+/**
+ * A sub-thread column builds a NEW MessageThread wrapper on every rebuild
+ * (conversation-tab mints one per non-root column), and a rebuild runs on any
+ * conversation:changed — which during a turn is every status frame. The root
+ * column reuses `conversation.rootMessageThread`, so this lands on sub-threads
+ * and mostly spares the root.
+ *
+ * The wrapper is new; the thread is not. Treating a re-hand as a change of
+ * thread throws away everything the footer had measured, several times a second,
+ * which is what makes a nested thread's meter flicker between its live count and
+ * the previous turn's blob. `_isOwnThread` already draws this distinction for
+ * the Undo offer — the token state is the same problem.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const footerHoldsLiveCountAcrossRebindTest = {
+  name: 'footer-holds-live-count-across-rebind',
+  description: 'Re-handing a footer the same thread in a fresh wrapper (a column rebuild) must not discard the live reading it is holding.',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    textResponse('first.', { inputTokens: 3000, outputTokens: 20, cachedTokens: 2000 })
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'one' }
+  ],
+
+  expectedItems: [
+    { type: 'system-prompt' },
+    { type: 'user', content: 'one' },
+    { type: 'assistant', content: 'first.' }
+  ],
+
+  async customAssertions(conversation) {
+    const td = findTokenDisplay(conversation);
+    const footer = /** @type {any} */ (findFooter(conversation));
+    if (!td || !footer) return; // headless
+
+    forceContextWindow(conversation, 200000);
+    await waitFor(() => /\b3k\b/.test(td.textContent || ''), 4000,
+      'footer settles on the completed turn\'s blob');
+
+    const conv = /** @type {any} */ (conversation);
+    conv.isThreadProcessing = () => true;
+    footer._modelStreamsLiveUsage = () => true;
+    conv.llmState.getLiveInputUsage = () => ({ inputTokens: 250000, cachedTokens: null });
+    footer._updateTokenDisplay();
+    if (!/\b250k\b/.test(td.textContent || '')) {
+      throw new Error(`Live usage must drive the meter mid-turn; got ${JSON.stringify(td.textContent)}`);
+    }
+
+    // The next status frame deletes the run's transient counters, so there is no
+    // live reading to re-derive the count from...
+    conv.llmState.getLiveInputUsage = () => null;
+
+    // ...and that same frame is a conversation:changed, so the column rebuilds
+    // and re-hands the footer the same thread in a new wrapper — exactly what
+    // conversation-tab hands a sub-thread column. The two arrive together, which
+    // is the whole difficulty: the state that would have covered the gap is
+    // discarded by the rebuild that accompanies it.
+    const rebound = Object.create(footer._messageThread);
+    footer.setMessageThread(rebound);
+    footer._updateTokenDisplay();
+
+    // The rebuild also emptied the blob cache, so the anchor walk has nothing to
+    // render from and leaves the display alone — the count only moves once the
+    // re-fetch lands. Wait for that rather than for a fixed delay: the flip is
+    // asynchronous, and asserting before it is asserting nothing.
+    await waitFor(() => footer._blobTokenCache.size > 0, 4000,
+      'the rebuild\'s blob re-fetch resolves');
+    footer._updateTokenDisplay();
+
+    if (!/\b250k\b/.test(td.textContent || '')) {
+      throw new Error(`A column rebuild must not reset the meter; got ${JSON.stringify(td.textContent)}`);
+    }
+  }
+};
+
+// ============================================================================
+// TEST 9: a prompt larger than the window must say so, not read as exactly full.
+// ============================================================================
+
+/**
+ * The window is a soft operating point, not a wall. With automatic compaction
+ * off the conversation is deliberately allowed to run past it — the request is
+ * dispatched with the guard bypassed and the provider is left to judge — so a
+ * measured total well above the budget is a normal, truthful reading, not a bug
+ * in the count.
+ *
+ * The bar cannot draw past its own width, and shouldn't try. The tooltip has no
+ * such excuse: it is computed from the same clamped percentage, so a
+ * conversation at nearly twice its window states "100% full" — the one reading
+ * that makes an overrun indistinguishable from a perfect fit, at exactly the
+ * moment the difference is the whole story.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const footerStatesOverrunTest = {
+  name: 'footer-states-overrun',
+  description: 'A total above the budget states how far over it is, instead of reporting itself as exactly full.',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    textResponse('OK.', { inputTokens: 100 })
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'hi' }
+  ],
+
+  expectedItems: [
+    { type: 'system-prompt' },
+    { type: 'user', content: 'hi' },
+    { type: 'assistant', content: 'OK.' }
+  ],
+
+  async customAssertions(conversation) {
+    const td = findTokenDisplay(conversation);
+    if (!td) return; // headless
+
+    forceContextWindow(conversation, 272000);
+
+    // The shape of the report: 516k measured against a 272k window.
+    /** @type {any} */ (td).setUsage({
+      total: 516000,
+      cached: null,
+      budget: 272000,
+    });
+
+    const title = td.getAttribute('title') || '';
+    if (/\b100%/.test(title)) {
+      throw new Error(`An overrun must not report itself as 100% full; title was ${JSON.stringify(title)}`);
+    }
+    if (!/\b244k\b/.test(title)) {
+      throw new Error(`An overrun must state how far over the window it is (244k); title was ${JSON.stringify(title)}`);
+    }
+
+    // The bar still cannot exceed its own width — over-budget is stated in
+    // words, never by drawing outside the track.
+    const fill = /** @type {HTMLElement|null} */ (td.querySelector('.token-fill'));
+    if (!fill || fill.style.width !== '100%') {
+      throw new Error(`The bar must saturate at 100%; got ${fill ? fill.style.width : '<missing>'}`);
+    }
+
+    // And the near-full band it sits above is untouched: 260k of 272k is 95.6%,
+    // which still reads as a percentage rather than an overrun.
+    /** @type {any} */ (td).setUsage({
+      total: 260000,
+      cached: null,
+      budget: 272000,
+    });
+    const nearlyFull = td.getAttribute('title') || '';
+    if (!/\b96% full\b/.test(nearlyFull)) {
+      throw new Error(`Just under the window must still state its percentage; title was ${JSON.stringify(nearlyFull)}`);
+    }
+  }
+};
+
+// ============================================================================
+// TEST 10: the meter measures the model THIS thread runs, not the root's.
+// ============================================================================
+
+/**
+ * A thread can override its model, and a sub-thread inherits by walking up the
+ * parent chain (MessageThread.getEffectiveModelConfig) rather than by asking the
+ * conversation. `conversation.modelConfig` is literally the ROOT thread's config
+ * — so a footer that asks the conversation is asking a different thread which
+ * model this column is running.
+ *
+ * Both halves of the meter depend on the answer: the window it is drawn against,
+ * and whether the model reports the per-step usage that makes it grow live at
+ * all. Ask the wrong thread and a sub-thread on a large-window model is metered
+ * against a small one, and a sub-thread on a live-usage provider hides its meter
+ * for the whole turn because the root's model does not stream usage.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const footerMetersThreadOwnModelTest = {
+  name: 'footer-meters-thread-own-model',
+  description: 'The meter takes its window and its live-usage capability from the model the column\'s own thread will run, not the root thread\'s.',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    textResponse('first.', { inputTokens: 3000, outputTokens: 20, cachedTokens: 2000 })
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'one' }
+  ],
+
+  expectedItems: [
+    { type: 'system-prompt' },
+    { type: 'user', content: 'one' },
+    { type: 'assistant', content: 'first.' }
+  ],
+
+  async customAssertions(conversation) {
+    const td = findTokenDisplay(conversation);
+    const footer = /** @type {any} */ (findFooter(conversation));
+    if (!td || !footer) return; // headless
+
+    forceContextWindow(conversation, 200000);
+    await waitFor(() => /\b3k\b/.test(td.textContent || ''), 4000,
+      'footer settles on the completed turn\'s blob');
+
+    const originalGet = providersCache.get;
+    const thread = footer._messageThread;
+    const originalResolve = thread.getEffectiveModelConfig;
+    try {
+      // Two models on one provider: the root's, and a bigger one this column's
+      // thread has overridden to.
+      providersCache.get = () => ([{
+        name: 'testprov',
+        modelsWithContext: [
+          { id: 'root-model', contextWindow: 200000, streamsLiveUsage: false },
+          { id: 'thread-model', contextWindow: 872000, streamsLiveUsage: true },
+        ],
+      }]);
+      thread.getEffectiveModelConfig = () => ({ provider: 'testprov', model: 'thread-model' });
+      // The footer holds the resolved config rather than re-walking the thread
+      // tree on every tick, and is told to drop it by document changes. Changing
+      // the answer from underneath it is not a document change, so say so.
+      footer._threadModelConfig = undefined;
+
+      footer._updateTokenDisplay();
+
+      const text = td.textContent || '';
+      if (!/\b872k\b/.test(text)) {
+        throw new Error(`Meter must use the thread's own model window (872k); got ${JSON.stringify(text)}`);
+      }
+      if (/\b200k\b/.test(text)) {
+        throw new Error(`Meter must not fall back to the root thread's window; got ${JSON.stringify(text)}`);
+      }
+      if (footer._modelStreamsLiveUsage() !== true) {
+        throw new Error('Live-usage capability must be read from the thread\'s own model');
+      }
+    } finally {
+      providersCache.get = originalGet;
+      thread.getEffectiveModelConfig = originalResolve;
+    }
+  }
+};
+
 export const tests = [
   footerShowsBlobTokensTest,
   footerHidesAfterRewindTest,
   footerCacheWarnTest,
   footerCacheHiddenWhileProcessingTest,
   footerCacheUnknownTest,
-  footerFallsBackPastUnmeasuredTurnTest
+  footerFallsBackPastUnmeasuredTurnTest,
+  footerHoldsLiveCountThroughGapTest,
+  footerHoldsLiveCountAcrossRebindTest,
+  footerStatesOverrunTest,
+  footerMetersThreadOwnModelTest
 ];

@@ -1797,12 +1797,16 @@ class Conversation {
     }
 
     try {
-      // Update status
+      // Update status, against the thread this response is for. Omitting the
+      // thread would target the conversation's projected run — the single
+      // thread it nominates as its headline — which is this one only by
+      // coincidence once several threads run at once, and a token count filed
+      // under a sibling is a meter reporting another thread's prompt.
       this._llmState.updateStatus(this.id, 'processing_tools', {
         inputTokens,
         outputTokens,
         cachedTokens
-      });
+      }, messageThread?.threadItemId ?? null);
 
       // The Go worker owns the turn: it adds text/thinking blocks during
       // streaming (processStreamChunk) and drives tool execution. The status

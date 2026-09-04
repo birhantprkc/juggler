@@ -201,9 +201,20 @@ func listModels(ctx context.Context, bearerToken string, headers map[string]stri
 		if model.Slug == "" || model.Visibility != "list" {
 			continue
 		}
-		contextWindow := model.ContextWindow
+		// The catalog states two windows, and they mean different things.
+		// `context_window` is the operating point the Codex CLI picks for
+		// itself and auto-compacts against; `max_context_window` is the ceiling
+		// the backend actually enforces — for the gpt-5.6 family, 872000 above
+		// a 272000 operating point.
+		//
+		// Juggler is not the Codex CLI and brings its own compaction policy, so
+		// what it needs from the catalog is the limit the wire imposes. A prompt
+		// between the two is accepted and billed like any other; measuring it
+		// against the operating point reports a conversation with half a million
+		// tokens of room to spare as over its limit.
+		contextWindow := model.MaxContextWindow
 		if contextWindow == 0 {
-			contextWindow = model.MaxContextWindow
+			contextWindow = model.ContextWindow
 		}
 		if contextWindow == 0 {
 			contextWindow = DefaultContextWindow

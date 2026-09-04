@@ -278,3 +278,56 @@ func TestUsageStatsCallsCodexEndpoint(t *testing.T) {
 		t.Fatalf("unexpected stats: %+v", stats)
 	}
 }
+
+// TestListModelsPrefersMaxContextWindow pins which of the catalog's two windows
+// a model is run at.
+//
+// The catalog states both. `context_window` is the operating point the Codex CLI
+// picks for itself and compacts against; `max_context_window` is the ceiling the
+// backend will actually accept — for the gpt-5.6 family, 872000 against a 272000
+// operating point. Juggler is not the Codex CLI and brings its own compaction
+// policy, so the number it needs is the one the wire enforces. Taking the
+// smaller of the two understates a legitimate prompt by more than half a million
+// tokens and paints a conversation that is nowhere near its limit as saturated.
+func TestListModelsPrefersMaxContextWindow(t *testing.T) {
+	originalBaseURL := baseURL
+	baseURL = ""
+	t.Cleanup(func() { baseURL = originalBaseURL })
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"models": [
+				{"slug":"gpt-5.6-sol","visibility":"list","context_window":272000,"max_context_window":872000,"max_output_tokens":32768,"priority":1},
+				{"slug":"gpt-5.5","visibility":"list","context_window":272000,"max_output_tokens":32768,"priority":2},
+				{"slug":"gpt-5.3-codex","visibility":"list","max_context_window":192000,"priority":3}
+			]
+		}`))
+	}))
+	defer server.Close()
+	baseURL = server.URL
+
+	models, err := listModels(context.Background(), "token", nil)
+	if err != nil {
+		t.Fatalf("listModels: %v", err)
+	}
+	byID := make(map[string]provider.ModelInfo, len(models))
+	for _, m := range models {
+		byID[m.ID] = m
+	}
+
+	// Both stated: the enforced ceiling wins.
+	if got := byID["gpt-5.6-sol"].ContextWindow; got != 872000 {
+		t.Fatalf("gpt-5.6-sol ContextWindow = %d, want 872000 (max_context_window, not the 272000 operating point)", got)
+	}
+	// Only the operating point stated: it is the only number there is, and a
+	// model whose ceiling the catalog declines to name is not assumed to have a
+	// larger one.
+	if got := byID["gpt-5.5"].ContextWindow; got != 272000 {
+		t.Fatalf("gpt-5.5 ContextWindow = %d, want 272000 (no max_context_window declared)", got)
+	}
+	// Only the ceiling stated: unchanged, and still the fallback it always was.
+	if got := byID["gpt-5.3-codex"].ContextWindow; got != 192000 {
+		t.Fatalf("gpt-5.3-codex ContextWindow = %d, want 192000", got)
+	}
+}

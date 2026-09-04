@@ -895,6 +895,17 @@ func (r *run) callLLMWithRetry(req json.RawMessage) (*LLMResponse, error) {
 			return nil, ErrPolitelyStopped
 		}
 
+		// The streamed OUTPUT is dropped so the fresh attempt starts clean —
+		// otherwise a partial answer from the failed attempt would be prefixed
+		// to this one. The input measurement deliberately is not: a retry
+		// re-sends `req` unchanged, so a prompt size the failed attempt already
+		// measured describes this attempt's prompt exactly, and it is the only
+		// account available if this attempt is cancelled before reporting its
+		// own. Dropping it would write a blob that reports nothing.
+		//
+		// That is why there is no resetStreamingUsage() here and there is one
+		// in runOneTurn: the strategy loop's next iteration sends a DIFFERENT
+		// prompt, grown by the tool results since. A retry does not.
 		r.finalizeStreaming()
 		r.resetStreamingText()
 		r.resetStreamingThinking()

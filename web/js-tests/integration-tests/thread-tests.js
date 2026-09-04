@@ -1606,7 +1606,69 @@ export const threadAliasDeleteRemovesOneTileTest = {
   }
 };
 
+/**
+ * A final response's token counts belong to the thread that produced them.
+ *
+ * `handleResponse` is handed the MessageThread the response is for, and the
+ * status write underneath it used to omit that thread — which means
+ * LLMState.updateStatus falls back to the conversation's *projected* run, the
+ * single thread the conversation nominates as its headline. With one thread
+ * running those are the same thread and nothing shows. With several running in
+ * parallel they routinely are not, and the counts land on a sibling: one
+ * thread's meter reports another thread's prompt.
+ *
+ * The thread is a parameter of the function. Nothing needs to be inferred.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const responseUsageLandsOnItsOwnThreadTest = {
+  name: 'response-usage-lands-on-its-own-thread',
+  description: 'Token counts from a final response are recorded against the thread that produced them, not the conversation\'s projected run.',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    textResponse('OK.', { inputTokens: 100 })
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'hi' }
+  ],
+
+  expectedItems: [
+    { type: 'system-prompt' },
+    { type: 'user', content: 'hi' },
+    { type: 'assistant', content: 'OK.' }
+  ],
+
+  async customAssertions(conversation) {
+    const conv = /** @type {any} */ (conversation);
+    const llmState = conv.llmState;
+    const original = llmState.isConversationProcessing;
+    try {
+      // handleResponse declines to do anything for a settled conversation.
+      llmState.isConversationProcessing = () => true;
+
+      // A response for a thread that is NOT the projected run. Only the thread
+      // id is needed here; handleResponse touches the rest solely on its error
+      // path.
+      await conv.handleResponse({ threadItemId: 'msg_sub_thread' }, [], 1234, 10, 500);
+
+      const own = llmState.getLiveInputUsage(conv.id, 'msg_sub_thread');
+      if (!own || own.inputTokens !== 1234) {
+        throw new Error(`The responding thread must carry its own count; got ${JSON.stringify(own)}`);
+      }
+
+      const projected = llmState.getLiveInputUsage(conv.id, null);
+      if (projected && projected.inputTokens === 1234) {
+        throw new Error('One thread\'s tokens must not be recorded against the projected run');
+      }
+    } finally {
+      llmState.isConversationProcessing = original;
+    }
+  }
+};
+
 export const tests = [
+  responseUsageLandsOnItsOwnThreadTest,
   threadCommandBasicTest,
   threadPlanIndicatorScopedTest,
   threadSummaryNotAutoChangedTest,

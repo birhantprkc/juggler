@@ -135,7 +135,12 @@ class TokenDisplay extends HTMLElement {
     const cached = this.processing ? null : this.cached;
 
     const hasBudget = this.budget > 0;
-    const totalPct = hasBudget ? Math.min(100, (this.total / this.budget) * 100) : 0;
+    // What the bar draws, and what is true, are not the same number once the
+    // window is passed. The track has a width and cannot exceed it; the words
+    // below have no such limit, and clamping them too is what made a
+    // conversation at twice its window report a perfect fit.
+    const truePct = hasBudget ? (this.total / this.budget) * 100 : 0;
+    const totalPct = Math.min(100, truePct);
     const cachedPct = (!hasBudget || cached === null) ? 0
       : Math.min(totalPct, (cached / this.budget) * 100);
     const usedPct = Math.max(0, totalPct - cachedPct);
@@ -168,7 +173,15 @@ class TokenDisplay extends HTMLElement {
     // in the tooltip rather than in the pill itself. The tooltip is also where
     // an unreported cache figure is accounted for: the pill states the total
     // and leaves the cache out, and the tooltip says why it is missing.
-    if (hasBudget && totalPct >= NEARLY_FULL_PCT) {
+    //
+    // Past the window it states the overrun and stops there. The window is an
+    // operating point rather than a wall — with automatic compaction off the
+    // conversation is meant to run beyond it — so the size of the overrun is
+    // the news, and a warning repeated on every hover of a state the user chose
+    // is not.
+    if (hasBudget && truePct > 100) {
+      this.title = `${fmtTokens(this.total - this.budget)} over the window.`;
+    } else if (hasBudget && totalPct >= NEARLY_FULL_PCT) {
       this.title = `${Math.round(totalPct)}% full. Something’s got to give.`;
     } else if (!this.processing && this.cached === null) {
       this.title = 'Cache use not reported for this turn.';

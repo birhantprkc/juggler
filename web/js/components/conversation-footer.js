@@ -92,6 +92,33 @@ class ConversationFooter extends HTMLElement {
   _pendingTxnId = '';
 
   /**
+   * The most recent live usage reading of the turn in flight, or null when no
+   * turn is running or none has been reported yet.
+   *
+   * A live reading is a snapshot, not a feed: the worker stamps it from a
+   * provider usage chunk once per round-trip and the next status frame deletes
+   * it again, so for most of a multi-step turn there is nothing to read. This
+   * holds the last one across those gaps. Dropping back to the previous turn's
+   * blob instead makes the meter alternate between two numbers — and between
+   * two shapes, since the blob path can also carry a cache figure — for the
+   * length of the turn.
+   * @type {{inputTokens: number, cachedTokens: number|null}|null}
+   * @private
+   */
+  _lastLiveUsage = null;
+
+  /**
+   * Memoised effective model config for this column's thread: `undefined` until
+   * resolved, then the config or null. Resolving it walks the thread tree (see
+   * _threadModelEntry), which is far too much work to repeat on a status tick.
+   * Invalidated on rebind and on any conversation change, since the override it
+   * reads lives in the document.
+   * @type {any}
+   * @private
+   */
+  _threadModelConfig = undefined;
+
+  /**
    * Debounce timer for event-driven token refreshes. Conversation/status
    * updates can arrive many times per second while the LLM streams; delaying
    * the refresh keeps the last stable count visible instead of briefly
@@ -152,20 +179,31 @@ class ConversationFooter extends HTMLElement {
   setMessageThread(mt) {
     if (this._unsubscribe) { this._unsubscribe(); this._unsubscribe = null; }
     if (this._statusUnsubscribe) { this._statusUnsubscribe(); this._statusUnsubscribe = null; }
-    // Only a real change of thread retires the Undo offer. A column re-hands
-    // its footer the thread it already has on every rebuild, and a rebuild runs
-    // on any conversation:changed — including the undoState frame the offer is
-    // waiting for to arm itself, so an unconditional retire here means the
-    // offer can never outlive the delete that raised it.
-    if (!this._isOwnThread(mt)) this._hideUndoOffer();
+    // Only a real change of thread retires the Undo offer or discards what the
+    // meter has measured. A column re-hands its footer the thread it already
+    // has on every rebuild — and a sub-thread column re-hands it in a NEW
+    // wrapper object every time, so object identity cannot be the test. A
+    // rebuild runs on any conversation:changed, which includes the undoState
+    // frame the offer is waiting for to arm itself, and every status frame of a
+    // running turn. Treating a re-hand as a change of thread would mean the
+    // offer can never outlive the delete that raised it, and the meter is reset
+    // to the previous turn's blob several times a second for the length of a
+    // turn — visibly, as a count that alternates between two numbers.
+    if (!this._isOwnThread(mt)) {
+      this._hideUndoOffer();
+      // A genuine recycle across threads (or across conversations). The
+      // per-txnID cache and the held live reading both describe the thread being
+      // left: txnIDs are globally unique so no entry can be served under the
+      // wrong key, but both would be served to the wrong footer for one tick
+      // before the new fetch lands.
+      this._blobTokenCache.clear();
+      this._pendingTxnId = '';
+      this._lastLiveUsage = null;
+    }
     this._cancelDeferredTokenDisplayUpdate();
-    // Defensive: if this element is recycled across threads (or across
-    // conversations) the per-txnID cache from the previous thread is no
-    // longer relevant. txnIDs are globally unique so collisions are not
-    // possible, but a stale entry could be served to the wrong footer
-    // for one tick before the new fetch lands.
-    this._blobTokenCache.clear();
-    this._pendingTxnId = '';
+    // Cheap to re-resolve once per rebind, and the thread being handed over may
+    // sit somewhere else in the tree entirely.
+    this._threadModelConfig = undefined;
     this._messageThread = mt;
     if (mt) {
       const conversation = mt.conversation;
@@ -175,6 +213,9 @@ class ConversationFooter extends HTMLElement {
           if (event.type === 'conversation:context-window-updated' && event.data === conversation) {
             this._scheduleTokenDisplayUpdate();
           } else if (event.type === 'contextItems:changed' || event.type === 'conversation:changed') {
+            // A model override lives in the document, so a document change is
+            // the event that can invalidate the resolved model.
+            this._threadModelConfig = undefined;
             this._scheduleTokenDisplayUpdate();
           } else if (event.type === 'conversation:items-removed'
             && this._isOwnThread(event.data?.messageThread)) {
@@ -320,19 +361,42 @@ class ConversationFooter extends HTMLElement {
   }
 
   /**
-   * Whether the visible conversation's model streams authoritative per-step
-   * input usage (provider capability, surfaced per model on the WS-pushed
-   * provider list). Only such models drive the live-growing meter; others keep
-   * the end-of-turn blob anchor.
-   * @returns {boolean} True when the current model reports live per-step usage.
+   * The WS-pushed provider-list entry for the model THIS column's thread will
+   * actually run, or null when it cannot be resolved.
+   *
+   * Resolved through the thread, not the conversation: a thread may override its
+   * model, and a sub-thread inherits by walking up the parent chain. The
+   * conversation's own `modelConfig` is the ROOT thread's, so asking it is
+   * asking a different thread what this column is running.
+   * @returns {any} The model entry from the provider list, or null.
+   * @private
+   */
+  _threadModelEntry() {
+    // Resolving the config walks up the thread tree, and each step materialises
+    // a Y.Array — while the provider lookup below is a scan of a handful of
+    // entries. The status feed asks this question on every tick of every
+    // running turn, so the walk is held and the lookup is not: a provider list
+    // that arrives or changes is picked up on the next tick, as it was before,
+    // without re-walking the document to learn nothing.
+    if (this._threadModelConfig === undefined) {
+      this._threadModelConfig = this._messageThread?.getEffectiveModelConfig?.() || null;
+    }
+    const cfg = this._threadModelConfig;
+    if (!cfg?.provider || !cfg?.model) return null;
+    const providerEntry = providersCache.get().find((/** @type {any} */ p) => p?.name === cfg.provider);
+    return providerEntry?.modelsWithContext?.find((/** @type {any} */ m) => m?.id === cfg.model) || null;
+  }
+
+  /**
+   * Whether this thread's model streams authoritative per-step input usage
+   * (provider capability, surfaced per model on the WS-pushed provider list).
+   * Only such models drive the live-growing meter; others keep the end-of-turn
+   * blob anchor.
+   * @returns {boolean} True when this thread's model reports live per-step usage.
    * @private
    */
   _modelStreamsLiveUsage() {
-    const cfg = this._messageThread?.conversation?.modelConfig;
-    if (!cfg?.provider || !cfg?.model) return false;
-    const providerEntry = providersCache.get().find((/** @type {any} */ p) => p?.name === cfg.provider);
-    const model = providerEntry?.modelsWithContext?.find((/** @type {any} */ m) => m?.id === cfg.model);
-    return !!model?.streamsLiveUsage;
+    return !!this._threadModelEntry()?.streamsLiveUsage;
   }
 
   /**
@@ -418,21 +482,43 @@ class ConversationFooter extends HTMLElement {
     if (!thread || !tokenDisplay) return;
 
     const conv = thread.conversation;
-    const budget = Number(conv?.contextWindow) || 0;
+    // The window belongs to the model this thread runs. `conversation.
+    // contextWindow` is resolved from the ROOT thread's model, so it is the
+    // right answer for the root column and the wrong one for a sub-thread that
+    // overrode its model — it would measure a large-window model's prompt
+    // against a small-window model's limit. It stays as the fallback for when
+    // the provider list has not arrived yet, which is the case it was already
+    // covering.
+    const budget = Number(this._threadModelEntry()?.contextWindow)
+      || Number(conv?.contextWindow) || 0;
     // This column's own thread: a meter measures one transcript, so a sibling's
     // turn must neither fill it nor blank it.
     const processing = !!thread.isProcessing;
     const streamsLive = this._modelStreamsLiveUsage();
 
+    // A finished turn releases the reading that measured it: the next turn's
+    // meter is the next turn's business, and the blob anchor is authoritative
+    // the moment the turn ends.
+    if (!processing) this._lastLiveUsage = null;
+
     // Live path: while a provider that reports authoritative per-step usage is
     // streaming, grow the meter against the running input total the worker has
     // stamped into this thread's processingState entry, rather than the frozen
-    // previous-turn blob anchor. Falls through to the anchor before the first
-    // usage chunk arrives (getLiveInputUsage null) and once the turn ends
-    // (processing false), so the end-of-turn number takes over seamlessly.
+    // previous-turn blob anchor.
+    //
+    // The reading is only present for the frame that carried a usage chunk —
+    // every subsequent status frame deletes it — so the last one is held for
+    // the rest of the turn. Only the stretch BEFORE the first chunk of a turn
+    // falls through to the anchor: there the previous turn's number is the best
+    // statement available, and it is the same number that was on screen a
+    // moment ago. Once this turn has measured itself, its own number stands
+    // until it measures itself again, and the turn's end hands over to the
+    // blob.
     if (processing && streamsLive) {
-      const live = conv?.llmState?.getLiveInputUsage?.(conv.id, thread.threadItemId);
+      const live = conv?.llmState?.getLiveInputUsage?.(conv.id, thread.threadItemId)
+        || this._lastLiveUsage;
       if (live) {
+        this._lastLiveUsage = live;
         /** @type {any} */ (tokenDisplay).setUsage({
           total: live.inputTokens,
           cached: live.cachedTokens,

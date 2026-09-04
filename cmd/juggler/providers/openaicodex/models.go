@@ -12,8 +12,18 @@ const (
 	DefaultContextWindow   = 128000
 	DefaultMaxOutputTokens = 16384
 
-	// catalogContextWindow is the window the ChatGPT-plan catalog reports for
-	// every model it currently lists.
+	// catalogContextWindow is the operating point the ChatGPT-plan catalog
+	// reports as `context_window` for every model it currently lists.
+	//
+	// The live path deliberately prefers the larger `max_context_window` (see
+	// listModels), and this map deliberately does not follow it. These numbers
+	// are used when the catalog is unreachable or the user is signed out, so
+	// they are guesses about a backend we could not reach — and the two
+	// directions of error are not equal. Guessing low compacts a conversation
+	// earlier than it needed to be; guessing high walks it into a mid-turn
+	// rejection with the whole prompt already assembled. The ceilings also vary
+	// per model in ways only the catalog knows, so a static one would be wrong
+	// per-slug rather than merely conservative.
 	catalogContextWindow = 272000
 )
 
