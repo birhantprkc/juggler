@@ -546,10 +546,18 @@ func transformMessagesToResponsesInput(messages []provider.Message) responses.Re
 			if isEmptyContent(content) {
 				content = emptyContentPlaceholder
 			}
-			inputItems = append(inputItems, responses.ResponseInputItemParamOfFunctionCallOutput(
-				msg.ToolUseID,
-				content,
-			))
+			// Built field by field rather than via
+			// ResponseInputItemParamOfFunctionCallOutput, which sets only the
+			// output: a function call output without its CallID cannot be
+			// matched to the call it answers.
+			inputItems = append(inputItems, responses.ResponseInputItemUnionParam{
+				OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
+					CallID: openai.String(msg.ToolUseID),
+					Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
+						OfString: openai.String(content),
+					},
+				},
+			})
 			// Queue image output to follow this run of tool results as a user turn.
 			for _, part := range msg.Parts {
 				if uri := imageDataURI(part); uri != "" {

@@ -643,7 +643,7 @@ fmt:
 
 # Pin golangci-lint to the same version the CI workflow installs, so local
 # and CI runs see the same rule set and the same false-positive surface.
-GOLANGCI_LINT_VERSION=v2.12.2
+GOLANGCI_LINT_VERSION=v2.13.2
 
 ## lint: Run all linters (Go + JavaScript type checking + JavaScript linting + CSS)
 ## This and `lint-files` are the ONLY sanctioned ways to lint. Never invoke
@@ -682,10 +682,7 @@ lint-fmt:
 # are therefore disposable, not hand-maintained).
 lint-go: app-icon-embed wails-runtime-embed
 	@$(GOVET) ./cmd/... ./tests/... ./web/...
-	@if ! command -v golangci-lint &> /dev/null; then \
-		echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."; \
-		go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION); \
-	fi
+	@GOLANGCI_LINT_VERSION="$(GOLANGCI_LINT_VERSION)" scripts/ensure-golangci-lint
 	@$(subst \,/,$(shell go env GOPATH))/bin/golangci-lint run --timeout=5m ./cmd/... ./tests/... ./web/...
 
 ## lint-deadcode: Find unreachable Go functions in cmd/ (production code).
@@ -768,10 +765,7 @@ fix-fmt:
 ## many findings have none and still need a hand edit). Same package scope as
 ## lint-go; embeds regenerated first so the fixers typecheck against the real build.
 fix-go: app-icon-embed wails-runtime-embed
-	@if ! command -v golangci-lint &> /dev/null; then \
-		echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."; \
-		go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION); \
-	fi
+	@GOLANGCI_LINT_VERSION="$(GOLANGCI_LINT_VERSION)" scripts/ensure-golangci-lint
 	@$(subst \,/,$(shell go env GOPATH))/bin/golangci-lint run --fix --timeout=5m ./cmd/... ./tests/... ./web/...
 
 ## fix-js: eslint --fix (same globs, config, and ignore patterns as lint-js).
