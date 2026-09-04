@@ -700,6 +700,15 @@ class Session {
         recordTape('session-mut', id, { op: 'set', from: '_loadAndInsertConversation-stub' });
         this._setConversationOrder([id], new Map([[id, stub]]));
         stubbed = true;
+        // Announce it now, not when the worker lands. Subscribers paint from the
+        // map but only inside a render, and they render on notifies — so holding
+        // the announcement back for the spawn leaves the tab strip unchanged for
+        // the whole load, and unchanged forever if it fails. That is the Undo
+        // that visibly does nothing until an unrelated event repaints the bar.
+        // The stub is a first-class tab: it draws its own spinner and hydrates
+        // when selected. The notify the load fires on completion rebinds this
+        // same entry rather than adding a second one.
+        this._notify('conversation:created', stub);
       }
     }
 
@@ -715,10 +724,16 @@ class Session {
     } catch (error) {
       console.error(`[Session] load failed for ${id}:`, error);
       // Drop the placeholder we put at the head — a conversation that never
-      // loaded must not leave a permanent dead tab at the top of the bar.
-      if (stubbed && this.conversations.get(id)?.loadState === 'unloaded') {
+      // loaded must not leave a permanent dead tab at the top of the bar. It was
+      // announced on the way in, so announce the removal too: subscribers hold
+      // per-conversation elements keyed off the create, and dropping the map
+      // entry silently strands them.
+      const stub = this.conversations.get(id);
+      if (stubbed && stub?.loadState === 'unloaded') {
         recordTape('session-mut', id, { op: 'delete', from: '_loadAndInsertConversation-stub-failed' });
         this.conversations.delete(id);
+        this._mruList = this._mruList.filter(x => x !== id);
+        this._notify('conversation:deleted', stub);
       }
       return null;
     }

@@ -16,6 +16,10 @@
  * The queue is cleared explicitly rather than by arranging an empty session:
  * what is under test is the queue-less path, and asserting it needs that state
  * to be certain rather than inherited from whatever the lane's session held.
+ *
+ * The last test covers the other half of the same stub: it has to be announced
+ * when it lands in the map, not when its worker arrives, or the tab is invisible
+ * for the whole load and there is nothing to select.
  * @module unit-tests/unloaded-tab-hydration
  */
 
@@ -198,6 +202,60 @@ export async function runTests(_ctx) {
       failed++;
       errors.push(`a restored conversation loads when selected: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
+      if (restoredId && session.conversations.has(restoredId)) {
+        await session.deleteConversation(restoredId);
+      }
+    }
+  }
+
+  // Test 4: the restored tab is announced the moment its stub is in the map,
+  // without waiting for the worker. The bar paints a row for every
+  // `session.conversations` entry, but only ever inside a render, and it renders
+  // on notifies — so a restore that announces itself only once the load lands
+  // leaves the tab strip visibly unchanged for the length of a worker spawn, and
+  // forever if the load fails. The user bins something, hits Undo, and nothing
+  // happens until an unrelated event (clicking another tab) repaints the bar.
+  //
+  // The apply is deliberately not awaited: an async function runs to its first
+  // await synchronously, and everything before the worker spawn — the stub, its
+  // ordering, and the announcement owed for it — belongs on that side of the
+  // yield. Asserting before the await is what pins it there.
+  {
+    /** @type {string|null} */
+    let restoredId = null;
+    /** @type {Function|null} */
+    let unsubscribe = null;
+    try {
+      const conv = await createTestConversation(session);
+      const name = conv.name;
+      restoredId = conv.id;
+
+      const binned = await session.binConversation(restoredId);
+      assert(binned === true, 'precondition: the bin must succeed');
+      assert(!session.conversations.has(restoredId), 'precondition: binning drops the conversation');
+
+      /** @type {string[]} */
+      const announced = [];
+      unsubscribe = session.subscribe(/** @param {any} event */ (event) => {
+        if (event.type === 'conversation:created' && event.data?.id === restoredId) {
+          announced.push(session.conversations.get(restoredId)?.loadState);
+        }
+      });
+
+      await session.restoreConversation(restoredId);
+      const applied = session.applyConversationRestored(restoredId, name);
+      assert(announced.length > 0,
+        'a restore put the conversation in the map and told nobody — the tab strip stays unchanged until something unrelated renders it');
+      assert(announced[0] !== 'loaded',
+        'the announcement waited for the worker: the tab is missing for the whole load');
+      await applied;
+
+      passed++;
+    } catch (e) {
+      failed++;
+      errors.push(`a restored conversation reaches the bar before its worker: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      if (unsubscribe) unsubscribe();
       if (restoredId && session.conversations.has(restoredId)) {
         await session.deleteConversation(restoredId);
       }

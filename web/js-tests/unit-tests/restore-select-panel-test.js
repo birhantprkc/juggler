@@ -7,12 +7,11 @@
  *
  * The sidebar row and the panel are built by two different mechanisms —
  * `render()` paints a row for every `session.conversations` entry, while the
- * `<conversation-tab>` host is built from `conversation:created`. A restore
- * seeds the map with an unloaded stub and only notifies once its worker has
- * spawned, so there is a window (and, if that load fails, a permanent state)
- * where the row is clickable and the host is absent. Activating a missing host
- * used to be a silent no-op that still hid every other tab: a blank page with
- * no way back but a reload.
+ * `<conversation-tab>` host is built from `conversation:created`. Anything that
+ * seeds the map outside that notify — a session load's stubs, a worker-manager
+ * hydration, a merge on refresh — leaves a clickable row whose host is absent.
+ * Activating a missing host used to be a silent no-op that still hid every
+ * other tab: a blank page with no way back but a reload.
  *
  * What must hold:
  *
@@ -112,8 +111,8 @@ export async function runTests() {
     assert(stayingTab.classList.contains('active'), 'the visible conversation was not activated');
 
     // --- 1: selecting a host-less mapped conversation builds its host -------
-    // This is the restore's load window: the stub is in the map (so the bar
-    // renders a row for it) but `conversation:created` has not fired yet.
+    // The stub is in the map (so the bar renders a row for it) but
+    // `conversation:created` has not fired for it.
     const restored = createStubConversation(session, 'conv_restored', 'Restored', 'unloaded');
     session.conversations.set(restored.id, restored);
     session.visibleConversationId = restored.id;
@@ -135,8 +134,8 @@ export async function runTests() {
     passed++;
 
     // --- 3: an error stub is selectable and offers its retry ----------------
-    // A restore whose load failed leaves loadState='error' and never notifies
-    // `conversation:created`, so this row would otherwise be dead forever.
+    // A load that failed leaves loadState='error', and nothing further is coming
+    // for it, so this row would otherwise be dead forever.
     const broken = createStubConversation(session, 'conv_broken', 'Broken', 'error');
     session.conversations.set(broken.id, broken);
     session.visibleConversationId = broken.id;
