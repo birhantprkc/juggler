@@ -5,30 +5,21 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
-- New Pinboard in the header bar, holding pinned files, plan, todos, memory, git, changed files and running tasks, and detachable onto one conversation in a window or tab of its own
-- The agent can pin a file and bring it into view on the Pinboard
+- New Pinboard feature, accessible from a header bar button. This shows pinned files, plan, todos, memory, git, changed files and running tasks. Multiple pinboards can be detached in windows or browser tabs
 - Open file and Reveal now say when the system refuses, instead of appearing to do nothing
 - Reveal now selects the file in the Linux file manager rather than only opening its folder
 - Background tasks are now stopped when you switch project or quit, instead of being left running
 - Hand edits to the project memory file are noticed while you are looking at it
 - An expired Claude Code sign-in now says how to fix it, with a settings shortcut
-- A conversation with no history yet shows the composer keys and gestures
 - Improvements to the UX and features in the slash commands menu and editor panels
-- A tab moves to the top when its turn finishes or needs you, not while output is arriving
 - The cache-miss caution now follows the model each thread actually ran, and clears again in sub-threads
-- Pinboard items can stay live while you read another tab, instead of starting over on the way back
-- Extensions can embed a local server in a pin, and start a background task with no deadline
 - Auto-compaction now triggers on measured token counts, never estimates, and no longer loops
 - Compaction summaries merge into one thread instead of stacking, and leave a notice at the tail
-- A summarized tool result no longer leaves its row looking as though it were still running
 - Compaction now says what it kept, badges its summary tile, and no longer steals your column
 - The model picker says a change reaches the turn already running, so there is no need to stop it
-- A sub-thread tile shows what its own context cost against what it returned to the conversation
-- Pause now stops the column it was pressed in and everything under it, siblings included
+- Pause now stops the column it was pressed in and everything under it, siblings included.
 - A pause holds until you lift it, and the footer says Paused with a Resume button
-- Pause now ends a rate-limit wait instead of letting it retry
 - Switching model no longer carries a paid serving tier onto the model you switched to
-- A Recent model row now restores exactly the pair it shows, standard serving included
 - Shift-Option-Command-M opens the model picker and leaves it open, to read rather than cycle
 - Whole-file writes no longer need a prior read, since their approval shows the full diff
 
