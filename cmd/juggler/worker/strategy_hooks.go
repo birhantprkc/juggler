@@ -153,19 +153,23 @@ func (r *run) dispatchWorkerIdleHook() {
 // drain or a compaction fold). Fire-and-forget: the engine fans the hook out
 // over every registered context-item type and each hook's effects are external
 // side-effects (e.g. writing to a memory server), so there is nothing to wait
-// for. Carries the just-incremented turn counter so a hook can distil only the
-// content that is new since its last run.
+// for. Carries the monotonic turn fence as it stands at this idle edge, so a
+// hook can distil only the content that is new since its last run. Sampled once
+// into a local: this runs on the turn's own goroutine, where a sibling retiring
+// on the actor can advance the fence between two reads, and the wire value and
+// the tape entry must describe the same dispatch.
 func (r *run) dispatchContextTurnHook() {
+	turn := r.turnCounter.Load()
 	data, err := json.Marshal(RunContextHookRequest{
 		Type:      "run-context-hook",
 		Hook:      "onTurnEnd",
-		TurnIndex: int(r.turnCounter),
+		TurnIndex: int(turn),
 	})
 	if err != nil {
 		r.log.Error("[worker] marshal run-context-hook: %v", err)
 		return
 	}
-	r.tape.Record("context-hook-dispatch", map[string]any{"hook": "onTurnEnd", "turn": r.turnCounter})
+	r.tape.Record("context-hook-dispatch", map[string]any{"hook": "onTurnEnd", "turn": turn})
 	r.callbacks.sendToEngine(data)
 }
 

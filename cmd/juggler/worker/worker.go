@@ -371,7 +371,13 @@ type ConversationWorker struct {
 	// processingState blob) so the browser (and test harness) can observe that
 	// a turn has completed even if the status transitions were merged by Yjs
 	// sync batching, and so it survives a reload. Monotonic, never resets.
-	turnCounter int64
+	//
+	// Atomic because the bump belongs to the actor — a turn hands its idle edge
+	// back to the run loop, which finalizes the fence as it retires the turn —
+	// while a live SIBLING turn reads that fence on its own goroutine to stamp
+	// the onTurnEnd context hook. Only the actor writes it, so the seed-then-
+	// increment below stays a single-writer sequence.
+	turnCounter atomic.Int64
 
 	// Thread reducer dispatch state. The reducer is called from the
 	// document observer (handleItemsChange) which fires synchronously —
@@ -1531,16 +1537,16 @@ func (r *run) bumpTurnCounterAtIdle() {
 	// first frame is idle, so this seed runs before any non-idle frame could
 	// regress it). Without the seed the counter would go backwards and break
 	// every fence observing it.
-	if docTC := r.docTurnCounter(); docTC > r.turnCounter {
-		r.turnCounter = docTC
+	if docTC := r.docTurnCounter(); docTC > r.turnCounter.Load() {
+		r.turnCounter.Store(docTC)
 	}
-	r.turnCounter++
+	next := r.turnCounter.Add(1)
 	// Persist the bumped counter to its own durable top-level metadata key,
 	// OUTSIDE the ephemeral processingState blob (whose other fields —
 	// startedAt, live token counts, status — are rebuilt from scratch on
 	// every load by handleInit). completedTurns is the one value read back
 	// across a load (the monotonic turn fence), so it gets a clean key.
-	r.doc.SetMetadata("completedTurns", r.turnCounter)
+	r.doc.SetMetadata("completedTurns", next)
 }
 
 // finishIdleTransition closes out a completed run: it collapses any in-flight

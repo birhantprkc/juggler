@@ -34,13 +34,33 @@ func testViewerClient(id, viewerID string) *WSClient {
 }
 
 // receivedAnything reports whether a client was sent anything within a short
-// window. Used for the negative cases, where the point is that nothing arrives.
+// window. Used ONLY for the negative cases, where the point is that nothing
+// arrives: a flat wait is all such an assertion can be, so it is kept cheap.
+// A positive case waits on awaitDelivery instead.
 func receivedAnything(c *WSClient) bool {
 	select {
 	case <-c.send:
 		return true
 	case <-time.After(150 * time.Millisecond):
 		return false
+	}
+}
+
+// awaitDelivery blocks until the client is sent something, and fails the test if
+// nothing is. Delivery is asynchronous in two hops — sendToViewer posts an op to
+// the viewer group's loop, which hands the message to each client's mailbox — so
+// how long it takes is a question about the scheduler, and a CI machine running
+// a whole suite's sockets alongside can take orders of magnitude longer over it
+// than a quiet laptop. The budget is generous because it is only ever paid when
+// the test is already failing.
+func awaitDelivery(t *testing.T, c *WSClient, who string) wsMessage {
+	t.Helper()
+	select {
+	case msg := <-c.send:
+		return msg
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s received nothing", who)
+		return wsMessage{}
 	}
 }
 
@@ -59,13 +79,8 @@ func TestViewerRelay_ReachesOnlyTheNamedViewer(t *testing.T) {
 
 	s.viewerSendToViewer("v_b", map[string]string{"type": "viewer-relay"})
 
-	select {
-	case msg := <-b.send:
-		if msg.json == nil {
-			t.Fatal("the addressed viewer got an empty message")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("the addressed viewer received nothing")
+	if msg := awaitDelivery(t, b, "the addressed viewer"); msg.json == nil {
+		t.Fatal("the addressed viewer got an empty message")
 	}
 	if receivedAnything(a) {
 		t.Error("a viewer that was not addressed received the relay")
@@ -124,12 +139,8 @@ func TestViewerRelay_DuplicateIDsBothReceive(t *testing.T) {
 
 	s.viewerSendToViewer("v_same", map[string]string{"type": "viewer-relay"})
 
-	if !receivedAnything(first) {
-		t.Error("the first connection under the shared id received nothing")
-	}
-	if !receivedAnything(second) {
-		t.Error("the second connection under the shared id received nothing")
-	}
+	awaitDelivery(t, first, "the first connection under the shared id")
+	awaitDelivery(t, second, "the second connection under the shared id")
 }
 
 // TestViewerRelay_LeavingStopsDelivery: a viewer that has left the group is not
