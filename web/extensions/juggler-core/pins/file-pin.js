@@ -60,6 +60,11 @@ class FilePin extends PinboardItemType {
     // the agent.
     addLabel: 'Add a file to view…',
     order: -1,
+    // This pin takes any file at all, so it is the answer only where nothing more
+    // specific wants the path — a patch, a notebook, a diagram. Being asked last
+    // is what lets a type built for one suffix have its say despite loading after
+    // everything in the box.
+    sourceFallback: true,
   };
 
   /**

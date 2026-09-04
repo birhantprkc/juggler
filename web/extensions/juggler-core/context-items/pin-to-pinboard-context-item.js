@@ -4,60 +4,80 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import ContextItem from 'juggler/context-item';
-import { pinToPinboard } from 'juggler/pinboard';
-import { normalizeFilePinParameters } from '../lib/file-pin-config.js';
+import { pinToPinboard, loadPinAgentDescriptors } from 'juggler/pinboard';
 
 /**
- * Type-specific adapters from the tool's public parameters to persisted pin
- * config, for a type that needs bespoke normalization or identity. Anything
- * not listed here still works, via GENERIC_ADAPTER below — this is an
- * optimization for `file`, not a gate on what the tool accepts.
+ * The installed pinboard item types that describe themselves to the agent, by id.
+ * Refreshed by prepareToolDefinitions() before each tool list is built, because
+ * the set changes when the user installs, enables or disables an extension.
+ * @type {Map<string, import('juggler/pinboard-item-type').PinAgentDescriptor>}
  */
-const PIN_TYPES = Object.freeze({
-  file: {
-    description: '`file`: `path` is required; `isDirectory` is optional.',
-    schema: {
-      type: 'object',
-      description: 'For `file`: `path` is required; `isDirectory` is optional.',
-      properties: {
-        path: { type: 'string', description: 'File or directory path, absolute or relative to the project.' },
-        isDirectory: { type: 'boolean', description: 'Whether the path names a directory. A trailing slash also implies this.' },
-      },
-      required: ['path'],
-    },
-    normalize: normalizeFilePinParameters,
-    toConfig: (/** @type {Record<string, any>} */ parameters) => ({
-      ...parameters,
-      agentRequested: true,
-    }),
-    identity: (/** @type {Record<string, any>} */ parameters) => parameters.path,
-  },
-});
+let catalog = new Map();
 
 /**
- * Fallback for any pinboard item type not listed in PIN_TYPES — including
- * every type an extension installs on its own. `parameters` is forwarded
- * unexamined as the pin's config; that type's own `normalizeConfig` (called
- * when the pin is mounted, see `pinboard-item-type.js`) is what validates and
- * shapes it, so this tool never needs to know a type's config shape.
+ * Stable JSON for a parameter object: same keys in the same order whatever order
+ * the model wrote them in, so a repeat of the same request hashes to the same pin.
+ * @param {Record<string, any>} parameters - The parameters to spell.
+ * @returns {string} A stable spelling.
  */
-const GENERIC_ADAPTER = {
-  normalize: (/** @type {Record<string, any>} */ parameters) => (
-    parameters && typeof parameters === 'object' && !Array.isArray(parameters) ? parameters : null
-  ),
-  toConfig: (/** @type {Record<string, any>} */ parameters) => ({
-    ...parameters,
-    agentRequested: true,
-  }),
-  identity: (/** @type {Record<string, any>} */ parameters) => JSON.stringify(parameters),
-};
+function stableStringify(parameters) {
+  return JSON.stringify(parameters, Object.keys(parameters).sort());
+}
 
 /**
- * @param {string} type - Requested pin type.
- * @returns {typeof PIN_TYPES.file|typeof GENERIC_ADAPTER|null} The adapter to use, or null for no type.
+ * Fold one type's parameters to the spelling that will be persisted, or null to
+ * reject them. A type with a descriptor normalizes its own; anything else gets
+ * only the check this tool can make without knowing the type — that there is an
+ * object there at all — and is judged properly by its `normalizeConfig` when the
+ * pin mounts.
+ * @param {import('juggler/pinboard-item-type').PinAgentDescriptor|null} descriptor - The type's descriptor, if it has one.
+ * @param {any} parameters - Raw parameters from the model.
+ * @returns {Record<string, any>|null} Normalized parameters, or null.
  */
-function adapterFor(type) {
-  return PIN_TYPES[/** @type {keyof typeof PIN_TYPES} */ (type)] || (type ? GENERIC_ADAPTER : null);
+function normalizeParameters(descriptor, parameters) {
+  if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) return null;
+  return descriptor?.normalize ? descriptor.normalize(parameters) : parameters;
+}
+
+/**
+ * What makes two requests the same pin.
+ * @param {import('juggler/pinboard-item-type').PinAgentDescriptor|null} descriptor - The type's descriptor, if it has one.
+ * @param {Record<string, any>} parameters - Normalized parameters.
+ * @returns {string} The type-owned identity.
+ */
+function identityOf(descriptor, parameters) {
+  return descriptor?.identity ? descriptor.identity(parameters) : stableStringify(parameters);
+}
+
+/**
+ * What to call this pin in the UI and in the summary the model reads back. A type
+ * that knows what identifies one of its pins says so; the rest are known by type.
+ * @param {string} type - The pin type.
+ * @param {Record<string, any>} [parameters] - Normalized parameters.
+ * @returns {string} A short label.
+ */
+function pinLabel(type, parameters) {
+  const descriptor = catalog.get(type);
+  return (parameters && descriptor?.identity?.(parameters)) || type;
+}
+
+/**
+ * Spell one type's parameter schema as a phrase, rather than making the model
+ * read JSON schema inside a description.
+ * @param {any} schema - The descriptor's `parameters` schema.
+ * @returns {string} A phrase describing the parameters.
+ */
+function describeParameters(schema) {
+  const properties = schema?.properties || {};
+  const required = new Set(Array.isArray(schema?.required) ? schema.required : []);
+  const names = Object.keys(properties);
+  if (!names.length) return 'No parameters.';
+  const parts = names.map((name) => {
+    const property = properties[name] || {};
+    const kind = [property.type, required.has(name) ? 'required' : null].filter(Boolean).join(', ');
+    return `\`${name}\`${kind ? ` (${kind})` : ''}${property.description ? ` — ${property.description}` : ''}`;
+  });
+  return `Parameters: ${parts.join(' ')}`;
 }
 
 /**
@@ -98,23 +118,49 @@ class PinToPinboardContextItem extends ContextItem {
   }
 
   /**
+   * Read the installed pin types before the tool list is built. The tool's whole
+   * job is to name them, and a type the model is never told about is one it never
+   * picks — which is how a `.cmajorpatch` ends up pinned as raw text.
+   * @returns {Promise<void>} Resolves once the catalog is current.
+   */
+  static async prepareToolDefinitions() {
+    try {
+      catalog = new Map((await loadPinAgentDescriptors()).map((d) => [d.id, d]));
+    } catch (err) {
+      // Keep whatever we had. An empty catalog would silently take every type
+      // away from the model, which is worse than describing a stale one.
+      console.error('[PinToPinboard] Couldn’t read the pinboard item types:', err);
+    }
+  }
+
+  /**
    * @returns {Array<{name: string, category: string, description: string, input_schema: import('juggler/strategy-type').JSONObjectSchema}>} Tool definition.
    */
   static getToolDefinitions() {
+    const listed = [...catalog.values()]
+      .map((d) => `- \`${d.id}\` — ${d.description} ${describeParameters(d.parameters)}`)
+      .join('\n');
+    const description = [
+      'Attach something to the user’s Pinboard and bring it into view. This is a one-way display action: you cannot list or read the user’s existing pins, and repeating a request reveals the existing pin instead of adding another.',
+      'Choose the type that is *for* the thing you are showing, not the one that will accept it — several types accept a path, and the specific one knows how to run, render or summarize what is at the end of it.',
+      listed ? `Installed types:\n${listed}` : '',
+      'A type installed after this list was built is accepted too: use its id and give it whatever parameters it expects, and it will validate its own config.',
+    ].filter(Boolean).join('\n\n');
+
     return [{
       name: 'pin_to_pinboard',
       category: 'write',
-      description: `Attach something to the user’s Pinboard and bring it into view. Parameters depend on the requested type. This is a one-way display action: you cannot list or read the user’s existing pins. Built in: ${Object.values(PIN_TYPES).map((adapter) => adapter.description).join(' ')} Any other pinboard item type the user has installed as an extension is also accepted — use its id as \`type\` and give it whatever parameters that type expects; it validates its own config. Repeating the same request reveals the existing pin instead of adding another.`,
+      description,
       input_schema: {
         type: 'object',
         properties: {
           type: {
             type: 'string',
-            description: 'Which kind of Pinboard item to add: `file`, or the id of any other pinboard item type the user has installed.',
+            description: 'Which kind of Pinboard item to add — the id of one of the installed types listed above.',
           },
           parameters: {
             type: 'object',
-            description: `Parameters for the requested type. ${PIN_TYPES.file.schema.description} For any other type, pass whatever parameters that type's pin expects.`,
+            description: 'Parameters for the requested type, as listed above. Pass an empty object for a type that takes none.',
           },
         },
         required: ['type', 'parameters'],
@@ -129,13 +175,10 @@ class PinToPinboardContextItem extends ContextItem {
    */
   async validate(toolInput) {
     const type = typeof toolInput?.type === 'string' ? toolInput.type.trim() : '';
-    const adapter = adapterFor(type);
-    if (!adapter) {
-      return { valid: false, error: `Unsupported pin type: ${type || '<missing>'}` };
+    if (!type) {
+      return { valid: false, error: 'Which pin type? Name one of the installed types.' };
     }
-    const parameters = adapter.normalize(
-      /** @type {Record<string, any>} */ (toolInput.parameters),
-    );
+    const parameters = normalizeParameters(catalog.get(type) || null, toolInput.parameters);
     if (!parameters) {
       return { valid: false, error: `${type} parameters are invalid` };
     }
@@ -148,12 +191,12 @@ class PinToPinboardContextItem extends ContextItem {
    * @returns {Promise<Record<string, unknown>>} Added pin descriptor.
    */
   async execute(params) {
-    const adapter = adapterFor(params.type);
-    const parameters = adapter?.normalize(params.parameters);
-    if (!adapter || !parameters) throw new Error(`Unsupported pin type: ${params.type}`);
+    const descriptor = catalog.get(params.type) || null;
+    const parameters = normalizeParameters(descriptor, params.parameters);
+    if (!parameters) throw new Error(`${params.type} parameters are invalid`);
 
-    const config = adapter.toConfig(parameters);
-    const pin = await pinIdFor(params.type, adapter.identity(parameters));
+    const config = { ...parameters, agentRequested: true };
+    const pin = await pinIdFor(params.type, identityOf(descriptor, parameters));
     const from = this.conversation?.id || '';
     if (!from) throw new Error('No conversation available to attribute the Pinboard request');
     const data = await pinToPinboard({
@@ -181,7 +224,7 @@ class PinToPinboardContextItem extends ContextItem {
       return this.failureSummary(outcome.error || 'Could not pin that');
     }
     const result = /** @type {{type?: string, parameters?: Record<string, any>}} */ (outcome.result) || {};
-    const label = result.type === 'file' ? result.parameters?.path : result.type;
+    const label = result.type ? pinLabel(result.type, result.parameters) : '';
     return this.successSummary(`Pinned ${label || 'the item'} and asked the user’s Pinboard to show it.`);
   }
 
@@ -196,7 +239,7 @@ class PinToPinboardContextItem extends ContextItem {
     }
     if (actionStatus.success) {
       const result = /** @type {{type?: string, parameters?: Record<string, any>}} */ (actionStatus.result || {});
-      const summary = result.type === 'file' ? result.parameters?.path : result.type;
+      const summary = result.type ? pinLabel(result.type, result.parameters) : '';
       return { typeName, summary: summary || 'item', status: 'success' };
     }
     const terminal = this.resolveTerminalStatus(actionStatus, 'Could not pin that');

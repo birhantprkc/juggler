@@ -342,6 +342,62 @@ export async function runTests(_ctx) {
     }
   });
 
+  await run('a catch-all type is asked only after every narrower one has declined', async () => {
+    // The shipped `file` pin accepts every live file and is registered before any
+    // extension's, so first-acceptor-wins by registration order handed it sources
+    // that a narrower type was built for — a .cmajorpatch opened as raw text.
+    class CatchAllPin extends PinboardItemType {
+      static MANIFEST = {
+        id: 'test-catch-all-pin',
+        name: 'Anything',
+        version: '1.0.0',
+        description: 'Accepts every file',
+        sourceFallback: true,
+      };
+      static canPinSource(source) { return source?.kind === 'file'; }
+      static configFromSource(source) { return { path: source.path, via: 'catch-all' }; }
+      mount() {}
+    }
+    class NarrowPin extends PinboardItemType {
+      static MANIFEST = {
+        id: 'test-narrow-pin',
+        name: 'Narrow',
+        version: '1.0.0',
+        description: 'Accepts one suffix only',
+      };
+      static canPinSource(source) { return source?.path?.endsWith('.probe') === true; }
+      static configFromSource(source) { return { path: source.path, via: 'narrow' }; }
+      mount() {}
+    }
+
+    pinboardItemRegistry.reset();
+    // The catch-all goes FIRST, which is the arrangement that used to decide it.
+    const registrations = [
+      pinboardItemRegistry.registerClass(/** @type {any} */ (CatchAllPin), { modulePath: '(test)' }),
+      pinboardItemRegistry.registerClass(/** @type {any} */ (NarrowPin), { modulePath: '(test)' }),
+    ];
+    try {
+      for (const reg of registrations) {
+        assert(reg.registered, `registerClass refused a probe: ${reg.reason}`);
+      }
+
+      const claimed = pinboardItemRegistry.resolveSource({ kind: 'file', path: '/tmp/a.probe' });
+      if (!claimed) throw new Error('a .probe source must resolve to something');
+      assert(claimed.typeId === 'test-narrow-pin',
+        `a type built for this source must beat the catch-all that registered first, got: ${claimed.typeId}`);
+      assert(claimed.config.via === 'narrow', 'the winning type must be the one that built the config');
+
+      // And the catch-all still catches what nothing else wants — being asked last
+      // is not the same as not being asked.
+      const unclaimed = pinboardItemRegistry.resolveSource({ kind: 'file', path: '/tmp/a.go' });
+      if (!unclaimed) throw new Error('an unclaimed file source must still resolve');
+      assert(unclaimed.typeId === 'test-catch-all-pin',
+        `the fallback must take what nothing claims, got: ${unclaimed.typeId}`);
+    } finally {
+      pinboardItemRegistry.reset();
+    }
+  });
+
   /**
    * Register default-pin probes against an empty registry, so these cases assert
    * about the types they registered rather than about the shipped pins a lane may

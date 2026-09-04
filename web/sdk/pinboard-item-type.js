@@ -27,6 +27,12 @@
  *   every user reads.
  * @property {boolean} [addable] - Whether the type appears in the add picker at all.
  *   Defaults to true; set false for a type only ever pinned from a source.
+ * @property {boolean} [sourceFallback] - Whether this type is the last resort for a
+ *   source rather than a claim on it. Off by default. A type that accepts a whole
+ *   `kind` — every file, say — sets it, and the host asks every other type first, so
+ *   a narrower type still gets its say however late it registered. Without this the
+ *   answer would be decided by load order, and a catch-all shipped in the box would
+ *   beat every extension by arriving first.
  * @property {boolean} [defaultPin] - Whether a board opens with this type already on
  *   it. The starting tabs are laid out once, the first time a board is used; after
  *   that the board is the user's, so one they remove stays removed. Only ask for this
@@ -61,6 +67,53 @@
  * @property {string} [path] - Absolute path, for `kind: 'file'`
  * @property {'live'|'snapshot'} [presentation] - Whether the pin tracks the source
  *   or freezes what it said at pin time
+ */
+
+/**
+ * What the agent is told about one pinboard item type, and how it addresses it.
+ *
+ * A pin type runs in the viewer: it touches the DOM, so it is never loaded in the
+ * engine worker, where the `pin_to_pinboard` tool lives. A type that says nothing
+ * here is still pinnable — the tool forwards an unrecognised type's parameters
+ * untouched — but the model has no way to *find out* it exists, so in practice it
+ * is never chosen. The descriptor is how a type gets named in the tool's
+ * description, and naming it is the whole of the difference.
+ *
+ * Declare it as the default export of a module beside the pin, listed under
+ * `pinboardItemMeta` in the extension manifest. That module is loaded in the
+ * worker, so it must be **free of side effects and of the DOM**: no styles
+ * injected at import, no `document`, nothing but the descriptor and the pure
+ * functions it needs.
+ *
+ * ```javascript
+ * // pins/clock-pin.meta.js
+ * export default {
+ *   id: 'clock',
+ *   description: 'The current time, ticking.',
+ *   parameters: { type: 'object', properties: {}, required: [] },
+ * };
+ * ```
+ * @typedef {object} PinAgentDescriptor
+ * @property {string} id - The item-type id, matching the pin's `MANIFEST.id`
+ * @property {string} description - One line, written for the model, saying what
+ *   this type shows and when to reach for it. Not `MANIFEST.description`, which is
+ *   catalog copy for a person: this one is read by something choosing between
+ *   types, so say what distinguishes it from the type it would otherwise pick.
+ * @property {object} parameters - JSON schema for the `parameters` the tool takes
+ *   for this type. A type that needs none still declares an empty object schema,
+ *   so the model can see there is nothing to supply.
+ * @property {(parameters: Record<string, any>) => Record<string, any>|null} [normalize] -
+ *   Collapse the model's parameters to one spelling, or return null to reject
+ *   them. Runs before the pin is written, so the type owns what a valid request
+ *   is rather than discovering it at mount. Defaults to accepting any plain object.
+ * @property {(parameters: Record<string, any>) => string} [identity] - What makes
+ *   two requests the same pin. The tool hashes it into a stable id, so a repeated
+ *   request reveals the existing pin instead of stacking a copy. Defaults to the
+ *   whole parameter object.
+ * @property {boolean} [fallback] - Whether this type is the general case rather
+ *   than a claim on anything in particular — the manifest's `sourceFallback`, said
+ *   to the model. It is listed last and named as the answer for what nothing else
+ *   claims, so a narrower type is the one that gets picked when it applies.
  */
 
 /**
@@ -437,6 +490,8 @@
  * 2. Define a static MANIFEST with the required fields (id, name, version, description).
  * 3. Implement `mount(container, pinContext)`; optionally override `describe()`,
  *    `canAdd()`, `normalizeConfig()`, and `configure()`.
+ * 4. To let the agent pin one, ship a `PinAgentDescriptor` beside it — see that
+ *    typedef. Without one the type is invisible to the model.
  *
  * ```javascript
  * import PinboardItemType from 'juggler/pinboard-item-type';
@@ -621,6 +676,11 @@ class PinboardItemType {
    * Whether this type can pin the given source. Static, because the host asks
    * before any instance exists — a properties panel says "pin this file" and the
    * registry finds the type that can, rather than the panel naming a class.
+   *
+   * Accept only what this type is *for*. The first type to accept wins, so a type
+   * that says yes to every file of any kind decides the answer for every other
+   * type; if that is genuinely what yours does, mark it `sourceFallback` in the
+   * manifest and it will be asked only once nothing narrower has claimed the source.
    * @param {PinSource} source - The source the user asked to pin.
    * @returns {boolean} True if `configFromSource` will accept it.
    */

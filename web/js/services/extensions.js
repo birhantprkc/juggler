@@ -50,6 +50,7 @@ import { fetchJson } from './http.js';
  * @property {string[]} infoCards - Served URLs of info-card modules
  * @property {string[]} fileViewers - Served URLs of file-viewer modules
  * @property {string[]} pinboardItems - Served URLs of pinboard-item modules
+ * @property {string[]} pinboardItemMeta - Served URLs of pinboard-item agent descriptors
  * @property {string} [systemPrompt] - Served URL of the extension's system-prompt contribution module (omitted when none declared)
  */
 
@@ -93,6 +94,7 @@ const TYPE_TO_KEY = /** @type {const} */ ({
   'info-card': 'infoCards',
   'file-viewer': 'fileViewers',
   'pinboard-item': 'pinboardItems',
+  'pinboard-item-meta': 'pinboardItemMeta',
 });
 
 /**

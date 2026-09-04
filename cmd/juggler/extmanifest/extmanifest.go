@@ -41,6 +41,16 @@ type Provides struct {
 	// viewer-only capabilities: they render DOM and are never loaded in the engine
 	// worker.
 	PinboardItems []string `json:"pinboardItems,omitempty"`
+	// PinboardItemMeta declares the agent-facing descriptors for those pinboard
+	// item types — one side-effect-free module per type, whose default export tells
+	// the model the type exists, what it shows, and what parameters it takes. Unlike
+	// the item types themselves these ARE loaded in the engine worker, where the
+	// pin tool runs, which is why they are declared separately: a pin module renders
+	// DOM at import and cannot go there. A type with no descriptor is still pinnable
+	// by name but is invisible to the model. Not a capability on its own — a
+	// descriptor describes an item type, so it never satisfies the "provides
+	// something" check by itself.
+	PinboardItemMeta []string `json:"pinboardItemMeta,omitempty"`
 	// SystemPrompt is a single module path (not a glob) whose default export
 	// `({enabledPluginIds}) => string` contributes terse, durable guidance to
 	// the system prompt — the extension's voice on how to use its tools. It is

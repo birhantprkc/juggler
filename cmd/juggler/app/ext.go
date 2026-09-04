@@ -148,7 +148,7 @@ func validateExtensionDir(dir string) (extmanifest.Manifest, []string, error) {
 		return m, nil, err
 	}
 	fsys := os.DirFS(dir)
-	for _, globs := range [][]string{m.Provides.ContextItems, m.Provides.Strategies, m.Provides.Commands, m.Provides.InfoCards, m.Provides.FileViewers, m.Provides.PinboardItems} {
+	for _, globs := range [][]string{m.Provides.ContextItems, m.Provides.Strategies, m.Provides.Commands, m.Provides.InfoCards, m.Provides.FileViewers, m.Provides.PinboardItems, m.Provides.PinboardItemMeta} {
 		expanded, err := extmanifest.ExpandGlobs(fsys, globs)
 		if err != nil {
 			return m, nil, err
@@ -583,7 +583,8 @@ export default HelloCommandType;
 		"This scaffold samples three capability types. An extension can also\n"+
 		"provide `infoCards` (sidebar tiles, `cards/*-card.js`), `fileViewers`\n"+
 		"(how a file type is shown and extracted, `viewers/*-file-viewer.js`),\n"+
-		"`pinboardItems` (panels the user can pin to the board, `pins/*-pin.js`), a\n"+
+		"`pinboardItems` (panels the user can pin to the board, `pins/*-pin.js`,\n"+
+		"each with a `pinboardItemMeta` descriptor if the agent is to pin one), a\n"+
 		"`systemPrompt` module, and `tests`. Delete whatever you don't need — a\n"+
 		"`provides` glob that matches nothing is a load error, so remove its\n"+
 		"manifest entry too.\n\n"+

@@ -77,12 +77,26 @@ class PinboardItemRegistry extends BaseRegistry {
    * Find the enabled type that can pin a source descriptor, and the config to pin
    * it with. This is the indirection that keeps a file properties panel from having
    * to name the File pin class: the panel describes what it has, the registry finds
-   * who wants it. First enabled acceptor wins.
+   * who wants it.
+   *
+   * First acceptor wins, but the types that claim a whole kind of source — the ones
+   * marked `sourceFallback` — are asked only after every other type has declined.
+   * Otherwise the answer would be settled by load order, and since builtins load
+   * before extensions, the File pin (which accepts any live file) would take every
+   * path an extension had a purpose-built type for.
    * @param {import('juggler/pinboard-item-type').PinSource} source - The source to pin.
    * @returns {{typeId: string, config: Record<string, any>}|null} The type and config, or null if nothing can pin it.
    */
   resolveSource(source) {
-    for (const { id, class: TypeClass } of this.getAll()) {
+    const all = this.getAll();
+    /**
+     * @param {{id: string, class: any}} entry - A registered item type.
+     * @returns {boolean} True when the type claims a whole kind of source.
+     */
+    const isFallback = (entry) => entry.class?.MANIFEST?.sourceFallback === true;
+    const ordered = [...all.filter((entry) => !isFallback(entry)), ...all.filter(isFallback)];
+
+    for (const { id, class: TypeClass } of ordered) {
       const Type = /** @type {any} */ (TypeClass);
       let config = null;
       try {
