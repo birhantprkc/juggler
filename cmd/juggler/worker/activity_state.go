@@ -613,6 +613,12 @@ func (w *ConversationWorker) consumeExplicitContinuation(threadItemID string) bo
 // should be dispatched on it once all its work is terminal. The threadItemID
 // identifies which thread needs dispatch ("" = root).
 //
+// This is one of the three verbs that start work, so a caller reached from a
+// human act lifts the pause covering threadItemID first (see the classification
+// in polite_stop.go). Queueing under a standing mark is legitimate — the thread
+// rests at the reducer's gate and waits — but only if what the caller has already
+// written to the document can still be driven once the mark is lifted.
+//
 // The postcondition is what the return value reports: true means this thread is
 // queued for dispatch, so a thread already awaiting is an idempotent success —
 // the caller's request stands either way. It fails only when that same thread is

@@ -647,6 +647,18 @@ func (r *run) finishStrategyRun() {
 	// drops only this thread's claim and leaves a parked parent's alone.
 	if r.t.politelyStopped {
 		r.t.politelyStopped = false
+
+		// A fold is the one thread whose "carry on when the pause lifts" is not
+		// free. Its run is licensed by needsStrategyRun, a one-shot the pickup
+		// consumed on the way in, and the reducer's walk offers nothing to a thread
+		// whose last item is the summarization prompt — so a fold paused mid-summary
+		// would sit there with no summary and no way to ask for one. Re-arm the
+		// trigger it spent, which is what handleUnpause offers to the pickup again.
+		if r.t.thread.itemID != "" && r.isBoundedCompactionThread(r.t.thread.itemID) &&
+			!r.threadHasResult(r.t.thread.itemID) {
+			r.setThreadNeedsStrategyRun(r.t.thread.itemID)
+		}
+
 		r.storeState(StateIdle)
 		r.releaseLLM(r.t.thread.itemID)
 		r.sendStatus("idle", "")

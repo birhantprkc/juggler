@@ -31,6 +31,36 @@ package worker
 // hard cancel over it (D7 escalation), and undo/redo, which revokes the whole
 // conversation's intent.
 //
+// Which means every path that starts work has to answer one question, and there
+// is no third answer:
+//
+//   - HUMAN INTENT — the user asked for this, now. It lifts the marks covering
+//     the thread the work runs on, exactly as a send does, because a mark that
+//     outlives the rest it caused suppresses the very turn that was just asked
+//     for. /compact and /handoff (handleCompact), Re-summarise
+//     (handleResummarizeCompactionThread), a tool retry (resetToolActionAndRedrive)
+//     and a thread the user created (handleCreateThread) all say so. Note it is
+//     the OP that is human, not the plumbing under it: createThread's
+//     ExternalDispatch flag is worn by the orchestrator too, so the lift lives in
+//     the handler.
+//   - MACHINE CONTINUATION — the conversation carrying on by itself, which is
+//     what a pause is a statement about. The mark stands and the work waits:
+//     delivered background-task output (handleInjectThreadMessage), a thread the
+//     model asked for, an orchestrated request.
+//
+// Which one an op picks is its own business; that it picks at all is not.
+// TestEveryWorkStartingOpClassifiesItselfAgainstThePause reads the dispatch
+// switch and fails on any op that starts work while saying neither.
+//
+// The second answer carries an obligation. Work committed to the document under
+// a mark must still be drivable once the mark is lifted, and the trap is
+// needsStrategyRun: a ONE-SHOT trigger, consumed by the pickup, that nothing
+// re-arms and that the reducer's walk will not substitute for. Hence the two
+// halves that make resting safe — checkForNewThreads declines covered threads
+// before it consumes anything, and the paused settle re-arms the trigger a fold
+// spent on its way in. A boundary that rests work it has already licensed leaves
+// a thread nothing can ever start.
+//
 // The set is an immutable map behind an atomic pointer, rewritten copy-on-write —
 // the same shape as the live-run registry, and for the same reason: the run loop
 // is the only writer, while the readers are turn goroutines at their boundaries.
@@ -240,7 +270,19 @@ func (w *ConversationWorker) handlePause(threadItemID string) {
 // off. Idempotent: lifting a pause that is not there changes nothing, so an
 // unpause racing a boundary is harmless — the thread was going to continue.
 func (w *ConversationWorker) handleUnpause(threadItemID string) {
+	if !w.hasPoliteStops() {
+		return
+	}
 	w.dropPoliteStopsCovering(threadItemID)
+
+	// A thread the pickup declined to start while covered is still sitting there
+	// with its needsStrategyRun armed — a fold owed a summary, a re-summarise the
+	// user asked for. Nothing else will offer it: the trigger is read by the
+	// pickup, and the pickup runs on document change, which lifting a mark is not.
+	// Both are cheap and idempotent when there is nothing waiting.
+	r := w.currentRun()
+	r.checkForNewThreads()
+	r.requestReconcile()
 }
 
 // nudgePoliteStop asks any covered run parked in a retry backoff to abandon the

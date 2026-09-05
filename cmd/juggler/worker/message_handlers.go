@@ -1243,6 +1243,11 @@ func (r *run) handleResummarizeCompactionThread(payload json.RawMessage) {
 	}
 	handled := r.isBoundedCompactionThread(msg.ThreadItemID)
 	if handled {
+		// Pressing Re-summarise is human intent, so it lifts any pause standing
+		// over this thread the way a send does (D6, §10.5). A mark left here
+		// re-arms the trigger for a run that rests at its first boundary, which
+		// is the state the button exists to get out of.
+		r.dropPoliteStopsCovering(msg.ThreadItemID)
 		r.clearThreadResult(msg.ThreadItemID)
 		// Drop any unsummarized marker from a previous attempt: this run is
 		// about to decide the question again, and the marker is re-set if it
@@ -1285,6 +1290,13 @@ func (w *ConversationWorker) resetToolActionAndRedrive(toolUseID string, fields 
 	// Signal that the reducer should dispatch CallLLM once the tool reaches a
 	// terminal state again. "" targets the root thread.
 	threadID, _ := w.doc.FindThreadIDForToolUseID(toolUseID)
+
+	// A retry is human intent — the user asked for this tool to run again — so it
+	// lifts the pause standing over the thread that owns it, as a send does (D6,
+	// §10.5). Without this the tool re-runs and its result lands, but the turn
+	// that would read it rests at the reducer's gate.
+	w.dropPoliteStopsCovering(threadID)
+
 	if w.requestLLM(threadID) {
 		// A retry may target an older tool followed by assistant text. The ordinary
 		// reducer treats that shape as resting unless the continuation intent is

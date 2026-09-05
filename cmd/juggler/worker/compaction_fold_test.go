@@ -216,6 +216,52 @@ func TestHandleCompactBusyDeclines(t *testing.T) {
 	}
 }
 
+// TestHandleCompactUnderLandedPauseLiftsAndSummarizes pins /compact as human
+// intent: a landed pause (mark standing, nothing running) must not swallow the
+// summarization. The fold commits either way — the busy gate passes, since a
+// landed pause holds no claim — so a mark left standing gives a conversation
+// whose history is folded into a thread that never gets its summary, and which
+// the reducer will not re-drive. Folding is an unambiguous "do this now", so it
+// lifts the mark exactly as a send does.
+func TestHandleCompactUnderLandedPauseLiftsAndSummarizes(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	w.currentRun().storeState(StateIdle)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	feedCompactionContextAndTools(w)
+	w.llmCallFunc = func(_ context.Context, _ json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
+		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "paused compact summary"}}}, nil
+	}
+	w.doc.doc.Transact(func(_ *ycrdt.Transaction) {
+		arr := w.doc.ensureItems()
+		arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: ItemTypeUser, ItemID: generateItemID(), Content: "hello"})})
+		arr.Push(ycrdt.ArrayAny{conversationItemToYMap(ConversationItem{Type: ItemTypeAssistant, ItemID: generateItemID(), Content: "hi"})})
+	}, w.doc.authorID)
+
+	// The user's state: Pause pressed, and the pause has landed.
+	w.markPoliteStop("")
+
+	waitAck := captureAck(t, w, "client-1", "a3")
+	w.currentRun().handleCompact(json.RawMessage(`{"type":"compact","ackId":"a3"}`))
+
+	ack := waitAck()
+	result, _ := ack["result"].(map[string]any)
+	if folded, _ := result["folded"].(bool); !folded {
+		t.Fatalf("ack result = %v, want {folded:true}", result)
+	}
+	if w.hasPoliteStops() {
+		t.Errorf("/compact left the pause standing: marks = %v", w.politeStopMarks())
+	}
+	items := w.doc.GetItems()
+	if len(items) != 1 || items[0].Type != ItemTypeThread {
+		t.Fatalf("root = %d items, want [foldThread]", len(items))
+	}
+	thread := w.doc.GetThreadYMap(items[0].ItemID)
+	if got, _ := thread.Get("result").(string); got != "paused compact summary" {
+		t.Fatalf("fold thread result = %q, want the summarizer output — a fold with no summary is unrecoverable", got)
+	}
+}
+
 // TestFoldConversationForCompactionSweepsMidConversationContext pins the
 // positional /compact rule: a non-conversational context/file item that appears
 // AFTER conversation started is swept into the thread (it is standing context

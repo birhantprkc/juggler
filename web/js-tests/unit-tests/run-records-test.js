@@ -379,6 +379,28 @@ export async function runTests() {
       'a summary arriving replaces the no-summary notice');
     assert(unsummarizedList.querySelector('.thread-result-label')?.textContent === 'Summary',
       'and the label follows it back');
+
+    // A fold left with no summary and no marker — the shape any path that
+    // commits the fold and then fails to summarise leaves behind, including
+    // every one that never runs a summarizer at all. Nothing is driving it and
+    // nothing is queued to, so the block is the only route out and must render
+    // off the state itself rather than off a flag someone remembered to write.
+    const stranded = thread([
+      item({ type: 'user', itemId: 'u-1', content: 'summarise this' })
+    ]);
+    stranded.set('boundedCompaction', true);
+    assert(!!render(stranded).querySelector('.thread-result-resummarise-btn'),
+      'a fold with no summary and nothing coming must offer Re-summarise even with no marker set');
+
+    // But not while a summary is genuinely on its way: a fold the pickup still
+    // owes a run to says so on the thread itself.
+    const queued = thread([
+      item({ type: 'user', itemId: 'u-1', content: 'summarise this' })
+    ]);
+    queued.set('boundedCompaction', true);
+    queued.set('needsStrategyRun', true);
+    assert(!render(queued).querySelector('.thread-result-final'),
+      'a fold still owed a summarization run must not offer to redo it');
     passed++;
   } catch (e) { failed++; errors.push(`Result block appears only where the summary is not: ${msg(e)}`); }
 

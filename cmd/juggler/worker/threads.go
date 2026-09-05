@@ -462,6 +462,14 @@ func (r *run) handleCreateThread(payload json.RawMessage) {
 		r.log.Error("Failed to parse create-thread message: %v", err)
 		return
 	}
+	// A thread the human asked for is human intent, so it lifts the pause
+	// standing over the thread it is created under, as a send into that thread
+	// does (D6, §10.5). Asked of the PARENT because the child does not exist yet,
+	// and a mark over the parent stands over the child. This lives here rather
+	// than in createThread's ExternalDispatch branch because that flag is also
+	// worn by the pendingRequests orchestrator, which is not a human asking.
+	r.dropPoliteStopsCovering(msg.ThreadItemID)
+
 	threadItemID, err := r.createThread(CreateThreadOptions{
 		Goal:               msg.Goal,
 		Prompt:             msg.Prompt,

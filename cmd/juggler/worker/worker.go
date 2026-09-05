@@ -1124,6 +1124,13 @@ func (r *run) dispatchMessage(msg workerMessage) {
 		return
 	}
 
+	// An op added here that starts work — requestLLM, setThreadNeedsStrategyRun,
+	// checkForNewThreads — owes an answer to the pause: it either lifts the marks
+	// covering the thread it runs on (a human asked for it) or leaves them
+	// standing and waits (the conversation carrying on by itself). The
+	// classification is in polite_stop.go; the choice is enforced by
+	// TestEveryWorkStartingOpClassifiesItselfAgainstThePause, which reads this
+	// switch to find the ops.
 	switch msg.Type {
 	case "init":
 		r.handleInit(msg.Payload)
@@ -1778,6 +1785,21 @@ func (r *run) checkForNewThreads() bool {
 			continue
 		}
 
+		// Polite stop (Pause): a mark stands over this thread, so the pickup leaves
+		// it exactly as it is. `continue` rather than `return`, because a mark is
+		// scoped — an uncovered thread further down the array is still eligible.
+		//
+		// This is the one gate that has to be read BEFORE the claim rather than at
+		// the turn's own boundary. Claiming publishes a busy frame naming a paused
+		// thread (so every column swaps "Paused" back for "Pausing…" and spins) and
+		// consumes needsStrategyRun below, which is a ONE-SHOT trigger: the run it
+		// licenses then rests at runOneTurn's gate having done nothing, and the
+		// reducer will not re-drive a thread whose trigger is spent. Resting here
+		// instead leaves the trigger armed, which is what handleUnpause resumes.
+		if r.politeStopCovers(item.ItemID) {
+			continue
+		}
+
 		// A thread with no items array has nothing to run. startThreadRun
 		// re-resolves the array it actually runs against.
 		if r.doc.GetThreadItemsArray(item.ItemID) == nil {
@@ -1921,6 +1943,12 @@ func (w *ConversationWorker) setThreadNeedsStrategyRun(threadItemID string) {
 
 // clearThreadNeedsStrategyRun consumes the one-shot trigger, so a run that is
 // cancelled or completed isn't restarted on the next observer tick.
+//
+// One-shot means exactly that: nothing re-arms it, and the reducer's walk will
+// not stand in for it, so a run this licenses that then rests without finishing
+// leaves a thread nothing can start again. That is why the pickup asks about the
+// pause BEFORE consuming it, and why the paused settle re-arms it for a fold
+// (polite_stop.go).
 func (w *ConversationWorker) clearThreadNeedsStrategyRun(threadItemID string) {
 	w.writeThreadNeedsStrategyRun(threadItemID, false)
 }

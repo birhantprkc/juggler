@@ -282,10 +282,82 @@ export const pausePendingSurvivesReloadTest = {
   }
 };
 
+// ============================================================================
+// TEST 5: /compact under a landed Pause folds AND summarises
+// ============================================================================
+
+/**
+ * The reported sequence: press Pause, wait for it to land, then run /compact.
+ *
+ * /compact is not a send, so nothing on its path lifts the mark unless the fold
+ * itself does. Left standing, the mark let the fold commit — the busy gate passes,
+ * a landed pause holds no claim — and then stopped the summarisation it owes: the
+ * whole history disappeared into a thread with no summary, every column went back
+ * to saying "Pausing…" because the pickup's claim published a busy frame, and no
+ * affordance was left anywhere to ask for the summary again.
+ *
+ * Folding the history is human intent, so it lifts the pause it is asked under and
+ * the summary lands.
+ * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
+ */
+export const compactUnderPauseSummarisesTest = {
+  name: 'polite-stop-compact-under-pause-summarises',
+  description: '/compact under a landed Pause lifts it and writes the summary it owes',
+  fixture: 'unit-test-fixture',
+
+  llmResponses: [
+    toolUseResponse('call_1', 'bash', { command: 'env echo "done"' }, 'Running.'),
+    // Consumed by the compaction turn. If the pause wrongly suppressed that turn,
+    // this response goes unconsumed and the fold ends with no summary.
+    textResponse('Summary: ran a command.')
+  ],
+
+  operations: [
+    { type: 'send-message', message: 'Run command' },
+    { type: 'wait-for-approval', toolUseId: 'call_1' },
+    { type: 'pause' },
+    { type: 'approve-no-wait', toolUseId: 'call_1' },
+    // The pause has LANDED: the tool finished, the worker rested, nothing runs.
+    { type: 'wait-for-state', condition: { processingStatus: 'idle' } },
+    { type: 'run-command', command: 'compact' },
+    { type: 'wait-for-state', condition: { hasCompactionBarrier: true } }
+  ],
+
+  expectedDocument: {
+    items: [
+      { type: 'system-prompt', itemId: '$ITEM_1' },
+      {
+        type: 'thread',
+        result: 'Summary: ran a command.',
+        boundedCompaction: true,
+        itemId: '$ITEM_2'
+      }
+    ]
+  },
+
+  customAssertions: (conversation) => {
+    // The pause is gone, not merely quiet: /compact lifted it, so the footers say
+    // neither "Pausing…" nor "Paused" and the next turn is not suppressed either.
+    if (conversation.isPolitePending()) {
+      throw new Error('the conversation still reports a pause winding down after /compact');
+    }
+    if (conversation.isPolitePaused()) {
+      throw new Error('/compact left the pause standing; the summary ran, but the next turn is still suppressed');
+    }
+    if (conversation.processingState?.politeStops) {
+      throw new Error(
+        'politeStops should be cleared once /compact lifted the mark: got ' +
+          JSON.stringify(conversation.processingState.politeStops)
+      );
+    }
+  }
+};
+
 // Export all tests
 export const tests = [
   pauseRestsBeforeNextTurnTest,
   pauseThenHardCancelEscalatesTest,
   unpauseResumesNextTurnTest,
-  pausePendingSurvivesReloadTest
+  pausePendingSurvivesReloadTest,
+  compactUnderPauseSummarisesTest
 ];

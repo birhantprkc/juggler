@@ -46,6 +46,7 @@ import { readItemData } from '../utils/item-data.js';
 import { renderAssistantContentWrapped, decorateCodeBlocks } from '../../sdk/lib/markdown.js';
 import { stripThinkingTags } from '../utils/content-utils.js';
 import { itemGoal } from '../model/thread-alias.js';
+import { liveMessageForThread } from '../utils/thread-display.js';
 
 /** @typedef {import('../../sdk/lib/message.js').Message} Message */
 
@@ -266,6 +267,20 @@ function renderThreadResultBody(body, text) {
 }
 
 /**
+ * Whether a summary for this fold is still coming: a run driving it right now, or
+ * the one-shot trigger that starts one. Either way the fold is mid-flight and has
+ * nothing to offer yet.
+ * @param {any} area - ConversationArea instance (provides the live snapshot).
+ * @param {any} threadYMap - The fold's thread Y.Map.
+ * @returns {boolean} True while a summary is still on its way.
+ */
+function summaryOnItsWay(area, threadYMap) {
+  if (threadYMap?.get?.('needsStrategyRun') === true) return true;
+  const live = area?._snapshotLiveStatus?.() ?? null;
+  return !!liveMessageForThread(live, threadYMap?.get?.('itemId'));
+}
+
+/**
  * Ensure the terminal thread-result block reflects a compaction fold's `result`.
  *
  * `result` is a field on the thread Y.Map, not an item, so the item list never
@@ -291,11 +306,22 @@ export function ensureThreadResult(area, messageList, footer) {
   const isFold = threadYMap?.get?.('boundedCompaction') === true;
   const result = threadYMap?.get?.('result');
   const text = (isFold && typeof result === 'string') ? result : '';
-  // A fold whose summarizer stopped without writing one. The block still has to
-  // render: it carries Re-summarise, and a fold with no summary is exactly the
-  // state that needs it — the parent thread shows only this fold's tile, so
-  // hiding the block here leaves no route back to a summary anywhere.
-  const unsummarized = isFold && threadYMap?.get?.('compactionUnsummarized') === true;
+  // A fold with no summary and nothing on its way to write one. The block still
+  // has to render: it carries Re-summarise, and this is exactly the state that
+  // needs it — the parent thread shows only this fold's tile, so hiding the block
+  // here leaves no route back to a summary anywhere.
+  //
+  // Derived rather than read from a stored marker. The summarizer sets
+  // compactionUnsummarized when a run of its own ends badly, but a fold can reach
+  // this state without any run ending at all — anything that leaves the fold
+  // committed and its summarization undone gets here — and a fold that never had
+  // the marker written is precisely the one with no other way out. The two
+  // exclusions are the states where a summary is still coming: a run driving it
+  // now, and the trigger that starts one.
+  // Asked only of a fold with nothing to show, which is the only column the
+  // answer can change: every other call would snapshot the live registry to
+  // discard it.
+  const unsummarized = isFold && !text && !summaryOnItsWay(area, threadYMap);
 
   if (!text && !unsummarized) {
     if (existing) existing.remove();

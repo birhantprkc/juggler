@@ -459,6 +459,15 @@ func (r *run) handleCompact(payload json.RawMessage) {
 		r.reply(ack)
 		return
 	}
+	// Folding the history is human intent, so it lifts any pause standing over
+	// the thread it folds, exactly as a send or Continue does (D6, §10.5). The
+	// fold commits whatever the marks say — the gate above passes, since a landed
+	// pause holds no claim — and the summarization it owes runs on a thread the
+	// mark would then cover, leaving a conversation folded into a thread that
+	// never gets its summary and that nothing re-drives. Root is the thread the
+	// fold targets, and the one the busy gate above asks about.
+	r.dropPoliteStopsCovering("")
+
 	_, folded, err := r.foldConversationForCompaction(msg.HandoffPromote)
 	if err != nil {
 		r.log.Error("[compact] fold failed: %v", err)

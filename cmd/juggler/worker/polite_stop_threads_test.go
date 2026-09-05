@@ -5,9 +5,13 @@
 package worker
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
+
+	"juggler/cmd/juggler/providers/provider"
 
 	ycrdt "github.com/skyterra/y-crdt"
 )
@@ -203,6 +207,259 @@ func TestPoliteStop_PausedChildNeitherSettlesNorReDrivesItsParent(t *testing.T) 
 	if status != "" {
 		t.Errorf("the paused child's run settled as %q; a paused run is not a finished one, "+
 			"and settling it answers a caller the thread was stopped before answering", status)
+	}
+}
+
+// TestPoliteStop_HumanIntentEntryPointsLiftTheMark pins the classification every
+// work-starter has to answer to. A send lifts the marks standing over its thread
+// because a mark outlives the rest it caused and would otherwise suppress the
+// very turn the user just asked for (D6, §10.5) — and every other button that
+// starts work is the same act by a different name. The failure is worse than a
+// suppressed turn: each of these commits something to the document first (a fold,
+// a cleared summary, a reset tool, a new thread) and then rests, leaving work
+// nothing will ever drive.
+func TestPoliteStop_HumanIntentEntryPointsLiftTheMark(t *testing.T) {
+	cases := []struct {
+		name  string
+		drive func(t *testing.T, w *ConversationWorker)
+	}{{
+		name: "re-summarise a fold",
+		drive: func(t *testing.T, w *ConversationWorker) {
+			t.Helper()
+			id := insertThreadWithOpts(w, threadOpts{
+				goal: "compacted", boundedCompaction: true, userMessage: "the folded history", result: `"stale"`,
+			})
+			w.markPoliteStop("")
+			payload, _ := json.Marshal(map[string]any{"threadItemId": id, "ackId": "r1"})
+			w.currentRun().handleResummarizeCompactionThread(payload)
+		},
+	}, {
+		name: "retry a tool",
+		drive: func(t *testing.T, w *ConversationWorker) {
+			t.Helper()
+			w.doc.InsertMessage(0, ConversationItem{
+				Type: ItemTypeToolAction, ItemID: generateItemID(),
+				ToolUseID: "tu-retry", ToolName: "bash",
+				State: StateCompleted, Result: resultJSON("boom"),
+			})
+			w.markPoliteStop("")
+			payload, _ := json.Marshal(map[string]any{"toolUseId": "tu-retry"})
+			w.handleRetryToolAction(payload)
+		},
+	}, {
+		name: "create a thread from the browser",
+		drive: func(t *testing.T, w *ConversationWorker) {
+			t.Helper()
+			w.doc.InsertMessage(0, ConversationItem{
+				Type: ItemTypeUser, ItemID: "u-1", Content: "look at a",
+				TransactionID: "txn-0", Timestamp: time.Now().Format(time.RFC3339),
+			})
+			w.markPoliteStop("")
+			payload, _ := json.Marshal(map[string]any{
+				"goal": "look at a", "prompt": "look at a", "threadItemId": "", "requestId": "q1",
+			})
+			w.currentRun().handleCreateThread(payload)
+		},
+	}}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := NewConversationWorker("test-polite-intent", "user:test")
+			defer w.doc.Destroy()
+			w.currentRun().storeState(StateIdle)
+			w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+			// Whatever each entry point starts is allowed to run to completion here:
+			// the question is whether the mark is still standing, and a starved turn
+			// would hang the test rather than answer it.
+			feedCompactionContextAndTools(w)
+			w.setMockResponses([]MockResponse{
+				{Blocks: []LLMResponseBlock{{Type: "text", Content: "ok"}}, StopReason: "end_turn"},
+				{Blocks: []LLMResponseBlock{{Type: "text", Content: "ok"}}, StopReason: "end_turn"},
+			})
+
+			tc.drive(t, w)
+
+			if w.hasPoliteStops() {
+				t.Errorf("%s left the pause standing (marks = %v): the work it committed to the "+
+					"document rests at its first boundary and nothing re-drives it", tc.name, w.politeStopMarks())
+			}
+		})
+	}
+}
+
+// TestPoliteStop_PickupLeavesCoveredThreadsArmed pins the gate the pickup has to
+// read before it claims, and the resume that pairs with it.
+//
+// needsStrategyRun is a ONE-SHOT trigger, consumed at pickup and never re-armed.
+// A pickup that claims a covered thread therefore spends the only thing that
+// would ever start it, publishes a busy frame naming a paused thread (which is
+// the "Pausing…" the user sees come back), and hands the run to a boundary that
+// rests immediately — leaving a thread nothing can drive again. Resting at the
+// pickup instead leaves the thread exactly as it was found, and unpausing offers
+// it once more.
+func TestPoliteStop_PickupLeavesCoveredThreadsArmed(t *testing.T) {
+	w := NewConversationWorker("test-polite-pickup", "user:test")
+	defer w.doc.Destroy()
+	w.currentRun().storeState(StateIdle)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	feedContextAndTools(t, w)
+	w.setMockResponses([]MockResponse{
+		{Blocks: []LLMResponseBlock{{Type: "text", Content: "the summary"}}, StopReason: "end_turn"},
+	})
+
+	w.doc.InsertMessage(0, ConversationItem{
+		Type: ItemTypeUser, ItemID: "u-1", Content: "do the thing",
+		TransactionID: "txn-0", Timestamp: time.Now().Format(time.RFC3339),
+	})
+	// The pause has already landed when the thread appears — the /compact
+	// sequence exactly: press Pause, wait, then ask for the fold.
+	w.markPoliteStop("")
+
+	// A thread the document says still owes a run — the shape /compact's fold and
+	// a re-summarise both leave behind.
+	id := insertThreadWithOpts(w, threadOpts{
+		goal: "owed a run", needsStrategyRun: true, noAutoSelect: true, userMessage: "summarize this",
+	})
+	w.currentRun().checkForNewThreads()
+
+	if left := w.mock.remaining(); left != 1 {
+		t.Fatalf("the pickup started a covered thread anyway (%d scripted turns left, want 1)", left)
+	}
+	ymap := w.doc.GetThreadYMap(id)
+	ycrdtMu.Lock()
+	armed, _ := ymap.Get("needsStrategyRun").(bool)
+	ycrdtMu.Unlock()
+	if !armed {
+		t.Fatal("the pickup consumed needsStrategyRun on a covered thread: the trigger is one-shot, " +
+			"so the thread can now never be started, by an unpause or by anything else")
+	}
+	if w.isLLMClaimed() {
+		t.Error("the pickup claimed a covered thread; that claim is the busy frame that puts every " +
+			"column back into Pausing… with a spinner on a thread that is going to rest")
+	}
+
+	// Lifting the pause is what offers it again.
+	w.handleUnpause("")
+	for i := 0; i < 10 && w.needsReconcile.Load(); i++ {
+		w.currentRun().tryReconcile()
+	}
+
+	if left := w.mock.remaining(); left != 0 {
+		t.Errorf("unpausing did not resume the thread the pause parked (%d scripted turns left, want 0)", left)
+	}
+}
+
+// TestPoliteStop_PausedFoldKeepsItsRightToASummary covers the window the pickup
+// gate cannot: a pause that arrives while the fold is ALREADY being summarized.
+// The trigger was legitimately consumed at pickup, and the reducer's walk offers
+// nothing to a thread whose last item is the summarization prompt — so a run that
+// simply rested here would leave the folded history behind a tile with no summary
+// and nothing left to ask for one. The paused settle re-arms what the pickup
+// spent, and lifting the pause summarizes it.
+func TestPoliteStop_PausedFoldKeepsItsRightToASummary(t *testing.T) {
+	w := NewConversationWorker("test-polite-fold", "user:test")
+	defer w.doc.Destroy()
+	w.currentRun().storeState(StateIdle)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	feedCompactionContextAndTools(w)
+	w.llmCallFunc = func(_ context.Context, _ json.RawMessage, _ func(StreamChunk)) (*LLMResponse, error) {
+		return &LLMResponse{Blocks: []LLMResponseBlock{{Type: provider.ContentBlockTypeText, Content: "the summary"}}}, nil
+	}
+
+	w.doc.InsertMessage(0, ConversationItem{
+		Type: ItemTypeUser, ItemID: "u-1", Content: "do the thing",
+		TransactionID: "txn-0", Timestamp: time.Now().Format(time.RFC3339),
+	})
+	// A fold mid-summarization: the pickup has claimed it and consumed its
+	// needsStrategyRun, so the thread carries neither.
+	fold := insertThreadWithOpts(w, threadOpts{
+		goal: "Compacted conversation history", boundedCompaction: true,
+		noAutoSelect: true, userMessage: "the folded history",
+	})
+	w.currentRun().claimLLM(fold)
+	w.turn.thread.itemID = fold
+	w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(fold)
+
+	// The user presses Pause while the summarizer is working.
+	w.markPoliteStop("")
+	w.currentRun().runStrategyLoop("", true)
+
+	ymap := w.doc.GetThreadYMap(fold)
+	ycrdtMu.Lock()
+	armed, _ := ymap.Get("needsStrategyRun").(bool)
+	summary, _ := ymap.Get("result").(string)
+	ycrdtMu.Unlock()
+	if summary != "" {
+		t.Fatalf("the paused fold summarized anyway (result = %q)", summary)
+	}
+	if !armed {
+		t.Fatal("a fold paused mid-summary lost its needsStrategyRun: the folded history is now behind " +
+			"a tile with no summary, and nothing — not even an unpause — can ask for one")
+	}
+
+	w.handleUnpause("")
+
+	ycrdtMu.Lock()
+	summary, _ = ymap.Get("result").(string)
+	ycrdtMu.Unlock()
+	if summary == "" {
+		t.Error("lifting the pause did not summarize the fold it parked")
+	}
+}
+
+// TestPoliteStop_MachineContinuationLeavesTheMarkStanding is the other half of
+// the classification, and the reason it is not simply "anything that starts work
+// lifts the pause". Delivered task output and a thread the MODEL asked for are
+// the conversation carrying on by itself, which is exactly what a pause is a
+// statement about — so the mark stands and the work waits.
+func TestPoliteStop_MachineContinuationLeavesTheMarkStanding(t *testing.T) {
+	w := NewConversationWorker("test-polite-machine", "user:test")
+	defer w.doc.Destroy()
+	w.currentRun().storeState(StateIdle)
+	w.doc.SetMetadata("defaultModelConfig", map[string]any{"provider": "test", "model": "test"})
+	feedContextAndTools(t, w)
+	w.setMockResponses([]MockResponse{
+		{Blocks: []LLMResponseBlock{{Type: "text", Content: "SHOULD NOT RUN"}}, StopReason: "end_turn"},
+	})
+
+	w.doc.InsertMessage(0, ConversationItem{
+		Type: ItemTypeUser, ItemID: "u-1", Content: "watch the build",
+		TransactionID: "txn-0", Timestamp: time.Now().Format(time.RFC3339),
+	})
+	w.markPoliteStop("")
+
+	// A background task delivering output into the paused conversation.
+	payload, _ := json.Marshal(injectThreadMessageMsg{
+		ThreadItemID: "", Text: "build failed", TaskID: "t-1",
+	})
+	w.currentRun().handleInjectThreadMessage(payload)
+
+	for i := 0; i < 10 && w.needsReconcile.Load(); i++ {
+		w.currentRun().tryReconcile()
+	}
+
+	if !w.politeStopCovers("") {
+		t.Fatal("delivered task output lifted the pause; nobody asked for that turn")
+	}
+	if left := w.mock.remaining(); left != 1 {
+		t.Errorf("delivered task output called the provider under a pause (%d scripted turns left, want 1)", left)
+	}
+	// The output itself must survive: the pause defers the answer, it does not
+	// discard the question.
+	found := false
+	for _, it := range w.doc.GetItems() {
+		if it.Type == ItemTypeUser && strings.Contains(it.Content, "build failed") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the delivered task output was dropped; it must be waiting to be answered when the pause lifts")
+	}
+	// And no claim left behind: a claim is the busy frame, and a busy frame naming
+	// a covered thread is what puts every column back into "Pausing…" behind a
+	// spinner for a turn that is never going to run.
+	if w.isLLMClaimed() {
+		t.Error("delivered task output left a claim standing under a pause")
 	}
 }
 
