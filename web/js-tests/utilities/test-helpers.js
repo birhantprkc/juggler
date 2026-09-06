@@ -170,6 +170,11 @@ export async function createTestSession() {
   // the lane can report the trajectory as well as the size at the failure.
   noteProjectSize(session.conversations.size);
 
+  // The failure trace reports which conversation this lane had visible. It reads
+  // the session from here, so a lane that never publishes one reports "none"
+  // whatever it was actually looking at.
+  /** @type {any} */ (window).__sessionForTests = session;
+
   return session;
 }
 

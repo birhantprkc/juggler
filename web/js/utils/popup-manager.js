@@ -366,12 +366,42 @@ let removalScheduled = false;
 let pendingSelfPops = 0;
 
 /**
+ * Whether this browsing context takes part in the Back gesture at all — true
+ * only where it OWNS the session history, which means only at the top level.
+ *
+ * An embedded context (an iframe: the test pool's lanes, any future embed)
+ * shares one joint session history with the page that framed it and with every
+ * sibling frame. A sentinel pushed from here goes onto their stack, so it
+ * hijacks the embedder's Back; worse, a `history.back()` any of them makes pops
+ * whatever is on top — often ours — and delivers the `popstate` HERE, where
+ * nothing distinguishes it from a Back press. The dismissal that follows tears
+ * down an overlay this context opened for its own reasons, a millisecond
+ * earlier, with nobody having pressed anything. Escape still dismisses.
+ * @type {boolean}
+ */
+let backIntegrationEnabled = typeof window !== 'undefined' && window.top === window;
+
+/**
+ * TEST-ONLY: force the Back integration on or off, returning what it was.
+ * The pool's lanes are iframes, where it is off, so the suites that test the
+ * integration itself switch it on for their own duration.
+ * @param {boolean} enabled
+ * @returns {boolean} The previous setting, to restore.
+ */
+export function __setBackIntegrationForTests(enabled) {
+  const was = backIntegrationEnabled;
+  backIntegrationEnabled = enabled;
+  return was;
+}
+
+/**
  * Put a sentinel entry on top for the overlay layer, unless one is already there
  * or nothing is open to need it. Pushing also prunes whatever was ahead of the
  * current entry, which is what clears any sentinel a traversal orphaned.
  * @private
  */
 function ensureOverlaySentinel() {
+  if (!backIntegrationEnabled) return;
   if (openPopups.size === 0 || overlayStatePushed) return;
   try {
     window.history.pushState({ [OVERLAY_HISTORY_MARKER]: true }, '');
@@ -405,6 +435,7 @@ function pushOverlayStateIfFirst() {
  * @private
  */
 function releaseOverlayStateIfLast() {
+  if (!backIntegrationEnabled) return;
   if (openPopups.size > 0 || !overlayStatePushed || removalScheduled) return;
   removalScheduled = true;
   setTimeout(() => {
@@ -443,6 +474,10 @@ function releaseOverlayStateIfLast() {
 // the DOM-less node engine host, where `window` is undefined.
 if (typeof window !== 'undefined') {
   window.addEventListener('popstate', (event) => {
+    // Not our history, not our gesture: an embedded context reads a pop as the
+    // embedder (or a sibling frame) navigating, never as a Back press aimed at
+    // an overlay of ours.
+    if (!backIntegrationEnabled) return;
     if (pendingSelfPops > 0) {
       pendingSelfPops--;
       // The event carries the state of the entry the traversal landed on — the
@@ -462,8 +497,10 @@ if (typeof window !== 'undefined') {
 
 // A reload can leave our sentinel as the current entry with nothing actually
 // open. Strip the marker so the first Back press navigates normally instead of
-// being swallowed dismissing a phantom overlay.
-if (typeof window !== 'undefined' && window.history && window.history.state
+// being swallowed dismissing a phantom overlay. Only where the entry can be
+// ours: an embedded context pushes none, and must not rewrite an entry belonging
+// to the page that framed it.
+if (backIntegrationEnabled && typeof window !== 'undefined' && window.history && window.history.state
     && /** @type {any} */ (window.history.state)[OVERLAY_HISTORY_MARKER]) {
   try { window.history.replaceState(null, ''); } catch (e) { /* ignore */ }
 }

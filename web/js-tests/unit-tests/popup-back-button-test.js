@@ -6,6 +6,9 @@
  * Unit tests for popup-manager's Back-button / unified-dismissal wiring.
  *
  * Covers:
+ *  - an EMBEDDED context (an iframe, which every test lane is) pushes no
+ *    sentinel and reads no popstate as a Back press — the session history is
+ *    joint with the embedder and its siblings, so both would be theirs;
  *  - opening an overlay pushes ONE sentinel history entry carrying the marker;
  *  - a second, stacked overlay shares that single entry (one Back press clears
  *    the whole layer);
@@ -39,6 +42,7 @@ import {
   registerOpenPopup,
   __resetPopupManagerForTests,
   __settlePopupHistoryForTests,
+  __setBackIntegrationForTests,
 } from '../../js/utils/popup-manager.js';
 import { modelGestureShouldHandle } from '../../js/services/model-cycler.js';
 
@@ -98,6 +102,55 @@ export async function runTests() {
   // what it is for, and would swallow the first synthetic Back press below.
   // Settle the debt before taking a baseline.
   await __settlePopupHistoryForTests();
+
+  // === embedded: the Back integration stands down where it doesn't own the
+  // session history ===
+  //
+  // These run FIRST, on the default setting, because the default is what every
+  // other realm in an embedded page gets. A test lane is an iframe, and the
+  // session history is JOINT with the top-level page and every sibling frame:
+  // a sentinel pushed here goes on their stack, and a `history.back()` any of
+  // them makes pops it and delivers the popstate HERE — where it is
+  // indistinguishable from a Back press, and dismisses whatever this context
+  // has open. Measured in the pool: a back() called in another frame delivers a
+  // popstate to this one, and it destroyed a notice raised a millisecond
+  // earlier. So an embedded context pushes nothing and reads no popstate as a
+  // dismissal; Escape still works, and it is the gesture that exists here.
+  const embRealPush = window.history.pushState;
+  const embRealBack = window.history.back;
+  let embPush = 0;
+  let embBack = 0;
+  window.history.pushState = function () { embPush++; };
+  window.history.back = function () {
+    embBack++;
+    window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+  };
+  try {
+    __resetPopupManagerForTests();
+    let embClosed = 0;
+    /** @type {() => void} */
+    let relEmb = () => {};
+    relEmb = markPopupOpen(() => { embClosed++; relEmb(); });
+    tally(check(embPush === 0,
+      `embedded: no sentinel pushed onto the embedder's history (got ${embPush})`, errors));
+    window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+    tally(check(embClosed === 0,
+      `embedded: a popstate this context did not cause leaves the overlay alone (closed ${embClosed}×)`, errors));
+    tally(check(isAnyPopupOpen(), 'embedded: and it is still registered open', errors));
+    relEmb();
+    await tick();
+    tally(check(embBack === 0,
+      `embedded: closing retracts nothing, having pushed nothing (got ${embBack})`, errors));
+  } finally {
+    window.history.pushState = embRealPush;
+    window.history.back = embRealBack;
+  }
+
+  // Everything below is about the integration itself, which is live only in the
+  // context that owns the history. Turn it on for the rest of this suite — the
+  // lane is an iframe, so it is off by default — and put it back in the finally
+  // that restores the History API.
+  const backIntegrationWas = __setBackIntegrationForTests(true);
 
   // === a sentinel WE dropped must not dismiss the overlay that replaced it ===
   //
@@ -400,6 +453,7 @@ export async function runTests() {
     await tick();
     window.history.pushState = realPush;
     window.history.back = realBack;
+    __setBackIntegrationForTests(backIntegrationWas);
   }
 
   return { passed, failed, errors };

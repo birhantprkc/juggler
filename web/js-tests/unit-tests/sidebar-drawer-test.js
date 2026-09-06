@@ -39,6 +39,7 @@ import {
   isAnyPopupOpen,
   __resetPopupManagerForTests,
   __settlePopupHistoryForTests,
+  __setBackIntegrationForTests,
 } from '../../js/utils/popup-manager.js';
 
 /**
@@ -134,10 +135,15 @@ function touchMove(target) {
  * a genuine `history.back()` at the test page's base entry unloads it. The
  * stubs stay up one macrotask past `fn`, since the sentinel's retraction is
  * deferred that far.
+ *
+ * The Back integration is switched on for the same span: this lane is an iframe,
+ * where it stands down (the session history there belongs to the embedder), and
+ * these cases are about what a top-level context does with it.
  * @param {(counts: {push: number, back: number}) => (void | Promise<void>)} fn - Test body.
  * @returns {Promise<void>} Resolves once the real History API is back.
  */
 async function withStubbedHistory(fn) {
+  const backIntegrationWas = __setBackIntegrationForTests(true);
   const realPush = window.history.pushState;
   const realBack = window.history.back;
   const counts = { push: 0, back: 0 };
@@ -155,6 +161,7 @@ async function withStubbedHistory(fn) {
     await new Promise((resolve) => setTimeout(resolve, 0));
     window.history.pushState = realPush;
     window.history.back = realBack;
+    __setBackIntegrationForTests(backIntegrationWas);
   }
 }
 

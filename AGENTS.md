@@ -94,6 +94,14 @@ line you already had and cuts the assertion that says what broke.
   and the lanes inside one subprocess share a single content process — one JS
   heap, one main thread. Raising iframes while dropping windows to 1 serialises
   the suite onto that thread and produces cascades of arbitrary timeouts.
+- **A lane is an iframe, and the lanes in one window share a single session
+  history.** A `pushState` or `back()` in any lane traverses that joint history
+  and delivers the `popstate` to whichever lane's entry it popped — so one lane
+  closing a menu could dismiss the overlay another lane had just opened. Nothing
+  in a lane may touch `window.history` casually: the overlay Back-button
+  sentinel (`popup-manager.js`) stands down unless the app owns the history
+  (`window.top === window`), and the two suites that test it switch it on for
+  their own duration via `__setBackIntegrationForTests`.
 - Suite timings are load-sensitive. A browser test that fails in a full run and
   passes alone is not a regression in the code it asserts on — re-run the exact
   subtest in isolation before investigating it. It is not automatically "just
