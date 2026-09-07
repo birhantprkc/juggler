@@ -24,6 +24,15 @@
  * Mirror a symbol as a real re-export when it's worker-safe (pure, DOM-free),
  * or as a throwing `domUnavailable` stub when it needs the DOM — either way the
  * export name must exist so the import resolves.
+ *
+ * The invariant holds in both directions: a symbol only the *worker* twin
+ * exports fails the other way round — it works in the engine and throws in
+ * every viewer — which no viewer-path test would catch either.
+ *
+ * Export names are not the whole contract. Where both sides implement the same
+ * pure helper independently, they must also agree on its *output*: an escaper
+ * that strips one character set in a viewer and another in the engine is a
+ * security-relevant split behind a single specifier.
  * @module unit-tests/sdk-facade-parity-test
  */
 
@@ -38,6 +47,20 @@ import * as itemUtilsWorker from '../../sdk/item-utils-worker.js';
 const FACADE_PAIRS = [
   { specifier: 'juggler/ui', browser: uiBrowser, worker: uiWorker },
   { specifier: 'juggler/item-utils', browser: itemUtilsBrowser, worker: itemUtilsWorker },
+];
+
+// Pure helpers a plugin may call through `juggler/ui` in either realm. Each
+// must return the same string whichever façade resolved it.
+const SHARED_STRING_HELPERS = ['escapeHtml', 'escapeAttr', 'escapeJsonContent'];
+
+// Inputs chosen to expose the ways two escapers can disagree: the quote
+// characters that make an attribute injectable, a bare ampersand, and the
+// nullish cases each implementation guards separately.
+const ESCAPER_INPUTS = [
+  '<script>alert("x")</script>',
+  `it's a "quoted" & <tagged> value`,
+  'plain text',
+  '',
 ];
 
 /**
@@ -81,10 +104,12 @@ export async function runTests(_ctx) {
   };
 
   for (const { specifier, browser, worker } of FACADE_PAIRS) {
+    const facade = specifier.replace('juggler/', 'sdk/') + '.js';
+    const twin = specifier.replace('juggler/', 'sdk/') + '-worker.js';
+
     run(`${specifier}: worker twin mirrors every browser-façade export`, () => {
       const workerExports = new Set(exportNames(worker));
       const missing = exportNames(browser).filter((name) => !workerExports.has(name));
-      const twin = specifier.replace('juggler/', 'sdk/') + '-worker.js';
       assert(
         missing.length === 0,
         `${twin} is missing exports present in its browser façade: ${missing.join(', ')}. `
@@ -92,6 +117,36 @@ export async function runTests(_ctx) {
         + `or plugins importing it fail to load in the engine worker.`,
       );
     });
+
+    run(`${specifier}: browser façade mirrors every worker-twin export`, () => {
+      const browserExports = new Set(exportNames(browser));
+      const missing = exportNames(worker).filter((name) => !browserExports.has(name));
+      assert(
+        missing.length === 0,
+        `${facade} is missing exports present in its worker twin: ${missing.join(', ')}. `
+        + `Add each to ${facade} or plugins importing it load in the engine worker and `
+        + `fail in every viewer.`,
+      );
+    });
+
+    for (const name of SHARED_STRING_HELPERS) {
+      const browserFn = /** @type {any} */ (browser)[name];
+      const workerFn = /** @type {any} */ (worker)[name];
+      if (typeof browserFn !== 'function' || typeof workerFn !== 'function') continue;
+
+      run(`${specifier}: ${name} agrees across realms`, () => {
+        for (const input of ESCAPER_INPUTS) {
+          const fromBrowser = browserFn(input);
+          const fromWorker = workerFn(input);
+          assert(
+            fromBrowser === fromWorker,
+            `${name}(${JSON.stringify(input)}) is ${JSON.stringify(fromBrowser)} via ${facade} `
+            + `but ${JSON.stringify(fromWorker)} via ${twin}. One specifier, one output — `
+            + `both sides must resolve to the same implementation.`,
+          );
+        }
+      });
+    }
   }
 
   return { passed, failed, errors };

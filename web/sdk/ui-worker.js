@@ -32,35 +32,10 @@ export { highlightCode } from './lib/syntax-highlight.js';
 // composes its LLM text (plan steps, todo items) inside the engine worker.
 export { taskMarker, taskStatusWord } from './lib/task-markers.js';
 
-/**
- * @param {string} text
- * @returns {string} HTML-escaped text
- */
-export function escapeHtml(text) {
-  if (text === null || text === undefined) return '';
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-/**
- * @param {string} text
- * @returns {string} Attribute-escaped text
- */
-export function escapeAttr(text) {
-  return String(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
-/**
- * @param {string} text
- * @returns {string} JSON-content-escaped text
- */
-export function escapeJsonContent(text) {
-  return escapeHtml(JSON.stringify(String(text)).slice(1, -1));
-}
+// Pure string escaping, shared verbatim with the browser façade: one specifier
+// must not mean two escapers. `lib/html.js` touches `document` only inside its
+// DOM helpers, so importing it here costs the worker nothing.
+export { escapeHtml, escapeAttr, escapeJsonContent } from './lib/html.js';
 
 /** @param {string} name */
 function domUnavailable(name) {

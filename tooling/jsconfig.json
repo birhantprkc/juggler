@@ -34,7 +34,7 @@
       "juggler/item-utils": ["web/sdk/item-utils.js"],
       "juggler/registry": ["web/sdk/registry.js"],
       "juggler/version": ["web/sdk/version.js"],
-      "juggler/utils/html": ["web/js/utils/html.js"],
+      "juggler/utils/html": ["web/sdk/lib/html.js"],
       "juggler/utils/path-containment": ["web/sdk/lib/path-containment.js"]
     }
   },

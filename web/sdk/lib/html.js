@@ -6,20 +6,32 @@
 /**
  * HTML Utilities
  *
- * Common HTML helper functions used across context items and actions
+ * Common HTML helper functions used across context items and actions.
+ *
+ * The escaping helpers here are the single implementation behind the
+ * `juggler/ui` and `juggler/utils/html` specifiers: `sdk/ui.js` and
+ * `sdk/ui-worker.js` both re-export them, so a plugin gets the same output
+ * whichever realm resolved its import. They are pure string work with no
+ * `document`, which is what lets the worker twin surface them for real.
  */
 
 /**
- * Escape HTML special characters to prevent XSS
+ * Escape HTML special characters to prevent XSS.
+ *
+ * Escapes the quote characters as well as the tag characters, so the result is
+ * equally safe interpolated into an attribute value or into element content.
  * @param {string} text - Text to escape
  * @returns {string} Escaped text safe for HTML insertion
  */
 export function escapeHtml(text) {
   if (text === null || text === undefined) return '';
 
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 /**
@@ -43,9 +55,7 @@ const HTML_ENTITY_VALUES = {
  * because the model treats every string it writes as reply markup. Nothing
  * renders those through innerHTML, so the entities reach the user verbatim.
  *
- * One pass, so `&amp;lt;` decodes to `&lt;` and not to `<`. Pure string work
- * with no `document`: this module also loads in the engine worker, which has
- * no DOM.
+ * One pass, so `&amp;lt;` decodes to `&lt;` and not to `<`.
  * @param {string} text - Text that may contain escaped entities
  * @returns {string} Text with the escapeHtml entity set decoded
  */
@@ -65,7 +75,7 @@ export function decodeHtmlEntities(text) {
  */
 export function escapeJsonContent(str) {
   // Use JSON.stringify for proper JSON escaping, then remove the quotes it adds
-  const withQuotes = JSON.stringify(str);
+  const withQuotes = JSON.stringify(String(str));
   const withoutQuotes = withQuotes.slice(1, -1);
   // Then escape HTML entities for safe display
   return escapeHtml(withoutQuotes);
@@ -78,7 +88,7 @@ export function escapeJsonContent(str) {
  * @returns {string} Escaped string safe for HTML attributes
  */
 export function escapeAttr(text) {
-  return text
+  return String(text)
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 }

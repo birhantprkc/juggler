@@ -16,6 +16,7 @@ export {
   createElement,
   escapeHtml,
   escapeAttr,
+  escapeJsonContent,
   getToggleIcons,
   renderResultStatusMessage,
   createSummaryRow,
