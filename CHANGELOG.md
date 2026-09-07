@@ -6,6 +6,10 @@ of changes; this project follows semantic versioning.
 ## [Unreleased]
 
 - GPT-6 Astra is selectable on a ChatGPT plan, with its reasoning and speed options
+- A large file no longer loses its middle to a second, silent trim on the way to the model
+- A read's footer now names exactly the lines it returned, so paging a file misses nothing
+- batch_read gives each file its own share instead of dropping the ones in the middle
+- Tool results scale with the model's window, so a large window reads a large file in one call
 - Tab auto-naming now avoids your other tab titles, so similar tasks stop getting near-identical names
 - Page Up and Page Down step through your conversations
 - Auto-approve retries a review its model was too slow to answer, and says so in plain English

@@ -100,7 +100,7 @@ class ReadFileContextItem extends ContextItem {
       required: ['file_path']
     };
 
-    const description = 'Reads a file from the local filesystem. Returns content wrapped in <file> tags with line numbers in cat -n format. By default reads up to 2000 lines. Use offset and limit for pagination on large files.';
+    const description = 'Reads a file from the local filesystem. Returns content wrapped in <file> tags with line numbers in cat -n format. A file too large to return at once arrives a page at a time: the footer names the lines you got and the offset the next page starts at, so following it reads the whole file without gaps. Use offset and limit to choose a range yourself.';
 
     return [
       {
@@ -324,7 +324,12 @@ class ReadFileContextItem extends ContextItem {
   }
 
   /**
-   * Format file content with line numbers for LLM
+   * Format file content with line numbers for LLM.
+   *
+   * The character budget is spent here rather than on the finished string: the
+   * formatter drops whole lines off the end and says so in its footer, where a
+   * later squeeze would take the middle out of a block whose footer had already
+   * described it.
    * @param {ReadFileResult} result - Read result from backend
    * @returns {string} Formatted file content
    * @private
@@ -334,9 +339,9 @@ class ReadFileContextItem extends ContextItem {
       content: result.content || '',
       path: result.path,
       lineOffset: result.lineOffset || 1,
-      lineCount: result.lineCount,
       totalLines: result.totalLines,
-      readMode: result.readMode
+      readMode: result.readMode,
+      maxChars: this.truncationBudget()
     });
   }
 

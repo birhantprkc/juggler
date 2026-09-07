@@ -298,6 +298,16 @@ class BatchContextItem extends ContextItem {
    * @private
    */
   _formatBatchReadResults(results) {
+    // Every file gets its own share of the budget and its own footer. Sharing
+    // one budget across the joined text spends it in reading order, so a file
+    // in the middle disappears entirely and gets read again on its own; a file
+    // that is merely short says where to pick it up. The margin leaves room for
+    // the separators and error lines, which are outside the per-file shares.
+    const rendersContent = (/** @type {{success: boolean, result?: any}} */ r) =>
+      r.success && r.result?.exists !== false && !r.result?.warning;
+    const readable = results.filter(rendersContent).length;
+    const perFile = Math.floor((this.truncationBudget() * 0.9) / Math.max(1, readable));
+
     /** @type {string[]} */
     const parts = [];
     for (const r of results) {
@@ -320,8 +330,8 @@ class BatchContextItem extends ContextItem {
           content: r.result.extracted?.text || r.result.content || '',
           path: r.file,
           lineOffset: r.result.lineOffset || 1,
-          lineCount: r.result.lineCount,
-          totalLines: r.result.totalLines
+          totalLines: r.result.totalLines,
+          maxChars: perFile
         }));
       }
       parts.push('');

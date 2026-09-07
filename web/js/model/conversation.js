@@ -8,6 +8,7 @@ import providersCache from '../services/providers-cache.js';
 import recentModels from '../services/recent-models.js';
 import { AbortError } from 'juggler/strategy-type';
 import { DEFAULT_TRUNCATION_BUDGET } from 'juggler/context-item';
+import { CHARS_PER_TOKEN } from '../utils/token-estimate.js';
 import ConversationDocument from './conversation-document.js';
 import slashCommandHandler from '../services/slash-command-handler.js';
 import workerManager from '../services/worker-manager.js';
@@ -59,6 +60,21 @@ const CANCEL_CEILING_MS = 5000;
  * conversation changes shape faster than it can be read.
  */
 const UNDO_OFFER_MIN_ITEMS = 2;
+
+/**
+ * The share of the model's context window a single tool result may occupy.
+ * {@link DEFAULT_TRUNCATION_BUDGET} against a 200k window, so a model of that
+ * size is bounded exactly as the flat constant bounded it.
+ */
+const TOOL_RESULT_WINDOW_FRACTION = 0.0375;
+
+/**
+ * Ceiling on a single tool result whatever the window claims. Past this a read
+ * is costing more to carry for the rest of the conversation than reading the
+ * rest of the file later would cost, and an implausible window figure from a
+ * provider cannot turn one result into the whole request.
+ */
+const MAX_TRUNCATION_BUDGET = 200000;
 
 /**
  * @typedef {import('./session.js').default} Session
@@ -681,10 +697,21 @@ class Conversation {
    * it through `ContextItem#truncationBudget()` / `truncateForLLM()` rather
    * than reaching in here, so the conversation stays the one place the budget
    * can grow a policy (per-model window, per-turn call count).
+   *
+   * The budget is a share of the model's own window, floored at the default so
+   * a small or unreported window behaves as it always has. One result may take
+   * {@link TOOL_RESULT_WINDOW_FRACTION} of the window, which is what 30k chars
+   * is to the 200k window the constant was chosen against — held steady, a
+   * model with room to spare reads a large file in one call instead of paging
+   * through it, and a turn's worth of reads still cannot crowd out the
+   * conversation.
    * @returns {number} Maximum characters of tool output to hand the LLM
    */
   get truncationBudget() {
-    return DEFAULT_TRUNCATION_BUDGET;
+    const window = Number(this.contextWindow);
+    if (!Number.isFinite(window) || window <= 0) return DEFAULT_TRUNCATION_BUDGET;
+    const scaled = Math.round(window * CHARS_PER_TOKEN * TOOL_RESULT_WINDOW_FRACTION);
+    return Math.min(MAX_TRUNCATION_BUDGET, Math.max(DEFAULT_TRUNCATION_BUDGET, scaled));
   }
 
   /**

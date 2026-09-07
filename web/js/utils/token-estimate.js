@@ -19,7 +19,7 @@
 import { yGet, plain } from '../model/item-accessor.js';
 
 /** Characters per token in the shared approximation. */
-const CHARS_PER_TOKEN = 4;
+export const CHARS_PER_TOKEN = 4;
 
 /** Text longer than this contributes its own labelled block in detail views. */
 export const LONG_TEXT_CHARS = 160;

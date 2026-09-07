@@ -294,8 +294,18 @@ export async function runTests(_ctx) {
     const toolResult = /** @type {{content?: string}} */ (context.messages[2]);
     const content = toolResult.content || '';
     assert(content.startsWith('<file path="large-file.txt">'), 'Should start with file tag');
-    assert(content.includes('Showing lines 1-2000 of 3000'), 'Should show line range in footer');
-    assert(content.includes('offset=2001'), 'Should suggest how to get more');
+    // The range itself moves with the character budget; what this asserts is the
+    // shape — a range inside the file, and a hint that resumes on the very next
+    // line. That the range is also the truth about the block is held by
+    // unit:read-truncation.
+    const footer = /\(Showing lines 1-(\d+) of 3000\. Use offset=(\d+) to read more\.\)/.exec(content);
+    assert(footer !== null, `Should show a resumable line range in the footer, got: ${content.slice(-200)}`);
+    const shownThrough = Number(footer?.[1]);
+    assert(shownThrough < 3000, `Footer should stop short of the file end, claimed ${shownThrough}`);
+    assert(
+      Number(footer?.[2]) === shownThrough + 1,
+      `Pagination hint should resume at ${shownThrough + 1}, offered ${footer?.[2]}`
+    );
 
     passed++;
   } catch (e) {

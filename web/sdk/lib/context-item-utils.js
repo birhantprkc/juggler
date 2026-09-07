@@ -133,18 +133,51 @@ export function createEmptyState(message, icon = '') {
  * @property {string} content - File content
  * @property {string} path - File path
  * @property {number} [lineOffset=1] - Starting line number (1-indexed)
- * @property {number} [lineCount] - Number of lines in content
+ * @property {number} [lineCount] - Number of lines the reader believes it holds. Ignored: the footer is computed from the lines this block actually renders, which is the only count the model can act on.
  * @property {number} [totalLines] - Total lines in file
  * @property {string} [readMode] - Human-readable read mode (e.g., "First 50 lines", "Lines 10-20")
+ * @property {number} [maxChars] - Character budget for the whole block. Lines past it are left for the next read rather than cut out of this one.
  */
 
 /**
+ * How many of these lines fit `maxChars` once the tag, the closer and the
+ * footer are paid for. Always at least one line: a read that returns nothing
+ * teaches the model only that the file is unreadable.
+ * @param {string[]} lines - The block's lines
+ * @param {{path: string, lineOffset: number, numWidth: number, effectiveTotal: number, maxChars?: number}} opts - Rendering context
+ * @returns {number} Number of leading lines to render
+ */
+function linesWithinBudget(lines, opts) {
+  const { path, lineOffset, numWidth, effectiveTotal, maxChars } = opts;
+  if (!maxChars || maxChars <= 0) return lines.length;
+
+  // Reserve the longest footer this block could end up carrying, so choosing
+  // fewer lines can never make the result overflow.
+  const lastPossible = lineOffset + lines.length - 1;
+  const footer = `(Showing lines ${lineOffset}-${lastPossible} of ${effectiveTotal}. Use offset=${lastPossible + 1} to read more.)`;
+  let used = `<file path="${path}">\n`.length + '\n</file>\n'.length + footer.length;
+
+  for (let i = 0; i < lines.length; i++) {
+    // Number, tab, the line itself, newline.
+    const cost = numWidth + 1 + String(lines[i]).length + 1;
+    if (used + cost > maxChars && i > 0) return i;
+    used += cost;
+  }
+  return lines.length;
+}
+
+/**
  * Format file content for LLM context with line numbers and XML wrapper.
+ *
+ * The block and its footer are decided together: whatever bounds the content —
+ * the caller's line range or `maxChars` — the footer names the run that is
+ * actually present and where to resume. A reader that follows it sees every
+ * line of the file exactly once.
  * @param {FileContentParams} params - File content parameters
  * @returns {string} Formatted file content with line numbers and XML wrapper
  */
 export function formatFileContentForLLM(params) {
-  const { content, path, lineOffset = 1, lineCount, totalLines } = params;
+  const { content, path, lineOffset = 1, totalLines, maxChars } = params;
 
   // Empty file warning
   if (!content || content.trim() === '') {
@@ -156,7 +189,15 @@ export function formatFileContentForLLM(params) {
   const maxLineNum = lineOffset + lines.length - 1;
   const numWidth = String(maxLineNum).length;
 
-  const contentWithLineNumbers = lines.map((line, idx) => {
+  // The file's length as this block can attest to it. A trailing newline renders
+  // one line more than the backend counted, and a footer must never claim fewer
+  // lines than it has just printed.
+  const effectiveTotal = Math.max(Number(totalLines) || 0, maxLineNum);
+
+  const kept = linesWithinBudget(lines, { path, lineOffset, numWidth, effectiveTotal, maxChars });
+  const deliveredEnd = lineOffset + kept - 1;
+
+  const contentWithLineNumbers = lines.slice(0, kept).map((line, idx) => {
     const lineNum = lineOffset + idx;
     const paddedNum = String(lineNum).padStart(numWidth, ' ');
     return `${paddedNum}\t${line}`;
@@ -165,17 +206,15 @@ export function formatFileContentForLLM(params) {
   // Build simple XML tag with just path attribute
   const fileTag = `<file path="${path}">\n${contentWithLineNumbers}\n</file>`;
 
-  // Add file info footer
-  if (lineCount && totalLines && lineCount < totalLines) {
-    // File was truncated - show how to get more
-    const nextOffset = lineOffset + lineCount;
+  // Something is still unread - say what arrived and where to pick it up
+  if (deliveredEnd < effectiveTotal) {
     return fileTag + '\n' +
-      `(Showing lines ${lineOffset}-${lineOffset + lineCount - 1} of ${totalLines}. Use offset=${nextOffset} to read more.)`;
+      `(Showing lines ${lineOffset}-${deliveredEnd} of ${effectiveTotal}. Use offset=${deliveredEnd + 1} to read more.)`;
   }
 
   // Full file or single chunk - show total
   if (totalLines) {
-    return fileTag + '\n' + `(${totalLines} lines total)`;
+    return fileTag + '\n' + `(${effectiveTotal} lines total)`;
   }
 
   return fileTag;

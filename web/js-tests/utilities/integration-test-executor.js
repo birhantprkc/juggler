@@ -102,6 +102,7 @@ import { runTests as runToolPendingHookTests } from '../unit-tests/tool-pending-
 import { runTests as runContextTurnHookTests } from '../unit-tests/context-turn-hook-test.js';
 import { runTests as runHandoffPromotionTests } from '../unit-tests/handoff-promotion-test.js';
 import { runTests as runReadFileActionTests } from '../unit-tests/read-file-action-test.js';
+import { runTests as runReadTruncationTests } from '../unit-tests/read-truncation-test.js';
 import { runTests as runPathInputQuotesTests } from '../unit-tests/path-input-quotes-test.js';
 import { runTests as runSearchActionTests } from '../unit-tests/search-action-test.js';
 import { runTests as runToolCancellationTests } from '../unit-tests/tool-cancellation-test.js';
@@ -412,6 +413,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:context-turn-hook', run: runContextTurnHookTests },
   { name: 'unit:handoff-promotion', run: runHandoffPromotionTests },
   { name: 'unit:read-file-action', run: runReadFileActionTests },
+  { name: 'unit:read-truncation', run: runReadTruncationTests },
   { name: 'unit:path-input-quotes', run: runPathInputQuotesTests },
   { name: 'unit:mobile-composer', run: runMobileComposerTests },
   { name: 'unit:composer-send-latch', run: runComposerSendLatchTests },
