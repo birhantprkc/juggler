@@ -7,7 +7,7 @@ import ContextItem from 'juggler/context-item';
 import { shell, shellStreaming, shellBackground, shellKill, MAX_EXEC_TIMEOUT_MS, DEFAULT_EXEC_TIMEOUT_MS } from 'juggler/ops';
 import { createHighlightedCode, createSummaryWithSubtitle } from 'juggler/ui';
 import { renderLiveTaskOutput } from '../../../sdk/lib/live-task-output.js';
-import { resolveAgainstCwd } from 'juggler/utils/path-containment';
+import { resolveAgainstCwd, posixNormalize } from 'juggler/utils/path-containment';
 import { isCommandAutoApproved, suggestApprovalPatterns, MAX_SUGGESTED_PATTERN_LENGTH, canonicalRoot, isGrantableRoot } from './execute/command-approval.js';
 import { isShellCommandPermitted, isShellCommandCatastrophic } from './execute/command-permission.js';
 import { renderExecutePermissionSection } from './execute/permission-section.js';
@@ -124,6 +124,50 @@ function formatCommandForDisplay(command) {
     lines.push(sep === '&&' ? `&& ${trimmed}` : trimmed);
   }
   return lines.join('\n');
+}
+
+/**
+ * Reduce a path to a comparable absolute form: relative paths resolve against
+ * the working directory, `.`/`..` segments collapse, and on Windows the
+ * backslash and case spellings of one directory fold together.
+ * @param {string} p - Path to canonicalise
+ * @param {string} cwd - Directory a relative path is relative to
+ * @param {string} platform - 'darwin', 'linux', or 'windows'
+ * @returns {string} Comparable path
+ */
+function comparableDir(p, cwd, platform) {
+  const slashed = platform === 'windows' ? p.replace(/\\/g, '/') : p;
+  const abs = posixNormalize(resolveAgainstCwd(slashed, cwd, platform));
+  return platform === 'windows' ? abs.toLowerCase() : abs;
+}
+
+/**
+ * Drop a leading `cd <project-directory> &&` from a command, for the one-line
+ * summary on the item tile. The tile has a single line to spend and models
+ * habitually open a command by changing to the directory the shell already
+ * starts in, which pushes the part worth reading off the end.
+ *
+ * Only a `cd` that moves nowhere is dropped: the target must resolve to the
+ * project directory itself. A `cd` into a subdirectory, out of the project, or
+ * to a target this cannot resolve (a shell expansion) changes where the command
+ * runs and stays on the tile. The `;` form is left alone too — the habit being
+ * trimmed is `cd <project> && …`.
+ *
+ * Display only. The command is executed, approved, and shown in the properties
+ * panel exactly as the model wrote it.
+ * @param {string} command - The raw shell command
+ * @param {{cwd?: string, home?: string, platform?: string}} [opts] - Project directory, user home (for `~`), and platform
+ * @returns {string} The command without a redundant leading `cd`
+ */
+function stripLeadingProjectCd(command, opts = {}) {
+  const { cwd = '', home = '', platform = '' } = opts;
+  if (!cwd) return command;
+  const match = /^\s*cd\s+(?:'([^']*)'|"([^"]*)"|((?:\\ |[^\s&|;<>'"])+))\s*&&\s*/.exec(command);
+  if (!match) return command;
+  const target = (match[1] ?? match[2] ?? match[3] ?? '').replace(/\\ /g, ' ');
+  if (!target || target.includes('$') || target.includes('`')) return command;
+  const to = comparableDir(ExecuteContextItem._untildeify(target, home), cwd, platform);
+  return to === comparableDir(cwd, cwd, platform) ? command.slice(match[0].length) : command;
 }
 
 /**
@@ -281,7 +325,7 @@ class ExecuteContextItem extends ContextItem {
       required: ['command']
     };
 
-    const description = 'Executes a given bash command with optional timeout. Use this for terminal operations like git, npm, docker, etc. Each call runs in a fresh shell rooted at the project directory — no working directory, environment variable or shell state carries over between calls, so a leading `cd` applies only to the command it is part of, and relative paths are resolved against the project directory.';
+    const description = 'Runs a bash command in a fresh shell rooted at the project directory (no `cd` needed). Nothing persists between calls.';
 
     return [
       {
@@ -1025,6 +1069,16 @@ class ExecuteContextItem extends ContextItem {
       return null;
     }
 
+    // The tile gets one line, so a `cd` to the directory the shell already
+    // starts in is dropped from it. Execution, approval and the properties
+    // panel all still see the command as written.
+    const session = this.conversation?.session;
+    const tileCommand = stripLeadingProjectCd(command, {
+      cwd: session?.projectPath || '',
+      home: session?.home || '',
+      platform: session?.platform || ''
+    });
+
     // Build summary and status based on result state
     /** @type {string|HTMLElement} */
     let summary;
@@ -1039,27 +1093,27 @@ class ExecuteContextItem extends ContextItem {
 
     if (result?.pending) {
       summary = backgroundRequested
-        ? this._backgroundSummary(command, description)
-        : createSummaryWithSubtitle(createHighlightedCode(command, 'bash'), description);
+        ? this._backgroundSummary(tileCommand, description)
+        : createSummaryWithSubtitle(createHighlightedCode(tileCommand, 'bash'), description);
       status = 'running';
     } else if (result?.cancelled) {
-      summary = `Command cancelled: ${command}`;
+      summary = `Command cancelled: ${tileCommand}`;
       status = 'cancelled';
     } else if (result?.success) {
       const rawResult = result.result || {};
       const exitCode = rawResult.exitCode ?? 0;
       if (backgroundRequested || rawResult.background) {
-        summary = this._backgroundSummary(command, description);
+        summary = this._backgroundSummary(tileCommand, description);
         status = 'success';
       } else {
-        summary = createSummaryWithSubtitle(createHighlightedCode(command, 'bash'), description);
+        summary = createSummaryWithSubtitle(createHighlightedCode(tileCommand, 'bash'), description);
         status = exitCode === 0 ? 'success' : 'error';
       }
     } else if (result) {
-      summary = `${command} — failed`;
+      summary = `${tileCommand} — failed`;
       status = 'error';
     } else {
-      summary = createSummaryWithSubtitle(createHighlightedCode(command, 'bash'), description);
+      summary = createSummaryWithSubtitle(createHighlightedCode(tileCommand, 'bash'), description);
       status = 'running';
     }
 
@@ -1166,6 +1220,6 @@ class ExecuteContextItem extends ContextItem {
   }
 }
 
-export { formatCommandForDisplay };
+export { formatCommandForDisplay, stripLeadingProjectCd };
 
 export default ExecuteContextItem;

@@ -140,7 +140,8 @@ export async function runTests(_ctx) {
 
   // === formatCommandForDisplay: newline-splitting for the properties panel ===
 
-  const { formatCommandForDisplay } = await import('../context-items/execute-context-item.js');
+  const ExecuteContextItem = (await import('../context-items/execute-context-item.js')).default;
+  const { formatCommandForDisplay, stripLeadingProjectCd } = await import('../context-items/execute-context-item.js');
 
   /**
    * @param {string} label
@@ -191,6 +192,75 @@ export async function runTests(_ctx) {
     'pwd &&', 'pwd');
   check('trailing ; is dropped',
     'pwd;', 'pwd');
+
+  // === stripLeadingProjectCd: tile-only removal of a redundant leading `cd` ===
+
+  const PROJECT = '/Users/jules/code/juggler-pro';
+  const HOME = '/Users/jules';
+
+  /**
+   * @param {string} label
+   * @param {string} input
+   * @param {string} expected
+   * @param {{cwd?: string, home?: string, platform?: string}} [opts]
+   */
+  const tile = (label, input, expected, opts = { cwd: PROJECT, home: HOME }) => {
+    run(label, () => {
+      const got = stripLeadingProjectCd(input, opts);
+      assert(got === expected, `input ${JSON.stringify(input)}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(got)}`);
+    });
+  };
+
+  // A `cd` to the project dir itself is a no-op — drop it and its operator.
+  tile('drops a leading cd to the project directory',
+    `cd ${PROJECT} && make check`, 'make check');
+  tile('drops it with a trailing slash on the target',
+    `cd ${PROJECT}/ && make check`, 'make check');
+  tile('drops a quoted target',
+    `cd "${PROJECT}" && ls`, 'ls');
+  tile('drops a single-quoted target',
+    `cd '${PROJECT}' && ls`, 'ls');
+  tile('drops a ~-form target',
+    'cd ~/code/juggler-pro && ls', 'ls');
+  tile('drops a relative no-op target',
+    'cd . && ls', 'ls');
+  tile('drops it regardless of spacing around the operator',
+    `cd ${PROJECT}&&ls`, 'ls');
+  tile('leaves the rest of the chain intact',
+    `cd ${PROJECT} && make check && make build`, 'make check && make build');
+
+  // Anything that actually moves the shell is information — keep it.
+  tile('keeps a cd to a subdirectory',
+    'cd juggler && make test', 'cd juggler && make test');
+  tile('keeps a cd outside the project',
+    'cd /tmp && ls', 'cd /tmp && ls');
+  tile('keeps a cd whose target is an expansion',
+    'cd "$PROJECT" && ls', 'cd "$PROJECT" && ls');
+  tile('keeps a cd joined by ; rather than &&',
+    `cd ${PROJECT}; ls`, `cd ${PROJECT}; ls`);
+  tile('keeps a cd in a later segment',
+    `make build && cd ${PROJECT} && ls`, `make build && cd ${PROJECT} && ls`);
+  tile('keeps a command that merely starts with cd-like text',
+    'cdk deploy && ls', 'cdk deploy && ls');
+  tile('keeps everything when the project directory is unknown',
+    `cd ${PROJECT} && ls`, `cd ${PROJECT} && ls`, { cwd: '', home: HOME });
+
+  run('tile summary drops the redundant cd while the panel keeps it', () => {
+    const command = `cd ${PROJECT} && make check`;
+    const item = new ExecuteContextItem({
+      id: 'bash-highlight-test-execute',
+      session: {},
+      conversation: { session: { projectPath: PROJECT, home: HOME, platform: 'darwin' } },
+      messageThread: {}
+    });
+    const ui = item.getStatusUI({ success: true, result: { exitCode: 0 } }, { command });
+    const summary = ui?.summary;
+    const text = typeof summary === 'string' ? summary : (summary?.textContent || '');
+    assert(text === 'make check', `tile summary should drop the cd, got ${JSON.stringify(text)}`);
+    // The properties panel renders the command in full, cd included.
+    assert(formatCommandForDisplay(command) === `cd ${PROJECT}\n&& make check`,
+      'properties panel must show the command unchanged');
+  });
 
   return { passed, failed, errors };
 }
