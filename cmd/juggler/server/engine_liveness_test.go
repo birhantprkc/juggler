@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -97,6 +98,93 @@ func waitUntil(budget time.Duration, cond func() bool) bool {
 		time.Sleep(20 * time.Millisecond)
 	}
 	return cond()
+}
+
+const (
+	// livenessWindowUnderBeats is the staleness window the two tests that assert
+	// a beating engine is LEFT ALONE ask the server to honour, and beatInterval
+	// is how often they beat into it — ten beats per window.
+	livenessWindowUnderBeats = 400 * time.Millisecond
+	beatInterval             = 40 * time.Millisecond
+)
+
+// engineBeater keeps one engine's proof of life going over a real socket, and
+// records how well this process managed to keep it up.
+//
+// The window under test is compressed a hundred times below the production one
+// and the scheduler is not compressed with it, so a run whose own beats were
+// starved for longer than the window it is asking the server to honour has
+// produced the silence itself, and cannot tell a wrongly-dropped engine from an
+// engine that really did go quiet. blameTheDrop reports that starvation instead
+// of a verdict. (The viewer half of the same contract measures itself the same
+// way — see TestViewerSocket_BeatingViewerKeepsItsSocket.)
+type engineBeater struct {
+	// Both written by the beating goroutine and read by the test once the server
+	// has dropped the engine: the longest gap between beats that reached the
+	// wire, and when the last of them did.
+	longestGap atomic.Int64
+	lastBeat   atomic.Int64
+	writeErr   chan error
+}
+
+// beatEngine sends frame down conn every beatInterval until the test ends.
+func beatEngine(t *testing.T, conn *websocket.Conn, frame any) *engineBeater {
+	t.Helper()
+	b := &engineBeater{writeErr: make(chan error, 1)}
+	b.lastBeat.Store(time.Now().UnixNano())
+
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	go func() {
+		tick := time.NewTicker(beatInterval)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				if err := conn.WriteJSON(frame); err != nil {
+					b.writeErr <- err
+					return
+				}
+				now := time.Now()
+				if gap := now.UnixNano() - b.lastBeat.Load(); gap > b.longestGap.Load() {
+					b.longestGap.Store(gap)
+				}
+				b.lastBeat.Store(now.UnixNano())
+			}
+		}
+	}()
+	return b
+}
+
+// blameTheDrop decides what a dropped engine means, given how this process was
+// running at the time, and ends the test either way. verdict is the failure to
+// report when the beats were on time and the server dropped the engine anyway.
+func (b *engineBeater) blameTheDrop(t *testing.T, verdict string) {
+	t.Helper()
+	// Nothing in these tests closes the socket from the server side — the
+	// supervisor that evicts is only ever stepped by hand — so a write that
+	// failed is this process losing its own grip on the beat.
+	select {
+	case err := <-b.writeErr:
+		t.Skipf("this engine's own beats stopped reaching the socket, so the drop "+
+			"says nothing about liveness: %v", err)
+	default:
+	}
+	// The gap still open counts too: a process starved right now has not
+	// recorded that gap between two beats yet.
+	gap := time.Duration(b.longestGap.Load())
+	if open := time.Since(time.Unix(0, b.lastBeat.Load())); open > gap {
+		gap = open
+	}
+	if gap > livenessWindowUnderBeats {
+		t.Skipf("this process went %v without getting a beat out — longer than the %v "+
+			"window it is asking the server to honour — so the drop is unattributable",
+			gap.Round(time.Millisecond), livenessWindowUnderBeats)
+	}
+	t.Fatalf("%s (longest gap between beats %v, well inside the %v window)",
+		verdict, gap.Round(time.Millisecond), livenessWindowUnderBeats)
 }
 
 // TestEngineSocket_MuteEngineIsDetected is the reproduction. An engine that
@@ -206,6 +294,7 @@ func TestEngineSocket_ToolExecutionReportsDoNotProveLiveness(t *testing.T) {
 // still count as alive.
 func TestEngineSocket_OtherWorkerMessagesStillProveLiveness(t *testing.T) {
 	s, ts := newEngineSocketServer(t)
+	s.setEngineLivenessWindow(livenessWindowUnderBeats)
 	conn := dialEngine(t, ts)
 
 	if !waitUntil(muteDetectionBudget, s.IsEngineConnected) {
@@ -213,30 +302,15 @@ func TestEngineSocket_OtherWorkerMessagesStillProveLiveness(t *testing.T) {
 	}
 	freezeRealm(conn)
 
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		tick := time.NewTicker(50 * time.Millisecond)
-		defer tick.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-tick.C:
-				if err := conn.WriteJSON(map[string]any{
-					"type":           "worker-message",
-					"conversationId": "conv-busy",
-					"workerMsgType":  "engine-trace",
-					"payload":        map[string]any{"event": "execute-start"},
-				}); err != nil {
-					return
-				}
-			}
-		}
-	}()
+	beats := beatEngine(t, conn, map[string]any{
+		"type":           "worker-message",
+		"conversationId": "conv-busy",
+		"workerMsgType":  "engine-trace",
+		"payload":        map[string]any{"event": "execute-start"},
+	})
 
 	if waitUntil(muteDetectionBudget, func() bool { return !s.IsEngineConnected() }) {
-		t.Fatal("an engine tracing real tool activity was dropped as silent")
+		beats.blameTheDrop(t, "an engine tracing real tool activity was dropped as silent")
 	}
 }
 
@@ -327,8 +401,12 @@ func TestEngineSupervisor_IgnoresAnEngineItNeverEvicted(t *testing.T) {
 // whatever proves liveness must be satisfied by an engine that is merely idle.
 // A user who reads for ten minutes without sending anything must not have their
 // engine torn down underneath them.
+//
+// It beats through an engineBeater, so a run that starved its own beats for
+// longer than the window says so rather than blaming the server.
 func TestEngineSocket_LiveEngineStaysConnected(t *testing.T) {
 	s, ts := newEngineSocketServer(t)
+	s.setEngineLivenessWindow(livenessWindowUnderBeats)
 	conn := dialEngine(t, ts)
 
 	if !waitUntil(muteDetectionBudget, s.IsEngineConnected) {
@@ -337,26 +415,11 @@ func TestEngineSocket_LiveEngineStaysConnected(t *testing.T) {
 
 	// A live realm: drains its socket AND keeps proving it is running.
 	freezeRealm(conn)
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		tick := time.NewTicker(50 * time.Millisecond)
-		defer tick.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-tick.C:
-				if err := conn.WriteJSON(map[string]string{"type": "engine-heartbeat"}); err != nil {
-					return
-				}
-			}
-		}
-	}()
+	beats := beatEngine(t, conn, map[string]string{"type": "engine-heartbeat"})
 
 	if waitUntil(muteDetectionBudget, func() bool { return !s.IsEngineConnected() }) {
-		t.Fatal("a live engine was dropped: liveness must be satisfied by an idle " +
-			"but running realm, not by user traffic")
+		beats.blameTheDrop(t, "a live engine was dropped: liveness must be satisfied "+
+			"by an idle but running realm, not by user traffic")
 	}
 }
 
