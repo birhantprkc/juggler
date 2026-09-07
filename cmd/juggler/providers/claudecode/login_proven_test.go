@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // resetLoginState pins both login-proof latches for a test and restores them on
@@ -16,13 +17,28 @@ import (
 func resetLoginState(t *testing.T, state loginState, probed bool) {
 	t.Helper()
 	prevState := claudeLogin.Load()
-	prevProbed := usageProbeAttempted.Load()
+	prevProbed := usageProbeAt.Load()
 	claudeLogin.Store(int32(state))
-	usageProbeAttempted.Store(probed)
+	if probed {
+		usageProbeAt.Store(usageProbeNow().UnixNano())
+	} else {
+		usageProbeAt.Store(0)
+	}
 	t.Cleanup(func() {
 		claudeLogin.Store(prevState)
-		usageProbeAttempted.Store(prevProbed)
+		usageProbeAt.Store(prevProbed)
 	})
+}
+
+// pinUsageProbeClock replaces the clock the probe latch ages against, so a test
+// can step over usageProbeRetryInterval instead of waiting five minutes.
+func pinUsageProbeClock(t *testing.T, start time.Time) func(time.Duration) {
+	t.Helper()
+	prev := usageProbeNow
+	now := start
+	usageProbeNow = func() time.Time { return now }
+	t.Cleanup(func() { usageProbeNow = prev })
+	return func(d time.Duration) { now = now.Add(d) }
 }
 
 // TestUsagePollAllowsOneProbeBeforeLogin verifies a logged-out CLI is spawned at
@@ -49,6 +65,44 @@ func TestUsagePollAllowsOneProbeBeforeLogin(t *testing.T) {
 	_, err = (&Client{}).UsageStats(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "poll skipped") {
 		t.Fatalf("expected the second probe to be skipped, got %v", err)
+	}
+}
+
+// TestUsagePollRearmsAfterRetryInterval verifies the probe latch ages instead of
+// holding for the life of the process: a probe the CLI was too slow or too busy
+// to answer blocks the ticks that follow it, but once the retry interval is up
+// the next poll is allowed through. Without this, one unlucky probe at startup
+// leaves usage blank until the user happens to send a message.
+func TestUsagePollRearmsAfterRetryInterval(t *testing.T) {
+	advance := pinUsageProbeClock(t, time.Now())
+	resetLoginState(t, loginUnknown, false)
+
+	if !claudeUsagePollAllowed() {
+		t.Fatalf("the first probe must be allowed")
+	}
+	advance(usageProbeRetryInterval - time.Second)
+	if claudeUsagePollAllowed() {
+		t.Fatalf("a probe inside the retry interval must stay latched off")
+	}
+	advance(2 * time.Second)
+	if !claudeUsagePollAllowed() {
+		t.Fatalf("the latch must re-arm once the retry interval has elapsed")
+	}
+	if claudeUsagePollAllowed() {
+		t.Fatalf("the re-armed probe must latch off again immediately")
+	}
+}
+
+// TestUsagePollStaysBlockedWhileExpiredAfterInterval verifies the re-arm applies
+// only to an unknown sign-in: once a real turn has proved the CLI is logged out,
+// no amount of elapsed time earns another spawn.
+func TestUsagePollStaysBlockedWhileExpiredAfterInterval(t *testing.T) {
+	advance := pinUsageProbeClock(t, time.Now())
+	resetLoginState(t, loginExpired, false)
+
+	advance(10 * usageProbeRetryInterval)
+	if claudeUsagePollAllowed() {
+		t.Fatalf("an expired sign-in must block the poll however long has passed")
 	}
 }
 

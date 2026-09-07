@@ -46,6 +46,22 @@ function stubFetch(handler) {
 }
 
 /**
+ * Pin `Date.now()` so debounce windows can be stepped over without waiting.
+ * @param {number} start - The instant to report until advanced.
+ * @returns {{advance: (ms: number) => void, restore: () => void}} Clock control
+ *   and a restore function (call in a finally).
+ */
+function stubNow(start) {
+  const orig = Date.now;
+  let current = start;
+  Date.now = () => current;
+  return {
+    advance: (ms) => { current += ms; },
+    restore: () => { Date.now = orig; },
+  };
+}
+
+/**
  * Force one `refresh()` for `provider` against a stubbed server that returns
  * `usageArray` as the `usage` field (or throws when `throwErr` is set).
  * @param {string} provider - Provider name to refresh.
@@ -176,6 +192,71 @@ export async function runTests(_ctx) {
 
     await refreshWith(p, []);
     assert(usageStatsCache.getError(p) === '', 'a successful refresh must clear the previous error');
+  });
+
+  await run('a fetch that reported an error is retried long before the full interval', async () => {
+    const p = 'claude-retry-gap';
+    const clock = stubNow(Date.now());
+    try {
+      await refreshWith(p, [snapshotWith(p, 12)]);
+
+      // A minute on, a healthy snapshot is still debounced: no network at all.
+      clock.advance(60 * 1000);
+      const idle = stubFetch(() => ({ ok: true, json: async () => ({ usage: [], errors: {} }) }));
+      try {
+        await usageStatsCache.refresh(p);
+      } finally {
+        idle.restore();
+      }
+      assert(idle.calls.length === 0, 'a healthy snapshot must stay debounced for the full interval');
+
+      // Now a poll the server answers with an error. Waiting out the full
+      // interval before trying again is what strands one window showing nothing
+      // while a freshly opened one shows real numbers.
+      const failed = stubFetch(() => ({
+        ok: true,
+        json: async () => ({ usage: [], errors: { [p]: 'claude CLI usage poll skipped: sign-in not yet confirmed' } }),
+      }));
+      try {
+        await usageStatsCache.refresh(p, { force: true });
+      } finally {
+        failed.restore();
+      }
+
+      clock.advance(60 * 1000);
+      const retry = stubFetch(() => ({ ok: true, json: async () => ({ usage: [snapshotWith(p, 34)], errors: {} }) }));
+      try {
+        await usageStatsCache.refresh(p);
+      } finally {
+        retry.restore();
+      }
+      assert(retry.calls.length === 1, 'an errored fetch must be retried without waiting out the full interval');
+      assert(usageStatsCache.get(p)?.stats?.[0]?.usedPercent === 34, 'the retry must replace the stale state');
+      assert(usageStatsCache.getError(p) === '', 'the retry must clear the reported error');
+    } finally {
+      clock.restore();
+    }
+  });
+
+  await run('a first load carrying no stats is retried soon, not held blank', async () => {
+    const p = 'claude-firstblank';
+    const clock = stubNow(Date.now());
+    try {
+      await refreshWith(p, []); // first load, nothing reported
+      assert(usageStatsCache.get(p) === null, 'precondition: nothing cached to show');
+
+      clock.advance(60 * 1000);
+      const retry = stubFetch(() => ({ ok: true, json: async () => ({ usage: [snapshotWith(p, 7)], errors: {} }) }));
+      try {
+        await usageStatsCache.refresh(p);
+      } finally {
+        retry.restore();
+      }
+      assert(retry.calls.length === 1, 'a blank first load must not hold the meters empty for the full interval');
+      assert(usageStatsCache.get(p)?.stats?.[0]?.usedPercent === 7, 'the retry must populate the meter');
+    } finally {
+      clock.restore();
+    }
   });
 
   await run('a falsy provider name is a no-op that resolves null', async () => {

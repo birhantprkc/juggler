@@ -39,24 +39,65 @@ func TestIdleWatchdog_FiresAfterIdle(t *testing.T) {
 	}
 }
 
+const (
+	// windowUnderResets is the idle window TestIdleWatchdog_ResetPreventsFire
+	// asks the watchdog to honour, and resetInterval is how often it resets
+	// inside that window — ten resets per window.
+	windowUnderResets = 500 * time.Millisecond
+	resetInterval     = 50 * time.Millisecond
+)
+
 func TestIdleWatchdog_ResetPreventsFire(t *testing.T) {
 	cancel, done := firedCancel()
-	w := NewIdleWatchdog(60*time.Millisecond, cancel)
+	w := NewIdleWatchdog(windowUnderResets, cancel)
 	defer w.Stop()
 
-	// Reset faster than the window for several cycles; it must not fire.
-	ticker := time.NewTicker(15 * time.Millisecond)
+	// The window under test is compressed hundreds of times below the production
+	// one and the scheduler is not compressed with it, so a run whose own resets
+	// were starved for longer than the window it is asking the watchdog to
+	// honour produced that silence itself, and cannot tell a watchdog that
+	// ignored a reset from one that was never given the chance to see it. Time
+	// the resets and report the starvation instead of a verdict. (The engine
+	// liveness tests measure their own beats the same way.)
+	lastReset := time.Now()
+	var longestGap time.Duration
+	// gap is the longest a reset has been outstanding, including the one still
+	// open: a run starved right now has not recorded that gap between two
+	// resets yet.
+	gap := func() time.Duration {
+		if open := time.Since(lastReset); open > longestGap {
+			return open
+		}
+		return longestGap
+	}
+	blameTheFire := func() {
+		t.Helper()
+		if g := gap(); g >= windowUnderResets {
+			t.Skipf("this test went %v without getting a reset in — longer than the %v "+
+				"window it is asking the watchdog to honour — so the fire is unattributable",
+				g.Round(time.Millisecond), windowUnderResets)
+		}
+		t.Fatalf("watchdog fired despite being reset within the idle window "+
+			"(longest gap between resets %v, well inside the %v window)",
+			gap().Round(time.Millisecond), windowUnderResets)
+	}
+
+	ticker := time.NewTicker(resetInterval)
 	defer ticker.Stop()
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 10; i++ {
 		select {
 		case <-done:
-			t.Fatal("watchdog fired despite being reset within the idle window")
+			blameTheFire()
 		case <-ticker.C:
 			w.Reset()
+			if elapsed := time.Since(lastReset); elapsed > longestGap {
+				longestGap = elapsed
+			}
+			lastReset = time.Now()
 		}
 	}
 	if w.Fired() {
-		t.Fatal("Fired() should be false while the stream keeps making progress")
+		blameTheFire()
 	}
 }
 

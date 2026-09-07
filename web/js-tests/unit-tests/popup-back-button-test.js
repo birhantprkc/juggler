@@ -26,11 +26,14 @@
  *    dismisses dropdowns wired through the POPUP_CLOSE_ALL event.
  *
  * The History API is stubbed for all but the first case, so the test never
- * actually navigates the iframe — a real history.back() at the base entry would
- * unload the test page — and we assert only that popup-manager drives push/back
- * correctly. The stray-pop case is the exception: it needs the real API, since
- * the whole of it happens in the gap before a real back() answers. It leaves the
- * layer as it found it, on the sentinel entry it pushed.
+ * navigates for real and we assert only that popup-manager drives push/back
+ * correctly. Nothing here may traverse the real one: a lane is an iframe, and
+ * its session history is JOINT with the pool page and every sibling lane, so a
+ * back() from here pops whatever is on top of that shared stack — routinely a
+ * sibling lane loading its next test page, which is sent back a document while
+ * this frame is delivered no popstate at all. The stub answers each back() with
+ * a popstate of its own, as the real API does; how long it takes to answer is
+ * itself under test, so each case says which it wants.
  * @module unit-tests/popup-back-button-test
  */
 
@@ -152,94 +155,125 @@ export async function runTests() {
   // that restores the History API.
   const backIntegrationWas = __setBackIntegrationForTests(true);
 
-  // === a sentinel WE dropped must not dismiss the overlay that replaced it ===
-  //
-  // This case runs against the REAL History API, before the stub below goes in:
-  // the failure lives entirely in the gap between history.back() being called
-  // and its popstate arriving, and a stubbed back() never produces one.
-  //
-  // Closing the last overlay queues the sentinel's retraction. An overlay that
-  // opens after that back() has been called — but before its popstate lands —
-  // pushes a fresh sentinel and is then hit by the trailing pop, which the
-  // handler reads as a Back press and dismisses it. It is not a Back press: it
-  // is our own retraction answering. (Seen as the Pinboard's refused-open notice
-  // vanishing when it opened just after a context menu closed.)
-  //
-  // The traversal also does NOT land where the overlay's own sentinel is: its
-  // target is fixed when it is queued, so the entry pushed while it was in
-  // flight is jumped clean over (measured in WebKit: the pop arrives at the base
-  // entry with both sentinels left ahead of it). That leaves the layer bare, so
-  // the second half of the case is that it gets covered again — a layer that
-  // believes in a sentinel it hasn't got spends the user's next Back press
-  // leaving the app.
-  __resetPopupManagerForTests();
-  const relClosingReal = markPopupOpen(() => {});
-  relClosingReal();       // last overlay closes → retraction queued
-  await tick();           // the retraction runs: history.back() is called
-  const popLanded = nextPopstate();
-  let strayClosed = 0;
-  /** @type {() => void} */
-  let relAfterPop = () => {};
-  relAfterPop = markPopupOpen(() => { strayClosed++; relAfterPop(); });
-  const sawPop = await popLanded;
-  // Without the pop there is nothing to survive, so the checks below would pass
-  // for the wrong reason.
-  tally(check(sawPop, 'stray-pop: precondition — the retraction popstate arrived', errors));
-  tally(check(strayClosed === 0,
-    `stray-pop: an overlay opened during our own sentinel drop survives it (closed ${strayClosed}×)`, errors));
-  tally(check(isAnyPopupOpen(), 'stray-pop: and it is still registered open', errors));
-  const coveredAfterPop = /** @type {any} */ (window.history.state);
-  tally(check(!!coveredAfterPop && coveredAfterPop[OVERLAY_MARKER] === true,
-    `stray-pop: the overlay layer is covered by a real sentinel again, got ${JSON.stringify(coveredAfterPop)}`, errors));
-  // Drain this overlay's own retraction before the stubs go up, so no real pop
-  // wanders into the stubbed cases below.
-  const drainPop = nextPopstate();
-  relAfterPop();
-  await tick();
-  tally(check(await drainPop, 'stray-pop: the closing overlay drops its sentinel for real', errors));
-
-  // === settling a debt waits for the pop rather than writing it off ===
-  // Also on the real API. A pop still in flight is one the browser is going to
-  // deliver, and a suite that forgot it would be handed it moments later as a
-  // Back press — dismissing whatever that suite had opened by then, which is the
-  // stray pop above all over again. Only a debt nothing will ever answer gets
-  // written off, and that takes the whole budget to establish.
-  const relSettling = markPopupOpen(() => {});
-  relSettling();
-  await tick(); // the retraction runs: a real back() is now in flight
-  await __settlePopupHistoryForTests(3000);
-  let dismissedAfterSettle = 0;
-  /** @type {() => void} */
-  let relAfterSettle = () => {};
-  relAfterSettle = markPopupOpen(() => { dismissedAfterSettle++; relAfterSettle(); });
-  await new Promise((r) => setTimeout(r, 100)); // long enough for a late pop to land
-  tally(check(dismissedAfterSettle === 0,
-    `settle: the pop it waited for is not spent on the next overlay (closed ${dismissedAfterSettle}×)`, errors));
-  const drainSettled = nextPopstate();
-  relAfterSettle();
-  await tick();
-  tally(check(await drainSettled, 'settle: and that overlay drops its own sentinel for real', errors));
-
   // Stub History so no real navigation occurs; count the calls popup-manager
   // makes and capture the most recent pushed state for assertions.
+  //
+  // The stub answers each back() with a popstate, as the real API does. A stub
+  // that only counts leaves popup-manager owed an answer for the rest of the
+  // realm's life, and the next Back press is spent settling that debt instead of
+  // dismissing. `backAnswer` says WHEN the answer comes, which is itself the
+  // subject of the first two cases:
+  //   'sync'     — before back() returns, so a case's bookkeeping is settled by
+  //                the time it asserts;
+  //   'deferred' — `backAnswerDelay` ms later, the gap the real API leaves;
+  //   'never'    — not at all, the traversal with nowhere left to go.
+  //
+  // The answering pop carries `state: null`, because a traversal's target is
+  // fixed when it is queued: a sentinel pushed while it was in flight is jumped
+  // clean over, and it lands on the bare entry behind (measured in WebKit).
   const realPush = window.history.pushState;
   const realBack = window.history.back;
   let pushCount = 0;
   let backCount = 0;
   /** @type {any} */
   let lastPushState = null;
+  /** @type {'sync'|'deferred'|'never'} */
+  let backAnswer = 'deferred';
+  let backAnswerDelay = 0;
   window.history.pushState = function (state) { pushCount++; lastPushState = state; };
-  // The stub answers with a popstate, as the real API does a task later. A stub
-  // that only counts leaves popup-manager owed an answer for the rest of the
-  // realm's life, and the next Back press is spent settling that debt instead of
-  // dismissing. Answering synchronously keeps each case's bookkeeping settled by
-  // the time it asserts.
   window.history.back = function () {
     backCount++;
-    window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+    if (backAnswer === 'never') return;
+    const answer = () => window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+    if (backAnswer === 'sync') answer();
+    else setTimeout(answer, backAnswerDelay);
   };
 
   try {
+    // === a sentinel WE dropped must not dismiss the overlay that replaced it ===
+    //
+    // The whole of this one happens in the gap between back() being called and
+    // its popstate arriving, so the stub answers a task later rather than
+    // before it returns.
+    //
+    // Closing the last overlay queues the sentinel's retraction. An overlay that
+    // opens after that back() has been called — but before its popstate lands —
+    // pushes a fresh sentinel and is then hit by the trailing pop, which the
+    // handler reads as a Back press and dismisses it. It is not a Back press: it
+    // is our own retraction answering. (Seen as the Pinboard's refused-open
+    // notice vanishing when it opened just after a context menu closed.)
+    //
+    // The pop does NOT land where the overlay's own sentinel is: the entry
+    // pushed while the traversal was in flight is jumped over, leaving the layer
+    // bare. So the second half of the case is that it gets covered again — a
+    // layer that believes in a sentinel it hasn't got spends the user's next
+    // Back press leaving the app.
+    __resetPopupManagerForTests();
+    const relClosingDeferred = markPopupOpen(() => {});
+    relClosingDeferred();   // last overlay closes → retraction queued
+    await tick();           // the retraction runs: back() called, answer pending
+    const popLanded = nextPopstate();
+    let strayClosed = 0;
+    /** @type {() => void} */
+    let relAfterPop = () => {};
+    relAfterPop = markPopupOpen(() => { strayClosed++; relAfterPop(); });
+    const pAfterReopen = pushCount;
+    const sawPop = await popLanded;
+    // Without the pop there is nothing to survive, so the checks below would pass
+    // for the wrong reason.
+    tally(check(sawPop, 'stray-pop: precondition — the retraction popstate arrived', errors));
+    tally(check(strayClosed === 0,
+      `stray-pop: an overlay opened during our own sentinel drop survives it (closed ${strayClosed}×)`, errors));
+    tally(check(isAnyPopupOpen(), 'stray-pop: and it is still registered open', errors));
+    tally(check(pushCount === pAfterReopen + 1,
+      `stray-pop: the bare layer is covered by a fresh sentinel (pushed ${pushCount - pAfterReopen})`, errors));
+    tally(check(!!lastPushState && lastPushState[OVERLAY_MARKER] === true,
+      'stray-pop: and that sentinel carries the overlay marker', errors));
+    // Drain this overlay's own retraction, so no pop of its wanders into the
+    // cases below.
+    const drainPop = nextPopstate();
+    relAfterPop();
+    await tick();
+    tally(check(await drainPop, 'stray-pop: the closing overlay drops its sentinel', errors));
+
+    // === settling a debt waits for the pop rather than writing it off ===
+    // A pop still in flight is one the browser is going to deliver, and a suite
+    // that forgot it would be handed it moments later as a Back press —
+    // dismissing whatever that suite had opened by then, which is the stray pop
+    // above all over again. Only a debt nothing will ever answer gets written
+    // off (the owed-pop case below), and that takes the whole budget to
+    // establish. The answer is held back well past the settle's own poll
+    // interval here, so a settle that wrote the debt off would return first.
+    backAnswerDelay = 100;
+    let popsWhileSettling = 0;
+    const countPop = () => { popsWhileSettling++; };
+    window.addEventListener('popstate', countPop);
+    const relSettling = markPopupOpen(() => {});
+    relSettling();
+    await tick(); // the retraction runs: back() called, its answer 100ms out
+    tally(check(popsWhileSettling === 0,
+      'settle: precondition — the pop is still in flight when the settle starts', errors));
+    await __settlePopupHistoryForTests(3000);
+    tally(check(popsWhileSettling === 1,
+      `settle: it waited for the pop rather than writing the debt off (saw ${popsWhileSettling})`, errors));
+    window.removeEventListener('popstate', countPop);
+    backAnswerDelay = 0;
+    let dismissedAfterSettle = 0;
+    /** @type {() => void} */
+    let relAfterSettle = () => {};
+    relAfterSettle = markPopupOpen(() => { dismissedAfterSettle++; relAfterSettle(); });
+    await new Promise((r) => setTimeout(r, 100)); // long enough for a late pop to land
+    tally(check(dismissedAfterSettle === 0,
+      `settle: the pop it waited for is not spent on the next overlay (closed ${dismissedAfterSettle}×)`, errors));
+    const drainSettled = nextPopstate();
+    relAfterSettle();
+    await tick();
+    tally(check(await drainSettled, 'settle: and that overlay drops its own sentinel', errors));
+
+    // Every case below asserts its bookkeeping the moment it acts, so from here
+    // the answer comes before back() returns.
+    backAnswer = 'sync';
+
     // The multi-iframe pool reuses ONE JS realm for the whole sequence of tests
     // a lane runs, so a prior test that leaked an open-popup registration would
     // poison this module singleton and break the 0→1 sentinel baseline every
@@ -349,14 +383,13 @@ export async function runTests() {
     // instead of dismissing. That is what the settle writes off, and every suite
     // that presses Back synthetically opens by calling it.
     __resetPopupManagerForTests();
-    const answeringBack = window.history.back;
-    window.history.back = function () { backCount++; }; // owes an answer, never pays
+    backAnswer = 'never'; // owes an answer, never pays
     /** @type {() => void} */
     let relOwed = () => {};
     relOwed = markPopupOpen(() => { relOwed(); });
     relOwed();
     await tick(); // the retraction runs: back() called, nothing answers
-    window.history.back = answeringBack;
+    backAnswer = 'sync';
     await __settlePopupHistoryForTests(50);
     let closedAfterDebt = 0;
     /** @type {() => void} */

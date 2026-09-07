@@ -13,7 +13,9 @@
  * CLI-backed providers, can even provoke a login). The cache is
  * keyed by provider so the model selector and the usage sidebar card can track
  * different providers without evicting each other. Each provider's live fetch is
- * debounced to one call per REFRESH_INTERVAL_MS and de-dupes concurrent callers.
+ * debounced to one call per REFRESH_INTERVAL_MS — or per the much shorter
+ * RETRY_INTERVAL_MS when the last one reported an error or no meters — and
+ * de-dupes concurrent callers.
  */
 
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
@@ -44,12 +46,23 @@ import { fetchJson } from './http.js';
  */
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
+/**
+ * Gap applied instead of REFRESH_INTERVAL_MS when a fetch came back with an error
+ * or with nothing to show. The long interval exists to spare a healthy source
+ * that has already answered; charging it to a failure inverts the backoff, since
+ * a failed poll is the one most likely to succeed if asked again. A provider that
+ * fails at startup (a CLI too slow to answer its first probe) would otherwise
+ * leave that window blank for five minutes while a window opened seconds later —
+ * with an empty cache of its own — shows real numbers.
+ */
+const RETRY_INTERVAL_MS = 30 * 1000;
+
 /** @type {Map<string, UsageStats|null>} provider name → latest snapshot (null = fetched, none reported). */
 const _byProvider = new Map();
 /** @type {Map<string, string>} provider name → latest fetch error. */
 const _errors = new Map();
-/** @type {Map<string, number>} provider name → last live-fetch timestamp. */
-const _lastFetch = new Map();
+/** @type {Map<string, number>} provider name → earliest timestamp a live fetch may run. */
+const _nextFetch = new Map();
 /** @type {Map<string, Promise<UsageStats|null>>} provider name → in-flight fetch. */
 const _inFlight = new Map();
 
@@ -85,7 +98,8 @@ const usageStatsCache = {
 
   /**
    * Fetch one provider's usage stats, debounced to one live call per
-   * REFRESH_INTERVAL_MS. Concurrent callers share the in-flight request. Resolves
+   * REFRESH_INTERVAL_MS (RETRY_INTERVAL_MS after a fetch that reported an error
+   * or no meters). Concurrent callers share the in-flight request. Resolves
    * with the provider's cached snapshot (refreshed or not). Never rejects — on
    * failure it resolves with the last snapshot, or null if none exists yet. A
    * falsy providerName is a no-op that resolves null.
@@ -96,9 +110,7 @@ const usageStatsCache = {
   async refresh(providerName, { force = false } = {}) {
     if (!providerName) return null;
 
-    const now = Date.now();
-    const last = _lastFetch.get(providerName) || 0;
-    if (!force && _byProvider.has(providerName) && now - last < REFRESH_INTERVAL_MS) {
+    if (!force && _byProvider.has(providerName) && Date.now() < (_nextFetch.get(providerName) || 0)) {
       return _byProvider.get(providerName) || null;
     }
     const pending = _inFlight.get(providerName);
@@ -130,11 +142,14 @@ const usageStatsCache = {
         if (nextHasStats || !prevHasStats) {
           _byProvider.set(providerName, snapshot);
         }
-        _lastFetch.set(providerName, Date.now());
+        // Only a fetch that actually produced meters earns the full interval.
+        const healthy = nextHasStats && !fetchError;
+        _nextFetch.set(providerName, Date.now() + (healthy ? REFRESH_INTERVAL_MS : RETRY_INTERVAL_MS));
         return _byProvider.get(providerName) || null;
       } catch (err) {
         const message = extractErrorMessage(err);
         _errors.set(providerName, message);
+        _nextFetch.set(providerName, Date.now() + RETRY_INTERVAL_MS);
         console.warn('[usageStatsCache] refresh failed:', err);
         return _byProvider.get(providerName) || null;
       } finally {

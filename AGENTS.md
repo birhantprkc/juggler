@@ -101,7 +101,13 @@ line you already had and cuts the assertion that says what broke.
   in a lane may touch `window.history` casually: the overlay Back-button
   sentinel (`popup-manager.js`) stands down unless the app owns the history
   (`window.top === window`), and the two suites that test it switch it on for
-  their own duration via `__setBackIntegrationForTests`.
+  their own duration via `__setBackIntegrationForTests` while stubbing the
+  History API. **A test must never traverse the real one**, however carefully it
+  balances its own entries: a sibling lane loading its next test page puts an
+  entry on top of the shared stack, so the `back()` lands on the sibling — which
+  is sent back a document — and this lane is delivered no `popstate` at all. A
+  stub answering with a `popstate` of its own, in a later task, reproduces
+  everything a real traversal was there to show.
 - Suite timings are load-sensitive. A browser test that fails in a full run and
   passes alone is not a regression in the code it asserts on — re-run the exact
   subtest in isolation before investigating it. It is not automatically "just
