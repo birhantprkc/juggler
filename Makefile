@@ -1,4 +1,4 @@
-.PHONY: build test test-go test-full benchmark dev clean fmt lint lint-files lint-go lint-deadcode lint-js lint-types lint-css fix fix-files fix-fmt fix-go fix-js fix-css node-deps help mac-app install-mac app-icon-embed wails-runtime-embed win-icon release-build-mac mac-dmg mac-dmg-pack win-installer win-installer-pack linux-binaries linux-tarball linux-tarball-pack mac-codesign
+.PHONY: build test test-go test-full benchmark dev clean fmt lint lint-files lint-go lint-deadcode lint-js lint-types lint-css fix fix-files fix-fmt fix-go fix-js fix-css node-deps help mac-app install-mac app-icon-embed wails-runtime-embed win-icon release-build-mac mac-dmg mac-dmg-pack win-installer win-installer-pack linux-binaries linux-tarball linux-tarball-pack mac-codesign linux-compat-server
 
 # Binary name
 BINARY_NAME=juggler
@@ -355,6 +355,23 @@ linux-binaries: app-icon-embed wails-runtime-embed
 	fi
 	@echo "  → juggler-app ($(GOARCH))"
 	@CGO_ENABLED=1 GOOS=linux GOARCH=$(GOARCH) $(GOBUILD_RELEASE) -ldflags "$(LDFLAGS_BASE)" -o $(BUILD_DIR)/juggler-app ./cmd/juggler-app
+
+## linux-compat-server: Build a linux/amd64 server binary inside Ubuntu 22.04,
+## for running it on a distribution older than the one a release is built on.
+## Output: bin/juggler-linux-amd64-jammy.
+## Needs Docker, and runs on any host — the build is containerised, so an arm64
+## machine cross-builds it under emulation rather than needing a toolchain.
+## $(SERVER_BIN) is deliberately NOT honoured here: this target exists to pin
+## the glibc floor, which a binary built elsewhere would not have.
+linux-compat-server: app-icon-embed wails-runtime-embed
+	@mkdir -p $(BUILD_DIR)
+	@echo "  → juggler-linux-amd64-jammy (docker, ubuntu:22.04)"
+	@DOCKER_BUILDKIT=1 docker build \
+		--platform linux/amd64 \
+		--target export \
+		--output type=local,dest=$(BUILD_DIR) \
+		--build-arg LDFLAGS="$(LDFLAGS_BASE)" \
+		-f packaging/docker/Dockerfile.build-jammy .
 
 ## linux-tarball: linux-binaries + package them (README + checksums) into one
 ## tarball. Output: bin/juggler-linux-$(GOARCH).tar.gz.

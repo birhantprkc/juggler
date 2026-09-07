@@ -1,0 +1,54 @@
+# Builds a linux/amd64 juggler server binary on Ubuntu 22.04, for running it on
+# a distribution older than the one a release is built on. Build it with
+# `make linux-compat-server`, which passes the shared ldflags in.
+#
+# The point is glibc. A cgo binary records the symbol versions it was linked
+# against, so one built on 24.04 (glibc 2.39) fails to start on 22.04 (2.35)
+# with "GLIBC_2.38 not found" — and no runtime package fixes that, because the
+# missing thing is the C library itself. Building here pins the floor at 2.35,
+# which every currently supported Ubuntu can load.
+#
+# The three -dev packages are the ones CONTRIBUTING.md lists for a Linux source
+# build. The server links GTK/WebKitGTK through cgo unconditionally, whichever
+# host the agent engine later runs in, so they are needed to compile even for a
+# binary that will only ever run headless with the Node engine host.
+
+FROM --platform=linux/amd64 ubuntu:22.04 AS build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential pkg-config git ca-certificates curl \
+        libgtk-4-dev libwebkitgtk-6.0-dev libsoup-3.0-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Go from the official tarball, pinned to one version and checksum: Ubuntu
+# 22.04 packages a Go far below go.mod's floor, and a pinned tarball rebuilds
+# identically where an apt repo tracking a moving toolchain does not.
+ENV GO_VERSION=1.26.8
+ENV GO_SHA256=d0f743b33e8d8945e6b1f432edd15785c70507121d6e2a723b21285eddf8b57b
+
+RUN set -eux; \
+    tarball="go${GO_VERSION}.linux-amd64.tar.gz"; \
+    curl -fsSLO "https://go.dev/dl/${tarball}"; \
+    echo "${GO_SHA256}  ${tarball}" | sha256sum -c -; \
+    tar -C /usr/local -xzf "${tarball}"; \
+    rm "${tarball}"; \
+    /usr/local/go/bin/go version
+
+ENV PATH=/usr/local/go/bin:$PATH
+
+WORKDIR /src
+COPY . .
+
+# The version stamps come from the Makefile rather than being recomputed here,
+# so this binary reports the same version, commit and date as every other build
+# of the same tree. mk/build-flags.mk is the single source of truth for them.
+ARG LDFLAGS=""
+
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+    go build -tags production -ldflags "${LDFLAGS}" \
+        -o /out/juggler-linux-amd64-jammy ./cmd/juggler
+
+# A scratch stage so `docker build --output` writes the binary alone into bin/,
+# instead of leaving a multi-gigabyte toolchain image behind to be dug through.
+FROM scratch AS export
+COPY --from=build /out/juggler-linux-amd64-jammy /

@@ -92,7 +92,7 @@ Results displayed in real-time / saved to JSON
 
 Options:
   --task=TASK_ID          Run specific task (e.g., ci-tree, action-edit-from-ci)
-  --category=CATEGORY     Run all tasks in category (e.g., context-items, actions, errors, swe-bench)
+  --category=CATEGORY     Run all tasks in category (e.g., context-items, actions, errors)
   --port=PORT             Server port (default: 3939)
   --timeout=MINUTES       Overall timeout in minutes (default: 30)
   --results-file=PATH     Output JSON file (default: tests/benchmarks/results/results.json)
@@ -115,10 +115,7 @@ make benchmark ARGS="--category=actions"
 # Run strategy tests
 make benchmark ARGS="--category=strategies"
 
-# Run SWE-bench tests only
-make benchmark ARGS="--category=swe-bench"
-
-# Run all tests (37 total across 7 categories)
+# Run all tests (24 total across 6 categories)
 make benchmark
 ```
 
@@ -187,13 +184,6 @@ Runs the complete JS integration test suite:
 
 - **all-integration-tests**: Executes all 95+ integration tests with mock LLM
 
-### SWE-bench Tests (10 tasks)
-Real-world GitHub issues from open-source projects:
-
-- Flask, Requests, Pytest, Sphinx issues
-- Git-based fixtures cloned from actual repositories
-- Tests against production codebases
-
 ## Directory Structure
 
 ### Test Project Structure
@@ -211,12 +201,11 @@ benchmarks/
 │   └── external-change-fixture/  # Files for external modification tests
 ├── tasks/                         # Task definitions (JSON)
 │   ├── context-items/            # Context item capability tests (6)
-│   ├── actions/                  # Action reliability tests (5)
-│   ├── errors/                   # Error handling tests (4)
+│   ├── actions/                  # Action reliability tests (4)
+│   ├── errors/                   # Error handling tests (2)
 │   ├── strategies/               # Strategy behavior tests (3)
 │   ├── external-file-changes/    # External modification tests (8)
-│   ├── integration-tests/        # JS integration test runner (1)
-│   └── swe-bench/                # Real GitHub issues (10)
+│   └── integration-tests/        # JS integration test runner (1)
 └── results/                       # Test results (gitignored)
 ```
 
@@ -430,7 +419,6 @@ make benchmark ARGS="--category=context-items"
 - Check fixture files exist
 - Verify scoring criteria are correct
 - Review browser console logs
-- For SWE-bench tests, check if git repos cloned correctly in `/tmp/juggler/`
 
 ## Future Enhancements
 

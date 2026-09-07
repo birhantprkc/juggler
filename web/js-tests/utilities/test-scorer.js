@@ -2,7 +2,6 @@
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
-import SWEBenchScorer from './swe-bench-scorer.js';
 import logger from './test-logger.js';
 
 /**
@@ -72,9 +71,6 @@ class TestScorer {
       case 'multi_file_consistency':
         return await this.scoreMultiFileConsistency();
 
-      case 'swe_bench_validation':
-        return await this.scoreSWEBench();
-
       case 'unit_test':
         return await this.scoreUnitTest();
 
@@ -87,21 +83,6 @@ class TestScorer {
           details: `Unknown scoring type: ${scoringType}`
         };
     }
-  }
-
-  /**
-   * Score: swe_bench_validation
-   * Validates SWE-bench tasks (fail-to-pass + pass-to-pass tests)
-   * @returns {Promise<ScoreResult>} The SWE-bench scoring result
-   * @private
-   */
-  async scoreSWEBench() {
-    logger.info('[TestScorer] Scoring SWE-bench task');
-
-    // Cast to unknown to bypass type checking since we know the scoring field has the right shape
-    const sweBenchTask = /** @type {any} */ (this.task);
-    const scorer = new SWEBenchScorer(sweBenchTask, this.fixtureDir);
-    return await scorer.score();
   }
 
   /**

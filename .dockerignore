@@ -1,0 +1,16 @@
+# Keeps the build context for packaging/docker/Dockerfile.build-jammy to the
+# sources a compile actually reads. Without this the context is the whole tree,
+# including bin/ and node_modules, and every build ships it to the daemon.
+#
+# Nothing here is generated at build time: the go:embed inputs
+# (cmd/juggler/server/wails_runtime.js and the app icon) are tracked files, and
+# the Makefile targets that refresh them are idempotent syncs run before docker.
+
+.git
+bin
+tooling/node_modules
+node_modules
+.juggler
+tests/benchmarks/results
+*.log
+.DS_Store

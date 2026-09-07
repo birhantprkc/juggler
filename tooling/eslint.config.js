@@ -412,7 +412,7 @@ export default [
       }],
 
       // Enforce that raw console.log calls include proper prefixes
-      // This catches the misuse like "console.log('[SWEBenchScorer] Scoring task:')"
+      // This catches the misuse like "console.log('[TestScorer] Scoring task:')"
       // without the actual data
       'no-restricted-syntax': [
         'error',
