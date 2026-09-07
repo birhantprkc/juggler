@@ -1397,6 +1397,76 @@ export async function acpSetConfig(params, signal) {
 }
 
 // ============================================================================
+// Custom providers (the user's own named OpenAI-compatible endpoints)
+// ============================================================================
+
+/**
+ * One configured custom endpoint, as its settings card needs it. Each registers
+ * as its own provider, so `providerId` is the name conversations, the model
+ * stores and the model picker all use — and the one thing about an endpoint that
+ * can never change.
+ * @typedef {object} CustomEndpoint
+ * @property {string} id - The endpoint id, chosen once when it was added
+ * @property {string} providerId - The provider id it registers under
+ * @property {string} [displayName] - The label shown in the picker
+ * @property {string} [url] - The configured base URL
+ * @property {Record<string, string>} [headers] - Extra request headers
+ * @property {boolean} enabled - Whether the user has it switched on
+ * @property {boolean} registered - Whether it reached the provider registry, and so the picker
+ * @property {string} [error] - Why an enabled endpoint did not register
+ * @property {boolean} hasKey - Whether an API key is stored or in the environment
+ * @property {''|'credentials'|'env'} [keySource] - Where that key comes from
+ * @property {string} envVarName - The environment variable a key may come from instead
+ */
+
+/**
+ * List every configured endpoint, switched on or off. Every mutation below
+ * answers with the same list, so a card redraws from one round trip.
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<{endpoints: CustomEndpoint[]}>} The configured endpoints
+ */
+export async function customProvidersList(signal) {
+  return callOp('customProviders', 'list', {}, signal);
+}
+
+/**
+ * Write one endpoint — adding it when the id is new, editing it when it is not.
+ * Only the fields sent are changed, so a card can save the one input the user
+ * just left. Takes effect at once: the server reconciles the provider registry
+ * before answering.
+ * @param {{id: string, displayName?: string, url?: string, headers?: object, enabled?: boolean}} params
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<{endpoints: CustomEndpoint[]}>} Updated endpoint list
+ */
+export async function customProvidersSave(params, signal) {
+  return callOp('customProviders', 'save', params, signal);
+}
+
+/**
+ * Delete one endpoint, along with the hidden models, token limits and model
+ * selections naming the provider id it registered under. Its API key stays in
+ * the credentials store.
+ * @param {{id: string}} params
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<{endpoints: CustomEndpoint[]}>} Updated endpoint list
+ */
+export async function customProvidersRemove(params, signal) {
+  return callOp('customProviders', 'remove', params, signal);
+}
+
+/**
+ * Store (or, with an empty string, clear) one endpoint's API key. The credential
+ * key name is derived from the id server-side, so this works whether or not the
+ * endpoint is currently registered.
+ * @param {{id: string, apiKey: string}} params
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<{endpoints: CustomEndpoint[]}>} Updated endpoint list
+ */
+export async function customProvidersSetKey(params, signal) {
+  return callOp('customProviders', 'setKey', params, signal);
+}
+
+// ============================================================================
 // Extension configuration
 // ============================================================================
 

@@ -13,8 +13,10 @@ import { openExternalURL } from '../../../sdk/lib/window-control.js';
 import wsService from '../../services/websocket.js';
 import providersCache from '../../services/providers-cache.js';
 import { fetchJson, httpErrorText } from '../../services/http.js';
+import { customProvidersList } from '../../services/ops-api.js';
 import { showAlert, showConfirm } from '../modal-dialog.js';
 import { sortModelsByVersion } from '../../utils/model-filter.js';
+import { buildEndpointCard, buildAddEndpointForm } from './custom-endpoint-card.js';
 
 // Standard refresh glyph for the OAuth "re-check sign-in" button. Fill is left to
 // CSS (currentColor) so it tracks the button's theme colour.
@@ -23,12 +25,19 @@ const OAUTH_REFRESH_ICON =
   '<path d="M482-160q-134 0-228-93t-94-227v-7l-64 64-56-56 160-160 160 160-56 56-64-64v7q0 100 70.5 170T482-240q26 0 51-6t49-18l60 60q-38 22-78 33t-82 11Zm278-161L600-481l56-56 64 64v-7q0-100-70.5-170T478-720q-26 0-51 6t-49 18l-60-60q38-22 78-33t82-11q134 0 228 93t94 227v7l64-64 56 56-160 160Z"/></svg>';
 
 /**
- * "Provider API Keys" tab: one field per registered provider — OAuth (bearer),
- * keyless (toggle), or API-key (input + save/delete) — plus the OpenAI-compatible
- * gateway rows, the Ollama host, and the Claude Code binary path. Seeded from the
+ * "Providers" tab: one field per registered provider — OAuth (bearer), keyless
+ * (toggle), or API-key (input + save/delete) — plus the Ollama host and the
+ * Claude Code binary path, and, last, the user's own endpoints. Seeded from the
  * shared loadConfig() fetch; keys persist via PUT /api/config. `updateAllButtons`
  * is providers-only (despite the generic name) and is also invoked by the shell's
  * close() after its panel-wide secret-input sweep.
+ *
+ * A custom endpoint is a provider like any other, so it belongs here rather than
+ * in a tab of its own: it is the same card, with the same key row, model list and
+ * token limits, plus the base URL and headers that only it has. Its own cards are
+ * built from the endpoint definitions (see the section below), so the ones that
+ * did not register — switched off, or a base URL that no longer parses — still
+ * have somewhere to be fixed.
  */
 export class ProvidersTab {
   /**
@@ -42,6 +51,29 @@ export class ProvidersTab {
     this.config = {};
     /** @type {any[]} @private */
     this.providers = [];
+    // The user's own endpoints, read as definitions rather than as published
+    // providers: the ones that did not register are exactly the ones needing a
+    // card.
+    /** @type {any[]} @private */
+    this.endpoints = [];
+    // Whether the "new endpoint" form is open.
+    /** @type {boolean} @private */
+    this.addingEndpoint = false;
+    // The drawn cards, so one endpoint can be updated or taken out on its own.
+    /** @type {Map<string, {element: HTMLElement, refresh: (opts?: {remodel?: boolean}) => void, endpoint: any}>} @private */
+    this.endpointCards = new Map();
+    /** @type {HTMLElement|null} @private */
+    this.endpointSection = null;
+  }
+
+  /** Tab became visible: pick up endpoints added or removed since it was last drawn. */
+  show() {
+    this._refreshEndpoints();
+  }
+
+  /** Panel closed: an abandoned add form must not be there on reopen. */
+  close() {
+    if (this.addingEndpoint) this._closeAddForm();
   }
 
   /**
@@ -72,8 +104,15 @@ export class ProvidersTab {
     // Clear existing fields
     container.innerHTML = '';
 
+    // A custom endpoint is in this list too, since it registers as a provider.
+    // Its card is built from its definition instead, in the section below, so it
+    // is skipped here rather than drawn twice with half the controls each time.
+    const ownEndpoints = new Set(this.endpoints.map(e => e.providerId));
+
     // Generate a field for each provider
     for (const provider of this.providers) {
+      if (ownEndpoints.has(provider.name)) continue;
+
       if (provider.authType === 'oauth_bearer') {
         this._buildOAuthProviderField(provider, container);
         continue;
@@ -88,6 +127,189 @@ export class ProvidersTab {
       // API key provider - show input field
       this._buildApiKeyProviderField(provider, container);
     }
+
+    this.endpointSection = document.createElement('div');
+    this.endpointSection.id = 'custom-endpoints-section';
+    container.appendChild(this.endpointSection);
+    this._renderEndpointSection();
+    this._refreshEndpoints();
+  }
+
+  /**
+   * Draw the "Your own endpoints" section from the definitions in hand.
+   *
+   * This is the only method that empties the section, and it runs when the tab
+   * is built — never in response to a save. Everything after that edits the
+   * section in place: a card is added, removed or refreshed on its own, so
+   * nothing a save touches moves anything else on the page.
+   * @private
+   */
+  _renderEndpointSection() {
+    const root = this.endpointSection;
+    if (!root) return;
+    root.innerHTML = '';
+    this.endpointCards.clear();
+
+    const heading = document.createElement('div');
+    heading.className = 'settings-section-heading';
+    heading.textContent = 'Your own endpoints';
+    root.appendChild(heading);
+
+    const note = document.createElement('div');
+    note.className = 'custom-endpoints-note';
+    note.textContent = 'Anything that speaks the OpenAI Chat Completions API — a gateway, a tenant, a local server. Each one is a provider of its own in the model picker.';
+    root.appendChild(note);
+
+    for (const endpoint of this.endpoints) root.appendChild(this._buildCard(endpoint));
+    root.appendChild(this._buildAddControl());
+  }
+
+  /**
+   * Build one endpoint's card and remember how to update it.
+   * @param {any} endpoint - The endpoint to draw.
+   * @returns {HTMLElement} The card element.
+   * @private
+   */
+  _buildCard(endpoint) {
+    const card = buildEndpointCard(endpoint, {
+      // Only a registered endpoint has a published provider to draw models from.
+      // Asking the endpoint rather than the provider list means a card is right
+      // the moment it is switched off, without waiting for the server's next
+      // provider recompute to drop it from that list.
+      providerFor: (providerId) => this.providers.find(p => p.name === providerId),
+      modelRow: (provider) => this._buildModelVisibilityRow(provider),
+      applyEndpoints: (endpoints) => { this.endpoints = Array.isArray(endpoints) ? endpoints : []; },
+      refreshProviders: () => this.host.loadConfig(false),
+      onRemoved: (endpoints) => this._onEndpointRemoved(endpoints),
+      reportError: (message) => { showAlert(message, 'Custom endpoints'); },
+    });
+    this.endpointCards.set(endpoint.id, { ...card, endpoint });
+    return card.element;
+  }
+
+  /**
+   * Build whatever sits at the end of the section: the form for a new endpoint,
+   * or the button that opens it.
+   * @returns {HTMLElement} The control.
+   * @private
+   */
+  _buildAddControl() {
+    if (this.addingEndpoint) {
+      return buildAddEndpointForm({
+        takenIds: this.endpoints.map(e => e.id),
+        onAdded: (endpoints) => this._onEndpointAdded(endpoints),
+        onCancel: () => this._closeAddForm(),
+      });
+    }
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'settings-btn small custom-endpoint-add-open';
+    add.textContent = 'Add endpoint';
+    add.addEventListener('click', () => {
+      this.addingEndpoint = true;
+      const form = this._buildAddControl();
+      add.replaceWith(form);
+      /** @type {HTMLInputElement|null} */ (form.querySelector('.custom-endpoint-add-name'))?.focus();
+    });
+    return add;
+  }
+
+  /**
+   * Put the Add button back where the form was.
+   * @private
+   */
+  _closeAddForm() {
+    this.addingEndpoint = false;
+    const form = this.endpointSection?.querySelector('.custom-endpoint-add');
+    if (form) form.replaceWith(this._buildAddControl());
+  }
+
+  /**
+   * A new endpoint exists: its card takes the place of the form that made it.
+   * The provider list above is left alone — a provider registered a moment ago
+   * has no card up there to remove, and the next full render will skip it.
+   * @param {any[]} endpoints - The list as the server now holds it.
+   * @private
+   */
+  _onEndpointAdded(endpoints) {
+    const known = new Set(this.endpoints.map(e => e.id));
+    this.endpoints = Array.isArray(endpoints) ? endpoints : [];
+    this.addingEndpoint = false;
+    const root = this.endpointSection;
+    if (!root) return;
+    const cards = this.endpoints.filter(e => !known.has(e.id)).map(e => this._buildCard(e));
+    const form = root.querySelector('.custom-endpoint-add');
+    if (form) form.replaceWith(...cards, this._buildAddControl());
+    else for (const card of cards) root.appendChild(card);
+  }
+
+  /**
+   * An endpoint is gone: its card goes with it, and nothing else moves.
+   * @param {any[]} endpoints - The list as the server now holds it.
+   * @private
+   */
+  _onEndpointRemoved(endpoints) {
+    this.endpoints = Array.isArray(endpoints) ? endpoints : [];
+    const left = new Set(this.endpoints.map(e => e.id));
+    for (const [id, card] of this.endpointCards) {
+      if (left.has(id)) continue;
+      card.element.remove();
+      this.endpointCards.delete(id);
+    }
+  }
+
+  /**
+   * Fetch the endpoint definitions and bring the section into line with them.
+   *
+   * Called when the tab is drawn and whenever it is shown again, so it is how a
+   * change made in another window arrives. Cards that already exist are updated
+   * where they stand rather than replaced.
+   * @private
+   */
+  async _refreshEndpoints() {
+    try {
+      const { endpoints } = await customProvidersList();
+      const next = Array.isArray(endpoints) ? endpoints : [];
+      if (JSON.stringify(next) === JSON.stringify(this.endpoints)) return;
+      this.endpoints = next;
+      this._syncEndpointCards();
+    } catch (error) {
+      // The built-in providers are unaffected, and the section says nothing
+      // rather than claiming the user has no endpoints.
+      console.error('[SettingsPanel] Could not list custom endpoints:', error);
+    }
+  }
+
+  /**
+   * Match the drawn cards to the endpoints in hand, and take out any built-in
+   * card that has turned out to be one of them — which is what the first pass
+   * after a fresh render finds, since the provider list is drawn before the
+   * definitions that say which of those providers are the user's own.
+   * @private
+   */
+  _syncEndpointCards() {
+    const root = this.endpointSection;
+    if (!root) return;
+    const container = this.host.querySelector('#provider-fields-container');
+
+    for (const endpoint of this.endpoints) {
+      const drawn = this.endpointCards.get(endpoint.id);
+      if (drawn) {
+        Object.assign(drawn.endpoint, endpoint);
+        drawn.refresh();
+      } else {
+        root.insertBefore(this._buildCard(endpoint), root.lastElementChild);
+      }
+      const duplicate = container?.querySelector(`.provider-field[data-provider="${endpoint.providerId}"]`);
+      if (duplicate) duplicate.remove();
+    }
+
+    const live = new Set(this.endpoints.map(e => e.id));
+    for (const [id, card] of this.endpointCards) {
+      if (live.has(id)) continue;
+      card.element.remove();
+      this.endpointCards.delete(id);
+    }
   }
 
   /**
@@ -100,6 +322,9 @@ export class ProvidersTab {
   _buildOAuthProviderField(provider, container) {
     const fieldGroup = document.createElement('div');
     fieldGroup.className = 'settings-group provider-field';
+    // Names the provider this card is for, so one that turns out to be a custom
+    // endpoint can be taken out without rebuilding the whole list.
+    fieldGroup.dataset.provider = provider.name;
 
     const infoColumn = document.createElement('div');
     infoColumn.className = 'provider-info';
@@ -433,6 +658,9 @@ export class ProvidersTab {
   _buildKeylessProviderField(provider, container) {
     const fieldGroup = document.createElement('div');
     fieldGroup.className = 'settings-group provider-field';
+    // Names the provider this card is for, so one that turns out to be a custom
+    // endpoint can be taken out without rebuilding the whole list.
+    fieldGroup.dataset.provider = provider.name;
 
     const infoColumn = document.createElement('div');
     infoColumn.className = 'provider-info';
@@ -553,6 +781,9 @@ export class ProvidersTab {
   _buildApiKeyProviderField(provider, container) {
     const fieldGroup = document.createElement('div');
     fieldGroup.className = 'settings-group provider-field';
+    // Names the provider this card is for, so one that turns out to be a custom
+    // endpoint can be taken out without rebuilding the whole list.
+    fieldGroup.dataset.provider = provider.name;
 
     const infoColumn = document.createElement('div');
     infoColumn.className = 'provider-info';
@@ -647,13 +878,6 @@ export class ProvidersTab {
     controlColumn.appendChild(inputWrapper);
     controlColumn.appendChild(sourceHint);
 
-    // OpenAI-compatible: expose the gateway base URL and optional custom
-    // request headers (JSON), so one provider covers any Chat-Completions
-    // gateway. Saved as raw credentials; the backend re-fetches models on save.
-    if (provider.name === 'openai-compatible') {
-      controlColumn.appendChild(this._buildOpenAICompatRows());
-    }
-
     // Which of this provider's models to offer in the model menu.
     const visibility = this._buildModelVisibilityRow(provider);
     if (visibility) controlColumn.appendChild(visibility);
@@ -664,25 +888,32 @@ export class ProvidersTab {
   }
 
   /**
-   * Build the collapsible "which models to show" list for a provider: one
-   * checkbox per model, plus a filter box.
+   * Build the collapsible per-model list for a provider: one row per model,
+   * carrying a visibility checkbox and the two token limits, plus a filter box.
    *
-   * The stored preference is a deny-list (`models.hidden` in the global
+   * The visibility preference is a deny-list (`models.hidden` in the global
    * settings), so a model the provider adds later shows up on its own and only
    * what the user explicitly turned off stays off. Unchecking writes the id into
    * that list; the server then flags the model `hidden` everywhere it publishes
    * the catalogue, which is what actually keeps it out of the model menu and out
    * of default/cheap-model resolution.
    *
+   * The limits (`models.limits`) are the escape hatch for a model whose real
+   * context window or output cap differs from what this build believes. That is
+   * not cosmetic: the window decides admission and when a conversation compacts,
+   * so a model catalogued at 128k that really serves 1M compacts eight times
+   * sooner than it needs to. Correcting it here is what saves the user waiting
+   * on a release to carry a new number.
+   *
    * The filter isn't decoration: OpenRouter publishes several hundred models, and
-   * an unfiltered checkbox list of that is unusable.
+   * an unfiltered list of that is unusable.
    * @param {any} provider - Provider info object, including `modelsWithContext`
    * @returns {HTMLElement|null} The row to append, or null when the provider
    *   lists no models (nothing to choose between).
    * @private
    */
   _buildModelVisibilityRow(provider) {
-    /** @type {Array<{id: string, displayName?: string, hidden?: boolean}>} */
+    /** @type {Array<{id: string, displayName?: string, hidden?: boolean, contextWindow?: number, maxOutputTokens?: number, providerContextWindow?: number, providerMaxOutputTokens?: number}>} */
     const models = Array.isArray(provider.modelsWithContext) ? provider.modelsWithContext : [];
     if (models.length === 0) return null;
 
@@ -738,12 +969,111 @@ export class ProvidersTab {
     empty.textContent = 'Nothing.';
     empty.style.display = 'none';
 
+    // The overrides this provider currently has, seeded from the catalogue: the
+    // server publishes the provider's own number beside the effective one for
+    // exactly the models it replaced, so a present `providerContextWindow` is
+    // what marks a field as overridden — the effective value is then the
+    // override. Kept as one object because a save has to send the provider's
+    // COMPLETE set (see saveLimits).
+    /** @type {Record<string, {contextWindow?: number, maxOutputTokens?: number}>} */
+    const limits = {};
+    for (const model of models) {
+      /** @type {{contextWindow?: number, maxOutputTokens?: number}} */
+      const entry = {};
+      if (model.providerContextWindow !== undefined && model.providerContextWindow !== null) {
+        entry.contextWindow = model.contextWindow;
+      }
+      if (model.providerMaxOutputTokens !== undefined && model.providerMaxOutputTokens !== null) {
+        entry.maxOutputTokens = model.maxOutputTokens;
+      }
+      if (Object.keys(entry).length > 0) limits[model.id] = entry;
+    }
+
+    /**
+     * Persist every override this provider has. The server replaces a named
+     * provider's whole set rather than merging into it, so a partial send would
+     * silently delete the models it left out.
+     * @returns {Promise<any>} The settings PUT.
+     */
+    const saveLimits = () => fetchJson('/api/settings', {
+      method: 'PUT',
+      body: { models: { limits: { [provider.name]: limits } } },
+    });
+
+    /**
+     * One token-limit field: blank means "use whatever the provider reports",
+     * which is also what the placeholder shows — on an overridden model that is
+     * the number clearing the field restores, not the override in force.
+     * @param {any} model - The catalogue entry this row is for.
+     * @param {'contextWindow'|'maxOutputTokens'} field - Which limit to edit.
+     * @param {string} label - Human name of the limit, for the aria-label.
+     * @returns {HTMLInputElement} The input to append to the row.
+     */
+    const buildLimitInput = (model, field, label) => {
+      const reported = field === 'contextWindow'
+        ? (model.providerContextWindow ?? model.contextWindow)
+        : (model.providerMaxOutputTokens ?? model.maxOutputTokens);
+      const stored = () => limits[model.id]?.[field];
+
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.min = '0';
+      input.className = 'model-limit-input';
+      input.dataset.limit = field;
+      input.placeholder = reported > 0 ? String(reported) : 'auto';
+      input.value = stored() ? String(stored()) : '';
+      input.autocomplete = 'off';
+      input.spellcheck = false;
+      input.setAttribute('aria-label', `${label} for ${model.id}`);
+
+      input.addEventListener('change', async () => {
+        const previous = limits[model.id] ? { ...limits[model.id] } : undefined;
+        const restore = () => {
+          if (previous) limits[model.id] = previous;
+          else delete limits[model.id];
+          input.value = previous?.[field] ? String(previous[field]) : '';
+        };
+        const raw = input.value.trim();
+        const parsed = raw === '' ? 0 : Number.parseInt(raw, 10);
+        // A blank or a zero is how "no override" is spelled; anything that isn't
+        // a usable number is a typo, and putting the field back says so more
+        // clearly than an error line would.
+        if (!Number.isFinite(parsed) || parsed < 0) {
+          restore();
+          return;
+        }
+        const entry = { ...(limits[model.id] || {}) };
+        if (parsed > 0) entry[field] = parsed;
+        else delete entry[field];
+        if (Object.keys(entry).length > 0) limits[model.id] = entry;
+        else delete limits[model.id];
+        try {
+          await saveLimits();
+          status.style.display = 'none';
+        } catch (err) {
+          // Nothing was stored, so leaving the number on screen would misreport
+          // the window every later turn is admitted against.
+          restore();
+          status.textContent = `Couldn't save the token limits. ${httpErrorText(err)}`;
+          status.style.display = '';
+        }
+      });
+      return input;
+    };
+
     /** @type {Array<{row: HTMLElement, haystack: string}>} */
     const rows = [];
     // Same lineage grouping the model menu uses, so the two lists read alike.
     for (const model of sortModelsByVersion(models)) {
-      const row = document.createElement('label');
+      const row = document.createElement('div');
       row.className = 'model-visibility-row';
+      row.dataset.model = model.id;
+
+      // The checkbox and the name are the label; the number fields are not. A
+      // label forwards a click anywhere inside it to its control, so wrapping
+      // the whole row would hide the model every time one was clicked into.
+      const toggle = document.createElement('label');
+      toggle.className = 'model-visibility-toggle';
 
       const box = document.createElement('input');
       box.type = 'checkbox';
@@ -787,8 +1117,16 @@ export class ProvidersTab {
         }
       });
 
-      row.appendChild(box);
-      row.appendChild(name);
+      toggle.appendChild(box);
+      toggle.appendChild(name);
+      row.appendChild(toggle);
+
+      const limitFields = document.createElement('span');
+      limitFields.className = 'model-limit-fields';
+      limitFields.appendChild(buildLimitInput(model, 'contextWindow', 'Context window'));
+      limitFields.appendChild(buildLimitInput(model, 'maxOutputTokens', 'Max output tokens'));
+      row.appendChild(limitFields);
+
       list.appendChild(row);
       rows.push({ row, haystack: `${model.id} ${model.displayName || ''}`.toLowerCase() });
     }
@@ -808,137 +1146,15 @@ export class ProvidersTab {
     // leaves a box saying so, rather than an empty box with a note under it.
     list.appendChild(empty);
 
+    const legend = document.createElement('div');
+    legend.className = 'model-limit-legend';
+    legend.textContent = 'Context and output token limits. Blank uses the provider’s own.';
+
     details.appendChild(filter);
+    details.appendChild(legend);
     details.appendChild(list);
     details.appendChild(status);
     return details;
-  }
-
-  /**
-   * Build the base-URL and custom-headers rows for the OpenAI-compatible
-   * provider. Base URL saves as `openai_compatible_base_url`; headers save as
-   * `openai_compatible_headers` (a JSON object string). Both persist via
-   * /api/config on blur or Enter; empty clears the override.
-   * @returns {HTMLElement} The rows wrapper to append to the control column.
-   * @private
-   */
-  _buildOpenAICompatRows() {
-    const wrapper = document.createElement('div');
-    wrapper.className = 'openai-compat-rows';
-
-    /**
-     * @param {string} key - config key posted to /api/config
-     * @param {string} configField - camelCase field on this.config
-     * @param {string} label - visible field label
-     * @param {string} placeholder - input placeholder
-     * @param {(v: string) => string|null} validate - returns an error string or null
-     * @returns {HTMLElement} The input row element.
-     */
-    const buildRow = (key, configField, label, placeholder, validate) => {
-      const row = document.createElement('div');
-      row.className = 'provider-subfield';
-
-      const inputId = `openai-compat-${configField}`;
-
-      const labelEl = document.createElement('label');
-      labelEl.className = 'provider-subfield-label';
-      labelEl.textContent = label;
-      labelEl.setAttribute('for', inputId);
-      row.appendChild(labelEl);
-
-      const inputWrapper = document.createElement('div');
-      inputWrapper.className = 'provider-input-wrapper';
-
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.id = inputId;
-      // Non-secret persisted value: keep visible across close/reopen (see close()).
-      input.className = 'settings-value-input';
-      input.placeholder = placeholder;
-      input.autocomplete = 'off';
-      input.setAttribute('autocorrect', 'off');
-      input.setAttribute('autocapitalize', 'off');
-      input.spellcheck = false;
-      input.value = /** @type {any} */ (this.config)[configField] || '';
-      inputWrapper.appendChild(input);
-      row.appendChild(inputWrapper);
-
-      const status = document.createElement('div');
-      status.className = 'provider-subfield-status';
-      row.appendChild(status);
-
-      /** @type {ReturnType<typeof setTimeout>|undefined} */
-      let statusTimer;
-      /**
-       * @param {string} text
-       * @param {'ok'|'error'|'pending'} [kind]
-       */
-      const setStatus = (text, kind) => {
-        clearTimeout(statusTimer);
-        status.textContent = text;
-        if (kind) status.dataset.kind = kind; else delete status.dataset.kind;
-        // Success is transient — the visible value is the real confirmation, so
-        // the note fades. Errors stay until the next edit.
-        if (kind === 'ok') {
-          statusTimer = setTimeout(() => {
-            status.textContent = '';
-            delete status.dataset.kind;
-          }, 2000);
-        }
-      };
-
-      const save = async () => {
-        const value = input.value.trim();
-        if (value === (/** @type {any} */ (this.config)[configField] || '')) return;
-        const err = validate(value);
-        if (err) {
-          setStatus(err, 'error');
-          return;
-        }
-        setStatus('Saving…', 'pending');
-        try {
-          await fetchJson('/api/config', { method: 'PUT', body: { [key]: value } });
-          /** @type {any} */ (this.config)[configField] = value;
-          setStatus(value ? 'Saved' : 'Cleared', 'ok');
-        } catch (e) {
-          console.error(`[SettingsPanel] Failed to save ${key}:`, e);
-          setStatus('Failed to save', 'error');
-        }
-      };
-
-      input.addEventListener('blur', save);
-      input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          save();
-          input.blur();
-        }
-      });
-      return row;
-    };
-
-    wrapper.appendChild(buildRow(
-      'openai_compatible_base_url', 'openaiCompatibleBaseURL',
-      'Base URL', 'https://gateway.example.com/v1', () => null,
-    ));
-    wrapper.appendChild(buildRow(
-      'openai_compatible_headers', 'openaiCompatibleHeaders',
-      'Custom headers (JSON, optional)', '{"User-Agent": "my-app/1.0"}',
-      (v) => {
-        if (v === '') return null;
-        try {
-          const parsed = JSON.parse(v);
-          if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-            return 'Headers must be a JSON object.';
-          }
-          return null;
-        } catch {
-          return 'Invalid JSON.';
-        }
-      },
-    ));
-
-    return wrapper;
   }
 
   /**

@@ -7,6 +7,8 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -130,6 +132,32 @@ func cloneHiddenModels(in map[string][]string) map[string][]string {
 	return out
 }
 
+// cloneModelLimits deep-copies a per-model limits map, so the copy can be
+// mutated without touching the settings the store still owns.
+func cloneModelLimits(in map[string]map[string]core.ModelLimits) map[string]map[string]core.ModelLimits {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]map[string]core.ModelLimits, len(in))
+	for providerName, byModel := range in {
+		out[providerName] = maps.Clone(byModel)
+	}
+	return out
+}
+
+// sameModelLimits reports whether two limit maps describe the same overrides.
+func sameModelLimits(a, b map[string]map[string]core.ModelLimits) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for providerName, byModel := range a {
+		if !maps.Equal(byModel, b[providerName]) {
+			return false
+		}
+	}
+	return true
+}
+
 // sameHiddenModels reports whether two hidden-model maps describe the same set.
 // Both come from normalised documents, so the lists are already sorted and
 // de-duplicated and a plain element-wise comparison is exact.
@@ -170,11 +198,38 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	// writes into that map in place — so without this clone a decode would reach
 	// straight into the stored settings, and a request rejected below (or one
 	// whose save fails) would leave its changes behind in memory anyway.
+	//
+	// models.limits merges the same way, one level deeper: an omitted provider
+	// keeps its overrides, but a provider that IS named has its whole set
+	// replaced — decoding an object into a map never merges into the value that
+	// was already at a key. So a client changing one model's limits must send
+	// that provider's complete set, and clearing the last one is an explicit {}.
 	incoming.Models.Hidden = cloneHiddenModels(incoming.Models.Hidden)
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&incoming); err != nil {
+	incoming.Models.Limits = cloneModelLimits(incoming.Models.Limits)
+	// Held rather than streamed, because the body is decoded twice: once merged
+	// onto the document above, and once on its own below to learn which provider
+	// keys this request actually named.
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<16))
+	if err != nil {
 		handlers.WriteError(w, r, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	if err := json.Unmarshal(body, &incoming); err != nil {
+		handlers.WriteError(w, r, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	// posted holds just the provider keys the request sent under the two model
+	// sections. The merge above cannot answer that question: incoming was seeded
+	// from the stored document, so a key present there may be one this request
+	// never mentioned. Unmarshalling cannot fail — the same bytes decoded into
+	// the stricter types above.
+	var posted struct {
+		Models struct {
+			Hidden map[string]json.RawMessage `json:"hidden"`
+			Limits map[string]json.RawMessage `json:"limits"`
+		} `json:"models"`
+	}
+	_ = json.Unmarshal(body, &posted)
 	// A non-empty mode must be one we recognise; empty normalises to automatic.
 	if incoming.Updates.Mode != "" && !core.IsKnownUpdateMode(incoming.Updates.Mode) {
 		handlers.WriteError(w, r, http.StatusBadRequest, "invalid update mode")
@@ -194,16 +249,40 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		handlers.WriteError(w, r, http.StatusBadRequest, "invalid proxy URL")
 		return
 	}
-	// Every hidden-model list must name a provider this build registers, so a
-	// typo'd or hand-posted key can't sit in the file hiding nothing.
-	for providerName := range incoming.Models.Hidden {
+	// Every hidden-model list the request sends must name a provider this build
+	// registers, so a typo'd or hand-posted key can't sit in the file hiding
+	// nothing. Only the keys it sends: a key inherited from the stored document
+	// names a provider this build does not have, which is the ordinary state
+	// after a custom provider is deleted or a newer build wrote the file. Judging
+	// those here would let one stale entry reject every later PUT, including the
+	// ones that touch no model settings at all.
+	for providerName := range posted.Models.Hidden {
 		if _, ok := provider.GetProviderInfo(providerName); !ok {
 			handlers.WriteError(w, r, http.StatusBadRequest, "unknown provider in hidden models: "+providerName)
 			return
 		}
 	}
+	// Same for the limit overrides, which additionally must be numbers a model
+	// could actually have. A negative one is a typo or a hand-posted body; zero
+	// is how "not overridden" is spelled, so it is accepted and normalised away.
+	for providerName := range posted.Models.Limits {
+		if _, ok := provider.GetProviderInfo(providerName); !ok {
+			handlers.WriteError(w, r, http.StatusBadRequest, "unknown provider in model limits: "+providerName)
+			return
+		}
+		// Naming a provider replaces its whole set, so the merged value at this
+		// key is exactly what the request posted.
+		for modelID, limits := range incoming.Models.Limits[providerName] {
+			if limits.ContextWindow < 0 || limits.MaxOutputTokens < 0 {
+				handlers.WriteError(w, r, http.StatusBadRequest, "negative model limit for "+providerName+" "+modelID)
+				return
+			}
+		}
+	}
 	prevMode := s.updateMode()
-	prevHidden := s.settings.get().Models.Hidden
+	prevSettings := s.settings.get()
+	prevHidden := prevSettings.Models.Hidden
+	prevLimits := prevSettings.Models.Limits
 	incoming.Updates.Mode = core.NormalizeUpdateMode(incoming.Updates.Mode)
 	incoming.Network.Proxy.Mode = core.NormalizeProxyMode(incoming.Network.Proxy.Mode)
 	if err := s.settings.set(incoming); err != nil {
@@ -216,9 +295,11 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	// client should see and what the comparison below must be made against.
 	incoming = s.settings.get()
 	// Hidden models change what the model menu offers and what the default and
-	// cheap-model resolvers may pick, so republish the provider list instead of
+	// cheap-model resolvers may pick, and a limit override changes the window
+	// every one of them displays, so republish the provider list instead of
 	// leaving the change invisible until something else triggers a refresh.
-	if !sameHiddenModels(prevHidden, incoming.Models.Hidden) {
+	if !sameHiddenModels(prevHidden, incoming.Models.Hidden) ||
+		!sameModelLimits(prevLimits, incoming.Models.Limits) {
 		s.RefreshProviders()
 	}
 	// Apply the proxy policy live so a change takes effect without a restart; the

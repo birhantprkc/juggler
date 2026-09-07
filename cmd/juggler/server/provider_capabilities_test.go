@@ -7,7 +7,9 @@ package server
 import (
 	"testing"
 
+	"juggler/cmd/juggler/core"
 	"juggler/cmd/juggler/providers/provider"
+	"juggler/internal/userpaths/userpathstest"
 )
 
 func TestResolveModelCapabilities(t *testing.T) {
@@ -128,6 +130,118 @@ func TestResolveModelCapabilitiesKeepsFallbackForNonPositiveLiveValues(t *testin
 	if got := s.resolveModelCapabilities(providerName, "model"); got != (provider.ModelCapabilities{ContextWindowTokens: 999, MaxOutputTokens: provider.ContextSafetyReserve(999)}) {
 		t.Fatalf("resolveModelCapabilities() = %+v, want positive static fallback with derived reserve", got)
 	}
+}
+
+// TestResolveModelCapabilitiesHonoursUserLimitOverrides pins the escape hatch
+// for a model whose real limits differ from what this build believes: the
+// user's models.limits override outranks the catalogue AND the live list, and
+// applies even when the model appears in neither (an empty cache at startup, or
+// a gateway alias the provider never lists).
+func TestResolveModelCapabilitiesHonoursUserLimitOverrides(t *testing.T) {
+	userpathstest.Isolate(t)
+	const providerName = "test_capability_user_overrides"
+	provider.RegisterProvider(provider.ProviderInfo{
+		Name:                providerName,
+		ModelContextWindows: map[string]int{"catalogued": 128000},
+	}, func(provider.Config) (provider.Provider, error) { return nil, nil })
+
+	if err := core.SaveGlobalSettings(&core.GlobalSettings{Models: core.ModelSettings{
+		Limits: map[string]map[string]core.ModelLimits{providerName: {
+			"catalogued":   {ContextWindow: 1000000, MaxOutputTokens: 64000},
+			"listed":       {ContextWindow: 200000},
+			"never-listed": {ContextWindow: 512000},
+		}},
+	}}); err != nil {
+		t.Fatalf("SaveGlobalSettings: %v", err)
+	}
+
+	s := &Server{settings: newSettingsStore()}
+	providers := []ProviderStatus{{
+		Name: providerName,
+		ModelsWithContext: []ModelWithContext{
+			{ID: "listed", ContextWindow: 32000, MaxOutputTokens: 4096},
+		},
+	}}
+	s.providersList.Store(&providers)
+
+	tests := []struct {
+		name  string
+		model string
+		want  provider.ModelCapabilities
+	}{
+		{
+			name:  "override beats the compiled-in catalogue",
+			model: "catalogued",
+			want:  provider.ModelCapabilities{ContextWindowTokens: 1000000, MaxOutputTokens: 64000},
+		},
+		{
+			// The half the user left blank still comes from the provider, so
+			// correcting a window does not silently discard a good output cap.
+			name:  "override beats the live list, per field",
+			model: "listed",
+			want:  provider.ModelCapabilities{ContextWindowTokens: 200000, MaxOutputTokens: 4096},
+		},
+		{
+			// Nothing knows this model. Without the override it would be
+			// unknown, and admission would have no window to charge against.
+			name:  "override alone makes an unlisted model usable",
+			model: "never-listed",
+			want: provider.ModelCapabilities{
+				ContextWindowTokens: 512000,
+				MaxOutputTokens:     provider.ContextSafetyReserve(512000),
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := s.resolveModelCapabilities(providerName, test.model); got != test.want {
+				t.Fatalf("resolveModelCapabilities() = %+v, want %+v", got, test.want)
+			}
+		})
+	}
+}
+
+// TestApplyModelLimitsPublishesEffectiveAndReportedValues pins what the
+// catalogue puts on the wire: consumers read one effective number, and the
+// provider's own is preserved beside it only where an override replaced it, so
+// the settings UI can show what clearing the field restores.
+func TestApplyModelLimitsPublishesEffectiveAndReportedValues(t *testing.T) {
+	base := ModelWithContext{ID: "m", ContextWindow: 128000, MaxOutputTokens: 16384}
+
+	t.Run("no override leaves the entry untouched", func(t *testing.T) {
+		got := applyModelLimits(base, core.ModelLimits{})
+		if got.ContextWindow != 128000 || got.MaxOutputTokens != 16384 {
+			t.Fatalf("limits = %d/%d, want the provider's 128000/16384", got.ContextWindow, got.MaxOutputTokens)
+		}
+		if got.ProviderContextWindow != nil || got.ProviderMaxOutputTokens != nil {
+			t.Fatal("reported values published without an override — the UI would read that as overridden")
+		}
+	})
+
+	t.Run("one override replaces one field and records it", func(t *testing.T) {
+		got := applyModelLimits(base, core.ModelLimits{ContextWindow: 1000000})
+		if got.ContextWindow != 1000000 {
+			t.Fatalf("context window = %d, want the override 1000000", got.ContextWindow)
+		}
+		if got.ProviderContextWindow == nil || *got.ProviderContextWindow != 128000 {
+			t.Fatalf("reported window = %v, want 128000", got.ProviderContextWindow)
+		}
+		if got.MaxOutputTokens != 16384 || got.ProviderMaxOutputTokens != nil {
+			t.Fatalf("output limit disturbed: %d / %v", got.MaxOutputTokens, got.ProviderMaxOutputTokens)
+		}
+	})
+
+	t.Run("a provider that reports nothing overrides to a recorded zero", func(t *testing.T) {
+		// The pointer is why this is expressible: a plain int could not tell
+		// "provider reported 0" from "not overridden".
+		got := applyModelLimits(ModelWithContext{ID: "m"}, core.ModelLimits{ContextWindow: 64000})
+		if got.ContextWindow != 64000 {
+			t.Fatalf("context window = %d, want 64000", got.ContextWindow)
+		}
+		if got.ProviderContextWindow == nil || *got.ProviderContextWindow != 0 {
+			t.Fatalf("reported window = %v, want a recorded 0", got.ProviderContextWindow)
+		}
+	})
 }
 
 // TestResolveModelCapabilitiesDerivesOneEffectiveOutputLimit pins the unified

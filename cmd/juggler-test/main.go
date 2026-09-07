@@ -28,13 +28,13 @@ import (
 	"juggler/cmd/juggler/providers/acp"
 	"juggler/cmd/juggler/providers/anthropic"
 	"juggler/cmd/juggler/providers/claudecode"
+	"juggler/cmd/juggler/providers/customprovider"
 	"juggler/cmd/juggler/providers/deepseek"
 	"juggler/cmd/juggler/providers/gemini"
 	"juggler/cmd/juggler/providers/moonshot"
 	"juggler/cmd/juggler/providers/ollama"
 	"juggler/cmd/juggler/providers/openai"
 	"juggler/cmd/juggler/providers/openaicodex"
-	"juggler/cmd/juggler/providers/openaicompat"
 	"juggler/cmd/juggler/providers/openrouter"
 	"juggler/cmd/juggler/providers/provider"
 	"juggler/cmd/juggler/providers/streamidle"
@@ -57,9 +57,10 @@ func registerProviders() {
 	ollama.Register()
 	openai.Register()
 	openaicodex.Register()
-	openaicompat.Register()
 	openrouter.Register()
 	zai.Register()
+	// The user's own named endpoints, same as the server registers them.
+	customprovider.RegisterAll()
 	streamidle.Register()
 }
 

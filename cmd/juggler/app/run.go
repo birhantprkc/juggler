@@ -31,6 +31,7 @@ import (
 	"juggler/cmd/juggler/providers/anthropic"
 	"juggler/cmd/juggler/providers/claudecode"
 	"juggler/cmd/juggler/providers/copilot"
+	"juggler/cmd/juggler/providers/customprovider"
 	"juggler/cmd/juggler/providers/deepseek"
 	"juggler/cmd/juggler/providers/gemini"
 	"juggler/cmd/juggler/providers/llamacpp"
@@ -39,7 +40,6 @@ import (
 	"juggler/cmd/juggler/providers/ollama"
 	"juggler/cmd/juggler/providers/openai"
 	"juggler/cmd/juggler/providers/openaicodex"
-	"juggler/cmd/juggler/providers/openaicompat"
 	"juggler/cmd/juggler/providers/opencodezen"
 	"juggler/cmd/juggler/providers/openrouter"
 	"juggler/cmd/juggler/providers/streamidle"
@@ -156,6 +156,7 @@ func Run(cfg Config) int {
 	ops.RegisterAll()
 	mcp.Register()
 	acp.RegisterOps()
+	customprovider.RegisterOps()
 	if err := extconfig.RegisterOps(); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to register extension config: %v\n", err)
 		return 1
@@ -213,10 +214,15 @@ func registerProviders() {
 	ollama.Register()
 	openai.Register()
 	openaicodex.Register()
-	openaicompat.Register()
 	opencodezen.Register()
 	openrouter.Register()
 	zai.Register()
+
+	// The user's own named endpoints, read from their definitions file. They
+	// register here, alongside the built-ins and ahead of every credential
+	// reader, because a provider's key is resolved through the ConfigKeyName its
+	// registration carries. Later edits re-register through customprovider.Sync.
+	customprovider.RegisterAll()
 
 	// Not a provider: install the resolver for the user-configurable stream
 	// idle timeout so every provider's watchdog reads the setting live.

@@ -669,6 +669,13 @@ type Config struct {
 	Headers     map[string]string
 	Model       string
 
+	// BaseURL overrides the endpoint this client talks to, taking precedence
+	// over whatever the provider was registered with. It is what lets one
+	// registered provider serve several user-configured endpoints: the endpoint
+	// travels with the request instead of being fixed at registration. Empty
+	// means "use the registered endpoint", which is every built-in vendor.
+	BaseURL string
+
 	// ProjectPath is the loaded project's root — the authoritative working
 	// directory the server currently has open. Providers that spawn a CLI
 	// (claudecode, acp) must root that process here so it resolves the same

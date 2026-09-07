@@ -248,6 +248,187 @@ func TestHandlePutSettingsUnknownProviderRejected(t *testing.T) {
 	}
 }
 
+func TestHandlePutSettingsModelLimitsRoundTrip(t *testing.T) {
+	userpathstest.Isolate(t)
+	const providerName = "settings-model-limits-provider"
+	provider.RegisterProvider(provider.ProviderInfo{Name: providerName}, func(provider.Config) (provider.Provider, error) {
+		return nil, nil
+	})
+	s := &Server{
+		settings:        newSettingsStore(),
+		testMode:        true,
+		providerRefresh: providerRefresh{providersReady: make(chan struct{})},
+	}
+
+	putSettings(t, s, `{"models":{"limits":{"`+providerName+`":{"big-model":{"contextWindow":1000000,"maxOutputTokens":64000}}}}}`, http.StatusOK)
+	gs := s.settings.get()
+	if got := gs.ModelLimitsFor(providerName, "big-model"); got.ContextWindow != 1000000 || got.MaxOutputTokens != 64000 {
+		t.Fatalf("limits after PUT = %+v, want {1000000 64000}", got)
+	}
+
+	// GET reflects it.
+	rec := httptest.NewRecorder()
+	s.handleGetSettings(rec, httptest.NewRequest("GET", "/api/settings", nil))
+	var out core.GlobalSettings
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := out.ModelLimitsFor(providerName, "big-model"); got.ContextWindow != 1000000 {
+		t.Fatalf("GET limits = %+v, want the stored override", got)
+	}
+
+	// A provider that is named has its whole set replaced, so this drops the
+	// first model's override and installs another's in one request.
+	putSettings(t, s, `{"models":{"limits":{"`+providerName+`":{"other-model":{"contextWindow":8000}}}}}`, http.StatusOK)
+	gs = s.settings.get()
+	if !gs.ModelLimitsFor(providerName, "big-model").IsZero() {
+		t.Fatal("naming a provider must replace its whole set, not merge into it")
+	}
+	if got := gs.ModelLimitsFor(providerName, "other-model"); got.ContextWindow != 8000 {
+		t.Fatalf("replacement entry = %+v, want {8000 0}", got)
+	}
+
+	// Clearing the last override is an explicit empty object, mirroring the
+	// empty array that un-hides a provider's last hidden model.
+	putSettings(t, s, `{"models":{"limits":{"`+providerName+`":{}}}}`, http.StatusOK)
+	if got := s.settings.get().Models.Limits[providerName]; len(got) != 0 {
+		t.Fatalf("limits after clearing = %v, want empty", got)
+	}
+}
+
+func TestHandlePutSettingsModelLimitsMergePreservesOtherSections(t *testing.T) {
+	userpathstest.Isolate(t)
+	const providerName = "settings-limits-merge-provider"
+	provider.RegisterProvider(provider.ProviderInfo{Name: providerName}, func(provider.Config) (provider.Provider, error) {
+		return nil, nil
+	})
+	s := &Server{
+		settings:        newSettingsStore(),
+		testMode:        true,
+		providerRefresh: providerRefresh{providersReady: make(chan struct{})},
+	}
+
+	putSettings(t, s, `{"models":{"hidden":{"`+providerName+`":["a-model"]}}}`, http.StatusOK)
+	putSettings(t, s, `{"models":{"limits":{"`+providerName+`":{"a-model":{"contextWindow":250000}}}}}`, http.StatusOK)
+	// The two model sections are independent: setting a limit must not un-hide.
+	gs := s.settings.get()
+	if !gs.IsModelHidden(providerName, "a-model") {
+		t.Fatal("hidden list cleared by a limits PUT")
+	}
+	// And an unrelated section's PUT must not wipe the overrides.
+	putSettings(t, s, `{"updates":{"mode":"off"}}`, http.StatusOK)
+	gs = s.settings.get()
+	if got := gs.ModelLimitsFor(providerName, "a-model"); got.ContextWindow != 250000 {
+		t.Fatalf("limits clobbered by a later updates PUT: %+v", got)
+	}
+}
+
+func TestHandlePutSettingsModelLimitsRejected(t *testing.T) {
+	userpathstest.Isolate(t)
+	const providerName = "settings-limits-reject-provider"
+	provider.RegisterProvider(provider.ProviderInfo{Name: providerName}, func(provider.Config) (provider.Provider, error) {
+		return nil, nil
+	})
+	s := &Server{
+		settings:        newSettingsStore(),
+		testMode:        true,
+		providerRefresh: providerRefresh{providersReady: make(chan struct{})},
+	}
+	putSettings(t, s, `{"models":{"limits":{"`+providerName+`":{"a-model":{"contextWindow":250000}}}}}`, http.StatusOK)
+
+	// A provider this build doesn't register, and a negative limit, are both
+	// refused outright — and neither disturbs what was already stored.
+	putSettings(t, s, `{"models":{"limits":{"nosuchprovider":{"m":{"contextWindow":1}}}}}`, http.StatusBadRequest)
+	putSettings(t, s, `{"models":{"limits":{"`+providerName+`":{"a-model":{"contextWindow":-1}}}}}`, http.StatusBadRequest)
+	gs := s.settings.get()
+	if _, ok := gs.Models.Limits["nosuchprovider"]; ok {
+		t.Fatal("rejected PUT stored an unknown provider key")
+	}
+	if got := gs.ModelLimitsFor(providerName, "a-model"); got.ContextWindow != 250000 {
+		t.Fatalf("rejected PUT disturbed the stored override: %+v", got)
+	}
+}
+
+// TestHandlePutSettingsStaleUnknownProviderDoesNotBlockPut pins the scope of the
+// unknown-provider rejection: it covers the provider keys a request actually
+// sends, not the ones the handler inherits from the stored document. A
+// settings.json holding entries for a provider this build does not register — a
+// custom endpoint the user deleted, or one written by a newer build — must sit
+// inert rather than making every later PUT fail, including PUTs to unrelated
+// sections.
+func TestHandlePutSettingsStaleUnknownProviderDoesNotBlockPut(t *testing.T) {
+	userpathstest.Isolate(t)
+	const providerName = "settings-stale-live-provider"
+	provider.RegisterProvider(provider.ProviderInfo{Name: providerName}, func(provider.Config) (provider.Provider, error) {
+		return nil, nil
+	})
+	// Seed the file directly. The API refuses to post these keys, so writing
+	// through core is the only way to reach the state a deleted provider leaves.
+	if _, err := core.UpdateGlobalSettings(func(gs *core.GlobalSettings) bool {
+		gs.Models.Hidden = map[string][]string{"deleted-instance": {"m"}}
+		gs.Models.Limits = map[string]map[string]core.ModelLimits{
+			"deleted-instance": {"m": {ContextWindow: 1000}},
+		}
+		return true
+	}); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+	s := &Server{
+		settings:        newSettingsStore(),
+		testMode:        true,
+		providerRefresh: providerRefresh{providersReady: make(chan struct{})},
+	}
+	if got := s.settings.get().Models.Hidden["deleted-instance"]; len(got) != 1 {
+		t.Fatalf("seeded hidden entry did not survive load: %v", got)
+	}
+
+	// An unrelated section still saves.
+	putSettings(t, s, `{"updates":{"mode":"off"}}`, http.StatusOK)
+	if got := s.settings.get().Updates.Mode; got != core.UpdateModeOff {
+		t.Fatalf("mode after PUT = %q, want off", got)
+	}
+	// So do both model sections, for a provider that is registered.
+	putSettings(t, s, `{"models":{"hidden":{"`+providerName+`":["a-model"]}}}`, http.StatusOK)
+	putSettings(t, s, `{"models":{"limits":{"`+providerName+`":{"a-model":{"contextWindow":250000}}}}}`, http.StatusOK)
+
+	// The stale entries are preserved, not quietly destroyed: a provider can be
+	// absent because its registration is pending, and core keeps unknown keys for
+	// exactly that reason.
+	gs := s.settings.get()
+	if got := gs.Models.Hidden["deleted-instance"]; len(got) != 1 || got[0] != "m" {
+		t.Fatalf("stale hidden entry = %v, want it preserved", got)
+	}
+	if got := gs.ModelLimitsFor("deleted-instance", "m"); got.ContextWindow != 1000 {
+		t.Fatalf("stale limit entry = %+v, want it preserved", got)
+	}
+
+	// A request that does name an unknown provider is still refused.
+	putSettings(t, s, `{"models":{"hidden":{"nosuchprovider":["x"]}}}`, http.StatusBadRequest)
+	putSettings(t, s, `{"models":{"limits":{"nosuchprovider":{"m":{"contextWindow":1}}}}}`, http.StatusBadRequest)
+}
+
+func TestSameModelLimits(t *testing.T) {
+	a := map[string]map[string]core.ModelLimits{"p": {"m": {ContextWindow: 1000}}}
+	if !sameModelLimits(a, map[string]map[string]core.ModelLimits{"p": {"m": {ContextWindow: 1000}}}) {
+		t.Error("identical maps reported different")
+	}
+	if sameModelLimits(a, map[string]map[string]core.ModelLimits{"p": {"m": {ContextWindow: 2000}}}) {
+		t.Error("changed window reported same")
+	}
+	if sameModelLimits(a, map[string]map[string]core.ModelLimits{"p": {"m": {ContextWindow: 1000, MaxOutputTokens: 8}}}) {
+		t.Error("added output cap reported same")
+	}
+	if sameModelLimits(a, map[string]map[string]core.ModelLimits{"p": {"n": {ContextWindow: 1000}}}) {
+		t.Error("different model key reported same")
+	}
+	if sameModelLimits(a, map[string]map[string]core.ModelLimits{"q": {"m": {ContextWindow: 1000}}}) {
+		t.Error("different provider key reported same")
+	}
+	if !sameModelLimits(nil, map[string]map[string]core.ModelLimits{}) {
+		t.Error("nil and empty must compare equal")
+	}
+}
+
 func TestSameHiddenModels(t *testing.T) {
 	a := map[string][]string{"p": {"x", "y"}}
 	if !sameHiddenModels(a, map[string][]string{"p": {"x", "y"}}) {

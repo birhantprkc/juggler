@@ -1,15 +1,102 @@
 //     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
 //     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
-//   ▄▄█▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 package openaibase
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"juggler/cmd/juggler/providers/provider"
 	"juggler/cmd/juggler/providers/utils"
 )
+
+// modelListServer answers the OpenAI /models call with one model, recording the
+// path it was asked for. Reaching it at all is the assertion: the decoy URLs the
+// base-URL tests register point at a closed port, so a client built against the
+// wrong one fails to connect instead of quietly succeeding.
+func modelListServer(t *testing.T) (*httptest.Server, *string) {
+	t.Helper()
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"m","object":"model"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &gotPath
+}
+
+// closedPort is a decoy endpoint: nothing listens there, and it costs no DNS
+// lookup, so a client that wrongly uses it fails immediately.
+const closedPort = "http://127.0.0.1:1/v1"
+
+func TestRegisterConfigBaseURLOverridesDescriptor(t *testing.T) {
+	srv, gotPath := modelListServer(t)
+	name := "openaibase-config-baseurl-" + t.Name()
+	// Both descriptor forms are set and both are decoys: the config's URL must
+	// beat the static field and the resolver alike.
+	Register(Descriptor{
+		Name:            name,
+		BaseURL:         closedPort,
+		BaseURLFunc:     func() string { return closedPort },
+		ContextWindowFn: func(string) (int, int) { return 2000, 200 },
+	})
+
+	p, err := provider.InitializeProvider(name, provider.Config{
+		APIKey:  "test",
+		Model:   "m",
+		BaseURL: srv.URL,
+	})
+	if err != nil {
+		t.Fatalf("InitializeProvider: %v", err)
+	}
+	if _, err := p.ListModelsWithInfo(context.Background()); err != nil {
+		t.Fatalf("ListModelsWithInfo went somewhere other than the config's base URL: %v", err)
+	}
+	if *gotPath != "/models" {
+		t.Fatalf("server asked for %q, want /models", *gotPath)
+	}
+}
+
+func TestRegisterDescriptorBaseURLStandsWithoutAConfigOverride(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		build func(endpoint string) Descriptor
+	}{
+		{"static BaseURL", func(endpoint string) Descriptor {
+			return Descriptor{BaseURL: endpoint}
+		}},
+		{"BaseURLFunc beats the static field", func(endpoint string) Descriptor {
+			return Descriptor{BaseURL: closedPort, BaseURLFunc: func() string { return endpoint }}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, gotPath := modelListServer(t)
+			d := tc.build(srv.URL)
+			d.Name = "openaibase-descriptor-baseurl-" + t.Name()
+			d.ContextWindowFn = func(string) (int, int) { return 2000, 200 }
+			Register(d)
+
+			// No BaseURL on the config: the descriptor still decides, exactly as
+			// it did before the config gained the field.
+			p, err := provider.InitializeProvider(d.Name, provider.Config{APIKey: "test", Model: "m"})
+			if err != nil {
+				t.Fatalf("InitializeProvider: %v", err)
+			}
+			if _, err := p.ListModelsWithInfo(context.Background()); err != nil {
+				t.Fatalf("ListModelsWithInfo did not reach the descriptor's base URL: %v", err)
+			}
+			if *gotPath != "/models" {
+				t.Fatalf("server asked for %q, want /models", *gotPath)
+			}
+		})
+	}
+}
 
 func TestRegisterPublishesDescriptorCapabilities(t *testing.T) {
 	name := "openaibase-capabilities-" + t.Name()

@@ -19,12 +19,10 @@ import (
 // Kept in sync with the producing packages (e.g. ollama.HostCredKey,
 // claudecode.BinaryPathCredKey) — the frontend posts these literal names.
 const (
-	ollamaHostKey              = "ollama_host"
-	llamacppHostKey            = "llamacpp_host"
-	claudecodeBinaryPathKey    = "claudecode_binary_path"
-	openaiCompatibleBaseURLKey = "openai_compatible_base_url"
-	openaiCompatibleHeadersKey = "openai_compatible_headers"
-	streamIdleTimeoutKey       = "stream_idle_timeout" // mirrors streamidle.CredKey
+	ollamaHostKey           = "ollama_host"
+	llamacppHostKey         = "llamacpp_host"
+	claudecodeBinaryPathKey = "claudecode_binary_path"
+	streamIdleTimeoutKey    = "stream_idle_timeout" // mirrors streamidle.CredKey
 	// autoCompactDisabledKey stores the disabled state of automatic compaction,
 	// so an absent/empty value means enabled (the default). "1" means disabled.
 	// Mirrored by createAutoCompactGate in server/llm_caller.go.
@@ -123,16 +121,14 @@ func (c *ConfigAPI) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 			"host": cfg.Server.Host,
 			"port": cfg.Server.Port,
 		},
-		"ollamaHost":              c.credStore.GetRawKey(ollamaHostKey),
-		"llamacppHost":            c.credStore.GetRawKey(llamacppHostKey),
-		"claudecodeBinaryPath":    c.credStore.GetRawKey(claudecodeBinaryPathKey),
-		"openaiCompatibleBaseURL": c.credStore.GetRawKey(openaiCompatibleBaseURLKey),
-		"openaiCompatibleHeaders": c.credStore.GetRawKey(openaiCompatibleHeadersKey),
-		"streamIdleTimeout":       c.credStore.GetRawKey(streamIdleTimeoutKey),
-		"autoCompactDisabled":     c.credStore.GetRawKey(autoCompactDisabledKey) == "1",
-		"autoNameDisabled":        c.credStore.GetRawKey(autoNameDisabledKey) == "1",
-		"autoNameInstruction":     c.credStore.GetRawKey(autoNameInstructionKey),
-		"autoNameDefaultPrompt":   c.AutoNameDefaultPrompt,
+		"ollamaHost":            c.credStore.GetRawKey(ollamaHostKey),
+		"llamacppHost":          c.credStore.GetRawKey(llamacppHostKey),
+		"claudecodeBinaryPath":  c.credStore.GetRawKey(claudecodeBinaryPathKey),
+		"streamIdleTimeout":     c.credStore.GetRawKey(streamIdleTimeoutKey),
+		"autoCompactDisabled":   c.credStore.GetRawKey(autoCompactDisabledKey) == "1",
+		"autoNameDisabled":      c.credStore.GetRawKey(autoNameDisabledKey) == "1",
+		"autoNameInstruction":   c.credStore.GetRawKey(autoNameInstructionKey),
+		"autoNameDefaultPrompt": c.AutoNameDefaultPrompt,
 	}
 
 	WriteJSON(w, r, 0, response)
@@ -210,25 +206,6 @@ func (c *ConfigAPI) HandleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		if pathStr, ok := pathValue.(string); ok {
 			if err := c.credStore.SetRawKey(claudecodeBinaryPathKey, strings.TrimSpace(pathStr)); err != nil {
 				jlog.Error("Failed to save Claude Code binary path: %v", err)
-			}
-		}
-	}
-
-	// Handle the OpenAI-compatible gateway base URL and custom headers (raw
-	// credentials). The openaicompat provider reads both live at client
-	// construction; fireCredsChanged (below) refreshes the provider list so the
-	// model catalogue re-fetches against the new gateway.
-	if v, ok := req[openaiCompatibleBaseURLKey]; ok {
-		if s, ok := v.(string); ok {
-			if err := c.credStore.SetRawKey(openaiCompatibleBaseURLKey, strings.TrimSpace(s)); err != nil {
-				jlog.Error("Failed to save OpenAI-compatible base URL: %v", err)
-			}
-		}
-	}
-	if v, ok := req[openaiCompatibleHeadersKey]; ok {
-		if s, ok := v.(string); ok {
-			if err := c.credStore.SetRawKey(openaiCompatibleHeadersKey, strings.TrimSpace(s)); err != nil {
-				jlog.Error("Failed to save OpenAI-compatible headers: %v", err)
 			}
 		}
 	}

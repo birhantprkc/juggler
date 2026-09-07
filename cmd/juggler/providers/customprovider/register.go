@@ -1,0 +1,213 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+package customprovider
+
+import (
+	"fmt"
+	"strings"
+
+	"juggler/cmd/juggler/providers/openaibase"
+	"juggler/cmd/juggler/providers/provider"
+	"juggler/cmd/juggler/providers/utils"
+	"juggler/internal/jlog"
+)
+
+// Default context/output caps for an endpoint's models. A gateway's model list
+// carries ids and nothing else, so these bound them conservatively; a user who
+// knows better raises them per model through models.limits in settings.
+const (
+	defaultContextWindow   = 128000
+	defaultMaxOutputTokens = 16384
+)
+
+// The set of instances currently registered, keyed by instance id, so Sync can
+// tell which registrations are its own and retire the ones the user removed.
+// Scanning the registry for the id prefix would not do: the migrated singleton
+// keeps its historic bare name.
+//
+// Guarded by a 1-capacity channel used as a binary semaphore (the codebase
+// forbids sync.Mutex): acquire by sending, release by receiving. syncLock
+// serialises whole reconciliations, so two concurrent edits cannot interleave
+// their register and unregister passes.
+var (
+	syncLock       = make(chan struct{}, 1)
+	registeredLock = make(chan struct{}, 1)
+	registeredIDs  = make(map[string]bool)
+)
+
+// RegisterAll registers every enabled instance at startup. It is called before
+// any credential is read, which it must be: the credentials store resolves a
+// provider's key through its registered ConfigKeyName, so an instance that is
+// not registered has no key to find.
+//
+// A file that cannot be read is logged rather than fatal — the rest of the
+// providers still work, and the settings UI is how the user would fix it.
+func RegisterAll() {
+	if err := migrateLegacySingleton(); err != nil {
+		jlog.Error("[CustomProvider] Could not migrate the existing OpenAI-compatible endpoint: %v", err)
+	}
+	if err := Sync(); err != nil {
+		jlog.Error("[CustomProvider] Could not register custom providers: %v", err)
+	}
+}
+
+// Sync reconciles the registry with the file: instances added or edited are
+// registered (re-registering a name replaces its definition), and ones removed,
+// disabled or no longer valid are unregistered. Callers run it after every edit,
+// so a new endpoint reaches the model picker without a restart.
+func Sync() error {
+	syncLock <- struct{}{}
+	defer func() { <-syncLock }()
+
+	instances, err := Load()
+	if err != nil {
+		return err
+	}
+
+	desired := make(map[string]bool, len(instances))
+	for id, inst := range instances {
+		if !inst.IsEnabled() {
+			continue
+		}
+		// A file edited by hand can hold an entry that could never have been
+		// saved through the UI. Registering it would put a provider in the picker
+		// that errors on first use, so it is skipped and named in the log.
+		if err := validateIDShape(id); err != nil {
+			jlog.Error("[CustomProvider] Skipping entry: %v", err)
+			continue
+		}
+		if err := ValidateInstance(inst); err != nil {
+			jlog.Error("[CustomProvider] Skipping %q: %v", id, err)
+			continue
+		}
+		desired[id] = true
+		registerInstance(id, inst)
+	}
+
+	registeredLock <- struct{}{}
+	var retired []string
+	for id := range registeredIDs {
+		if !desired[id] {
+			retired = append(retired, id)
+		}
+	}
+	registeredIDs = desired
+	<-registeredLock
+
+	for _, id := range retired {
+		provider.UnregisterProvider(RegisteredName(id))
+	}
+	return nil
+}
+
+// registerInstance registers one endpoint under its own provider id, from a
+// descriptor template shared by every instance.
+//
+// The record is passed only for the values that are fixed at registration
+// (the label). Everything the request itself needs is resolved from a fresh read
+// at client-construction time, so editing an endpoint's URL or headers takes
+// effect on the next turn rather than at the next restart.
+func registerInstance(id string, inst Instance) {
+	displayName := strings.TrimSpace(inst.DisplayName)
+	if displayName == "" {
+		displayName = id
+	}
+	openaibase.Register(openaibase.Descriptor{
+		Name:        RegisteredName(id),
+		DisplayName: displayName,
+		Description: "A custom endpoint speaking the OpenAI Chat Completions API. Its base URL and request headers are set in the Custom Providers tab; the API key is optional, for endpoints that need one. Models come from the endpoint's own model list.",
+		// Per-instance credential slot and environment variable, so several
+		// endpoints hold distinct secrets. The environment form folds the
+		// hyphens an id may carry to underscores, since a shell cannot set a
+		// variable whose name contains one.
+		ConfigKeyName:     ConfigKeyName(id),
+		EnvVarName:        EnvVarName(id),
+		DisplayProvider:   displayName,
+		ContextWindowCaps: utils.ModelCaps{Default: defaultContextWindow},
+		MaxOutputCaps:     utils.ModelCaps{Default: defaultMaxOutputTokens},
+		BaseURLFunc:       func() string { return liveBaseURL(id) },
+		HeadersFunc:       func() map[string]string { return liveHeaders(id) },
+		// The key is optional: an endpoint may serve a public model list and
+		// need no auth at all. Availability rests instead on the base URL being
+		// configured — not a network probe, since the health path of an
+		// arbitrary endpoint is unknown.
+		APIKeyOptional: true,
+		AutoDetect:     func() bool { return liveBaseURL(id) != "" },
+		// Zero-value Quirks: the standard OpenAI request shape, the safe default
+		// for an endpoint whose divergences are unknown.
+	})
+}
+
+// ConfigKeyName is the credentials-store key holding an instance's API key. The
+// id is kept verbatim so the key reads back as the endpoint it belongs to; the
+// migrated endpoint keeps the key name it was already stored under, so its key
+// is found without being moved.
+func ConfigKeyName(id string) string {
+	if id == LegacyID {
+		return legacyAPIKeyCredKey
+	}
+	return "custom_" + id + "_api_key"
+}
+
+// EnvVarName is the environment variable an instance's API key can be supplied
+// in instead.
+func EnvVarName(id string) string {
+	if id == LegacyID {
+		return legacyEnvVarName
+	}
+	return "CUSTOM_" + strings.ToUpper(strings.ReplaceAll(id, "-", "_")) + "_API_KEY"
+}
+
+// lookup reads one instance from the file. Every per-request resolver goes
+// through it rather than closing over a copy, so an edit is live. A read failure
+// answers "not configured", which surfaces as a clear error on first use.
+func lookup(id string) (Instance, bool) {
+	instances, err := Load()
+	if err != nil {
+		return Instance{}, false
+	}
+	inst, ok := instances[id]
+	return inst, ok
+}
+
+// liveBaseURL resolves an instance's endpoint. Trailing slashes are trimmed so
+// the SDK does not build "//v1/..." paths.
+func liveBaseURL(id string) string {
+	inst, ok := lookup(id)
+	if !ok {
+		return ""
+	}
+	return strings.TrimRight(strings.TrimSpace(inst.BaseURL), "/")
+}
+
+// liveHeaders resolves an instance's extra request headers.
+func liveHeaders(id string) map[string]string {
+	inst, ok := lookup(id)
+	if !ok || len(inst.Headers) == 0 {
+		return nil
+	}
+	headers := make(map[string]string, len(inst.Headers))
+	for name, value := range inst.Headers {
+		headers[name] = value
+	}
+	return headers
+}
+
+// validateIDShape checks an id against the rules that make it usable as a
+// provider id, a DOM element id, a CSS selector and a credential key. It leaves
+// out the collision check ValidateID adds, because an id already registered by
+// the very instance being checked is not a collision.
+func validateIDShape(id string) error {
+	if id == "" {
+		return fmt.Errorf("provider id is required")
+	}
+	if len(id) > maxIDLength {
+		return fmt.Errorf("provider id %q is longer than %d characters", id, maxIDLength)
+	}
+	if !idPattern.MatchString(id) {
+		return fmt.Errorf("provider id %q must start with a letter and use only lowercase letters, digits and single hyphens", id)
+	}
+	return nil
+}

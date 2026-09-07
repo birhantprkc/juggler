@@ -133,7 +133,7 @@ class SettingsPanel extends HTMLElement {
                 <button class="close-button" id="settings-close" title="Close" aria-label="Close"><span class="icon-close"></span></button>
                 <nav class="settings-tabs">
                     <div class="settings-tabs-scroll">
-                        <button class="settings-tab active" data-tab="providers">Provider API Keys</button>
+                        <button class="settings-tab active" data-tab="providers">Providers</button>
                         <button class="settings-tab" data-tab="defaults">Defaults</button>
                         <button class="settings-tab" data-tab="connectivity">Connectivity</button>
                         <button class="settings-tab" data-tab="extensions">Extensions</button>

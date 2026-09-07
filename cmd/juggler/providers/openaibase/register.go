@@ -183,6 +183,13 @@ func Register(d Descriptor) {
 		if d.BaseURLFunc != nil {
 			baseURL = d.BaseURLFunc()
 		}
+		// An endpoint carried on the config outranks the descriptor's own, so a
+		// single descriptor can serve several user-configured endpoints instead of
+		// needing one registration per URL. Empty leaves the descriptor deciding,
+		// which is every built-in vendor.
+		if cfg.BaseURL != "" {
+			baseURL = cfg.BaseURL
+		}
 		staticHeaders := d.Headers
 		if d.HeadersFunc != nil {
 			staticHeaders = d.HeadersFunc()

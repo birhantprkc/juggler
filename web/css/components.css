@@ -5952,12 +5952,57 @@ settings-panel .model-visibility-row {
     min-height: 1.625rem;
     padding: 0.125rem 0.375rem;
     border-radius: 0.25rem;
-    cursor: pointer;
-    user-select: none;
 }
 
 settings-panel .model-visibility-row:hover {
     background: var(--bg-raised);
+}
+
+/* Only the checkbox and the name are the label — the token-limit fields beside
+   them are not, or clicking into one would toggle the model's visibility. */
+settings-panel .model-visibility-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: 1 1 auto;
+    min-width: 0;
+    cursor: pointer;
+    user-select: none;
+}
+
+settings-panel .model-limit-legend {
+    margin-top: 0.375rem;
+    font-size: 0.6875rem;
+    color: var(--text-tertiary);
+}
+
+settings-panel .model-limit-fields {
+    display: flex;
+    gap: 0.25rem;
+    flex: 0 0 auto;
+}
+
+settings-panel .model-limit-input {
+    width: 5.5rem;
+    padding: 0.0625rem 0.25rem;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 0.0625rem solid var(--border-color);
+    border-radius: 0.25rem;
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    text-align: right;
+}
+
+settings-panel .model-limit-input:focus {
+    outline: none;
+    border-color: var(--accent-blue);
+}
+
+/* An overridden limit is the exception, so it reads as one rather than sitting
+   at the same weight as the placeholder showing the provider's own number. */
+settings-panel .model-limit-input:not(:placeholder-shown) {
+    color: var(--accent-blue);
 }
 
 settings-panel .model-visibility-check {
@@ -6006,17 +6051,10 @@ settings-panel .model-visibility-status {
     padding-left: 0.125rem;
 }
 
-/* OpenAI-compatible provider: labelled Base URL / headers sub-fields, each with
-   its own transient save-status line. The saved value stays visible in the
-   input, so the status note is a light confirmation rather than the only proof
-   the save landed. */
-settings-panel .openai-compat-rows {
-    display: flex;
-    flex-direction: column;
-    gap: 0.625rem;
-    margin-top: 0.625rem;
-}
-
+/* A labelled sub-field inside a provider card's control column, each with its
+   own transient save-status line. The saved value stays visible in the input, so
+   the status note is a light confirmation rather than the only proof the save
+   landed. */
 settings-panel .provider-subfield {
     position: relative; /* anchor for the floating save-status note */
     display: flex;
@@ -6049,6 +6087,113 @@ settings-panel .provider-subfield-status[data-kind="ok"] {
 
 settings-panel .provider-subfield-status[data-kind="error"] {
     color: var(--accent-red, #f85149);
+}
+
+/* The user's own endpoints: the same provider cards as everything above them,
+   plus the few controls only an endpoint has. */
+settings-panel .custom-endpoints-note {
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    margin-bottom: 0.625rem;
+}
+
+settings-panel .custom-endpoint .provider-control {
+    gap: 0.75rem;
+}
+
+/* The provider id: not editable, because everything stored names it. */
+settings-panel .custom-endpoint-id {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-tertiary);
+}
+
+/* Always in the card, so saying something later costs no rebuild. Empty means
+   there is nothing wrong, and it takes no room. */
+settings-panel .custom-endpoint-problem {
+    font-size: 0.75rem;
+    line-height: 1.4;
+    color: var(--accent-red, #f85149);
+}
+
+settings-panel .custom-endpoint-problem:empty {
+    display: none;
+}
+
+settings-panel .custom-endpoint-toggle-note {
+    font-size: 0.75rem;
+    color: var(--accent-red, #f85149);
+}
+
+settings-panel .custom-endpoint-headers {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+}
+
+/* Name, value, and the button that drops the row. The name column is narrower:
+   a header's name is a word, its value can be anything. */
+settings-panel .custom-endpoint-header-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr) auto;
+    gap: 0.375rem;
+    align-items: center;
+}
+
+settings-panel .custom-endpoint-header-remove {
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    border: 0.0625rem solid var(--border-color);
+    min-width: 0;
+    padding: 0.375rem 0.5rem;
+    line-height: 1;
+}
+
+settings-panel .custom-endpoint-header-remove:hover {
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
+}
+
+settings-panel .custom-endpoint-header-add {
+    align-self: flex-start;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    border: 0.0625rem solid var(--border-color);
+    margin-top: 0.375rem;
+}
+
+settings-panel .custom-endpoint-header-add:hover {
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
+}
+
+settings-panel .custom-endpoint-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}
+
+/* The add form is a card in waiting: same grid, dashed while it holds nothing. */
+settings-panel .custom-endpoint-add {
+    border: 0.0625rem dashed var(--border-color);
+}
+
+settings-panel .custom-endpoint-add-id {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-tertiary);
+}
+
+settings-panel .custom-endpoint-add-open {
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    border: 0.0625rem solid var(--border-color);
+}
+
+settings-panel .custom-endpoint-add-open:hover {
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
 }
 
 /* About Modal Component */
@@ -7663,7 +7808,7 @@ settings-panel .toggle-label {
         grid-area: sidebar;
         flex-direction: column;
         align-items: stretch;
-        padding: 0.75rem 0.6rem;
+        padding: 1.5rem 0.6rem;
         border-bottom: none;
         border-right: 0.0625rem solid var(--border-divider);
         overflow-y: auto;

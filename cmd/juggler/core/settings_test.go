@@ -281,6 +281,117 @@ func TestLoadGlobalSettingsMissingFileNoHiddenModels(t *testing.T) {
 	}
 }
 
+func TestSaveLoadGlobalSettingsModelLimitsRoundTrip(t *testing.T) {
+	userpathstest.Isolate(t)
+	in := &GlobalSettings{
+		Models: ModelSettings{
+			Hidden: map[string][]string{"mistral": {"mistral-embed"}},
+			Limits: map[string]map[string]ModelLimits{
+				"deepseek":   {"deepseek-v4-pro": {ContextWindow: 1000000, MaxOutputTokens: 384000}},
+				"openrouter": {"z-ai/glm-4.6": {ContextWindow: 200000}},
+			},
+		},
+	}
+	if err := SaveGlobalSettings(in); err != nil {
+		t.Fatalf("SaveGlobalSettings: %v", err)
+	}
+	gs, err := LoadGlobalSettings()
+	if err != nil {
+		t.Fatalf("LoadGlobalSettings: %v", err)
+	}
+	if got := gs.ModelLimitsFor("deepseek", "deepseek-v4-pro"); got.ContextWindow != 1000000 || got.MaxOutputTokens != 384000 {
+		t.Fatalf("deepseek limits = %+v, want {1000000 384000}", got)
+	}
+	// One limit without the other: the unset field stays zero so the provider's
+	// own output cap continues to apply.
+	if got := gs.ModelLimitsFor("openrouter", "z-ai/glm-4.6"); got.ContextWindow != 200000 || got.MaxOutputTokens != 0 {
+		t.Fatalf("openrouter limits = %+v, want {200000 0}", got)
+	}
+	// Nothing set is the zero value, not a panic on a missing provider or model.
+	if got := gs.ModelLimitsFor("deepseek", "deepseek-v4-flash"); !got.IsZero() {
+		t.Fatalf("unset model limits = %+v, want zero", got)
+	}
+	if got := gs.ModelLimitsFor("nosuchprovider", "whatever"); !got.IsZero() {
+		t.Fatalf("unknown provider limits = %+v, want zero", got)
+	}
+	// The sections are independent.
+	if !gs.IsModelHidden("mistral", "mistral-embed") {
+		t.Fatal("hidden list lost when limits were saved alongside it")
+	}
+}
+
+func TestNormalizeModelSettingsCleansLimits(t *testing.T) {
+	userpathstest.Isolate(t)
+	deepseek := map[string]ModelLimits{
+		"negative":   {ContextWindow: -5, MaxOutputTokens: 8192},
+		"blank-both": {ContextWindow: 0, MaxOutputTokens: 0},
+		"":           {ContextWindow: 4096},
+	}
+	// Assigned rather than written as a literal: the padding is the point of the
+	// case, and a padded map-key literal is a lint error.
+	deepseek[" deepseek-v4-pro "] = ModelLimits{ContextWindow: 1000000}
+	in := &GlobalSettings{Models: ModelSettings{Limits: map[string]map[string]ModelLimits{
+		"deepseek": deepseek,
+		"gemini":   {"gemini-3-pro": {ContextWindow: -1}}, // nothing usable ⇒ provider goes
+	}}}
+	if err := SaveGlobalSettings(in); err != nil {
+		t.Fatalf("SaveGlobalSettings: %v", err)
+	}
+	gs, err := LoadGlobalSettings()
+	if err != nil {
+		t.Fatalf("LoadGlobalSettings: %v", err)
+	}
+	if got := gs.ModelLimitsFor("deepseek", "deepseek-v4-pro"); got.ContextWindow != 1000000 {
+		t.Fatalf("trimmed model id = %+v, want the entry under the trimmed key", got)
+	}
+	// A negative is not an override; the sibling field it was posted with still is.
+	if got := gs.ModelLimitsFor("deepseek", "negative"); got.ContextWindow != 0 || got.MaxOutputTokens != 8192 {
+		t.Fatalf("negative window = %+v, want {0 8192}", got)
+	}
+	for _, id := range []string{"blank-both", ""} {
+		if _, ok := gs.Models.Limits["deepseek"][id]; ok {
+			t.Fatalf("entry %q kept, want dropped", id)
+		}
+	}
+	if _, ok := gs.Models.Limits["gemini"]; ok {
+		t.Fatal("provider with no usable overrides kept, want dropped")
+	}
+}
+
+func TestLoadGlobalSettingsKeepsUnknownProviderModelLimits(t *testing.T) {
+	userpathstest.Isolate(t)
+	if err := os.MkdirAll(userpaths.ConfigDir(), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Same contract as the hidden lists: a provider this build doesn't register
+	// must not cost the user the numbers they set for it.
+	if err := os.WriteFile(filepath.Join(userpaths.ConfigDir(), "settings.json"),
+		[]byte(`{"models":{"limits":{"notaprovider":{"some-model":{"contextWindow":123456}}}}}`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	gs, err := LoadGlobalSettings()
+	if err != nil {
+		t.Fatalf("LoadGlobalSettings: %v", err)
+	}
+	if got := gs.ModelLimitsFor("notaprovider", "some-model"); got.ContextWindow != 123456 {
+		t.Fatalf("unknown provider limits = %+v, want {123456 0}", got)
+	}
+}
+
+func TestLoadGlobalSettingsMissingFileNoModelLimits(t *testing.T) {
+	userpathstest.Isolate(t)
+	gs, err := LoadGlobalSettings()
+	if err != nil {
+		t.Fatalf("LoadGlobalSettings: %v", err)
+	}
+	if gs.Models.Limits != nil {
+		t.Fatalf("missing file limits = %v, want nil", gs.Models.Limits)
+	}
+	if !gs.ModelLimitsFor("deepseek", "deepseek-v4-pro").IsZero() {
+		t.Fatal("nothing is overridden on a fresh install")
+	}
+}
+
 func TestUpdateGlobalSettingsMergesOntoDisk(t *testing.T) {
 	userpathstest.Isolate(t)
 	if err := SaveGlobalSettings(&GlobalSettings{

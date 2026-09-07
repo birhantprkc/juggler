@@ -45,6 +45,44 @@ type ModelSettings struct {
 	// because model ids contain slashes of their own (OpenRouter's
 	// "z-ai/glm-4.6"), so a flat key could not be split back apart reliably.
 	Hidden map[string][]string `json:"hidden,omitempty"`
+
+	// Limits overrides the token limits Juggler assumes for a model, keyed by
+	// provider name and then by model id. Only what the user set is stored; a
+	// model with no entry uses whatever its provider reports or Juggler has
+	// catalogued, which is right almost always and is always preferred.
+	//
+	// It exists because a wrong window is not cosmetic: it decides admission and
+	// when a conversation compacts, so a model catalogued at 128k that really
+	// serves 1M compacts eight times sooner than it needs to, and the user has
+	// no other way to correct it without waiting for a build carrying a new
+	// table. It applies to every provider, not just custom endpoints — the
+	// models found wrong in practice are usually built-in ones whose published
+	// window moved.
+	//
+	// Keyed by provider then model for the same reason Hidden is: model ids
+	// contain slashes of their own.
+	Limits map[string]map[string]ModelLimits `json:"limits,omitempty"`
+}
+
+// ModelLimits is a user-supplied replacement for a model's token limits. The
+// two fields are independent — a non-positive one means "not overridden" and
+// leaves that limit to the provider, so a user can correct a wrong context
+// window without also having to state an output cap.
+type ModelLimits struct {
+	ContextWindow   int `json:"contextWindow,omitempty"`
+	MaxOutputTokens int `json:"maxOutputTokens,omitempty"`
+}
+
+// IsZero reports whether this override carries nothing worth storing.
+func (ml ModelLimits) IsZero() bool {
+	return ml.ContextWindow <= 0 && ml.MaxOutputTokens <= 0
+}
+
+// ModelLimitsFor returns the user's limit overrides for one provider/model pair.
+// The zero value means nothing was overridden, so callers can apply the result
+// unconditionally and let the non-positive fields fall through.
+func (gs *GlobalSettings) ModelLimitsFor(providerName, modelID string) ModelLimits {
+	return gs.Models.Limits[providerName][modelID]
 }
 
 // IsModelHidden reports whether the user turned this model off. Lists are small
@@ -59,15 +97,22 @@ func (gs *GlobalSettings) IsModelHidden(providerName, modelID string) bool {
 	return false
 }
 
-// normalizeModelSettings canonicalises the hidden-model lists: ids are trimmed,
-// blanks and duplicates dropped, each list sorted, and any provider left with no
-// ids removed entirely. Applied on read and on write, so a hand-edited file
-// behaves exactly like one the UI wrote, and the file stays diff-friendly.
+// normalizeModelSettings canonicalises every section of the model preferences.
+// Applied on read and on write, so a hand-edited file behaves exactly like one
+// the UI wrote, and the file stays diff-friendly.
 //
 // Provider names are NOT validated here: core has no view of the provider
 // registry, and a provider being temporarily unregistered (a build without it,
-// a key removed) must not destroy the list the user curated for it.
+// a key removed) must not destroy the preferences the user curated for it.
 func normalizeModelSettings(ms *ModelSettings) {
+	normalizeHiddenModels(ms)
+	normalizeModelLimits(ms)
+}
+
+// normalizeHiddenModels canonicalises the hidden-model lists: ids are trimmed,
+// blanks and duplicates dropped, each list sorted, and any provider left with no
+// ids removed entirely.
+func normalizeHiddenModels(ms *ModelSettings) {
 	for providerName, ids := range ms.Hidden {
 		seen := make(map[string]struct{}, len(ids))
 		cleaned := make([]string, 0, len(ids))
@@ -91,6 +136,37 @@ func normalizeModelSettings(ms *ModelSettings) {
 	}
 	if len(ms.Hidden) == 0 {
 		ms.Hidden = nil
+	}
+}
+
+// normalizeModelLimits canonicalises the per-model limit overrides: model ids
+// are trimmed, negative values flattened to zero ("not overridden"), entries
+// left carrying no value dropped, and any provider left with no entries removed
+// entirely. A zero is stored as an absence rather than a number, so clearing a
+// field in the UI and never having set it are the same state on disk.
+func normalizeModelLimits(ms *ModelSettings) {
+	for providerName, byModel := range ms.Limits {
+		cleaned := make(map[string]ModelLimits, len(byModel))
+		for modelID, limits := range byModel {
+			modelID = strings.TrimSpace(modelID)
+			if modelID == "" {
+				continue
+			}
+			limits.ContextWindow = max(limits.ContextWindow, 0)
+			limits.MaxOutputTokens = max(limits.MaxOutputTokens, 0)
+			if limits.IsZero() {
+				continue
+			}
+			cleaned[modelID] = limits
+		}
+		if len(cleaned) == 0 {
+			delete(ms.Limits, providerName)
+			continue
+		}
+		ms.Limits[providerName] = cleaned
+	}
+	if len(ms.Limits) == 0 {
+		ms.Limits = nil
 	}
 }
 

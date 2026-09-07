@@ -27,6 +27,18 @@ type ModelWithContext struct {
 	MaxOutputTokens int      `json:"maxOutputTokens"`
 	FromAPI         bool     `json:"fromAPI"`                   // True if from API, false if hardcoded fallback
 	InputModalities []string `json:"inputModalities,omitempty"` // e.g. ["text","image"]; empty/omitted means text-only
+	// ProviderContextWindow and ProviderMaxOutputTokens carry the numbers the
+	// provider itself reported, and are set only when a user override
+	// (models.limits in the global settings) replaced one in the fields above.
+	// Non-nil is therefore exactly "the user overrode this", which a plain int
+	// could not express: a provider that reports no limit of its own overrides
+	// to a genuine zero. The value is what clearing the override restores.
+	//
+	// Only the settings UI reads them. Everything that runs a turn wants the
+	// effective limits above, which is why the override is applied there rather
+	// than left for each consumer to remember to merge.
+	ProviderContextWindow   *int `json:"providerContextWindow,omitempty"`
+	ProviderMaxOutputTokens *int `json:"providerMaxOutputTokens,omitempty"`
 	// ThinkingLevels lists the reasoning-effort tiers this model supports, in
 	// display order, each named in the provider's own native vocabulary (e.g.
 	// "low"/"medium"/"high", "none"/"low"/"high"/"xhigh"). The string is the
@@ -85,6 +97,28 @@ type ProviderStatus struct {
 	ModelsWithContext []ModelWithContext `json:"modelsWithContext"`
 }
 
+// applyModelLimits replaces a published model's token limits with the user's
+// overrides, keeping the provider's own numbers alongside so the settings UI can
+// show what clearing an override would restore. A non-positive override is not
+// one, so the two limits can be overridden independently.
+//
+// Applied wherever the catalogue is published, so every consumer — the model
+// menu, the footer meter, admission — reads one effective number and none of
+// them has to know an override exists.
+func applyModelLimits(model ModelWithContext, limits core.ModelLimits) ModelWithContext {
+	if limits.ContextWindow > 0 {
+		reported := model.ContextWindow
+		model.ProviderContextWindow = &reported
+		model.ContextWindow = limits.ContextWindow
+	}
+	if limits.MaxOutputTokens > 0 {
+		reported := model.MaxOutputTokens
+		model.ProviderMaxOutputTokens = &reported
+		model.MaxOutputTokens = limits.MaxOutputTokens
+	}
+	return model
+}
+
 func modelContextFallbacks(pInfo provider.ProviderInfo, settings core.GlobalSettings) []ModelWithContext {
 	if len(pInfo.ModelContextWindows) == 0 {
 		return nil
@@ -96,13 +130,13 @@ func modelContextFallbacks(pInfo provider.ProviderInfo, settings core.GlobalSett
 	sort.Strings(ids)
 	models := make([]ModelWithContext, 0, len(ids))
 	for _, id := range ids {
-		models = append(models, ModelWithContext{
+		models = append(models, applyModelLimits(ModelWithContext{
 			ID:               id,
 			ContextWindow:    pInfo.ModelContextWindows[id],
 			FromAPI:          false,
 			Hidden:           settings.IsModelHidden(pInfo.Name, id),
 			StreamsLiveUsage: pInfo.StreamsLiveUsage,
-		})
+		}, settings.ModelLimitsFor(pInfo.Name, id)))
 	}
 	return models
 }
@@ -190,7 +224,7 @@ func (s *Server) computeProviders(ctx context.Context) []ProviderStatus {
 				modelInfos, err := s.fetchModels(ctx, pInfo.Name, cred)
 				if err == nil {
 					for _, modelInfo := range modelInfos {
-						modelsWithContext = append(modelsWithContext, ModelWithContext{
+						modelsWithContext = append(modelsWithContext, applyModelLimits(ModelWithContext{
 							ID:                   modelInfo.ID,
 							DisplayName:          modelInfo.DisplayName,
 							ContextWindow:        modelInfo.ContextWindow,
@@ -203,7 +237,7 @@ func (s *Server) computeProviders(ctx context.Context) []ProviderStatus {
 							DefaultServiceTier:   modelInfo.DefaultServiceTier,
 							Hidden:               settings.IsModelHidden(pInfo.Name, modelInfo.ID),
 							StreamsLiveUsage:     pInfo.StreamsLiveUsage,
-						})
+						}, settings.ModelLimitsFor(pInfo.Name, modelInfo.ID)))
 					}
 				} else {
 					available = false
@@ -737,17 +771,35 @@ func (s *Server) resolveModelCapabilities(providerName, model string) provider.M
 			continue
 		}
 		for _, candidate := range status.ModelsWithContext {
-			if candidate.ID == model {
-				if candidate.ContextWindow > 0 {
-					capabilities.ContextWindowTokens = int64(candidate.ContextWindow)
-				}
-				if candidate.MaxOutputTokens > 0 {
-					capabilities.MaxOutputTokens = int64(candidate.MaxOutputTokens)
-				}
-				return normalizeOutputLimit(capabilities)
+			if candidate.ID != model {
+				continue
 			}
+			if candidate.ContextWindow > 0 {
+				capabilities.ContextWindowTokens = int64(candidate.ContextWindow)
+			}
+			if candidate.MaxOutputTokens > 0 {
+				capabilities.MaxOutputTokens = int64(candidate.MaxOutputTokens)
+			}
+			break
 		}
 		break
+	}
+
+	// The user's override outranks every source above, including the live list.
+	// The published entry already carries it, so this is usually a no-op — but
+	// only usually: the catalogue is empty until the first refresh lands, and a
+	// model a provider does not list at all (a gateway alias, a model named
+	// straight into the config) never appears in it. Admission would then run on
+	// the stale number the override was written to correct.
+	if s.settings != nil {
+		settings := s.settings.get()
+		limits := settings.ModelLimitsFor(providerName, model)
+		if limits.ContextWindow > 0 {
+			capabilities.ContextWindowTokens = int64(limits.ContextWindow)
+		}
+		if limits.MaxOutputTokens > 0 {
+			capabilities.MaxOutputTokens = int64(limits.MaxOutputTokens)
+		}
 	}
 	return normalizeOutputLimit(capabilities)
 }

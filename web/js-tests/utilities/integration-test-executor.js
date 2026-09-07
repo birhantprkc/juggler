@@ -205,6 +205,7 @@ import { runTests as runServiceTierChipTests } from '../unit-tests/service-tier-
 import { runTests as runTransactionPanelTests } from '../unit-tests/transaction-panel-test.js';
 import { runTests as runModelSelectorHudTests } from '../unit-tests/model-selector-hud-test.js';
 import { runTests as runModelPickerTests } from '../unit-tests/model-picker-test.js';
+import { runTests as runCustomProvidersTests } from '../unit-tests/custom-providers-test.js';
 import { runTests as runDefaultsModelHostTests } from '../unit-tests/defaults-model-host-test.js';
 import { runTests as runCommandEditorTests } from '../unit-tests/command-editor-test.js';
 import { runTests as runFindTests } from '../unit-tests/find-test.js';
@@ -236,6 +237,7 @@ import { runTests as runLogsTests } from '../unit-tests/logs-test.js';
 import { runTests as runUpdatesSettingsTests } from '../unit-tests/updates-settings-test.js';
 import { runTests as runSettingsFirstLoadTests } from '../unit-tests/settings-first-load-test.js';
 import { runTests as runProxySettingsTests } from '../unit-tests/proxy-settings-test.js';
+import { runTests as runModelLimitsTests } from '../unit-tests/model-limits-test.js';
 import { runTests as runReconnectPolicyTests } from '../unit-tests/reconnect-policy-test.js';
 import { runTests as runResyncOfflineEditTests } from '../unit-tests/resync-offline-edit-test.js';
 import { runTests as runPopupBackButtonTests } from '../unit-tests/popup-back-button-test.js';
@@ -374,6 +376,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:transaction-panel', run: runTransactionPanelTests },
   { name: 'unit:model-selector-hud', run: runModelSelectorHudTests },
   { name: 'unit:model-picker', run: runModelPickerTests },
+  { name: 'unit:custom-providers', run: runCustomProvidersTests },
   { name: 'unit:defaults-model-host', run: runDefaultsModelHostTests },
   { name: 'unit:command-editor', run: runCommandEditorTests },
   { name: 'unit:find', run: runFindTests },
@@ -540,6 +543,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:updates-settings', run: runUpdatesSettingsTests },
   { name: 'unit:settings-first-load', run: runSettingsFirstLoadTests },
   { name: 'unit:proxy-settings', run: runProxySettingsTests },
+  { name: 'unit:model-limits', run: runModelLimitsTests },
   { name: 'unit:reconnect-policy', run: runReconnectPolicyTests },
   { name: 'unit:resync-offline-edit', run: runResyncOfflineEditTests },
   { name: 'unit:popup-back-button', run: runPopupBackButtonTests },

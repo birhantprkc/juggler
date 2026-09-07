@@ -597,9 +597,32 @@ class ModelSelector extends HTMLElement {
     const modelEntry = provider.modelsWithContext?.find(m => m.id === modelName);
     const label = modelLabel(modelEntry?.displayName, modelName);
     const hint = (provider.authHint || '').trim();
-    const message = hint
+    await this._offerProviderSettings(hint
       ? `Can't select ${label} yet: ${hint}`
-      : `There was a problem selecting ${label}.`;
+      : `There was a problem selecting ${label}.`);
+  }
+
+  /**
+   * Explain that the model's provider isn't there at all. A custom provider can
+   * be deleted while conversations still name it, and a recent entry or a
+   * keyboard cycle can still ask for one — so this is a state the user reaches
+   * by ordinary means, not a broken call.
+   * @param {string} providerName
+   * @param {string} modelName
+   * @private
+   */
+  async _showMissingProvider(providerName, modelName) {
+    await this._offerProviderSettings(
+      `Can't select ${modelName}: the provider ${providerName} is not configured.`);
+  }
+
+  /**
+   * Present a selection problem and take the user to provider settings if they
+   * want it. Offers "Go to provider settings" / "Cancel".
+   * @param {string} message
+   * @private
+   */
+  async _offerProviderSettings(message) {
     const goToSettings = await showConfirm(message, 'Problem selecting model', {
       confirmText: 'Go to provider settings',
       cancelText: 'Cancel',
@@ -625,7 +648,10 @@ class ModelSelector extends HTMLElement {
     let provider = this.providers.find(p => p.name === providerName);
 
     if (!provider) {
-      console.error('[ModelSelector] Provider not found:', providerName);
+      // A deleted custom provider outlives itself in conversations, recent
+      // models and cycler state. Saying nothing here leaves a click that does
+      // nothing at all, with the reason only in a console the user cannot see.
+      await this._showMissingProvider(providerName, modelName);
       return;
     }
 
