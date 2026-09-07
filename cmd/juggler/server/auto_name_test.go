@@ -104,6 +104,25 @@ func TestSanitizeAutoNameCapsLength(t *testing.T) {
 	}
 }
 
+// TestSanitizeAutoNameTruncatesOnWordBoundary pins that a title overrunning the
+// cap is cut back to a whole word. The prompt asks for the specific subject of
+// the task (a file, a symbol, an error), which is exactly the detail that pushes
+// a title over the cap — and a title severed mid-word identifies it worse than
+// the generic one it was meant to beat.
+func TestSanitizeAutoNameTruncatesOnWordBoundary(t *testing.T) {
+	// 52 runes: the cut at 48 lands one letter into "flake".
+	got := sanitizeAutoName("Investigate browser pool connection starvation flake")
+	if want := "Investigate browser pool connection starvation"; got != want {
+		t.Fatalf("sanitizeAutoName = %q, want %q", got, want)
+	}
+
+	// No boundary to fall back to: a hard cut is better than nothing.
+	long := strings.Repeat("x", 60)
+	if n := len([]rune(sanitizeAutoName(long))); n != autoNameMaxLen {
+		t.Fatalf("unbroken title kept %d runes, want %d", n, autoNameMaxLen)
+	}
+}
+
 func TestTruncateRunesMultibyte(t *testing.T) {
 	// Ensure a multibyte string isn't split mid-rune and stays within the cap.
 	in := strings.Repeat("é", 10)
@@ -148,6 +167,88 @@ func TestAcceptableAutoName(t *testing.T) {
 		if acceptableAutoName(b) {
 			t.Errorf("expected %q to be rejected", b)
 		}
+	}
+}
+
+// TestSiblingTitles pins which existing tab names the namer is shown as an
+// avoid-list. Placeholders carry no information to avoid, the conversation being
+// named is not its own sibling, and a name repeated across tabs is worth saying
+// once.
+func TestSiblingTitles(t *testing.T) {
+	order := []string{"c1", "c2", "c3", "c4", "c5", "c6"}
+	names := map[string]string{
+		"c1": "Fix login redirect bug",
+		"c2": "Untitled 4", // placeholder: nothing to distinguish from
+		"c3": "Add dark mode toggle",
+		"c4": "Fix login redirect bug", // duplicate, case-folded below
+		"c5": "fix LOGIN redirect BUG",
+		"c6": "   ", // blank name on disk
+		// "c7" is in neither map nor order.
+	}
+
+	got := siblingTitles(order, names, "c3", 24)
+	want := []string{"Fix login redirect bug"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("siblingTitles = %q, want %q", got, want)
+	}
+
+	// The conversation being named is excluded by id, not by name: c4 and c5 are
+	// other tabs that happen to share c1's name, and dropping c1 leaves theirs
+	// standing (once, folded).
+	got = siblingTitles(order, names, "c1", 24)
+	want = []string{"Add dark mode toggle", "Fix login redirect bug"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("siblingTitles excluding c1 = %q, want %q", got, want)
+	}
+
+	// A conversation absent from the tab order (never in the order, or evicted
+	// mid-derivation) still gets the others.
+	if got := siblingTitles(order, names, "c7", 24); len(got) != 2 {
+		t.Fatalf("siblingTitles for an unknown id = %q, want 2 names", got)
+	}
+}
+
+// TestSiblingTitlesPrefersNeighbours pins the rule for trimming an over-long
+// avoid-list: keep the tabs nearest this one in tab order — the ones it will sit
+// beside and be mistaken for — and keep them in tab order, not distance order.
+func TestSiblingTitlesPrefersNeighbours(t *testing.T) {
+	var order []string
+	names := map[string]string{}
+	for i := range 9 {
+		id := fmt.Sprintf("c%d", i)
+		order = append(order, id)
+		names[id] = fmt.Sprintf("Title %d", i)
+	}
+
+	got := siblingTitles(order, names, "c4", 4)
+	want := []string{"Title 2", "Title 3", "Title 5", "Title 6"}
+	if len(got) != len(want) {
+		t.Fatalf("siblingTitles = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("siblingTitles = %q, want %q", got, want)
+		}
+	}
+}
+
+// TestAutoNamePromptListsTitlesInUse pins that the avoid-list reaches the model,
+// and that an empty one leaves no empty scaffolding behind for the model to
+// puzzle over.
+func TestAutoNamePromptListsTitlesInUse(t *testing.T) {
+	with := autoNamePrompt("fix the flaky test", []string{"Fix login redirect bug", "Add dark mode toggle"})
+	for _, want := range []string{"TITLES IN USE", "Fix login redirect bug", "Add dark mode toggle", "fix the flaky test"} {
+		if !strings.Contains(with, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, with)
+		}
+	}
+
+	without := autoNamePrompt("fix the flaky test", nil)
+	if strings.Contains(without, "TITLES IN USE") {
+		t.Fatalf("prompt has an empty titles section:\n%s", without)
+	}
+	if !strings.Contains(without, "fix the flaky test") {
+		t.Fatalf("prompt missing the message:\n%s", without)
 	}
 }
 
