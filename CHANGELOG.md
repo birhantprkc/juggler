@@ -10,6 +10,7 @@ of changes; this project follows semantic versioning.
 - Plugins can bound a generateText call with timeoutMs; a timed-out call now reports 504, not 502
 - A connection that keeps dropping now eases off instead of reconnecting three times a second
 - Emptying the bin no longer races a project switch with its background delete
+- GPT-6 Astra is selectable on a ChatGPT plan, with its reasoning and speed options
 
 ## [0.6.0] - 2026-09-04
 

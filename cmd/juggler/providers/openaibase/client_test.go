@@ -162,6 +162,59 @@ func TestModelsUseResponsesAPI(t *testing.T) {
 	}
 }
 
+// TestResponsesAPIRoutingFollowsGeneration pins the routing rule as a version
+// comparison rather than a list of slugs. Juggler is a tool-calling client, and
+// OpenAI does not offer tool calling on Chat Completions for these generations —
+// so a model id we have never seen before must route to Responses on the
+// strength of its generation alone. Getting this wrong is not a graceful
+// degradation: the model is reachable and answers, it just cannot call a tool.
+func TestResponsesAPIRoutingFollowsGeneration(t *testing.T) {
+	// A generation at or beyond the cut-off, including ids that postdate this
+	// code — a new codename, a new major, a hypothetical later one.
+	for _, model := range []string{
+		"gpt-6-astra", "GPT-6-Astra", "gpt-6", "gpt-6.1-mini", "gpt-7", "gpt-5.6",
+		"gpt-5.7-newcodename", "codex-max", "gpt-5.3-codex",
+	} {
+		if !IsResponsesAPIModel(model) {
+			t.Errorf("IsResponsesAPIModel(%q) = false, want true — a gen-5.6-or-later id must route to Responses", model)
+		}
+	}
+	// Below the cut-off, and ids that carry no GPT generation at all: unchanged,
+	// still Chat Completions.
+	for _, model := range []string{"gpt-5.5", "gpt-5", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo", "o3", "gpt-oss-120b", ""} {
+		if IsResponsesAPIModel(model) {
+			t.Errorf("IsResponsesAPIModel(%q) = true, want false — routing must not sweep in older or non-GPT ids", model)
+		}
+	}
+}
+
+// TestGPTGeneration pins the parser both routing and vision detection depend on.
+func TestGPTGeneration(t *testing.T) {
+	cases := map[string]float64{
+		"gpt-6-astra":   6,
+		"gpt-6":         6,
+		"gpt-5.6-sol":   5.6,
+		"gpt-5.6":       5.6,
+		"gpt-5":         5,
+		"gpt-4o":        4,
+		"gpt-4o-mini":   4,
+		"gpt-4.1":       4.1,
+		"gpt-3.5-turbo": 3.5,
+		// Not a gpt-<version> id: no generation, and no accidental match on a
+		// digit that lives somewhere else in the slug.
+		"gpt-oss-120b":     0,
+		"chatgpt-4o-later": 0,
+		"o3":               0,
+		"codex-max":        0,
+		"":                 0,
+	}
+	for model, want := range cases {
+		if got := GPTGeneration(model); got != want {
+			t.Errorf("GPTGeneration(%q) = %v, want %v", model, got, want)
+		}
+	}
+}
+
 // TestCustomHeaderOverridesUserAgent verifies that a User-Agent supplied via
 // Config.Headers replaces the openai-go SDK's default User-Agent on the wire.
 // This is what lets the OpenAI-compatible provider satisfy gateways that

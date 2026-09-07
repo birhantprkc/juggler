@@ -122,13 +122,40 @@ export async function runTests(_ctx) {
     assert(!result.includes('gpt-5.2'), '5.2 dropped (0.4 back — big gap)');
   });
 
-  // ---- major bump shows only the new major ----
-  await test('major version bump drops the previous major', () => {
+  // ---- a brand-new major keeps the line it replaced, until it has its own ----
+  await test('a just-arrived major keeps the top of the previous major', () => {
     const result = ids(getRecommendedModels(models([
       'glm-5.0', 'glm-4.7', 'glm-4.6', 'glm-4.5', 'glm-4.5-air', 'glm-4.4', 'glm-4.3',
     ])));
     assert(result.includes('glm-5.0'), '5.0 kept');
-    assert(!result.includes('glm-4.7'), '4.7 dropped (previous major)');
+    assert(result.includes('glm-4.7'), '4.7 kept (the line the new major just replaced)');
+    assert(!result.includes('glm-4.6'), '4.6 dropped (third-newest version)');
+  });
+
+  await test('the previous major drops once the new major has a point release', () => {
+    const result = ids(getRecommendedModels(models([
+      'glm-5.1', 'glm-5.0', 'glm-4.7', 'glm-4.6', 'glm-4.5', 'glm-4.4', 'glm-4.3',
+    ])));
+    assert(result.includes('glm-5.1'), '5.1 kept');
+    assert(result.includes('glm-5.0'), '5.0 kept (close predecessor, same major)');
+    assert(!result.includes('glm-4.7'), '4.7 dropped — the new major has moved on');
+  });
+
+  // The reported OpenAI case: the day a gen-6 flagship lands, the whole 5.6 line
+  // must not vanish out of the shortlist, and the stale 5.4 mini must not be
+  // what is left standing beside it.
+  await test('gpt-6 keeps the gpt-5.6 line in the shortlist', () => {
+    const result = ids(getRecommendedModels(models([
+      'gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
+      'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini',
+    ])));
+    assert(result.includes('gpt-6-astra'), 'astra kept');
+    assert(result.includes('gpt-5.6-sol'), '5.6-sol kept');
+    assert(result.includes('gpt-5.6-terra'), '5.6-terra kept');
+    assert(result.includes('gpt-5.6-luna'), '5.6-luna kept');
+    assert(!result.includes('gpt-5.5'), '5.5 dropped (third-newest version)');
+    assert(!result.includes('gpt-5.4-mini'), '5.4-mini dropped (stale version)');
+    assert(result[0] === 'gpt-6-astra', `newest first, got ${result.join(',')}`);
   });
 
   // ---- z.ai style: small (8) multi-generation list trims to the latest couple ----

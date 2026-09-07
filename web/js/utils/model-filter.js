@@ -10,8 +10,9 @@
  * are grouped into lineages — a product line that persists across version
  * bumps, e.g. the `gpt-5.x` flagship line, the `*-codex` coding line, the
  * `*-mini` budget line, or the `glm-4.x` line. Within each lineage only the
- * newest generation (and, when it's a close minor bump, the one before it) is
- * kept, and ALL sibling variants of a kept generation survive together.
+ * newest generation (and, when it's a close predecessor, the one before it —
+ * see {@link isClosePredecessor}) is kept, and ALL sibling variants of a kept
+ * generation survive together.
  *
  * That single rule fixes what the old category-bucket scorer got wrong:
  *   - Same-generation siblings (e.g. gpt-5.6-sol / -terra / -luna) are all
@@ -47,12 +48,12 @@ const MIN_CURATE_SIZE = 4;
 const MAX_VERSIONS_PER_BRAND = 2;
 
 /**
- * Keep the second-newest generation of a lineage only when it is a *close*
- * predecessor of the newest: the same integer major, no more than this far
- * behind in minor version. So glm-4.7 keeps glm-4.6 (0.1 back) and gpt-5.6
- * keeps a gpt-5.5, but gpt-5.6 drops gpt-5.2 (0.4 back — a big gap) and a major
- * bump (glm-5.0 over glm-4.7) shows only the new major. Anything older than the
- * second kept generation is always dropped.
+ * Within one major, keep the second-newest generation of a lineage only when it
+ * is a *close* predecessor of the newest: no more than this far behind in minor
+ * version. So glm-4.7 keeps glm-4.6 (0.1 back) and gpt-5.6 keeps a gpt-5.5, but
+ * gpt-5.6 drops gpt-5.2 (0.4 back — a big gap). Anything older than the second
+ * kept generation is always dropped. Across a major, see
+ * {@link isClosePredecessor}.
  */
 const GENERATION_GAP = 0.2;
 
@@ -211,9 +212,36 @@ export function sortModelsByVersion(models) {
 }
 
 /**
+ * Whether a lineage's second-newest generation is close enough to the newest to
+ * stay in the shortlist. Two ways to qualify:
+ *
+ * - Same major, within GENERATION_GAP: 5.6 keeps 5.5, and drops 5.2.
+ * - The top of the major a *brand-new* major has just replaced: gpt-6 keeps
+ *   gpt-5.6, glm-5.0 keeps glm-4.7. The day a major lands, the line everyone is
+ *   actually using is one release old, and dropping it leaves a shortlist of
+ *   one unproven model. This lapses on its own as soon as the new major has a
+ *   version of its own — once gpt-6.1 ships, gpt-5.6 goes — so no model list
+ *   has to be edited to retire it.
+ *
+ * The second rule deliberately requires the newest to be the start of its major
+ * (`6`, `5.0`), not merely a different one. claude-opus-4-6 does not drag
+ * claude-3 back in: by 4.6 the previous major is several releases stale, which
+ * is the case the same-major gap rule already handles.
+ * @param {number} newest - The newest generation in the lineage.
+ * @param {number} second - The second-newest generation in the lineage.
+ * @returns {boolean} True when `second` should be kept alongside `newest`.
+ */
+function isClosePredecessor(newest, second) {
+  if (Math.trunc(newest) === Math.trunc(second)) {
+    return newest - second <= GENERATION_GAP;
+  }
+  return newest === Math.trunc(newest) && Math.trunc(newest) - Math.trunc(second) === 1;
+}
+
+/**
  * Curate one lineage to its current generation(s): always the newest, plus the
- * second-newest when it is a close predecessor (same major, within
- * GENERATION_GAP). Within each kept generation, drop preview and dated variants
+ * second-newest when it is a close predecessor ({@link isClosePredecessor}).
+ * Within each kept generation, drop preview and dated variants
  * when a stable/undated sibling exists, but keep every remaining variant.
  * @param {Annotated[]} entries
  * @returns {Annotated[]} Survivors.
@@ -225,11 +253,7 @@ function curateLineage(entries) {
   const keptGenerations = new Set([newest]);
 
   const second = generations[1];
-  if (
-    second !== undefined &&
-    Math.trunc(second) === Math.trunc(newest) &&
-    newest - second <= GENERATION_GAP
-  ) {
+  if (second !== undefined && isClosePredecessor(newest, second)) {
     keptGenerations.add(second);
   }
 

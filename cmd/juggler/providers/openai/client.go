@@ -35,6 +35,11 @@ func Register() {
 	})
 }
 
+// visionGeneration is the OpenAI generation from which every mainline gpt model
+// accepts image input. A model wrongly reported text-only does not error: the
+// images are simply dropped from the turn.
+const visionGeneration = 5
+
 // inputModalities reports the input modalities for an OpenAI model id. Returns
 // ["text","image"] for vision-capable families, nil (text-only) otherwise.
 func inputModalities(modelID string) []string {
@@ -44,18 +49,23 @@ func inputModalities(modelID string) []string {
 	return nil
 }
 
-// supportsVision reports whether an OpenAI model accepts image input. Vision
-// families: gpt-4o*, gpt-4.1*, gpt-4-turbo*, gpt-5*, chatgpt-4o*, o4-mini, and
-// the full o1/o3 reasoning models. Text-only exceptions handled by exclusion:
-// gpt-4 base, gpt-3.5, o1-mini, o1-preview, o3-mini.
+// supportsVision reports whether an OpenAI model accepts image input. Every
+// mainline gpt model from visionGeneration onwards takes images, so that line
+// is drawn by generation and covers ids newer than this code; the families
+// below it are named individually. Vision families: gpt-4o*, gpt-4.1*,
+// gpt-4-turbo*, gpt-5 and later, chatgpt-4o*, o4-mini, and the full o1/o3
+// reasoning models. Text-only exceptions handled by exclusion: gpt-4 base,
+// gpt-3.5, o1-mini, o1-preview, o3-mini.
 func supportsVision(modelID string) bool {
 	m := strings.ToLower(modelID)
+	if openaibase.GPTGeneration(m) >= visionGeneration {
+		return true
+	}
 	switch {
 	case strings.HasPrefix(m, "gpt-4o"),
 		strings.HasPrefix(m, "chatgpt-4o"),
 		strings.HasPrefix(m, "gpt-4.1"),
 		strings.HasPrefix(m, "gpt-4-turbo"),
-		strings.HasPrefix(m, "gpt-5"),
 		strings.HasPrefix(m, "o4-mini"):
 		return true
 	// o1 / o3 full reasoning models support vision; their -mini and o1-preview

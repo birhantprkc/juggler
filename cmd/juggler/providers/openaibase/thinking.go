@@ -57,12 +57,23 @@ func EffortSpec(defaultLevel string, levels ...string) ThinkingSpec {
 // ThinkingSpec.
 //
 // The level sets are deliberately conservative: the valid set of
-// reasoning_effort values differs by model family and a wrong value is a hard
-// 400, so a model we can't confidently classify gets no control (no param sent)
-// rather than a guessed value. This is the single source of truth shared by the
-// openai and openaicodex providers.
+// reasoning_effort values differs per model and a value the model does not
+// accept risks a hard 400, so a model we can't confidently classify gets no
+// control (no param sent) rather than a guessed value. It then runs at its own
+// default effort, which is always a value the model accepts. This is the single
+// source of truth shared by the openai and openaicodex providers.
+//
+// Unlike routing and vision, this question cannot be answered by generation:
+// the accepted set genuinely differs model by model — gpt-5.1 takes "none"
+// where gpt-5 takes "minimal", and gpt-6-astra takes neither — which is why the
+// ChatGPT-plan catalog ships a per-model reasoning list rather than a rule.
 func OpenAIThinkingSpec(modelID string) ThinkingSpec {
 	m := strings.ToLower(modelID)
+
+	// GPT-6 Astra: no off tier at all, and two tiers above "high".
+	if strings.HasPrefix(m, "gpt-6-astra") {
+		return EffortSpec("low", "low", "medium", "high", "xhigh", "max")
+	}
 
 	// Codex reasoning models (gpt-5.x-codex, codex-max, bare "codex" slugs).
 	// They accept low/medium/high; codex-max style models add an "xhigh" tier.
@@ -74,14 +85,24 @@ func OpenAIThinkingSpec(modelID string) ThinkingSpec {
 		return EffortSpec("medium", "low", "medium", "high")
 	}
 
-	// GPT-5 family (gpt-5, gpt-5-mini/nano, gpt-5.1, gpt-5.1-thinking, gpt-5.6…).
-	// gpt-5.1+ accept an explicit "none" for fully-off; earlier gpt-5 use
-	// "minimal" as their lowest tier. No family member exposes "xhigh".
+	// GPT-5 family. gpt-5.1/5.2/5.6 accept an explicit "none" for fully-off; the
+	// original gpt-5 line (gpt-5, gpt-5-mini, gpt-5-nano) uses "minimal" as its
+	// lowest tier instead.
 	if strings.HasPrefix(m, "gpt-5") {
 		if strings.HasPrefix(m, "gpt-5.1") || strings.HasPrefix(m, "gpt-5.2") || strings.HasPrefix(m, "gpt-5.6") {
 			return EffortSpec("medium", "none", "low", "medium", "high")
 		}
-		return EffortSpec("medium", "minimal", "low", "medium", "high")
+		if GPTGeneration(m) == 5 {
+			return EffortSpec("medium", "minimal", "low", "medium", "high")
+		}
+		// Any other gpt-5.x: unclassified, so no control and no parameter. These
+		// route to Chat Completions, which will not tool-call alongside any
+		// effort but "none" — so the levels we would have to guess at are
+		// precisely the ones that would stop the model calling a tool. Their own
+		// default effort is both correct and safe. Classify one here only with
+		// its documented set in hand, and route it to Responses if that set
+		// contains anything but "none".
+		return ThinkingSpec{}
 	}
 
 	// o-series reasoning models (o1, o3, o3-mini, o4-mini). These accept only

@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
 	"juggler/cmd/juggler/providers/openaibase"
@@ -141,8 +143,8 @@ func TestListModelsParsesCodexCatalog(t *testing.T) {
 	}
 	// Two visible catalog models, then the static entries the catalog did not
 	// return. gpt-5.5 is in both, and must not be listed twice.
-	if len(models) != 7 {
-		t.Fatalf("got %d models, want 7", len(models))
+	if len(models) != 8 {
+		t.Fatalf("got %d models, want 8", len(models))
 	}
 	if models[0].ID != "gpt-5.5" || models[0].ContextWindow != 272000 || models[0].MaxOutputTokens != 32768 || !models[0].FromAPI {
 		t.Fatalf("unexpected first model: %+v", models[0])
@@ -216,7 +218,7 @@ func TestListModelsParsesCodexCatalog(t *testing.T) {
 	for _, model := range models[2:] {
 		fallbackIDs[model.ID] = !model.FromAPI
 	}
-	for _, id := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4", "gpt-5.4-mini"} {
+	for _, id := range []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4", "gpt-5.4-mini"} {
 		if !fallbackIDs[id] {
 			t.Fatalf("missing static fallback %s in %+v", id, models)
 		}
@@ -237,6 +239,146 @@ func TestListModelsParsesCodexCatalog(t *testing.T) {
 				t.Fatalf("static fallback %s context window = %d, want %d", id, model.ContextWindow, catalogContextWindow)
 			}
 		}
+	}
+}
+
+// TestCodexClientVersionCoversEveryModel is the guard that makes knownModels a
+// safe place to add a slug. The catalog serves each row only to clients at or
+// above the minimal_client_version it declares, so a slug added without moving
+// codexClientVersion up is simply never returned — no error, no empty list, the
+// model just is not there. This test says so at the point of the edit.
+func TestCodexClientVersionCoversEveryModel(t *testing.T) {
+	for _, model := range knownModels {
+		if model.MinClientVersion == "" {
+			continue
+		}
+		if compareCodexVersions(codexClientVersion, model.MinClientVersion) < 0 {
+			t.Errorf("codexClientVersion = %q but %s needs >= %q — raise codexClientVersion to a real Codex release at or above it",
+				codexClientVersion, model.Slug, model.MinClientVersion)
+		}
+	}
+}
+
+// compareCodexVersions orders two dotted version strings numerically, so
+// "0.153.4" sorts above "0.99.0" where a string compare would not.
+func compareCodexVersions(a, b string) int {
+	partsA, partsB := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(partsA) || i < len(partsB); i++ {
+		var numA, numB int
+		if i < len(partsA) {
+			numA, _ = strconv.Atoi(partsA[i])
+		}
+		if i < len(partsB) {
+			numB, _ = strconv.Atoi(partsB[i])
+		}
+		if numA != numB {
+			return numA - numB
+		}
+	}
+	return 0
+}
+
+func TestCompareCodexVersions(t *testing.T) {
+	if compareCodexVersions("0.153.4", "0.99.0") <= 0 {
+		t.Error("0.153.4 must sort above 0.99.0 — the comparison is numeric, not lexical")
+	}
+	if compareCodexVersions("0.153.0", "0.153") != 0 || compareCodexVersions("0.153.4", "0.153.4") != 0 {
+		t.Error("equal versions must compare equal, with a missing trailing component read as zero")
+	}
+	if compareCodexVersions("0.152.9", "0.153.0") >= 0 {
+		t.Error("0.152.9 must sort below 0.153.0")
+	}
+}
+
+// TestListModelsAdmitsKnownHiddenModels covers GPT-6 Astra, which the catalog
+// ships as visibility "hide": configurable through the API but deliberately
+// absent from Codex's own picker. Juggler lists the slugs it knows about, so a
+// hidden row for a known slug is admitted with its live metadata intact, while
+// a hidden row for anything else stays out of the picker.
+func TestListModelsAdmitsKnownHiddenModels(t *testing.T) {
+	originalBaseURL := baseURL
+	baseURL = ""
+	t.Cleanup(func() { baseURL = originalBaseURL })
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"models": [
+				{"slug":"gpt-6-astra","visibility":"hide","context_window":272000,"max_context_window":872000,"priority":1,
+					"default_reasoning_level":"low",
+					"supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],
+					"service_tiers":[{"id":"priority","name":"Fast","description":"2x speed, increased usage"},{"id":"ultrafast","name":"Ultrafast","description":"The fastest available responses for latency-sensitive work."}],
+					"default_service_tier":null},
+				{"slug":"internal-eval-model","visibility":"hide","context_window":272000,"priority":2},
+				{"slug":"gpt-5.5","visibility":"list","context_window":272000,"priority":3}
+			]
+		}`))
+	}))
+	defer server.Close()
+	baseURL = server.URL
+
+	models, err := listModels(context.Background(), "token", nil)
+	if err != nil {
+		t.Fatalf("listModels: %v", err)
+	}
+	byID := make(map[string]provider.ModelInfo, len(models))
+	for _, m := range models {
+		byID[m.ID] = m
+	}
+
+	astra, ok := byID["gpt-6-astra"]
+	if !ok {
+		t.Fatalf("gpt-6-astra missing from %+v", models)
+	}
+	// Admitted from the live row, not manufactured by the static stand-in: the
+	// catalog is authoritative wherever it speaks.
+	if !astra.FromAPI {
+		t.Fatalf("gpt-6-astra = %+v, want the live catalog entry rather than the static stand-in", astra)
+	}
+	if astra.ContextWindow != 872000 {
+		t.Fatalf("gpt-6-astra ContextWindow = %d, want 872000 (max_context_window)", astra.ContextWindow)
+	}
+	wantLevels := []string{"low", "medium", "high", "xhigh", "max", "ultra"}
+	if !slices.Equal(astra.ThinkingLevels, wantLevels) || astra.DefaultThinkingLevel != "low" {
+		t.Fatalf("gpt-6-astra reasoning = %v/%q, want API-declared %v with default low", astra.ThinkingLevels, astra.DefaultThinkingLevel, wantLevels)
+	}
+	if len(astra.ServiceTiers) != 2 || astra.ServiceTiers[0].ID != "priority" || astra.ServiceTiers[1].ID != "ultrafast" {
+		t.Fatalf("gpt-6-astra service tiers = %+v, want the catalog's priority and ultrafast entries", astra.ServiceTiers)
+	}
+	// The wire gates read through these caches, so an admitted hidden model must
+	// be able to send the effort and tier it just advertised.
+	if got := codexThinkingSpec("gpt-6-astra").Options(); !slices.Equal(got, wantLevels) {
+		t.Fatalf("codexThinkingSpec(gpt-6-astra) = %v, want the cached API levels", got)
+	}
+	if got := codexServiceTierSpec("gpt-6-astra"); len(got.Tiers) != 2 {
+		t.Fatalf("codexServiceTierSpec(gpt-6-astra) = %+v, want the cached tiers", got)
+	}
+	// A hidden slug we do not ship stays hidden — admitting the catalog's whole
+	// hidden section would put internal and evaluation models in the picker.
+	if _, listed := byID["internal-eval-model"]; listed {
+		t.Fatalf("internal-eval-model was admitted from a hidden catalog row: %+v", models)
+	}
+}
+
+// TestKnownModelsDriveEverything checks that the one table is in fact the one
+// place to edit: the map the settings UI and the static fallbacks read is
+// derived from it, entry for entry.
+func TestKnownModelsDriveEverything(t *testing.T) {
+	if len(ModelContextWindows) != len(knownModels) {
+		t.Fatalf("ModelContextWindows has %d entries for %d known models — it must be derived, not maintained alongside", len(ModelContextWindows), len(knownModels))
+	}
+	for _, model := range knownModels {
+		window, ok := ModelContextWindows[model.Slug]
+		if !ok {
+			t.Errorf("%s is not in ModelContextWindows, so it is unselectable while signed out", model.Slug)
+			continue
+		}
+		if window != model.ContextWindow || window <= 0 {
+			t.Errorf("%s window = %d, want the table's %d", model.Slug, window, model.ContextWindow)
+		}
+	}
+	if _, ok := ModelContextWindows["gpt-6-astra"]; !ok {
+		t.Error("gpt-6-astra is missing from the ChatGPT-plan model list")
 	}
 }
 

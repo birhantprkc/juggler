@@ -27,17 +27,51 @@ const (
 	catalogContextWindow = 272000
 )
 
-// ModelContextWindows mirrors the ChatGPT-plan catalog's visible slugs. It
-// serves the providers settings UI via ProviderInfo.ModelContextWindows and
-// backs withStaticFallbackModels, so it is the entire model list a user sees
-// while signed out or when /models is unreachable. A slug the catalog has
-// retired must be removed from here: left in place it stays selectable long
-// after the backend stops accepting it.
-var ModelContextWindows = map[string]int{
-	"gpt-5.6-sol":   catalogContextWindow,
-	"gpt-5.6-terra": catalogContextWindow,
-	"gpt-5.6-luna":  catalogContextWindow,
-	"gpt-5.5":       catalogContextWindow,
-	"gpt-5.4":       catalogContextWindow,
-	"gpt-5.4-mini":  catalogContextWindow,
+// knownModel is one slug Juggler lists for the ChatGPT plan.
+type knownModel struct {
+	// Slug is the catalog's model id, verbatim.
+	Slug string
+
+	// ContextWindow is the admission limit used only when the live catalog is
+	// unreachable or the user is signed out; a live row always overrides it.
+	ContextWindow int
+
+	// MinClientVersion is the minimal_client_version the catalog declares for
+	// this slug, or "" for a slug old enough to carry no minimum. The catalog
+	// withholds a row from any client older than this, and says nothing about
+	// having done so, which is why codexClientVersion must be at or above every
+	// value here — TestCodexClientVersionCoversEveryModel is what says so.
+	MinClientVersion string
+}
+
+// knownModels is the ChatGPT-plan model list, and the one place to edit when
+// the catalog gains or retires a model. Everything else is derived from it: the
+// windows the settings UI shows, the static entries a signed-out user picks
+// from, and which slugs may be admitted from a hidden catalog row (admitModel).
+//
+// Adding a model is one line, with two things to get right in it:
+//   - Copy MinClientVersion from the catalog's record for that slug. If it is
+//     above codexClientVersion, raise that too — the tests will tell you.
+//   - A slug the catalog has retired must be deleted from here. Left in place
+//     it stays selectable long after the backend stops accepting it.
+var knownModels = []knownModel{
+	{Slug: "gpt-6-astra", ContextWindow: catalogContextWindow, MinClientVersion: "0.153.0"},
+	{Slug: "gpt-5.6-sol", ContextWindow: catalogContextWindow},
+	{Slug: "gpt-5.6-terra", ContextWindow: catalogContextWindow},
+	{Slug: "gpt-5.6-luna", ContextWindow: catalogContextWindow},
+	{Slug: "gpt-5.5", ContextWindow: catalogContextWindow},
+	{Slug: "gpt-5.4", ContextWindow: catalogContextWindow},
+	{Slug: "gpt-5.4-mini", ContextWindow: catalogContextWindow},
+}
+
+// ModelContextWindows is knownModels in the shape the provider descriptor and
+// the settings UI consume, via ProviderInfo.ModelContextWindows.
+var ModelContextWindows = knownModelContextWindows()
+
+func knownModelContextWindows() map[string]int {
+	windows := make(map[string]int, len(knownModels))
+	for _, model := range knownModels {
+		windows[model.Slug] = model.ContextWindow
+	}
+	return windows
 }

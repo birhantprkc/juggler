@@ -19,7 +19,12 @@ import (
 var baseURL = "https://chatgpt.com/backend-api/codex"
 
 const (
-	codexClientVersion = "0.144.1"
+	// codexClientVersion is the Codex client version announced to /models. The
+	// catalog gates rows on it: each model declares a minimal_client_version and
+	// is simply omitted from the response for anything older, with no error to
+	// notice — the model just never appears. gpt-6-astra requires 0.153.0, so
+	// this must not be moved backwards past the oldest slug we list.
+	codexClientVersion = "0.153.4"
 )
 
 // Register adds the OpenAI Codex-plan provider to the global registry. It
@@ -71,7 +76,7 @@ type codexModel struct {
 
 	// ServiceTiers is the backend's declaration of the non-standard serving
 	// classes this model offers, carrying its own id, label and blurb (e.g.
-	// {"priority", "Fast", "1.5x speed, increased usage"}). It is the sole
+	// {"priority", "Fast", "2x speed, increased usage"}). It is the sole
 	// authority for what may be requested: a tier absent here is not offered
 	// and never sent. DefaultServiceTier is the backend's declared default and
 	// is displayed, never applied — see ServiceTierSpec.tierFor.
@@ -172,6 +177,26 @@ func thinkingSpecFromCatalog(model codexModel) openaibase.ThinkingSpec {
 	return openaibase.ThinkingSpec{Levels: levels, Default: model.DefaultReasoningLevel}
 }
 
+// admitModel decides whether a catalog row becomes a selectable model.
+//
+// `visibility` gates the picker, not the model: "list" is the catalog's own
+// front page, while "hide" marks a model that is fully usable but which Codex
+// declines to show — gpt-6-astra ships that way, configurable by name only.
+// Admitting every hidden row instead would put the catalog's internal and
+// evaluation entries in front of users, so the second gate is our own list:
+// a hidden model is admitted when it is a slug we ship in ModelContextWindows.
+//
+// This only decides admission. Everything about an admitted model — its
+// windows, reasoning levels, serving classes — still comes from the live row,
+// which stays the sole authority wherever it speaks.
+func admitModel(model codexModel) bool {
+	if model.Visibility == "list" {
+		return true
+	}
+	_, known := ModelContextWindows[model.Slug]
+	return known
+}
+
 func listModels(ctx context.Context, bearerToken string, headers map[string]string) ([]provider.ModelInfo, error) {
 	endpoint, err := url.Parse(baseURL + "/models")
 	if err != nil {
@@ -198,7 +223,7 @@ func listModels(ctx context.Context, bearerToken string, headers map[string]stri
 	specs := make(map[string]openaibase.ThinkingSpec, len(parsed.Models))
 	tierSpecs := make(map[string]openaibase.ServiceTierSpec, len(parsed.Models))
 	for _, model := range parsed.Models {
-		if model.Slug == "" || model.Visibility != "list" {
+		if model.Slug == "" || !admitModel(model) {
 			continue
 		}
 		// The catalog states two windows, and they mean different things.

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"juggler/cmd/juggler/providers/provider"
@@ -398,11 +399,51 @@ func NewClientFromProviderConfig(cfg provider.Config, baseURL string, quirks Qui
 	})
 }
 
-// IsResponsesAPIModel returns true if the model requires the Responses API instead of Chat Completions.
+// GPTGeneration parses the generation number out of an OpenAI `gpt-<version>`
+// model id: "gpt-6-astra" → 6, "gpt-5.6-sol" → 5.6, "gpt-4o" → 4,
+// "gpt-3.5-turbo" → 3.5. Anything that is not a gpt-<version> id — "o3",
+// "gpt-oss-120b", "chatgpt-4o-latest", a third party's slug — returns 0.
+//
+// Capability questions about OpenAI's own line are asked in generations rather
+// than by listing slugs, because the slugs are unknowable in advance: the
+// codename after the number changes every release (sol, terra, luna, astra) and
+// a list of them is a list that is out of date the day a model ships. The
+// number is the part that carries the meaning.
+func GPTGeneration(model string) float64 {
+	rest, ok := strings.CutPrefix(strings.ToLower(model), "gpt-")
+	if !ok {
+		return 0
+	}
+	end := 0
+	for end < len(rest) && (rest[end] == '.' || (rest[end] >= '0' && rest[end] <= '9')) {
+		end++
+	}
+	version, err := strconv.ParseFloat(strings.TrimSuffix(rest[:end], "."), 64)
+	if err != nil {
+		return 0
+	}
+	return version
+}
+
+// responsesAPIGeneration is the OpenAI generation from which a tool-calling
+// client must use the Responses API.
+//
+// Chat Completions still accepts these models, so getting this wrong does not
+// look like a failure: the model answers normally and simply never calls a
+// tool. What it cannot do there is combine tools with a reasoning effort, which
+// is every turn Juggler sends.
+const responsesAPIGeneration = 5.6
+
+// IsResponsesAPIModel returns true if the model requires the Responses API
+// instead of Chat Completions: any codex id, and any OpenAI model from
+// responsesAPIGeneration onwards. Asking the question by generation is what
+// lets a model released after this code shipped route correctly on the day it
+// appears, rather than falling to Chat Completions until someone notices.
 func IsResponsesAPIModel(model string) bool {
-	modelLower := strings.ToLower(model)
-	// Codex and GPT-5.6 model ids require the Responses API.
-	return strings.Contains(modelLower, "codex") || strings.HasPrefix(modelLower, "gpt-5.6")
+	if strings.Contains(strings.ToLower(model), "codex") {
+		return true
+	}
+	return GPTGeneration(model) >= responsesAPIGeneration
 }
 
 // usesResponsesAPI reports whether this client's calls route through the

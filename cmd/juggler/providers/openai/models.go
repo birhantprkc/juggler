@@ -14,6 +14,14 @@ var ModelContextWindows = map[string]int{
 	"gpt-5-mini": 400000,
 	"gpt-5-nano": 400000,
 
+	// GPT-6 Series (1.05M total: 922K input + 128K output)
+	"gpt-6-astra": 1050000,
+
+	// GPT-5.4 / 5.5 Series (1.05M total; the mini is 400K: 272K input + 128K output)
+	"gpt-5.5":      1050000,
+	"gpt-5.4":      1050000,
+	"gpt-5.4-mini": 400000,
+
 	// GPT-5.6 Series (1.05M total: 922K input + 128K output)
 	"gpt-5.6":          1050000,
 	"gpt-5.6-sol":      1050000,
@@ -44,6 +52,14 @@ var ModelContextWindows = map[string]int{
 
 // ModelMaxOutputTokens maps OpenAI model names to their max output tokens
 var ModelMaxOutputTokens = map[string]int{
+	// GPT-6 Series
+	"gpt-6-astra": 128000,
+
+	// GPT-5.4 / 5.5 Series
+	"gpt-5.5":      128000,
+	"gpt-5.4":      128000,
+	"gpt-5.4-mini": 128000,
+
 	// GPT-5 Series
 	"gpt-5":            128000,
 	"gpt-5-mini":       128000,

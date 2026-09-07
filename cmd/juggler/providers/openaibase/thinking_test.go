@@ -40,9 +40,24 @@ func TestOpenAIThinkingSpec(t *testing.T) {
 			model:      "o3-mini",
 			wantLevels: []string{"low", "medium", "high"},
 		},
+		{
+			// GPT-6 Astra: its own set. Lowest tier is "low" — it accepts no
+			// "none" at all — and it reaches beyond "high" to xhigh and max.
+			model:       "gpt-6-astra",
+			wantLevels:  []string{"low", "medium", "high", "xhigh", "max"},
+			wantDefault: "low",
+		},
 		{model: "gpt-4o", noControl: true},
 		{model: "gpt-3.5-turbo", noControl: true},
 		{model: "o1-mini", noControl: true}, // no reasoning_effort
+		// The generations between the "minimal" era and 5.6 are deliberately
+		// unclassified: they run at their own default effort. Offering a level
+		// here means sending one, and every level these models accept other
+		// than "none" is a combination Chat Completions refuses to tool-call
+		// with. No control, no parameter, no refusal.
+		{model: "gpt-5.4", noControl: true},
+		{model: "gpt-5.4-mini", noControl: true},
+		{model: "gpt-5.5", noControl: true},
 	}
 	for _, tc := range cases {
 		spec := OpenAIThinkingSpec(tc.model)
@@ -72,6 +87,14 @@ func TestThinkingSpecOptions(t *testing.T) {
 	}
 	if opts := OpenAIThinkingSpec("gpt-4o").Options(); len(opts) != 0 {
 		t.Errorf("gpt-4o: options = %+v, want none", opts)
+	}
+	// An unclassified model must send no reasoning_effort whatever the turn
+	// asks for: effortFor is the gate, and its answer for a level nobody
+	// advertised is "omit the parameter".
+	for _, level := range []string{"minimal", "none", "low", "medium", "high", "xhigh", ""} {
+		if effort, ok := OpenAIThinkingSpec("gpt-5.5").effortFor(level); ok {
+			t.Errorf("gpt-5.5 sent reasoning_effort %q for level %q, want the parameter omitted", effort, level)
+		}
 	}
 }
 
