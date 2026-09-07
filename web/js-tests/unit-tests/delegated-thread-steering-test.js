@@ -41,7 +41,7 @@ function threadWithFields(fields) {
   const conversation = /** @type {any} */ ({
     session: {},
     findParentContainer: () => null,
-    _doc: { metadata: { get: () => 'default' } }
+    getMetadata: () => 'default'
   });
   return new MessageThread(conversation, container, 'thread-1');
 }

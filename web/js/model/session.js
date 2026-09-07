@@ -665,7 +665,66 @@ class Session {
     for (const [id, conv] of this.conversations) {
       if (!next.has(id)) next.set(id, conv);
     }
-    this.conversations = next;
+    this._replaceConversations(next);
+  }
+
+  /**
+   * Swap the active map's contents for `next` without replacing the Map itself.
+   *
+   * The rebuild above runs on every insert and reorder, and one of those inserts
+   * happens with a conversation's worker still spawning — so the map is rebuilt
+   * under callers that are mid-await. Keeping the Map object identity means such
+   * a caller holds a live view of the tab bar rather than a snapshot of the order
+   * it was inserted into.
+   * @param {Map<string, any>} next - New contents, in their new order
+   * @private
+   */
+  _replaceConversations(next) {
+    this.conversations.clear();
+    for (const [id, conv] of next) this.conversations.set(id, conv);
+  }
+
+  /**
+   * Take ownership of a conversation this session did not build itself.
+   *
+   * The worker manager constructs a Conversation and must have it findable in
+   * the active map BEFORE it spawns the worker (the first yjs-sync arrives
+   * immediately), so the entry lands from outside — but the map is the tab-bar
+   * order and every mutation of it is taped, so it lands through here rather
+   * than by writing the Map directly. `atHead` puts the tab at the front of the
+   * bar, which is where a brand-new conversation belongs and where it must be
+   * from its first render, not after the spawn completes.
+   * @param {string} id - Conversation id
+   * @param {import('./conversation.js').default} conv - The conversation to insert
+   * @param {{atHead?: boolean, from?: string}} [opts] - `from` labels the tape entry
+   */
+  adoptConversation(id, conv, { atHead = false, from = 'adoptConversation' } = {}) {
+    recordTape('session-mut', id, { op: 'set', from });
+    if (atHead) {
+      this._setConversationOrder([id], new Map([[id, conv]]));
+    } else {
+      this.conversations.set(id, conv);
+    }
+  }
+
+  /**
+   * Drop an entry from the active map without tearing anything down.
+   *
+   * For a conversation that never finished arriving — an auto-load that came
+   * back without metadata, say — where the entry is expected to be re-made on
+   * the next sync. A conversation that really is going away goes through
+   * {@link Session#releaseConversation} or the delete/bin paths instead: those
+   * destroy the worker and the document, which this deliberately does not, and
+   * the MRU list is left alone here for the same reason.
+   * @param {string} id - Conversation id
+   * @param {string} [from] - Label for the tape entry
+   * @returns {boolean} True if an entry was dropped
+   */
+  forgetConversation(id, from = 'forgetConversation') {
+    if (!this.conversations.has(id)) return false;
+    recordTape('session-mut', id, { op: 'delete', from });
+    this.conversations.delete(id);
+    return true;
   }
 
   /**
@@ -2117,9 +2176,10 @@ class Session {
       return false;
     }
 
-    // Delete and re-add to move to end (Map maintains insertion order)
-    this.conversations.delete(conversationId);
-    this.conversations.set(conversationId, conv);
+    // Every other id in its current order, then this one last.
+    const order = Array.from(this.conversations.keys()).filter(id => id !== conversationId);
+    order.push(conversationId);
+    this._setConversationOrder(order);
 
     this._notify('conversation:reordered', { conversationId, beforeId: null });
 
@@ -2429,9 +2489,9 @@ class Session {
     const arrivals = Array.from(this.conversations)
       .filter(([id]) => !reordered.has(id) && !knownAtEntry.has(id));
 
-    this.conversations = arrivals.length > 0
+    this._replaceConversations(arrivals.length > 0
       ? new Map([...arrivals, ...reordered])
-      : reordered;
+      : reordered);
 
     // Announce each newly-loaded conv so subscribers (notably the
     // conversation-bar) build the inner <conversation-tab> host element.

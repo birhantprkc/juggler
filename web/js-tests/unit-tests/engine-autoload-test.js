@@ -40,7 +40,14 @@ function probeManager() {
   const wm = /** @type {any} */ (new WorkerManager());
   let attempts = 0;
   let shouldFail = true;
-  wm._session = { conversations: new Map() };
+  wm._session = {
+    conversations: new Map(),
+    /**
+     * @param {string} id - Conversation to drop from the map.
+     * @returns {boolean} True if an entry was dropped.
+     */
+    forgetConversation(id) { return this.conversations.delete(id); },
+  };
   wm.loadExistingConversation = async () => {
     attempts++;
     if (shouldFail) throw new Error('worker not ready');

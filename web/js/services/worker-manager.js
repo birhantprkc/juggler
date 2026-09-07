@@ -1636,17 +1636,10 @@ export class WorkerManager {
 
       // CRITICAL: Add to session BEFORE spawning worker. Worker sends yjs-sync
       // messages immediately and the message handler needs to find the
-      // conversation. Insert at the TOP (mutating in place so callers holding
-      // a reference to session.conversations stay valid) — any render that
-      // fires while the worker is still spawning (broadcast echo, etc.) then
-      // sees the new tab in its final position rather than briefly painting
-      // it at the end of the bar.
-      const existingEntries = Array.from(session.conversations.entries());
-      session.conversations.clear();
-      session.conversations.set(id, conversation);
-      for (const [cid, c] of existingEntries) {
-        if (cid !== id) session.conversations.set(cid, c);
-      }
+      // conversation. It goes in at the TOP, so any render that fires while the
+      // worker is still spawning (broadcast echo, etc.) sees the new tab in its
+      // final position rather than briefly painting it at the end of the bar.
+      session.adoptConversation(id, conversation, { atHead: true, from: '_doCreateNew' });
 
       // 2. Spawn worker with full metadata (LoadFromDisk: false)
       const workerInit = conversation.getWorkerInitData();
@@ -1780,9 +1773,9 @@ export class WorkerManager {
           services,
           { skipBuiltInContextItems: true }
         );
-        // Must be in session.conversations before _spawnWorker — yjs-sync
-        // messages from the worker arrive immediately and need to find it.
-        session.conversations.set(conversationId, conversation);
+        // Must be in the session before _spawnWorker — yjs-sync messages from
+        // the worker arrive immediately and need to find it.
+        session.adoptConversation(conversationId, conversation, { from: '_doLoadExisting' });
       }
 
       // 3. Spawn worker with LoadFromDisk flag
@@ -2005,7 +1998,7 @@ export class WorkerManager {
         // ready without metadata. Drop the stub so the next yjs-sync
         // re-triggers autoload — by then the worker is initialized and our
         // init takes the "Client attached" path with metadata.
-        if (this._session) this._session.conversations.delete(conversationId);
+        this._session?.forgetConversation(conversationId, 'engine-auto-load-failed');
       } finally {
         this._pendingAutoLoads.delete(conversationId);
       }

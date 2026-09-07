@@ -112,8 +112,7 @@ export default class MessageThread {
   get ownModelConfig() {
     if (!this.threadItemId) {
       // Root thread — own config is the conversation-level DEFAULT metadata.
-      const meta = this.conversation._doc.metadata;
-      const config = meta.get('defaultModelConfig');
+      const config = this.conversation.getMetadata('defaultModelConfig');
       return config !== undefined ? config : null;
     }
     const raw = this.container.get('modelConfig');
@@ -133,16 +132,15 @@ export default class MessageThread {
   set modelConfig(value) {
     if (!this.threadItemId) {
       // Root thread — write the conversation-level DEFAULT metadata.
-      this.conversation._doc.setMetadata('defaultModelConfig', value);
+      this.conversation.setMetadata('defaultModelConfig', value);
     } else {
-      const doc = this.conversation._doc.doc;
-      doc.transact(() => {
+      this.transact(() => {
         if (value === null || value === undefined) {
           this.container.delete('modelConfig');
         } else {
           this.container.set('modelConfig', convertToYType(value));
         }
-      }, this.conversation._doc.authorId);
+      });
     }
   }
 
@@ -166,7 +164,7 @@ export default class MessageThread {
       itemId = parent.get('itemId');
     }
     // Root level — conversation-level DEFAULT (`defaultModelConfig`).
-    const config = this.conversation._doc.metadata.get('defaultModelConfig');
+    const config = this.conversation.getMetadata('defaultModelConfig');
     return config !== undefined ? config : null;
   }
 
@@ -191,7 +189,7 @@ export default class MessageThread {
       container = parent;
       itemId = parent.get('itemId');
     }
-    const meta = this.conversation._doc.metadata.get('currentStrategyId');
+    const meta = this.conversation.getMetadata('currentStrategyId');
     return meta ? /** @type {string} */ (meta) : 'default';
   }
 
@@ -225,7 +223,7 @@ export default class MessageThread {
   get draft() {
     const raw = this.threadItemId
       ? this.container.get('draft')
-      : this.conversation._doc.metadata.get('draft');
+      : this.conversation.getMetadata('draft');
     return normalizeDraft(raw);
   }
 
@@ -256,19 +254,18 @@ export default class MessageThread {
     if (scheduledSendAt !== null) record.scheduledSendAt = scheduledSendAt;
     if (scheduledSendMode === 'turn-end') record.scheduledSendMode = scheduledSendMode;
     if (this.threadItemId) {
-      const doc = this.conversation._doc.doc;
-      doc.transact(() => {
+      this.transact(() => {
         if (empty) {
           this.container.delete('draft');
         } else {
           this.container.set('draft', convertToYType(record));
         }
-      }, this.conversation._doc.authorId);
+      });
     } else {
       // Root: conversation metadata. No metadata-delete exists, so an empty
       // draft is stored as the empty record (matching the prior empty-string
       // behaviour) rather than deleted.
-      this.conversation._doc.setMetadata('draft', empty ? { text: '', attachments: [], textFiles: [], pasteBlobs: [] } : record);
+      this.conversation.setMetadata('draft', empty ? { text: '', attachments: [], textFiles: [], pasteBlobs: [] } : record);
     }
   }
 
@@ -288,11 +285,10 @@ export default class MessageThread {
   ensureYarray() {
     let arr = this.container.get('items');
     if (!arr) {
-      const doc = this.conversation._doc.doc;
       arr = new Y.Array();
-      doc.transact(() => {
+      this.transact(() => {
         this.container.set('items', arr);
-      }, this.conversation._doc.authorId);
+      });
     }
     return arr;
   }
@@ -596,8 +592,7 @@ export default class MessageThread {
       const idx = raw.findIndex((/** @type {any} */ it) =>
         it && typeof it.get === 'function' && it.get('itemId') === id);
       if (idx >= 0) {
-        const doc = this.conversation._doc.doc;
-        doc.transact(() => { pendingArr.delete(idx, 1); }, this.conversation._doc.authorId);
+        this.transact(() => { pendingArr.delete(idx, 1); });
         return true;
       }
     }
@@ -699,7 +694,10 @@ export default class MessageThread {
 
   /**
    * Run a function inside a Yjs transaction with proper author attribution.
-   * This is the public API for plugins that need atomic multi-step mutations.
+   * This is the public API for plugins that need atomic multi-step mutations,
+   * and the route every mutation in this class takes: the document is the
+   * conversation's, so `Conversation.atomicUpdate` is the only sanctioned way
+   * to write it and this is that door for thread-scoped code.
    * @plugin-api
    * @param {() => void} fn - Function to execute inside the transaction
    */
@@ -783,13 +781,12 @@ export default class MessageThread {
   updateItemField(index, field, value) {
     const yarray = this.ensureYarray();
     if (index < 0 || index >= yarray.length) return;
-    const doc = this.conversation._doc.doc;
-    doc.transact(() => {
+    this.transact(() => {
       const ymap = yarray.get(index);
       if (ymap instanceof Y.Map) {
         ymap.set(field, convertToYType(value));
       }
-    }, this.conversation._doc.authorId);
+    });
   }
 
   // ── Event/message operations ──────────────────────────────────────
@@ -899,7 +896,6 @@ export default class MessageThread {
     const yarray = this.ensureYarray();
     const index = this.items.findIndex(item => item.get('toolUseId') === toolUseId);
     if (index >= 0 && index < yarray.length) {
-      const doc = this.conversation._doc.doc;
       const finalState = result.cancelled ? TOOL_STATES.CANCELLED : TOOL_STATES.COMPLETED;
       // A tool that returned images passes AssetRefs on `result.attachments`.
       // Store them at the item level (the same field user attachments use) so
@@ -922,7 +918,7 @@ export default class MessageThread {
       }
       // Set state and result atomically so the observer (and the Go worker)
       // never see state=completed/cancelled without a result, or vice versa.
-      doc.transact(() => {
+      this.transact(() => {
         const ymap = yarray.get(index);
         if (ymap instanceof Y.Map) {
           ymap.set('state', finalState);
@@ -938,7 +934,7 @@ export default class MessageThread {
             ymap.set('displayData', convertToYType(promotedDisplayData));
           }
         }
-      }, this.conversation._doc.authorId);
+      });
     }
   }
 
@@ -949,8 +945,7 @@ export default class MessageThread {
    * @param {{ifState?: string}} [options] - Optional CAS on current state
    */
   updateToolActionState(toolUseId, state, { ifState } = {}) {
-    const doc = this.conversation._doc.doc;
-    doc.transact(() => {
+    this.transact(() => {
       const items = this.items;
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
@@ -960,7 +955,7 @@ export default class MessageThread {
           break;
         }
       }
-    }, this.conversation._doc.authorId);
+    });
   }
 
   /**
@@ -1016,9 +1011,8 @@ export default class MessageThread {
 
     // Write state + result in a single transaction so the Go worker never sees
     // state=cancelled without a result (races checkToolsComplete otherwise).
-    const doc = this.conversation._doc.doc;
     let written = false;
-    doc.transact(() => {
+    this.transact(() => {
       const ymap = yarray.get(index);
       if (!(ymap instanceof Y.Map)) return;
 
@@ -1050,7 +1044,7 @@ export default class MessageThread {
         }));
       }
       written = true;
-    }, this.conversation._doc.authorId);
+    });
     return written;
   }
 
@@ -1387,14 +1381,13 @@ export default class MessageThread {
    */
   insertThread(index, threadData, initialItems = []) {
     const seed = contextItemHelpers.buildThreadInitialItems({ initialItems });
-    const doc = this.conversation._doc.doc;
     /** @type {*} */
     let nestedItems = null;
-    doc.transact(() => {
+    this.transact(() => {
       const ymap = this.buildThreadYMap(threadData, seed);
       this.ensureYarray().insert(index, [ymap]);
       nestedItems = ymap.get('items');
-    }, this.conversation._doc.authorId);
+    });
     return nestedItems;
   }
 
@@ -1440,10 +1433,9 @@ export default class MessageThread {
       // engine's approval gate (getApprovalPolicy) sees the sub-thread strategy.
       // No metadata observer fires for a thread-map write, so rebuild this
       // instance's strategy inline to keep the bound selector consistent.
-      const doc = this.conversation._doc.doc;
-      doc.transact(() => {
+      this.transact(() => {
         this.container.set('currentStrategyId', strategyId);
-      }, this.conversation._doc.authorId);
+      });
       this.currentStrategyId = strategyId;
       this.strategy = strategyRegistry.createStrategy(strategyId, this);
       return;
@@ -1451,7 +1443,7 @@ export default class MessageThread {
 
     // Root: pure metadata write — the metadata observer handles strategy
     // instance creation and notification.
-    this.conversation._doc.setMetadata('currentStrategyId', strategyId);
+    this.conversation.setMetadata('currentStrategyId', strategyId);
   }
 
   // ── Permissions ──────────────────────────────────────────────────

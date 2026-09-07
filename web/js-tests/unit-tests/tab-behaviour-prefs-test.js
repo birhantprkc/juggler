@@ -32,7 +32,7 @@
  * resolves).
  *
  * The bump half runs `Session.prototype.bumpConversation` against a minimal
- * stand-in `this` (a conversations Map plus the real `_setConversationOrder`),
+ * stand-in `this` (a conversations Map plus the real order-rebuild methods),
  * so it pins the gate without a live session, worker, or server round-trip.
  * @module unit-tests/tab-behaviour-prefs-test
  */
@@ -107,6 +107,7 @@ function fakeSession(ids) {
     notifies: 0,
     _isConvBusy: Session.prototype._isConvBusy,
     _setConversationOrder: Session.prototype._setConversationOrder,
+    _replaceConversations: Session.prototype._replaceConversations,
     _notify() { this.notifies++; },
     _persistOrder() { this.persists++; },
   };
