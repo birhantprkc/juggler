@@ -1054,8 +1054,9 @@ export async function webFetch(params, signal) {
 /**
  * Parameters for web search operation (backend CORS proxy)
  * @typedef {object} WebSearchParams
- * @property {string} url - The URL to fetch
- * @property {string} [method] - HTTP method (GET or POST)
+ * @property {string} url - The URL to fetch. Must be an absolute http/https URL
+ *   on a public host; private, loopback and link-local targets are refused.
+ * @property {string} [method] - HTTP method (GET or POST; nothing else)
  * @property {Record<string, string>} [form_data] - Form data for POST requests
  */
 
@@ -1065,6 +1066,7 @@ export async function webFetch(params, signal) {
  * @property {string} url - The URL that was fetched
  * @property {string} content - Raw response content (HTML or JSON)
  * @property {number} status - HTTP status code
+ * @property {boolean} truncated - Whether the body was cut at the size cap
  */
 
 /**

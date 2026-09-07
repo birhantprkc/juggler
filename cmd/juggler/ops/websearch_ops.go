@@ -12,8 +12,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	"juggler/internal/httpx"
 )
 
 // WebSearchOperations handles web search functionality
@@ -38,7 +36,14 @@ func (ops *WebSearchOperations) Execute(ctx context.Context, operation string, p
 	}
 }
 
-// search acts as a CORS proxy - frontend passes URL, we fetch and return raw content
+// searchMethods are the two verbs a search endpoint needs: GET for a query
+// string, POST for a form. The proxy is not a general-purpose HTTP client — the
+// `http` op is, and it is the one with the parameters to be trusted with more.
+var searchMethods = map[string]bool{http.MethodGet: true, http.MethodPost: true}
+
+// search acts as a CORS proxy - frontend passes URL, we fetch and return raw
+// content. The URL comes from the caller, so it is held to the same posture as
+// every other fetching op (see http_guard.go).
 func (ops *WebSearchOperations) search(ctx context.Context, params map[string]any) (any, error) {
 	// Frontend passes the full search URL
 	urlStr, ok := params["url"].(string)
@@ -47,13 +52,25 @@ func (ops *WebSearchOperations) search(ctx context.Context, params map[string]an
 	}
 
 	// For POST requests (DuckDuckGo), accept form data
-	method := "GET"
-	if m, ok := params["method"].(string); ok {
-		method = strings.ToUpper(m)
+	method := http.MethodGet
+	if raw, exists := params["method"]; exists {
+		text, valid := raw.(string)
+		method = strings.ToUpper(text)
+		if !valid || !searchMethods[method] {
+			return nil, fmt.Errorf("unsupported HTTP method")
+		}
+	}
+
+	parsedURL, err := parseFetchURL(urlStr)
+	if err != nil {
+		return nil, err
+	}
+	if err := validatePublicHTTPHost(ctx, parsedURL); err != nil {
+		return nil, err
 	}
 
 	var body io.Reader
-	if formData, ok := params["form_data"].(map[string]any); ok && method == "POST" {
+	if formData, ok := params["form_data"].(map[string]any); ok && method == http.MethodPost {
 		data := url.Values{}
 		for k, v := range formData {
 			data.Set(k, fmt.Sprintf("%v", v))
@@ -62,20 +79,23 @@ func (ops *WebSearchOperations) search(ctx context.Context, params map[string]an
 	}
 
 	// Create HTTP request
-	req, err := http.NewRequestWithContext(ctx, method, urlStr, body)
+	req, err := http.NewRequestWithContext(ctx, method, parsedURL.String(), body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	// Set headers
-	if method == "POST" {
+	if method == http.MethodPost {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
 	req.Header.Set("User-Agent", "Juggler/1.0 (AI Coding Assistant)")
 	req.Header.Set("Accept", "application/json, text/html, */*")
 
 	// Execute request (like webfetch does), proxy-aware.
-	client := httpx.Client(30 * time.Second)
+	client, err := newFetchClient(req, fetchClientOptions{timeout: 30 * time.Second})
+	if err != nil {
+		return nil, err
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch failed: %w", err)
@@ -87,14 +107,15 @@ func (ops *WebSearchOperations) search(ctx context.Context, params map[string]an
 	}
 
 	// Read and return raw response
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, truncated, err := readCappedBody(resp.Body, maxHTTPResponse)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	return map[string]any{
-		"url":     urlStr,
-		"content": string(bodyBytes),
-		"status":  resp.StatusCode,
+		"url":       urlStr,
+		"content":   string(bodyBytes),
+		"status":    resp.StatusCode,
+		"truncated": truncated,
 	}, nil
 }

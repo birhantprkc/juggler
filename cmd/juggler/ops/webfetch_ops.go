@@ -8,14 +8,10 @@ import (
 	"context"
 	"fmt"
 	"html"
-	"io"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strings"
 	"time"
-
-	"juggler/internal/httpx"
 )
 
 // WebFetchOperations handles web content fetching
@@ -113,21 +109,18 @@ func (ops *WebFetchOperations) fetch(ctx context.Context, params map[string]any)
 
 	prompt, _ := params["prompt"].(string)
 
-	// Validate URL
-	parsedURL, err := url.Parse(urlStr)
+	// Validate URL, upgrading HTTP to HTTPS
+	parsedURL, err := parseFetchURL(urlStr)
 	if err != nil {
-		return nil, fmt.Errorf("invalid URL: %w", err)
+		return nil, err
 	}
+	parsedURL.Scheme = "https"
+	urlStr = parsedURL.String()
 
-	// Upgrade HTTP to HTTPS
-	if parsedURL.Scheme == "http" {
-		parsedURL.Scheme = "https"
-		urlStr = parsedURL.String()
-	}
-
-	// Only allow http/https schemes
-	if parsedURL.Scheme != "https" {
-		return nil, fmt.Errorf("only https URLs are supported")
+	// Refuse a private destination before the cache is consulted, so a blocked
+	// URL neither reads a cached body nor stores one.
+	if err := validatePublicHTTPHost(ctx, parsedURL); err != nil {
+		return nil, err
 	}
 
 	// Check cache
@@ -145,23 +138,7 @@ func (ops *WebFetchOperations) fetch(ctx context.Context, params map[string]any)
 	}
 
 	// Fetch the URL
-	client := &http.Client{
-		Timeout:   30 * time.Second,
-		Transport: httpx.Transport(),
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			// Allow up to 10 redirects
-			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
-			}
-			// Check if redirect goes to a different host
-			if len(via) > 0 && req.URL.Host != via[0].URL.Host {
-				return fmt.Errorf("redirect to different host: %s", req.URL.String())
-			}
-			return nil
-		},
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -169,6 +146,21 @@ func (ops *WebFetchOperations) fetch(ctx context.Context, params map[string]any)
 	// Set a reasonable User-Agent
 	req.Header.Set("User-Agent", "Juggler/1.0 (AI Coding Assistant)")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7")
+
+	client, err := newFetchClient(req, fetchClientOptions{
+		timeout: 30 * time.Second,
+		checkRedirect: func(next *http.Request, via []*http.Request) error {
+			// A redirect off the requested host is reported back to the caller
+			// to fetch itself, rather than followed.
+			if len(via) > 0 && next.URL.Host != via[0].URL.Host {
+				return fmt.Errorf("redirect to different host: %s", next.URL.String())
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -191,15 +183,9 @@ func (ops *WebFetchOperations) fetch(ctx context.Context, params map[string]any)
 	}
 
 	// Read body with size limit
-	limitedReader := io.LimitReader(resp.Body, maxContentLength+1)
-	body, err := io.ReadAll(limitedReader)
+	body, truncated, err := readCappedBody(resp.Body, maxContentLength)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	truncated := len(body) > maxContentLength
-	if truncated {
-		body = body[:maxContentLength]
 	}
 
 	// Convert HTML to readable text/markdown

@@ -21,7 +21,9 @@
  * `treeGlob`, `grepSearch`, …). Import what you need by name; there is no bare
  * `fetch`/`search` (those would shadow web globals). Use `httpRequest` for
  * generic server-side HTTP, or `webFetch`/`webSearch` for the convenience
- * specialisations.
+ * specialisations. All three refuse private, loopback and link-local
+ * destinations; `httpRequest`'s `allowPrivateHosts` is the only way to reach a
+ * server on the machine or the network Juggler is running inside.
  */
 export {
   OpsError,

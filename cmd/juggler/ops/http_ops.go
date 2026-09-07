@@ -8,15 +8,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"net/textproto"
-	"net/url"
 	"strings"
 	"time"
-
-	"juggler/internal/httpx"
 )
 
 const (
@@ -63,9 +58,9 @@ func (o *HTTPOperations) request(ctx context.Context, params map[string]any) (an
 	if !ok || urlString == "" {
 		return nil, fmt.Errorf("missing url parameter")
 	}
-	parsedURL, err := url.Parse(urlString)
-	if err != nil || parsedURL.Hostname() == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
-		return nil, fmt.Errorf("url must be an absolute HTTP or HTTPS URL")
+	parsedURL, err := parseFetchURL(urlString)
+	if err != nil {
+		return nil, err
 	}
 
 	body, ok := optionalString(params, "body")
@@ -91,7 +86,7 @@ func (o *HTTPOperations) request(ctx context.Context, params map[string]any) (an
 
 	if !allowPrivateHosts {
 		if err := validatePublicHTTPHost(ctx, parsedURL); err != nil {
-			return nil, err
+			return nil, withAllowPrivateHostsHint(err)
 		}
 	}
 
@@ -106,45 +101,29 @@ func (o *HTTPOperations) request(ctx context.Context, params map[string]any) (an
 		req.Header.Set(name, value)
 	}
 
-	transport := httpx.Transport()
-	if !allowPrivateHosts {
-		proxyURL, err := httpx.Proxy(req)
-		if err != nil {
-			return nil, fmt.Errorf("failed to resolve HTTP proxy: %w", err)
-		}
-		if proxyURL == nil {
-			transport.DialContext = publicDialContext
-		}
-	}
-	client := &http.Client{Timeout: timeout, Transport: transport}
-	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
-		if !followRedirects {
-			return http.ErrUseLastResponse
-		}
-		if len(via) >= 10 {
-			return fmt.Errorf("too many redirects")
-		}
-		if !allowPrivateHosts {
-			if err := validatePublicHTTPHost(next.Context(), next.URL); err != nil {
-				return err
+	client, err := newFetchClient(req, fetchClientOptions{
+		timeout:      timeout,
+		allowPrivate: allowPrivateHosts,
+		checkRedirect: func(*http.Request, []*http.Request) error {
+			if !followRedirects {
+				return http.ErrUseLastResponse
 			}
-		}
-		return nil
+			return nil
+		},
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("HTTP request failed: %w", err)
+		return nil, withAllowPrivateHostsHint(fmt.Errorf("HTTP request failed: %w", err))
 	}
 	defer resp.Body.Close()
 
-	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPResponse+1))
+	responseBody, truncated, err := readCappedBody(resp.Body, maxHTTPResponse)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read HTTP response: %w", err)
-	}
-	truncated := len(responseBody) > maxHTTPResponse
-	if truncated {
-		responseBody = responseBody[:maxHTTPResponse]
 	}
 
 	responseHeaders := make(map[string]string, len(resp.Header))
@@ -223,64 +202,11 @@ func validHTTPHeader(name, value string) bool {
 		!strings.ContainsAny(value, "\r\n")
 }
 
-func validatePublicHTTPHost(ctx context.Context, target *url.URL) error {
-	host := target.Hostname()
-	if strings.EqualFold(host, "localhost") {
-		return fmt.Errorf("private, loopback, and link-local hosts require allowPrivateHosts")
+// withAllowPrivateHostsHint names the parameter that waives the shared
+// blocked-destination rule. Only this op has one, so only this op says so.
+func withAllowPrivateHostsHint(err error) error {
+	if errors.Is(err, errPrivateHost) {
+		return fmt.Errorf("%w: set allowPrivateHosts to reach them", err)
 	}
-
-	var addresses []net.IP
-	if literal := net.ParseIP(host); literal != nil {
-		addresses = []net.IP{literal}
-	} else {
-		resolved, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-		if err != nil {
-			return fmt.Errorf("failed to resolve HTTP host: %w", err)
-		}
-		for _, address := range resolved {
-			addresses = append(addresses, address.IP)
-		}
-	}
-	if len(addresses) == 0 {
-		return fmt.Errorf("HTTP host resolved to no addresses")
-	}
-	for _, address := range addresses {
-		if !publicIPAddress(address) {
-			return fmt.Errorf("private, loopback, and link-local hosts require allowPrivateHosts")
-		}
-	}
-	return nil
-}
-
-func publicIPAddress(ip net.IP) bool {
-	return ip != nil && !ip.IsPrivate() && !ip.IsLoopback() &&
-		!ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() &&
-		!ip.IsUnspecified() && !ip.IsMulticast()
-}
-
-func publicDialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(address)
-	if err != nil {
-		return nil, fmt.Errorf("invalid HTTP address: %w", err)
-	}
-	resolved, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve HTTP host: %w", err)
-	}
-	if len(resolved) == 0 {
-		return nil, fmt.Errorf("HTTP host resolved to no addresses")
-	}
-	var dialer net.Dialer
-	var dialErrors []error
-	for _, address := range resolved {
-		if !publicIPAddress(address.IP) {
-			return nil, fmt.Errorf("private, loopback, and link-local hosts require allowPrivateHosts")
-		}
-		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(address.IP.String(), port))
-		if err == nil {
-			return conn, nil
-		}
-		dialErrors = append(dialErrors, err)
-	}
-	return nil, errors.Join(dialErrors...)
+	return err
 }
