@@ -4,7 +4,7 @@
 
 import { resolveAssetUrl, importModuleUrl } from '../utils/asset-url.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
-import { fetchJson } from '../services/http.js';
+import { fetchDisabledPluginIds } from '../services/extensions.js';
 
 /**
  * Extract the served URL from a capability descriptor. Tolerates a bare path
@@ -101,6 +101,17 @@ class BaseRegistry {
      * @protected
      */
     this._disabledItems = new Map();
+
+    /**
+     * The resolved disabled-id set from the last `_applyDisabledFilter` pass,
+     * kept so registration that happens AFTER init (registerClass — user slash
+     * commands, item-owned strategies) is filtered by the same set the
+     * module-loaded capabilities were. Empty until the first pass, which is the
+     * right default: nothing is known to be off yet.
+     * @type {Set<string>}
+     * @protected
+     */
+    this._disabledIds = new Set();
   }
 
   /**
@@ -232,39 +243,66 @@ class BaseRegistry {
   }
 
   /**
-   * Fetch disabled plugin IDs from config and move them to _disabledItems
+   * Fetch the disabled plugin ids from config and split the loaded capabilities
+   * between `items` (enabled) and `_disabledItems` (loaded but switched off).
+   *
+   * Idempotent, and it has to be: `init()` marks itself initialized only once it
+   * has finished, so two overlapping inits — app startup racing the
+   * `plugin-changed` broadcast that a config write triggers — both run this pass
+   * in full against one registry. It therefore moves capabilities BOTH ways and
+   * never rebuilds a map from scratch: re-deriving `_disabledItems` from `items`
+   * would lose every capability the previous pass had already moved out of
+   * `items`, leaving it in neither map. Such a capability is not enabled and not
+   * disabled but gone, and the catalog row it backs loses its id, its name and
+   * its toggle.
    * @private
    * @returns {Promise<void>}
    */
   async _applyDisabledFilter() {
     try {
-      const data = await fetchJson('/api/config/plugins', { fallback: null });
-      if (!data) return;
+      const disabledSet = await fetchDisabledPluginIds();
+      // Config unreachable and never yet read: leave the split exactly as it
+      // stands rather than guessing, so a blip can't switch anything on or off.
+      if (!disabledSet) return;
+      this._disabledIds = disabledSet;
 
-      const { disabled } = data;
-      if (!Array.isArray(disabled) || disabled.length === 0) return;
+      /**
+       * @param {string} id - Capability id
+       * @returns {boolean} Whether that capability is switched off
+       */
+      const isDisabled = (id) => this._isDisabledId(id, this.itemExtensions.get(id) ?? null);
 
-      const disabledSet = new Set(disabled);
-      this._disabledItems.clear();
-
-      // A capability is disabled when either its own id OR the id of the
-      // extension that provides it appears in the disabled set — so the catalog
-      // can disable a whole extension by listing its extension id, without
-      // enumerating every capability it bundles.
-      for (const [id, ItemClass] of this.items) {
-        const extId = this.itemExtensions.get(id);
-        if (disabledSet.has(id) || (extId && disabledSet.has(extId))) {
-          this._disabledItems.set(id, ItemClass);
-        }
-      }
-
-      for (const id of this._disabledItems.keys()) {
+      for (const [id, ItemClass] of [...this.items]) {
+        if (!isDisabled(id)) continue;
+        this._disabledItems.set(id, ItemClass);
         this.items.delete(id);
         console.info(`[${this.name}] Plugin "${id}" is disabled via config`);
+      }
+
+      for (const [id, ItemClass] of [...this._disabledItems]) {
+        if (isDisabled(id)) continue;
+        this._disabledItems.delete(id);
+        this.items.set(id, ItemClass);
       }
     } catch {
       // Config endpoint may not exist yet — silently skip
     }
+  }
+
+  /**
+   * Whether a capability is switched off for this project.
+   *
+   * A capability is disabled when either its OWN id or the id of the extension
+   * that provides it appears in the disabled set — so a whole extension is
+   * switched off by listing its extension id, without enumerating every
+   * capability it bundles.
+   * @param {string} id - Capability id
+   * @param {string|null} extensionId - Id of the providing extension, if any
+   * @returns {boolean} True when the capability should not be live
+   * @protected
+   */
+  _isDisabledId(id, extensionId) {
+    return this._disabledIds.has(id) || (!!extensionId && this._disabledIds.has(extensionId));
   }
 
   /**
@@ -320,9 +358,15 @@ class BaseRegistry {
    * This enforces the rule that a late-registered capability may never shadow a
    * module-loaded one (a user command can't shadow a built-in command; an
    * item-owned strategy can't shadow a file-based strategy).
+   *
+   * A class whose id the project has switched off is kept but not made live: it
+   * joins the disabled set, so the catalog lists it with a working toggle. That
+   * is a different outcome from a collision and is reported as one — `disabled`
+   * rather than `reason` — and it never enters the failed-module list, because
+   * being switched off is a choice, not a fault.
    * @param {T} ItemClass - The class to register (must have a valid MANIFEST)
    * @param {{extensionId?: string|null, modulePath?: string}} [opts] - Attribution
-   * @returns {{registered: boolean, id?: string, reason?: string}} Outcome
+   * @returns {{registered: boolean, id?: string, reason?: string, disabled?: boolean}} Outcome
    */
   registerClass(ItemClass, { extensionId = null, modulePath = '' } = {}) {
     try {
@@ -338,9 +382,23 @@ class BaseRegistry {
       this._failedModules.set(modulePath || id, reason);
       return { registered: false, id, reason };
     }
-    this.items.set(id, ItemClass);
+
     this.modulePaths.set(id, modulePath);
     this.itemExtensions.set(id, extensionId);
+
+    // Config applies to a late registration exactly as it does to a loaded
+    // module. The disabled filter has already run by the time this is called
+    // (it is the last thing init() does, and every caller registers after that),
+    // so without this a user slash command or an item-owned strategy the user
+    // switched off would come back on at every rebuild. Not a failure: the
+    // capability is kept, attributed and catalogued as disabled, so its row can
+    // switch it on again.
+    if (this._isDisabledId(id, extensionId)) {
+      this._disabledItems.set(id, ItemClass);
+      return { registered: false, id, disabled: true };
+    }
+
+    this.items.set(id, ItemClass);
     return { registered: true, id };
   }
 
@@ -453,6 +511,10 @@ class BaseRegistry {
     this.itemExtensions.clear();
     this._failedModules.clear();
     this._disabledItems.clear();
+    // _disabledIds is deliberately NOT cleared: it is knowledge about config,
+    // not registry contents, and the next init() replaces it wholesale. Clearing
+    // it would make the window between reset and that pass claim nothing is
+    // switched off, which is exactly when registerClass runs.
   }
 
   /**

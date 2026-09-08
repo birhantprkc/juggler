@@ -9,7 +9,12 @@ import infoCardRegistry from '../registries/info-card-registry.js';
 import pinboardItemRegistry from '../registries/pinboard-item-registry.js';
 import fileViewerRegistry from '../registries/file-viewer-registry.js';
 import { reloadRegistries, REGISTRIES_RELOADED } from '../registries/reload-registries.js';
-import { fetchExtensions, fetchExtensionLocations } from '../services/extensions.js';
+import {
+  fetchExtensions,
+  fetchExtensionLocations,
+  fetchDisabledPluginIds,
+  fetchPluginAttribution,
+} from '../services/extensions.js';
 import { fetchJson, httpErrorText } from '../services/http.js';
 import { showConfirm, showNotice } from './modal-dialog.js';
 import { addFilePath } from '../utils/properties-panel-helpers.js';
@@ -53,6 +58,22 @@ const CAP_TYPES = /** @type {const} */ ([
   ['pinboardItems', 'pinboard-item'],
 ]);
 
+/**
+ * Every capability registry, with the itemType it holds. Deliberately one list:
+ * the catalog sweeps the registries three times over (ids, entries by URL, load
+ * failures), and keeping a separate list per sweep is how `fileViewerRegistry`
+ * came to be in two of them and not the third — a file viewer that failed to
+ * import then had neither an id nor an error, and its row vanished silently.
+ */
+const ALL_REGISTRIES = /** @type {ReadonlyArray<readonly [any, string]>} */ ([
+  [contextItemRegistry, 'context-item'],
+  [strategyRegistry, 'strategy'],
+  [commandRegistry, 'command'],
+  [infoCardRegistry, 'info-card'],
+  [fileViewerRegistry, 'file-viewer'],
+  [pinboardItemRegistry, 'pinboard-item'],
+]);
+
 /** Human labels for an extension's provenance. */
 const SOURCE_LABELS = /** @type {Record<string, string>} */ ({
   builtin: 'built-in',
@@ -84,6 +105,19 @@ const CAP_SECTIONS = /** @type {ReadonlyArray<readonly [string, string]>} */ ([
   ['pinboard-item', 'Pinboard Items'],
 ]);
 
+/**
+ * Tree key for the group holding switched-off ids nothing installed provides.
+ * Not an extension — it owns no manifest and can't be toggled as a unit — but it
+ * sits at the same level so the ids inside it get ordinary capability rows.
+ */
+const ORPHAN_KEY = 'ext:\u0000not-installed';
+
+/** Stand-in card for the orphan group, so orphan rows share the capability row shape. */
+const ORPHAN_CARD = /** @type {ExtCard} */ (/** @type {unknown} */ ({
+  manifest: null, source: '', error: null, extId: null,
+  extDisabled: false, caps: [], manifestPath: null,
+}));
+
 /** Human label for a capability itemType (singular, title-cased). */
 const TYPE_LABELS = /** @type {Record<string, string>} */ ({
   'context-item': 'Context Item',
@@ -111,6 +145,76 @@ export function computeNextDisabled(current, targetId, shouldEnable) {
 }
 
 /**
+ * The disabled ids that match nothing currently installed.
+ *
+ * The disabled list is a flat set of bare ids, and a row can only offer to
+ * re-enable an id it can still see: a capability whose module produced no
+ * registry entry has no id on its card, so its own row cannot reach the config
+ * entry holding it off. These ids get rows of their own instead, in the tree's
+ * `Not installed` group — without them, switching such a capability off is a
+ * one-way door out of the UI, recoverable only by editing config.json by hand.
+ *
+ * An id is orphaned when nothing claims it: no installed extension, no
+ * capability on a card, and no registry. That covers an extension that has been
+ * uninstalled, and a capability that stopped loading while switched off.
+ *
+ * `knownIds` is what keeps the group honest. Not every installed capability
+ * appears on a card — a user slash command is synthesised rather than served
+ * from an extension, so no card lists it and it has a manager of its own. Such
+ * an id is installed and reachable, and filing it here would be the catalog
+ * reporting its own blind spot as the user's problem.
+ * @param {ExtCard[]} cards - The built extension cards
+ * @param {Set<string>|string[]} disabledIds - Disabled ids from config
+ * @param {Set<string>} [knownIds] - Ids the registries hold, on a card or not
+ * @returns {string[]} Orphaned ids, sorted, so the render order is stable
+ */
+export function collectOrphanedDisabled(cards, disabledIds, knownIds = new Set()) {
+  const live = new Set(knownIds);
+  for (const card of cards) {
+    if (card.extId) live.add(card.extId);
+    for (const cap of card.caps) {
+      if (cap.id) live.add(cap.id);
+    }
+  }
+  return [...disabledIds].filter((id) => !live.has(id)).sort();
+}
+
+/**
+ * @typedef {object} PluginAttribution
+ * @property {string} [extension] - Id of the extension that provided the capability
+ * @property {string} [file] - Base name of the capability's module file
+ * @property {string} [type] - Capability type ('context-item', 'strategy', …)
+ * @property {string} [name] - Human label the capability's manifest carried
+ */
+
+/**
+ * Find what the config remembers about the capability a served URL points at.
+ *
+ * Matched on extension id, capability type and module BASE NAME — never on the
+ * served URL. A user extension's URL carries an epoch segment that changes every
+ * time extensions are rescanned, so a stored URL would stop matching as soon as
+ * anything was installed. Within one extension and one type, the base name is
+ * unique, which is all this needs; requiring the extension to match as well
+ * stops another extension's identically-named file from claiming the id.
+ * @param {Record<string, PluginAttribution>} attribution - Config's id → description map
+ * @param {string|null} extId - Id of the extension declaring this URL
+ * @param {string} itemType - Capability type of the declaring slot
+ * @param {string} url - Served URL of the capability module
+ * @returns {{id: string, entry: PluginAttribution}|null} The remembered id and description
+ */
+function findAttribution(attribution, extId, itemType, url) {
+  if (!extId) return null;
+  const file = url.split('/').pop();
+  if (!file) return null;
+  for (const [id, entry] of Object.entries(attribution)) {
+    if (entry?.extension === extId && entry.type === itemType && entry.file === file) {
+      return { id, entry };
+    }
+  }
+  return null;
+}
+
+/**
  * Merge the extension catalog (metadata + served URLs) with per-capability
  * registry state (registered / disabled / failed) into renderable card models.
  * Pure: no DOM, no fetch — so it is unit-testable in isolation.
@@ -118,9 +222,10 @@ export function computeNextDisabled(current, targetId, shouldEnable) {
  * @param {Map<string, {id: string, manifest: any, itemType: string, disabled: boolean}>} entriesByPath - Registry entries keyed by served URL
  * @param {Map<string, string>} failedByPath - Load errors keyed by served URL
  * @param {Set<string>} disabledIds - Disabled capability/extension ids from config
+ * @param {Record<string, PluginAttribution>} [attribution] - What each switched-off id was, from config
  * @returns {ExtCard[]} One card per extension
  */
-export function buildExtensionCards(extensions, entriesByPath, failedByPath, disabledIds) {
+export function buildExtensionCards(extensions, entriesByPath, failedByPath, disabledIds, attribution = {}) {
   return extensions.map((ext) => {
     const extId = ext.manifest?.id ?? null;
     const extDisabled = !!extId && disabledIds.has(extId);
@@ -132,13 +237,17 @@ export function buildExtensionCards(extensions, entriesByPath, failedByPath, dis
       for (const url of urls) {
         const reg = entriesByPath.get(url);
         const failed = failedByPath.get(url) ?? null;
-        const capId = reg?.id ?? null;
+        // With no registry entry the module is not loading, so its id — which
+        // lives inside that module — is unknowable from here. What the config
+        // remembered when the capability was switched off is the only way back.
+        const remembered = reg ? null : findAttribution(attribution, extId, itemType, url);
+        const capId = reg?.id ?? remembered?.id ?? null;
         const selfDisabled = !!capId && disabledIds.has(capId);
         caps.push({
           url,
           itemType: /** @type {'context-item'|'strategy'|'command'|'info-card'|'file-viewer'|'pinboard-item'} */ (itemType),
           id: capId,
-          name: reg?.manifest?.name || url.split('/').pop() || url,
+          name: reg?.manifest?.name || remembered?.entry.name || url.split('/').pop() || url,
           description: reg?.manifest?.description || '',
           version: reg?.manifest?.version || '',
           registered: !!reg,
@@ -185,14 +294,22 @@ class PluginCatalog extends JugglerElement {
     this._disabledIds = new Set();
 
     /**
-     * Enabled-id list carried verbatim from the config endpoint so a disabled
-     * write does not clobber it (the endpoint overwrites both lists).
-     * @type {string[]}
+     * What the config remembers about each switched-off id, so a row can still
+     * name itself once its module stops loading.
+     * @type {Record<string, PluginAttribution>}
      */
-    this._enabledIds = [];
+    this._attribution = {};
 
     /** @type {Array<{path: string, error: string}>} */
     this._failedModules = [];
+
+    /**
+     * Disabled ids no installed extension or loaded capability claims. Kept so
+     * a capability that stopped loading while switched off can still be
+     * switched back on (see {@link collectOrphanedDisabled}).
+     * @type {string[]}
+     */
+    this._orphanedDisabled = [];
 
     /**
      * Guards against overlapping toggles re-entering the re-init path.
@@ -294,12 +411,53 @@ class PluginCatalog extends JugglerElement {
   async _loadData() {
     const extensions = await fetchExtensions();
     this._disabledIds = await this._fetchConfig();
+    this._attribution = await fetchPluginAttribution();
 
     const entriesByPath = this._collectRegistryEntries();
     const failedByPath = this._collectFailed();
 
-    this._cards = buildExtensionCards(extensions, entriesByPath, failedByPath, this._disabledIds);
+    this._cards = buildExtensionCards(
+      extensions, entriesByPath, failedByPath, this._disabledIds, this._attribution);
     this._failedModules = [...failedByPath.entries()].map(([path, error]) => ({ path, error }));
+    this._orphanedDisabled = collectOrphanedDisabled(
+      this._cards, this._disabledIds, this._collectRegistryIds());
+
+    // A capability its extension declares that neither registered nor failed,
+    // and that the config remembers nothing about, is a row we can only label
+    // with its filename — so say which. Silently accepting it would make a
+    // registry that loses entries indistinguishable from an extension that
+    // never shipped them, and that is the shape of a real fault.
+    const missing = this._cards.flatMap((c) => c.caps.filter((cap) => !cap.id && !cap.failed));
+    if (missing.length > 0) {
+      console.warn('[PluginCatalog] Declared but not registered, so unidentifiable:',
+        missing.map((cap) => cap.url));
+    }
+  }
+
+  /**
+   * What we can say about each id being switched off, for the config to remember
+   * once the module that defines it stops loading. Gathered from the live rows,
+   * which is the only moment any of it is knowable.
+   * @param {string[]} ids - The ids being switched off
+   * @returns {Record<string, PluginAttribution>} Description keyed by capability id
+   * @private
+   */
+  _attributionFor(ids) {
+    /** @type {Record<string, PluginAttribution>} */
+    const hints = {};
+    const wanted = new Set(ids);
+    for (const card of this._cards) {
+      for (const cap of card.caps) {
+        if (!cap.id || !wanted.has(cap.id)) continue;
+        hints[cap.id] = {
+          extension: card.extId ?? undefined,
+          file: cap.url.split('/').pop(),
+          type: cap.itemType,
+          name: cap.name,
+        };
+      }
+    }
+    return hints;
   }
 
   /**
@@ -311,15 +469,7 @@ class PluginCatalog extends JugglerElement {
   _collectRegistryEntries() {
     /** @type {Map<string, {id: string, manifest: any, itemType: string, disabled: boolean}>} */
     const byPath = new Map();
-    const regs = /** @type {const} */ ([
-      [contextItemRegistry, 'context-item'],
-      [strategyRegistry, 'strategy'],
-      [commandRegistry, 'command'],
-      [infoCardRegistry, 'info-card'],
-      [fileViewerRegistry, 'file-viewer'],
-      [pinboardItemRegistry, 'pinboard-item'],
-    ]);
-    for (const [reg, itemType] of regs) {
+    for (const [reg, itemType] of ALL_REGISTRIES) {
       for (const m of reg.getCatalogManifests()) {
         if (m.modulePath) {
           byPath.set(m.modulePath, { id: m.id, manifest: m.manifest, itemType, disabled: m.disabled });
@@ -330,6 +480,21 @@ class PluginCatalog extends JugglerElement {
   }
 
   /**
+   * Every capability id the registries hold, enabled or disabled, whether or not
+   * it has a served URL to hang a row on. Used only to decide what is genuinely
+   * not installed — see {@link collectOrphanedDisabled}.
+   * @private
+   * @returns {Set<string>} Known capability ids across all registries
+   */
+  _collectRegistryIds() {
+    const ids = new Set();
+    for (const [reg] of ALL_REGISTRIES) {
+      for (const m of reg.getCatalogManifests()) ids.add(m.id);
+    }
+    return ids;
+  }
+
+  /**
    * Collect failed module loads (served URL → error) across all registries.
    * @private
    * @returns {Map<string, string>} Load errors keyed by served URL
@@ -337,7 +502,7 @@ class PluginCatalog extends JugglerElement {
   _collectFailed() {
     /** @type {Map<string, string>} */
     const failed = new Map();
-    for (const reg of [contextItemRegistry, strategyRegistry, commandRegistry, infoCardRegistry, pinboardItemRegistry]) {
+    for (const [reg] of ALL_REGISTRIES) {
       for (const { path, error } of reg.getFailedModules()) {
         failed.set(path, error);
       }
@@ -346,30 +511,29 @@ class PluginCatalog extends JugglerElement {
   }
 
   /**
-   * Fetch the disabled/enabled config lists. Stashes `enabled` for re-sending.
+   * The set of ids switched off for this project, through the same accessor the
+   * registries use — so the rows can never disagree with the registries about
+   * what is off, and a rebuild reads the config once between them.
    * @private
    * @returns {Promise<Set<string>>} The disabled-id set
    */
   async _fetchConfig() {
-    const data = await fetchJson('/api/config/plugins', { fallback: null });
-    if (!data) {
-      this._enabledIds = [];
-      return new Set();
-    }
-    this._enabledIds = Array.isArray(data.enabled) ? data.enabled : [];
-    return new Set(Array.isArray(data.disabled) ? data.disabled : []);
+    return await fetchDisabledPluginIds() || new Set();
   }
 
   /**
-   * Persist the disabled-id list, preserving the enabled list.
-   * @param {string[]} disabledList - The new disabled-id list
+   * Persist the set of ids that should be switched off. The server splits that
+   * across its stored disabled/enabled lists, so the UI states an outcome and
+   * never has to know how a default-off plugin is countermanded.
+   * @param {string[]} disabledList - The ids to switch off
+   * @param {Record<string, PluginAttribution>} [attribution] - What those ids are, for the config to remember
    * @private
    * @returns {Promise<void>}
    */
-  async _persist(disabledList) {
+  async _persist(disabledList, attribution = {}) {
     await fetchJson('/api/config/plugins', {
       method: 'PUT',
-      body: { disabled: disabledList, enabled: this._enabledIds },
+      body: { disabled: disabledList, attribution },
       errorPrefix: 'Failed to save extension config',
     });
   }
@@ -459,20 +623,21 @@ class PluginCatalog extends JugglerElement {
     this._busy = true;
     try {
       let next = [...this._disabledIds];
-      const enabled = new Set(this._enabledIds);
       for (const id of ids) {
         next = computeNextDisabled(next, id, shouldEnable);
-        if (shouldEnable) enabled.add(id);
-        else enabled.delete(id);
       }
-      this._enabledIds = [...enabled];
+      // Describe what is being switched off while its module is still loaded —
+      // afterwards its id is only a string in a list, and nothing can say what
+      // it was. Switching ON needs no hint: the server prunes the entry with it.
+      const hints = shouldEnable ? {} : this._attributionFor(ids);
       if (!await this._quiesceBeforeToggle()) return;
-      await this._persist(next);
+      await this._persist(next, hints);
       await this._reinitRegistries();
       await this._loadData();
       this._refreshCards();
     } catch (err) {
       console.error('[PluginCatalog] Failed to apply toggle:', err);
+      showNotice(`Couldn't apply the extension change. ${httpErrorText(err)}`);
     } finally {
       this._busy = false;
     }
@@ -483,9 +648,7 @@ class PluginCatalog extends JugglerElement {
     this.innerHTML = '';
     this.appendChild(this._renderHeader());
 
-    if (this._failedModules.length > 0) {
-      this.appendChild(this._renderFailedBanner());
-    }
+    this._refreshBanners();
 
     const entries = this._buildEntries();
     if (entries.length === 0) {
@@ -522,7 +685,9 @@ class PluginCatalog extends JugglerElement {
     const left = this._createElement('div', 'catalog-header-left');
     left.appendChild(this._createElement('h2', 'catalog-title', 'Extensions'));
     const extCount = this._cards.length;
-    const capCount = this._cards.reduce((n, c) => n + c.caps.length, 0);
+    // Counts what the tree shows, so the subtitle can't claim capabilities the
+    // list omits (see _buildEntries).
+    const capCount = this._buildEntries().filter((e) => e.kind === 'cap').length;
     left.appendChild(this._createElement('div', 'catalog-subtitle',
       `${extCount} extension${extCount === 1 ? '' : 's'}, ${capCount} capabilities`));
     header.appendChild(left);
@@ -586,7 +751,16 @@ class PluginCatalog extends JugglerElement {
    * (`extKey`) and, for capabilities, its type section, so `_fillSidebar` can
    * render them as a tree. The flat order is extension-then-its-capabilities
    * so `entries[0]` is the first extension — a sensible default selection.
-   * @returns {Array<{key: string, kind: 'extension'|'cap', extKey: string, section: string, label: string, card: ExtCard, cap?: CapCard, disabled: boolean, failed: boolean, status: string}>} One entry per extension and per capability
+   *
+   * Every capability the extension declares gets a row, and every switched-off
+   * id gets a row — nothing the user can act on is ever left out of the tree.
+   * A capability that FAILED to import keeps its row and reads `failed`; one the
+   * registry never registered keeps its row and reads `unknown`, which is a
+   * fault worth seeing rather than hiding. Ids switched off that nothing
+   * installed provides are gathered under {@link ORPHAN_KEY} with ordinary,
+   * clickable rows: the row IS the control bound to the id, so dropping it is
+   * what makes switching something off a one-way door.
+   * @returns {Array<{key: string, kind: 'extension'|'cap', extKey: string, section: string, label: string, card: ExtCard, cap?: CapCard, disabled: boolean, failed: boolean, status: string}>} One entry per extension and per shown capability
    * @private
    */
   _buildEntries() {
@@ -624,6 +798,25 @@ class PluginCatalog extends JugglerElement {
           });
         }
       }
+    }
+
+    for (const id of this._orphanedDisabled) {
+      const was = this._attribution[id];
+      entries.push({
+        key: `cap:orphan:${id}`,
+        kind: 'cap',
+        extKey: ORPHAN_KEY,
+        section: 'Switched off',
+        label: was?.name || id,
+        card: ORPHAN_CARD,
+        cap: /** @type {CapCard} */ (/** @type {unknown} */ ({
+          url: '', itemType: 'orphan', id, name: id, description: '', version: '',
+          registered: false, failed: null, disabled: true, inherited: false, path: null,
+        })),
+        disabled: true,
+        failed: false,
+        status: 'off',
+      });
     }
     return entries;
   }
@@ -677,6 +870,22 @@ class PluginCatalog extends JugglerElement {
         }
         node.appendChild(children);
       }
+      tree.appendChild(node);
+    }
+
+    // Switched-off ids nothing installed claims, in a group of their own. Always
+    // expanded: it exists only while it has contents, and its whole purpose is
+    // to put the toggle in reach.
+    const orphans = entries.filter((e) => e.extKey === ORPHAN_KEY);
+    if (orphans.length > 0) {
+      const node = this._createElement('div', 'plugin-tree-node');
+      const header = this._createElement('div', 'plugin-tree-row plugin-tree-ext plugin-tree-row-off');
+      header.appendChild(this._createElement('span', 'plugin-tree-caret', '▾'));
+      header.appendChild(this._createElement('span', 'plugin-tree-label', 'Not installed'));
+      node.appendChild(header);
+      const children = this._createElement('div', 'plugin-tree-children');
+      for (const orphan of orphans) children.appendChild(this._renderTreeCap(orphan));
+      node.appendChild(children);
       tree.appendChild(node);
     }
     sidebar.replaceChildren(tree);
@@ -737,8 +946,13 @@ class PluginCatalog extends JugglerElement {
    * and acts as a button: clicking flips the row's enabled state in place,
    * carrying any context items a strategy owns along with it.
    *
-   * Non-interactive states:
+   * Non-interactive states, each of which says why in its tooltip:
    * - `failed` — the module didn't load; nothing to toggle.
+   * - `unknown` — nothing to write to the config list, so the state can't be
+   *   read or changed: an extension whose manifest declares no id, or a declared
+   *   capability the registry never registered (its id lives in the module, and
+   *   the module isn't loading). The row still shows, because a declared
+   *   capability that isn't loading is a fault worth seeing.
    * - a capability whose extension is off — it can't be enabled on its own;
    *   the badge shows `off` but is inert (enable the extension first).
    *
@@ -753,28 +967,33 @@ class PluginCatalog extends JugglerElement {
     }
 
     const isExt = entry.kind === 'extension';
+    const id = isExt ? entry.card.extId : entry.cap?.id;
     const enabled = !entry.disabled;
-    const ids = /** @type {string[]} */ ((isExt
-      ? [entry.card.extId]
-      : [entry.cap?.id]).filter(Boolean));
-    const canToggle = isExt ? !!entry.card.extId : (!!entry.cap?.id && !entry.card.extDisabled);
+    const canToggle = !!id && (isExt || !entry.card.extDisabled);
 
     const badge = document.createElement('button');
     badge.type = 'button';
+    badge.dataset.testid = `toggle-${entry.key}`;
+
+    if (!id) {
+      badge.className = 'plugin-tree-toggle plugin-tree-toggle-unknown';
+      badge.textContent = 'unknown';
+      badge.disabled = true;
+      badge.title = "This extension declares no id, so it can't be switched on or off.";
+      return badge;
+    }
+
     badge.className = `plugin-tree-toggle plugin-tree-toggle-${enabled ? 'on' : 'off'}`;
     badge.textContent = enabled ? 'on' : 'off';
-    badge.dataset.testid = `toggle-${entry.key}`;
 
     if (!canToggle) {
       badge.disabled = true;
-      if (!isExt && entry.card.extDisabled) {
-        badge.title = 'Enable the extension to toggle this capability';
-      }
+      badge.title = 'Enable the extension to toggle this capability';
     } else {
       badge.title = enabled ? 'Click to disable' : 'Click to enable';
       badge.addEventListener('click', (e) => {
         e.stopPropagation();
-        this._toggle(ids, !enabled);
+        this._toggle([id], !enabled);
       });
     }
     return badge;
@@ -834,9 +1053,11 @@ class PluginCatalog extends JugglerElement {
         this._createElement('div', 'catalog-detail-empty', 'Select an item to view its details'));
       return;
     }
-    const detail = entry.kind === 'extension'
-      ? this._renderExtensionDetail(entry.card)
-      : this._renderCapDetailFull(/** @type {CapCard} */ (entry.cap), entry.card);
+    const detail = entry.extKey === ORPHAN_KEY
+      ? this._renderOrphanDetail(String(entry.cap?.id))
+      : entry.kind === 'extension'
+        ? this._renderExtensionDetail(entry.card)
+        : this._renderCapDetailFull(/** @type {CapCard} */ (entry.cap), entry.card);
     this._detailPanel.replaceChildren(detail);
   }
 
@@ -853,12 +1074,69 @@ class PluginCatalog extends JugglerElement {
       this.render();
       return;
     }
+    this._refreshBanners();
     const entries = this._buildEntries();
     if (!entries.some((e) => e.key === this._selectedKey)) {
       this._selectedKey = entries[0]?.key ?? null;
     }
     this._fillSidebar(this._sidebar, entries);
     this._renderDetailInto(entries);
+  }
+
+  /**
+   * Rebuild the failed-load banner in place, above the master/detail area.
+   * Shared by the full render and the post-toggle refresh so the two can't
+   * disagree about when it is shown.
+   * @private
+   */
+  _refreshBanners() {
+    for (const existing of Array.from(this.querySelectorAll('.catalog-failed-banner'))) {
+      existing.remove();
+    }
+    const main = this.querySelector('.catalog-main');
+    /** @param {HTMLElement} node */
+    const place = (node) => {
+      if (main) this.insertBefore(node, main);
+      else this.appendChild(node);
+    };
+    if (this._failedModules.length > 0) place(this._renderFailedBanner());
+  }
+
+  /**
+   * Detail for a switched-off id nothing installed provides. Its row carries the
+   * toggle, so this only has to say why the id is sitting in a group of its own.
+   * @param {string} id - The switched-off capability or extension id
+   * @returns {HTMLElement} The detail element
+   * @private
+   */
+  _renderOrphanDetail(id) {
+    const was = this._attribution[id];
+    const container = this._createElement('div', 'plugin-detail-container');
+    const header = this._createElement('div', 'plugin-detail-header');
+    const titleRow = this._createElement('div', 'plugin-title-row');
+    titleRow.appendChild(this._createElement('h3', 'plugin-detail-name', was?.name || id));
+    const badges = this._createElement('div', 'plugin-badges');
+    badges.appendChild(this._createElement('span', 'plugin-badge ext-cap-status-disabled', 'disabled'));
+    titleRow.appendChild(badges);
+    header.appendChild(titleRow);
+
+    const idRow = this._createElement('div', 'plugin-id-container');
+    idRow.appendChild(this._createElement('span', 'plugin-id-label', 'ID:'));
+    idRow.appendChild(this._createElement('code', 'plugin-id-value', id));
+    header.appendChild(idRow);
+
+    if (was?.extension) {
+      const fromRow = this._createElement('div', 'plugin-detail-from');
+      fromRow.appendChild(this._createElement('span', 'plugin-id-label', 'Was provided by:'));
+      fromRow.appendChild(this._createElement('code', 'plugin-id-value', was.extension));
+      header.appendChild(fromRow);
+    }
+
+    header.appendChild(this._createProse('div', 'plugin-description',
+      'Nothing installed provides this. Its extension was removed, or it stopped ' +
+      'loading while switched off. Switching it on clears it from the list.'));
+    container.appendChild(header);
+    return container;
   }
 
   /**

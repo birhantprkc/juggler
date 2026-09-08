@@ -39,6 +39,7 @@
 
 import { assert } from '../utilities/test-helpers.js';
 import Session from '../../js/model/session.js';
+import Conversation from '../../js/model/conversation.js';
 import {
   getAttentionPrefs,
   initAttention,
@@ -84,6 +85,7 @@ function fakeBar(convId, awaiting) {
   const conv = {
     llmState: { isConversationProcessing: () => false },
     rootMessageThread: { items },
+    isAwaitingApproval: Conversation.prototype.isAwaitingApproval,
   };
   const bar = /** @type {any} */ (document.createElement('conversation-bar'));
   bar._session = { conversations: new Map([[convId, conv]]) };
@@ -131,6 +133,7 @@ function attentionHarness(convId) {
     completedTurns: 0,
     llmState: { isConversationProcessing: () => conv.processing },
     rootMessageThread: { items: /** @type {any[]} */ ([]) },
+    isAwaitingApproval: Conversation.prototype.isAwaitingApproval,
   };
   const sess = {
     conversations: new Map([[convId, conv]]),

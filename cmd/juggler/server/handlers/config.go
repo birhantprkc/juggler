@@ -308,7 +308,10 @@ func (c *ConfigAPI) HandleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, r, 0, response)
 }
 
-// HandleGetPluginConfig returns the resolved plugin disabled/enabled lists
+// HandleGetPluginConfig returns the ids that are switched off for this project:
+// the build's defaults plus the project's own entries, minus what it switched
+// back on. Callers get that one resolved answer and never see the two stored
+// lists, so nothing outside this file has to know how a default is countermanded.
 func (c *ConfigAPI) HandleGetPluginConfig(w http.ResponseWriter, r *http.Request) {
 	cfg, err := core.LoadConfig(c.projectPath())
 	if err != nil {
@@ -316,28 +319,19 @@ func (c *ConfigAPI) HandleGetPluginConfig(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	disabled := make([]string, 0, len(cfg.GetDisabledPlugins()))
-	enabled := make(map[string]bool, len(cfg.GetEnabledPlugins()))
-	for _, id := range cfg.GetEnabledPlugins() {
-		enabled[id] = true
-	}
-	for _, id := range cfg.GetDisabledPlugins() {
-		if !enabled[id] {
-			disabled = append(disabled, id)
-		}
-	}
-
 	WriteJSON(w, r, 0, map[string]any{
-		"disabled": disabled,
-		"enabled":  cfg.GetEnabledPlugins(),
+		"disabled":    cfg.ResolvedDisabledPlugins(),
+		"attribution": cfg.Plugins.Attribution,
 	})
 }
 
-// HandleUpdatePluginConfig updates the plugin disabled/enabled lists
+// HandleUpdatePluginConfig records the ids that should be switched off. The
+// caller states the resolved set it wants; splitting that across the stored
+// disabled/enabled lists is this server's job.
 func (c *ConfigAPI) HandleUpdatePluginConfig(w http.ResponseWriter, r *http.Request) {
 	req, ok := DecodeJSON[struct {
-		Disabled []string `json:"disabled"`
-		Enabled  []string `json:"enabled"`
+		Disabled    []string                          `json:"disabled"`
+		Attribution map[string]core.PluginAttribution `json:"attribution"`
 	}](w, r)
 	if !ok {
 		return
@@ -349,20 +343,8 @@ func (c *ConfigAPI) HandleUpdatePluginConfig(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	cfg.Plugins.Disabled = req.Disabled
-	cfg.Plugins.Enabled = req.Enabled
-	for _, id := range req.Enabled {
-		found := false
-		for _, disabledID := range cfg.Plugins.Disabled {
-			if disabledID == id {
-				found = true
-				break
-			}
-		}
-		if !found {
-			cfg.Plugins.Disabled = append(cfg.Plugins.Disabled, id)
-		}
-	}
+	cfg.SetResolvedDisabledPlugins(req.Disabled)
+	cfg.RememberPluginAttribution(req.Attribution)
 
 	if err := cfg.Save(c.projectPath()); err != nil {
 		WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to save config: %v", err))

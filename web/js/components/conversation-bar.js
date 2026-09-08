@@ -23,7 +23,6 @@
 import { MAX_CONVERSATIONS, CONVERSATION_LIMIT_MESSAGE } from '../model/session.js';
 import { UNTITLED_BASE } from '../model/conversation-naming.js';
 import { MAX_CONVERSATION_NAME_LENGTH } from '../utils/constants.js';
-import { hasPendingApprovalInTree } from '../model/thread-navigation.js';
 import { setupColumnResize, applyColumnWidthPx } from '../utils/column-resize.js';
 import { startReorderDrag } from '../utils/reorder-drag.js';
 import { formatBytes } from '../utils/format.js';
@@ -981,9 +980,9 @@ class ConversationBar extends JugglerElement {
    *    deliberately NOT busy for the purpose of the bin guard.
    *
    * "Awaiting" comes from Yjs (tool-action state === PENDING / AWAITING_APPROVAL
-   * anywhere in the tree) — the shared source of truth across the engine and
-   * every viewer. The whole tree is searched so an approval parked deep inside a
-   * sub-thread still counts.
+   * anywhere in the tree) via `Conversation.isAwaitingApproval()` — the shared
+   * source of truth across the engine and every viewer, and the same subtraction
+   * the registry rebuild makes before deferring to a turn.
    * @param {string} convId
    * @returns {{awaiting: boolean, running: boolean}} The tab's two activity flags.
    * @private
@@ -992,8 +991,7 @@ class ConversationBar extends JugglerElement {
     const conv = this._session?.conversations.get(convId);
     const llm = conv?.llmState;
     if (!conv || !llm) return { awaiting: false, running: false };
-    const rootThread = /** @type {any} */ (conv).rootMessageThread;
-    const awaiting = !!rootThread && hasPendingApprovalInTree(rootThread.items);
+    const awaiting = conv.isAwaitingApproval();
     return { awaiting, running: !awaiting && llm.isConversationProcessing(convId) };
   }
 

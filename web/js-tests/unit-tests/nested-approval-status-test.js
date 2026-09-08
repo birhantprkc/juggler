@@ -27,6 +27,7 @@
 
 import { assert } from '../utilities/test-helpers.js';
 import { hasPendingApprovalInTree } from '../../js/model/thread-navigation.js';
+import Conversation from '../../js/model/conversation.js';
 import { getThreadStatus } from '../../js/utils/thread-display.js';
 import '../../js/components/conversation-bar.js';
 import '../../js/components/conversation-area.js';
@@ -131,7 +132,8 @@ export async function runTests() {
     let currentItems = [];
     const conv = {
       llmState: { isConversationProcessing: () => false },
-      rootMessageThread: { get items() { return currentItems; } }
+      rootMessageThread: { get items() { return currentItems; } },
+      isAwaitingApproval: Conversation.prototype.isAwaitingApproval,
     };
 
     const bar = /** @type {any} */ (document.createElement('conversation-bar'));

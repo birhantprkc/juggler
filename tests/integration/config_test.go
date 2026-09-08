@@ -18,7 +18,13 @@ func TestConfig_Default(t *testing.T) {
 	helpers.AssertEqual(t, cfg.Server.Host, "localhost")
 	helpers.AssertEqual(t, cfg.Context.TokenBudget, 0) // 0 = auto-calculate
 	helpers.AssertTrue(t, len(cfg.Project.Exclude) > 0, "should have default excludes")
-	helpers.AssertTrue(t, len(cfg.GetDisabledPlugins()) == 1 && cfg.GetDisabledPlugins()[0] == "@juggler/exa",
+	// Which plugins ship off is a property of the build, not of a project's
+	// config: a fresh config records no switches of its own, and the default is
+	// applied when the set is resolved.
+	helpers.AssertTrue(t, len(cfg.Plugins.Disabled) == 0 && len(cfg.Plugins.Enabled) == 0,
+		"a default config should record no plugin switches of its own")
+	resolved := cfg.ResolvedDisabledPlugins()
+	helpers.AssertTrue(t, len(resolved) == 1 && resolved[0] == "@juggler/exa",
 		"Exa should be disabled by default")
 }
 

@@ -47,6 +47,7 @@ export const MCP_DISABLED_NOTICE =
 export async function isMcpExtensionDisabled() {
   try {
     const disabled = await fetchDisabledPluginIds();
+    if (!disabled) return false; // unknown — don't claim the extension is off
     return disabled.has(MCP_EXTENSION_ID) || disabled.has(MCP_ITEM_TYPE);
   } catch {
     return false;

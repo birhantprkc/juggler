@@ -40,12 +40,33 @@ function getLiveSessions() {
 }
 
 /**
+ * How long the rebuild will defer to a running turn before going ahead anyway.
+ * The deferral exists to keep registry maps immutable across an observed turn,
+ * which is worth a wait but never worth a deadlock: every status this waits on
+ * is written by the worker, so anything that leaves one set — a crashed worker,
+ * a tool that never returns — would otherwise wedge the rebuild, and with it
+ * every enable/disable in the catalog, for the life of the page.
+ * @type {number}
+ */
+const QUIESCENCE_TIMEOUT_MS = 30000;
+
+/**
+ * Whether a conversation is running a turn we should wait for.
+ *
+ * A conversation parked on a tool approval is deliberately NOT busy. The worker
+ * publishes `processing_tools` for as long as the user deliberates, so a status
+ * check alone never clears; the turn is parked on the user, executes nothing,
+ * and can sit there indefinitely. The server's activity signal
+ * (GET /api/health/active) subtracts the same case, and the plugin catalog asks
+ * it before starting a toggle — so counting an approval-parked conversation as
+ * busy here would block a rebuild the catalog had already been told was safe.
  * @param {import('../model/conversation.js').default} conv
- * @returns {boolean} True while the conversation's worker status is non-idle
+ * @returns {boolean} True while the conversation is running a turn
  */
 function isConversationBusy(conv) {
   const status = conv.processingState?.status;
-  return !!status && status !== 'idle' && status !== 'error' && status !== 'validation-error';
+  if (!status || status === 'idle' || status === 'error' || status === 'validation-error') return false;
+  return !conv.isAwaitingApproval?.();
 }
 
 /**
@@ -60,9 +81,23 @@ function anyLocalConversationBusy() {
   return false;
 }
 
-/** @returns {Promise<void>} */
+/**
+ * Wait for every locally-observed turn to finish, giving up after
+ * {@link QUIESCENCE_TIMEOUT_MS}. Expiry is reported, not silent: a rebuild that
+ * went ahead over a turn is the explanation for anything odd that turn then
+ * sees, and there is nowhere else that would say so.
+ * @returns {Promise<void>}
+ */
 async function waitForLocalQuiescence() {
+  const deadline = Date.now() + QUIESCENCE_TIMEOUT_MS;
   while (anyLocalConversationBusy()) {
+    if (Date.now() >= deadline) {
+      console.warn(
+        `[registries] A turn was still running after ${QUIESCENCE_TIMEOUT_MS}ms; ` +
+        'rebuilding the capability registries anyway.'
+      );
+      return;
+    }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 }

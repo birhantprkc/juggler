@@ -445,6 +445,25 @@ class Conversation {
   }
 
   /**
+   * Whether this conversation is parked on a tool approval anywhere in its tree.
+   *
+   * This is the subtraction that turns the published status into a useful notion
+   * of "busy". The worker keeps publishing `processing_tools` for the whole time
+   * the user deliberates over an approval, so a status check alone reports a
+   * parked conversation as busy indefinitely — it executes nothing and can sit
+   * there for as long as the user likes. The server's own activity signal
+   * (GET /api/health/active) subtracts exactly this case; callers that must
+   * agree with it read this rather than re-deriving it.
+   *
+   * The whole tree is searched, so an approval parked deep inside a sub-thread
+   * still counts.
+   * @returns {boolean} True while a tool-action anywhere below is awaiting approval
+   */
+  isAwaitingApproval() {
+    return hasPendingApprovalInTree(this.rootMessageThread?.items);
+  }
+
+  /**
    * Get config data needed to initialize a worker. The model is the only piece
    * of conversation state init carries: strategy, permission rules and allowed
    * paths all live in the Yjs doc and reach the worker by sync, so sending them

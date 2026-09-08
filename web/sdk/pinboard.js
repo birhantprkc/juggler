@@ -48,10 +48,13 @@ export function pinToPinboard(request) {
  * @returns {Promise<import('./pinboard-item-type.js').PinAgentDescriptor[]>} The descriptors.
  */
 export async function loadPinAgentDescriptors() {
-  const [refs, disabled] = await Promise.all([
+  const [refs, known] = await Promise.all([
     getExtensionCapabilities(/** @type {any} */ ('pinboard-item-meta')),
     fetchDisabledPluginIds(),
   ]);
+  // Unknown reads as "nothing switched off": describing a pin type the user has
+  // disabled is a smaller fault than describing none of them.
+  const disabled = known || new Set();
 
   /** @type {import('./pinboard-item-type.js').PinAgentDescriptor[]} */
   const descriptors = [];

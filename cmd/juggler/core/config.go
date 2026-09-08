@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 // Config represents the application configuration
@@ -77,13 +78,48 @@ type LoggingConfig struct {
 	Disabled bool `json:"disabled,omitempty"`
 }
 
-// PluginsConfig contains plugin-related settings
+// PluginsConfig records what this project switched off, and what it switched on
+// that the build ships off. An id belongs to exactly one of the two lists; read
+// them through Config.ResolvedDisabledPlugins rather than directly, which is
+// what applies the build's defaults on top.
 type PluginsConfig struct {
-	// Disabled is a list of plugin IDs to disable (e.g., ["web-search", "compact"])
+	// Disabled lists capability and extension ids this project switched off
+	// (e.g. ["exa-search", "@juggler/mcp"]). Both kinds share one flat list.
 	Disabled []string `json:"disabled,omitempty"`
 
-	// Enabled is a list of plugin IDs to re-enable (overrides global disabled, project-level only)
+	// Enabled countermands DefaultDisabledPlugins: it lists the ids this project
+	// switched ON that would otherwise be off. Nothing else belongs here — an id
+	// that is simply on is absent from both lists.
 	Enabled []string `json:"enabled,omitempty"`
+
+	// Attribution remembers what each switched-off id was, keyed by id. A hint,
+	// never authority: the lists above decide what is off, and this only decides
+	// how it is described. Kept only for ids currently switched off.
+	Attribution map[string]PluginAttribution `json:"attribution,omitempty"`
+}
+
+// PluginAttribution describes a capability well enough to show a row for it
+// after the module that defines it has stopped loading.
+//
+// A capability's id lives inside its JS module, so once that module no longer
+// loads — its extension removed, its file renamed, a fault introduced — nothing
+// in the running app can say what a leftover id in the disabled list WAS. The
+// UI records this at the moment it switches something off, which is exactly when
+// it still knows.
+//
+// File is the module's base name rather than its served URL on purpose: a user
+// extension's URL carries an epoch segment that changes whenever extensions are
+// rescanned, so a stored URL would stop matching. Within one extension and one
+// capability type the base name is unique, which is all the matching needs.
+type PluginAttribution struct {
+	// Extension is the id of the extension that provided the capability.
+	Extension string `json:"extension,omitempty"`
+	// File is the base name of the capability's module file.
+	File string `json:"file,omitempty"`
+	// Type is the capability type ("context-item", "strategy", …).
+	Type string `json:"type,omitempty"`
+	// Name is the human label the capability's manifest carried.
+	Name string `json:"name,omitempty"`
 }
 
 // DefaultConfig returns default configuration
@@ -109,9 +145,9 @@ func DefaultConfig() *Config {
 			},
 			MaxFileSize: 1048576, // 1MB
 		},
-		Plugins: PluginsConfig{
-			Disabled: []string{"@juggler/exa"},
-		},
+		// Empty on purpose: which plugins ship switched off is
+		// defaultDisabledPlugins, resolved on top of a project's own lists.
+		Plugins: PluginsConfig{},
 		Logging: LoggingConfig{
 			// On-disk logging is on by default so post-mortem diagnostics
 			// (watchdog force-exits, shutdown-path traces) survive after the
@@ -142,20 +178,11 @@ func LoadConfig(projectPath string) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
-	// Fill fields left absent by the file with their defaults.
+	// Fill fields left absent by the file with their defaults. The plugin lists
+	// are deliberately not among them: they are the user's record of what they
+	// switched, and the build's own defaults are applied on top at read time by
+	// ResolvedDisabledPlugins rather than written in here.
 	defaults := DefaultConfig()
-	for _, defaultDisabled := range defaults.Plugins.Disabled {
-		found := false
-		for _, disabled := range cfg.Plugins.Disabled {
-			if disabled == defaultDisabled {
-				found = true
-				break
-			}
-		}
-		if !found {
-			cfg.Plugins.Disabled = append(cfg.Plugins.Disabled, defaultDisabled)
-		}
-	}
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = defaults.Server.Port
 	}
@@ -219,6 +246,38 @@ func (c *Config) IsAssetsFromDiskEnabled() bool {
 	return c.AssetsFromDisk
 }
 
+// RememberPluginAttribution folds in what the caller has just learned about the
+// ids it switched off, then drops every entry that no longer describes a
+// switched-off id.
+//
+// Merging rather than replacing is the point: the caller only knows about
+// capabilities that are currently loading, and the entries worth most are for
+// the ones that are not. Pruning is the other half — attribution describes the
+// disabled list and nothing else, so switching an id back on takes its entry
+// with it and the file cannot accumulate a record of every capability ever
+// toggled. Call it AFTER SetResolvedDisabledPlugins.
+func (c *Config) RememberPluginAttribution(hints map[string]PluginAttribution) {
+	merged := make(map[string]PluginAttribution, len(c.Plugins.Attribution)+len(hints))
+	for id, entry := range c.Plugins.Attribution {
+		merged[id] = entry
+	}
+	for id, entry := range hints {
+		merged[id] = entry
+	}
+
+	kept := map[string]PluginAttribution{}
+	for _, id := range c.ResolvedDisabledPlugins() {
+		if entry, ok := merged[id]; ok {
+			kept[id] = entry
+		}
+	}
+	if len(kept) == 0 {
+		c.Plugins.Attribution = nil
+		return
+	}
+	c.Plugins.Attribution = kept
+}
+
 // GetTokenBudget returns the token budget to use
 // If explicitly set in config, returns that value
 // Otherwise, returns 0 to signal auto-calculation based on provider
@@ -226,20 +285,60 @@ func (c *Config) GetTokenBudget() int {
 	return c.Context.TokenBudget
 }
 
-// GetDisabledPlugins returns the list of disabled plugin IDs
-func (c *Config) GetDisabledPlugins() []string {
-	if c.Plugins.Disabled == nil {
-		return []string{}
+// defaultDisabledPlugins are the plugin ids that ship switched off. This is a
+// property of the build, not of any project, so it is never written into a
+// user's config file — it is applied on top of one by
+// ResolvedDisabledPlugins. Switching such a plugin on is recorded as a
+// countermand in Plugins.Enabled.
+var defaultDisabledPlugins = []string{"@juggler/exa"}
+
+// ResolvedDisabledPlugins is the set of ids actually switched off for this
+// project: the build's defaults plus the project's own disabled entries, minus
+// anything the project explicitly switched on. Deduplicated, and ordered
+// defaults-first then file order, so the answer is stable across loads.
+func (c *Config) ResolvedDisabledPlugins() []string {
+	enabled := make(map[string]bool, len(c.Plugins.Enabled))
+	for _, id := range c.Plugins.Enabled {
+		enabled[id] = true
 	}
-	return c.Plugins.Disabled
+	seen := make(map[string]bool, len(defaultDisabledPlugins)+len(c.Plugins.Disabled))
+	resolved := make([]string, 0, len(defaultDisabledPlugins)+len(c.Plugins.Disabled))
+	for _, id := range slices.Concat(defaultDisabledPlugins, c.Plugins.Disabled) {
+		if enabled[id] || seen[id] {
+			continue
+		}
+		seen[id] = true
+		resolved = append(resolved, id)
+	}
+	return resolved
 }
 
-// GetEnabledPlugins returns the list of explicitly enabled plugin IDs
-func (c *Config) GetEnabledPlugins() []string {
-	if c.Plugins.Enabled == nil {
-		return []string{}
+// SetResolvedDisabledPlugins records the set of ids that should be switched off,
+// splitting it across the two stored lists so each id lands in exactly one of
+// them: entries the build already switches off need no record, and a default the
+// caller wants ON becomes a countermand.
+func (c *Config) SetResolvedDisabledPlugins(disabled []string) {
+	want := make(map[string]bool, len(disabled))
+	for _, id := range disabled {
+		want[id] = true
 	}
-	return c.Plugins.Enabled
+
+	c.Plugins.Disabled = make([]string, 0, len(disabled))
+	seen := make(map[string]bool, len(disabled))
+	for _, id := range disabled {
+		if seen[id] || slices.Contains(defaultDisabledPlugins, id) {
+			continue
+		}
+		seen[id] = true
+		c.Plugins.Disabled = append(c.Plugins.Disabled, id)
+	}
+
+	c.Plugins.Enabled = make([]string, 0, len(defaultDisabledPlugins))
+	for _, id := range defaultDisabledPlugins {
+		if !want[id] {
+			c.Plugins.Enabled = append(c.Plugins.Enabled, id)
+		}
+	}
 }
 
 // CalculateTokenBudget calculates the token budget based on a provider's context window

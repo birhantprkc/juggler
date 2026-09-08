@@ -293,6 +293,14 @@ plugin-catalog {
   cursor: default;
 }
 
+/* A row whose id could not be read: neither on nor off is known to be true. */
+.plugin-tree-toggle-unknown {
+  background: rgb(136 136 136 / 12%);
+  color: var(--text-tertiary);
+  border-color: var(--border-color);
+  font-style: italic;
+}
+
 .plugin-tree-toggle:disabled {
   cursor: not-allowed;
   opacity: 0.55;
@@ -1123,27 +1131,6 @@ plugin-catalog {
 .catalog-failed-error {
   font-size: 0.75rem;
   color: #ff5050;
-}
-
-/* Disabled plugins banner */
-.catalog-disabled-banner {
-  margin: 0.75rem 1rem;
-  padding: 0.75rem 1rem;
-  background: rgb(150 150 150 / 10%);
-  border: 1px solid rgb(150 150 150 / 30%);
-  border-radius: 0.375rem;
-  font-size: 0.8125rem;
-}
-
-.catalog-disabled-title {
-  font-weight: 600;
-  color: var(--text-secondary);
-  margin-bottom: 0.375rem;
-}
-
-.catalog-disabled-entry {
-  color: var(--text-tertiary);
-  margin-top: 0.25rem;
 }
 
 /* Plugin directory paths */

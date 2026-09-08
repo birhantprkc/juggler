@@ -75,16 +75,66 @@ import { fetchJson } from './http.js';
 let cached = null;
 
 /**
- * Last-known-good disabled set. A transient `/api/config/plugins` blip must not
- * collapse the disabled set to empty: that would resurrect a disabled
- * extension's always-on system-prompt sections for one assembly, flip the
- * prompt bytes, and cold-start claudecode's warm cache (next turn flips back).
- * On failure we serve the prior successful set instead. A genuine plugin toggle
- * goes through reloadRegistries() → resetExtensionsCache(), which clears this so
- * fresh state is re-read.
- * @type {Set<string>|null}
+ * @typedef {object} PluginConfig
+ * @property {Set<string>} disabled - Ids switched off for this project, already resolved by the server
+ * @property {Record<string, {extension?: string, file?: string, type?: string, name?: string}>} attribution - What each switched-off id was
  */
-let lastKnownDisabled = null;
+
+/**
+ * The last successfully read plugin config, shared by every reader. Six
+ * registries plus the catalog rebuild together and all want the same fact;
+ * without this they each fetched it, so they could disagree.
+ *
+ * It is never thrown away, only marked stale — see {@link disabledStale}.
+ * @type {PluginConfig|null}
+ */
+let pluginConfig = null;
+
+/**
+ * Whether {@link pluginConfig} needs re-reading. Invalidation sets this rather
+ * than nulling the set, because the two roles differ: as a CACHE it is stale
+ * the moment config changes, but as a FALLBACK it is still the best answer
+ * available if the re-read fails. Discarding it would mean a blip immediately
+ * after a toggle answered "nothing is disabled", switching every disabled
+ * capability back on — and for an extension-level disable that also resurrects
+ * its always-on system-prompt sections for one assembly, flipping the prompt
+ * bytes and cold-starting claudecode's warm cache.
+ */
+let disabledStale = false;
+
+/**
+ * In-flight fetch, so concurrent first readers make one request.
+ * @type {Promise<PluginConfig|null>|null}
+ */
+let disabledInFlight = null;
+
+/**
+ * Read the project's plugin config, once per load and shared by every caller.
+ * @returns {Promise<PluginConfig|null>} The config, or null when never readable
+ */
+async function loadPluginConfig() {
+  if (pluginConfig && !disabledStale) return pluginConfig;
+  if (disabledInFlight) return disabledInFlight;
+
+  disabledInFlight = (async () => {
+    const data = await fetchJson('/api/config/plugins', { fallback: null });
+    // Unreadable: serve the config that WAS read, or null if there has never
+    // been one. Never an empty set — see disabledStale.
+    if (!data) return pluginConfig;
+    pluginConfig = {
+      disabled: new Set(Array.isArray(data.disabled) ? data.disabled : []),
+      attribution: (data.attribution && typeof data.attribution === 'object') ? data.attribution : {},
+    };
+    disabledStale = false;
+    return pluginConfig;
+  })();
+
+  try {
+    return await disabledInFlight;
+  } finally {
+    disabledInFlight = null;
+  }
+}
 
 /** Map plugin-type → the capabilities key it lives under in the response. */
 const TYPE_TO_KEY = /** @type {const} */ ({
@@ -148,25 +198,43 @@ export async function getExtensionCapabilities(type) {
  */
 export function resetExtensionsCache() {
   cached = null;
-  // A genuine reload (plugin toggle) must re-read the disabled set fresh, so
-  // drop the last-known-good cache too — otherwise a stale set could survive.
-  lastKnownDisabled = null;
+  // A genuine reload (plugin toggle) must re-read the disabled set fresh. The
+  // set itself is kept as the failure fallback; only its freshness is dropped.
+  disabledStale = true;
+  disabledInFlight = null;
 }
 
 /**
- * Fetch the per-project disabled-id set (capability ids and extension ids share
- * one flat list). Used to gate extension-level system-prompt contributions:
- * a disabled extension contributes nothing. On a transient failure we serve the
- * last-known-good set rather than empty: collapsing to empty would resurrect a
- * disabled extension's always-on contribution sections for one assembly, flip
- * the system-prompt bytes, and cold-start claudecode's warm cache.
- * @returns {Promise<Set<string>>} Disabled capability/extension ids
+ * The set of capability and extension ids switched off for this project —
+ * already resolved by the server, so the build's own defaults and any project
+ * countermand are applied and callers see one flat answer.
+ *
+ * This is the ONLY reader of `/api/config/plugins`. Every registry's
+ * `_applyDisabledFilter` and the extensions catalog come through here, so a
+ * rebuild reads the config once and no two of them can split on different sets.
+ *
+ * Returns null when the set is genuinely unknown — the config could not be read
+ * and nothing has ever been read successfully. Callers must treat that as "leave
+ * things as they are"; treating it as empty would switch every disabled
+ * capability back on for as long as the blip lasts.
+ * @returns {Promise<Set<string>|null>} Disabled ids, or null when unknown
  */
 export async function fetchDisabledPluginIds() {
-  const data = await fetchJson('/api/config/plugins', { fallback: null });
-  if (!data) return lastKnownDisabled || new Set();
-  lastKnownDisabled = new Set(Array.isArray(data.disabled) ? data.disabled : []);
-  return lastKnownDisabled;
+  return (await loadPluginConfig())?.disabled ?? null;
+}
+
+/**
+ * What the config remembers about each switched-off id: which extension and
+ * module file it came from, its type and its name. Recorded when a capability is
+ * switched off, so a row can still describe it once the module that defines it
+ * stops loading and its id becomes unknowable from the running app.
+ *
+ * A hint and nothing more — it never decides whether something is disabled, only
+ * how it is described. Empty is always a valid answer.
+ * @returns {Promise<Record<string, {extension?: string, file?: string, type?: string, name?: string}>>} Description keyed by capability id
+ */
+export async function fetchPluginAttribution() {
+  return (await loadPluginConfig())?.attribution ?? {};
 }
 
 /**
@@ -211,10 +279,11 @@ export async function buildExtensionSystemPromptContributions() {
   // drop sections and change the cached system-prompt bytes.
   await whenRegistriesReady();
   const extensions = await fetchExtensions();
-  const [disabled, enabledPluginIds] = await Promise.all([
+  const [known, enabledPluginIds] = await Promise.all([
     fetchDisabledPluginIds(),
     collectEnabledPluginIds(),
   ]);
+  const disabled = known || new Set();
 
   /** @type {string[]} */
   const parts = [];
