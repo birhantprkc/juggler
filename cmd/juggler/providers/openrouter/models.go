@@ -24,7 +24,10 @@ var ModelContextWindows = map[string]int{
 // DefaultContextWindow is used for unknown models.
 const DefaultContextWindow = 128000
 
-// DefaultMaxOutputTokens is used when the API does not report a value.
+// DefaultMaxOutputTokens is the last resort for a model whose window is unknown
+// too, so no reserve can be derived from it. A model with a known window gets
+// that reserve instead (utils.ClampOutputToWindow), which is both larger and
+// consistent with what admission charges.
 const DefaultMaxOutputTokens = 8192
 
 // GetContextWindow returns the context window for a model (or default if unknown).

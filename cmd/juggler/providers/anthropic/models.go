@@ -9,42 +9,34 @@ import (
 	"strings"
 )
 
-// ModelContextWindows maps Anthropic model names to their context window sizes (in tokens)
-// These values are based on official Anthropic documentation as of 2025
+// ModelContextWindows maps Anthropic model ids to their context window sizes
+// (in tokens).
+//
+// This is the offline answer only. Anthropic's Models API returns
+// max_input_tokens and max_tokens per model, and ListModelsWithInfo prefers
+// them — so this table is what a lapsed key, a failed fetch or a hand-typed id
+// resolves against, and the generation rules below cover the ids it omits.
 var ModelContextWindows = map[string]int{
-	// Generation 5: Fable, Mythos, Opus and Sonnet all carry a 1M window as
-	// both default and maximum, at standard per-token pricing, so no beta
-	// header is involved.
+	// The current lineup — Fable, Mythos, Opus and Sonnet from 4.6 up — carries
+	// a 1M window as both default and maximum, at standard per-token pricing,
+	// so no beta header is involved. currentLineupLimits answers for the whole
+	// generation, dated ids included; these entries exist so the settings model
+	// list has something to show.
 	"claude-fable-5-1":  1000000,
 	"claude-mythos-5-1": 1000000,
+	"claude-fable-5":    1000000,
+	"claude-mythos-5":   1000000,
 	"claude-opus-5":     1000000,
 	"claude-sonnet-5":   1000000,
+	"claude-opus-4-8":   1000000,
+	"claude-opus-4-7":   1000000,
+	"claude-opus-4-6":   1000000,
+	"claude-sonnet-4-6": 1000000,
 
-	// Claude 3.5 Sonnet (current default)
-	"claude-3-5-sonnet-20241022": 200000,
-	"claude-3-5-sonnet-20240620": 200000,
-
-	// Claude Sonnet 4 Series
-	"claude-sonnet-4":   200000, // Standard: 200K, Beta (tier 4): 1M
-	"claude-sonnet-4.5": 200000, // Standard: 200K, Beta (tier 4): 1M
-	"claude-4-sonnet":   200000,
-	"claude-4.5-sonnet": 200000,
-
-	// Claude 3 Opus
-	"claude-3-opus-20240229": 200000,
-	"claude-3-opus":          200000,
-
-	// Claude 3 Sonnet
-	"claude-3-sonnet-20240229": 200000,
-	"claude-3-sonnet":          200000,
-
-	// Claude 3 Haiku
-	"claude-3-haiku-20240307": 200000,
-	"claude-3-haiku":          200000,
-
-	// Claude 3.5 Haiku
-	"claude-3-5-haiku-20241022": 200000,
-	"claude-3-5-haiku":          200000,
+	// The 4.5 generation stayed at 200K.
+	"claude-opus-4-5":   200000,
+	"claude-sonnet-4-5": 200000,
+	"claude-haiku-4-5":  200000,
 }
 
 // DefaultContextWindow is the fallback context window if model is not found
@@ -63,20 +55,27 @@ func GetContextWindow(model string) int {
 }
 
 // currentLineupLimits returns the context window and output ceiling shared by
-// the generation-5 lineup — Fable, Mythos, Opus and Sonnet — and true when the
-// id names one of them. Every member publishes a 1M window and a 128k output
+// the current lineup — Fable, Mythos, Opus and Sonnet — and true when the id
+// names one of them. Every member publishes a 1M window and a 128k output
 // ceiling, so the generation carries the limits and the family only says which
 // naming this is; that is what lets a new family name (Fable, Mythos) resolve
 // without being added to a list.
 //
-// Matching on the generation rather than on exact ids covers both the dateless
-// pinned ids used from 4.6 on and any dated variant. It deliberately does not
-// extend to generations past 5: an output ceiling guessed too high is a hard
-// 400 on every request, so an unrecognised generation must fall through to
-// defaultMaxOutputTokens instead.
+// The lineup starts at 4.6, which is where the 1M window arrived: 4.5 and below
+// are 200k, and the family ladder in catalogMaxOutputTokens still answers for
+// them. Matching on the generation rather than on exact ids covers both the
+// dateless pinned ids used from 4.6 on and any dated variant.
+//
+// It deliberately does not extend to generations past 5. That asymmetry is the
+// point: a model below the floor is merely sized conservatively, while an
+// output ceiling guessed too high for a model nobody has seen is a hard 400 on
+// every request it ever makes. So the ceiling moves up only when a released
+// generation is known to carry it, and an unrecognised one falls through to
+// defaultMaxOutputTokens.
 func currentLineupLimits(m string) (contextWindow, maxOutput int, ok bool) {
-	major, _, hasVersion := claudeVersion(m)
-	if !hasVersion || major != 5 {
+	major, minor, hasVersion := claudeVersion(m)
+	inLineup := major == 5 || (major == 4 && minor >= 6)
+	if !hasVersion || !inLineup {
 		return 0, 0, false
 	}
 	for _, family := range []string{"fable", "mythos", "opus", "sonnet"} {

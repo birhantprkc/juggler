@@ -80,6 +80,14 @@ type Descriptor struct {
 	// that bills a single serving speed.
 	ServiceTierSpecFn ServiceTierSpecFunc
 
+	// LimitDiscoveryUnsupported opts a provider OUT of reading the token limits
+	// its own model list publishes. Discovery is on by default because the
+	// endpoint describes the server that will serve the request, where a
+	// compiled-in catalog only describes what a vendor documented once — but a
+	// gateway that advertises a window it will not honour needs the catalog to
+	// stay in charge, and this is the switch for it.
+	LimitDiscoveryUnsupported bool
+
 	// ListModelsOverride, if non-nil, replaces the standard
 	// SDK Models.List + Filter + ContextWindowFn flow. Use for providers
 	// whose model catalog lives at a custom HTTP endpoint.
@@ -199,18 +207,8 @@ func Register(d Descriptor) {
 		if err != nil {
 			return nil, err
 		}
-		// The descriptor's ContextWindowFn is the authoritative per-model output
-		// ceiling for models it knows; hand it to the client so the wire cap is
-		// clamped to it even if the capability snapshot carries a higher value (a
-		// derived reserve, or an over-reported live limit).
-		if fn := d.ContextWindowFn; fn != nil {
-			base.catalogMaxOutput = func(model string) (int, bool) {
-				if _, maxOut := fn(model); maxOut > 0 {
-					return maxOut, true
-				}
-				return 0, false
-			}
-		}
+		base.limitDiscoveryDisabled = d.LimitDiscoveryUnsupported
+		base.catalogMaxOutput = catalogMaxOutputLookup(d, capsSynthesised)
 		// Label this client's provider-boundary errors (notably the idle-stall
 		// message) with the id the user configured, not the shared "openai".
 		if d.Name != "" {
@@ -239,6 +237,41 @@ func Register(d Descriptor) {
 	}
 
 	provider.RegisterProvider(info, initializer)
+}
+
+// catalogMaxOutputLookup returns the client's authoritative per-model output
+// ceiling: the value the wire cap is clamped down to even when the capability
+// snapshot carries a higher one (a derived reserve, or a live limit reported
+// above the model's real cap, which is a hard 400 on the wire).
+//
+// It answers only for models the catalog actually KNOWS, and that distinction
+// is the whole of it. A provider-wide default is not knowledge about a model:
+// clamping to it would discard the larger cap the endpoint published for that
+// exact id, which is the number closest to what the server will accept. So
+// data-driven caps vouch for an explicit override and nothing else, while a
+// descriptor supplying its own ContextWindowFn (ollama, llama.cpp — where the
+// function IS the live probe) stays authoritative throughout.
+//
+// Nil means nothing is authoritative and the snapshot stands unclamped.
+func catalogMaxOutputLookup(d Descriptor, capsSynthesised bool) func(model string) (int, bool) {
+	switch {
+	case capsSynthesised:
+		maxOutputCaps := d.MaxOutputCaps
+		return func(model string) (int, bool) {
+			value, known := maxOutputCaps.LookupKnown(model)
+			return value, known && value > 0
+		}
+	case d.ContextWindowFn != nil:
+		fn := d.ContextWindowFn
+		return func(model string) (int, bool) {
+			if _, maxOut := fn(model); maxOut > 0 {
+				return maxOut, true
+			}
+			return 0, false
+		}
+	default:
+		return nil
+	}
 }
 
 // capabilitiesFromPair builds ModelCapabilities from a (contextWindow,

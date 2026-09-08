@@ -26,10 +26,22 @@ func TestGetContextWindow(t *testing.T) {
 	}{
 		{"claude-fable-5-1", 1000000},
 		{"claude-mythos-5-1", 1000000},
+		{"claude-fable-5", 1000000},
+		{"claude-mythos-5", 1000000},
 		{"claude-opus-5", 1000000},
 		{"claude-sonnet-5", 1000000},
-		{"claude-3-5-sonnet-20241022", 200000},
-		{"claude-sonnet-4-5-20250929", DefaultContextWindow},
+		// The 1M window arrives at 4.6, not at 5. A gate that starts at
+		// generation 5 sizes these four at 200000 — a fifth of the truth — and
+		// the only symptom is history folded long before it had to be.
+		{"claude-opus-4-8", 1000000},
+		{"claude-opus-4-7", 1000000},
+		{"claude-opus-4-6", 1000000},
+		{"claude-sonnet-4-6", 1000000},
+		{"claude-opus-4-7-20260210", 1000000},
+		// 4.5 and below stayed at 200000.
+		{"claude-opus-4-5", 200000},
+		{"claude-sonnet-4-5-20250929", 200000},
+		{"claude-haiku-4-5-20251001", 200000},
 		{"some-future-model", DefaultContextWindow},
 		{"", DefaultContextWindow},
 	}
@@ -210,6 +222,13 @@ func TestGetMaxOutputTokens(t *testing.T) {
 		{"claude-haiku-4-5-20251001", 64000},
 		{"claude-opus-4-20250514", 32000},
 		{"claude-opus-4-1-20250805", 32000},
+		// 4.6 raised the ceiling to 128000 along with the window. The family
+		// ladder below answers 32000 for an Opus and 64000 for a Sonnet, which
+		// truncates a long answer at a quarter of what the model would give.
+		{"claude-opus-4-8", 128000},
+		{"claude-opus-4-7", 128000},
+		{"claude-opus-4-6", 128000},
+		{"claude-sonnet-4-6", 128000},
 		// Generation 5 shares one ceiling across every family, including the two
 		// (Fable, Mythos) that no family ladder keyed on opus/sonnet/haiku sees.
 		{"claude-fable-5-1", 128000},

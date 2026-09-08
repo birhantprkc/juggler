@@ -198,6 +198,11 @@ type Client struct {
 	// Register stamps it from the descriptor; direct construction (tests)
 	// defaults to "openai".
 	providerName string
+	// limitDiscoveryDisabled stops ListModelsWithInfo believing the limits a
+	// model list publishes about itself. Off by default — the server that will
+	// serve the request is the best authority on what it will accept — and set
+	// only for an endpoint whose reported numbers are known to be unusable.
+	limitDiscoveryDisabled bool
 }
 
 // enhanceError adds helpful, human-oriented hints to common API errors. It
@@ -280,8 +285,24 @@ func (c *Client) ListModelsWithInfo(ctx context.Context, filterFunc ModelFilterF
 			continue
 		}
 
-		// Get context window info using custom function
+		// What the endpoint says about this model outranks anything compiled
+		// in, because it describes the server that will serve the request
+		// rather than a vendor's documentation page. The two dimensions resolve
+		// independently: plenty of servers publish a window and no output cap,
+		// and the catalog is still the better answer for the half they omit.
 		contextWindow, maxOutputTokens := contextWindowFunc(model.ID)
+		fromAPI := false
+		if !c.limitDiscoveryDisabled {
+			discovered := DiscoverLimits(model.RawJSON())
+			if discovered.ContextWindow > 0 {
+				contextWindow = discovered.ContextWindow
+				fromAPI = true
+			}
+			if discovered.MaxOutput > 0 {
+				maxOutputTokens = discovered.MaxOutput
+			}
+		}
+		maxOutputTokens = utils.ClampOutputToWindow(contextWindow, maxOutputTokens)
 
 		var inputModalities []string
 		if modalitiesFunc != nil {
@@ -309,9 +330,10 @@ func (c *Client) ListModelsWithInfo(ctx context.Context, filterFunc ModelFilterF
 			DisplayName:     utils.ModelDisplayName(model.ID),
 			ContextWindow:   contextWindow,
 			MaxOutputTokens: maxOutputTokens,
-			// This path always uses fallback context windows; API-sourced
-			// windows come from a per-provider ListModelsOverride instead.
-			FromAPI:              false,
+			// True only when this row carried its own window. An endpoint that
+			// returns bare ids — OpenAI, DeepSeek, z.ai — leaves this false, and
+			// that is what tells the UI the number was assumed, not measured.
+			FromAPI:              fromAPI,
 			InputModalities:      inputModalities,
 			ThinkingLevels:       thinkingLevels,
 			DefaultThinkingLevel: defaultThinkingLevel,

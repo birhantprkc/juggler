@@ -790,6 +790,10 @@ func (c *Client) ListModelsWithInfo(ctx context.Context) ([]provider.ModelInfo, 
 			if contextWindow == 0 {
 				contextWindow = GetContextWindow(model.Name)
 			}
+			maxOutputTokens := model.OutputTokenLimit
+			if maxOutputTokens == 0 {
+				maxOutputTokens = GetMaxOutputTokens(model.Name)
+			}
 
 			var inputModalities []string
 			if SupportsImageInput(model.Name) {
@@ -802,7 +806,7 @@ func (c *Client) ListModelsWithInfo(ctx context.Context) ([]provider.ModelInfo, 
 				ID:                   model.Name,
 				DisplayName:          utils.FirstNonEmpty(model.DisplayName, utils.ModelDisplayName(model.Name)),
 				ContextWindow:        contextWindow,
-				MaxOutputTokens:      model.OutputTokenLimit,
+				MaxOutputTokens:      maxOutputTokens,
 				FromAPI:              model.InputTokenLimit > 0,
 				InputModalities:      inputModalities,
 				ThinkingLevels:       spec.levels,

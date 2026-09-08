@@ -28,6 +28,14 @@ func TestGLMOutputCapHasReasoningHeadroom(t *testing.T) {
 		{"glm-5.2", 16384, 98304}, // unknown/newer → generous default, still bounded
 		{"glm-5.3", 16384, 98304},
 		{"glm-4-flash", 16384, 98304},
+		// The vision line's documented ceilings are a fraction of the text
+		// line's, and the flat default sits above them. z.ai answers a
+		// max_tokens over a model's ceiling with a 400, so without their own
+		// entries every turn on these models fails.
+		{"glm-4.6v", 8192, 32000},
+		{"glm-4.6v-flash", 8192, 32000},
+		{"glm-4.5v", 8192, 16000},
+		{"glm-4-32b-0414-128k", 8192, 16000},
 	}
 	for _, tc := range cases {
 		got := maxOutputCaps.Lookup(tc.model)
@@ -52,14 +60,16 @@ func TestContextWindowDefaultsToModernCatalog(t *testing.T) {
 		model string
 		want  int
 	}{
-		{"glm-4.6", 200000},      // default
-		{"glm-4.7", 200000},      // default
-		{"glm-5.1", 200000},      // default
-		{"glm-5.2", 1000000},     // override → 1M window on the base id
-		{"glm-5.3", 1000000},     // override → 1M window on the base id
-		{"glm-9-future", 200000}, // unknown → default
-		{"glm-4.5", 128000},      // override
-		{"glm-4.5-air", 128000},  // override
+		{"glm-4.6", 200000},        // default
+		{"glm-4.7", 200000},        // default
+		{"glm-5.1", 200000},        // default
+		{"glm-5.2", 1000000},       // override → 1M window on the base id
+		{"glm-5.3", 1000000},       // override → 1M window on the base id
+		{"glm-5.3-flash", 1000000}, // the vision-capable flash variant, same 1M window
+		{"glm-4.6v", 128000},       // the vision line is below the default
+		{"glm-9-future", 200000},   // unknown → default
+		{"glm-4.5", 128000},        // override
+		{"glm-4.5-air", 128000},    // override
 	}
 	for _, tc := range cases {
 		if got := contextWindowCaps.Lookup(tc.model); got != tc.want {

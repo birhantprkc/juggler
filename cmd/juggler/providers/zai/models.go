@@ -16,9 +16,10 @@ import (
 // z.ai's /models endpoint, so new GLM releases appear automatically. What lives
 // here is the per-model capability metadata that endpoint does NOT return: its
 // objects carry only id/object/created/owned_by, no context window or output
-// cap. So these are local fallbacks keyed by model id, with defaults tuned to
-// the current catalog. TestModelMetadataCoversCatalog_Live flags drift when the
-// API starts advertising a model the defaults would mis-size.
+// cap, and z.ai does not document the endpoint at all. So this is not a
+// fallback for z.ai — it is the only source of limits its models will ever
+// have, and the drift audit (providers/audit) is the only thing that will tell
+// us it has gone stale.
 
 // ModelContextWindows overrides DefaultContextWindow for models whose window is
 // not 200K. The bulk of the modern line (glm-4.6 onward, glm-5, glm-5.1) is 200K;
@@ -29,10 +30,16 @@ import (
 // "glm-5.2[1m]" suffix was a phantom — z.ai 400s it as "Unknown Model" — so the 1M
 // window belongs on the base id, not an opt-in variant.)
 var ModelContextWindows = map[string]int{
-	"glm-4.5":     128000,
-	"glm-4.5-air": 128000,
-	"glm-5.2":     1000000,
-	"glm-5.3":     1000000,
+	"glm-4.5":       128000,
+	"glm-4.5-air":   128000,
+	"glm-5.2":       1000000,
+	"glm-5.3":       1000000,
+	"glm-5.3-flash": 1000000,
+	// The vision line sits below the 200K default rather than above it.
+	"glm-4.6v":            128000,
+	"glm-4.6v-flash":      128000,
+	"glm-4.6v-flashx":     128000,
+	"glm-4-32b-0414-128k": 128000,
 }
 
 // DefaultContextWindow is used for unknown models. The whole current z.ai
@@ -40,20 +47,37 @@ var ModelContextWindows = map[string]int{
 // likely 200K than not — the optimistic default matches reality.
 const DefaultContextWindow = 200000
 
-// DefaultMaxOutputTokens is the per-request output cap. GLM is a reasoning
-// model — it spends output budget thinking before answering — so this sits well
-// above a non-reasoning default to give chain-of-thought room to complete; an
-// 8192 cap throttled the reasoning itself, producing empty `finish=length`
-// turns. Every model in the current catalog accepts 65536, which also stays
-// under z.ai's coding-plan output ceiling (~98K), so no per-model override is
-// needed and a newly-released model inherits the right cap automatically.
+// DefaultMaxOutputTokens is the per-request output cap for the text line. GLM
+// is a reasoning model — it spends output budget thinking before answering — so
+// this sits well above a non-reasoning default to give chain-of-thought room to
+// complete; an 8192 cap throttled the reasoning itself, producing empty
+// `finish=length` turns.
+//
+// z.ai documents 128K for the GLM-5.x/4.7/4.6 line, so this is deliberately
+// half the ceiling rather than all of it: 65536 is accepted by every model in
+// the catalog including the older 4.5 series (96K), which keeps one number
+// right for all of them and lets a newly-released model inherit a cap that
+// cannot 400. Raising it would mean tracking a per-model ceiling for a vendor
+// whose endpoint publishes none.
 const DefaultMaxOutputTokens = 65536
+
+// ModelMaxOutputTokens holds the models whose ceiling is BELOW the default —
+// the vision line and the legacy 32B. z.ai rejects a max_tokens above a model's
+// ceiling outright, so without these entries every turn on one of them is a
+// 400, not a truncation.
+var ModelMaxOutputTokens = map[string]int{
+	"glm-4.6v":            32000,
+	"glm-4.6v-flash":      32000,
+	"glm-4.6v-flashx":     32000,
+	"glm-4.5v":            16000,
+	"glm-4-32b-0414-128k": 16000,
+}
 
 // contextWindowCaps / maxOutputCaps are the single source for per-model
 // lookups, consumed by both the Get* getters and the provider Descriptor.
 var (
 	contextWindowCaps = utils.ModelCaps{Default: DefaultContextWindow, Overrides: ModelContextWindows}
-	maxOutputCaps     = utils.ModelCaps{Default: DefaultMaxOutputTokens}
+	maxOutputCaps     = utils.ModelCaps{Default: DefaultMaxOutputTokens, Overrides: ModelMaxOutputTokens}
 )
 
 // thinkingSpec returns a GLM model's reasoning-effort selector. z.ai accepts the

@@ -1,0 +1,83 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+package customprovider
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"juggler/cmd/juggler/providers/provider"
+	"juggler/internal/userpaths/userpathstest"
+)
+
+// TestCustomProviderDiscoversEndpointLimits covers the case a compiled-in
+// catalog can never help with: an endpoint nobody but this user has configured.
+//
+// A custom endpoint is whatever the user pointed it at — vLLM, llama.cpp, LM
+// Studio, LiteLLM, a company gateway — and there is no vendor documentation to
+// consult about it. But most of those servers state their own limits on the
+// model list, and that number is authoritative in a way no table could be: it
+// is the machine that will serve the request. The flat default is what remains
+// for a server that says nothing, and it is a guess, which is why FromAPI has
+// to distinguish the two.
+func TestCustomProviderDiscoversEndpointLimits(t *testing.T) {
+	userpathstest.Isolate(t)
+	unregisterAllAtEnd(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[
+			{"id":"served-by-vllm","object":"model","owned_by":"vllm","max_model_len":131072},
+			{"id":"silent-gateway-model","object":"model","owned_by":"someone"}
+		]}`))
+	}))
+	defer srv.Close()
+
+	if _, err := execute(t, "save", endpointParams("lab", "Lab box", srv.URL)); err != nil {
+		t.Fatalf("save lab: %v", err)
+	}
+
+	built, err := provider.InitializeProvider(RegisteredName("lab"), provider.Config{Model: "served-by-vllm"})
+	if err != nil {
+		t.Fatalf("InitializeProvider: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	infos, err := built.ListModelsWithInfo(ctx)
+	if err != nil {
+		t.Fatalf("ListModelsWithInfo: %v", err)
+	}
+
+	byID := map[string]provider.ModelInfo{}
+	for _, info := range infos {
+		byID[info.ID] = info
+	}
+
+	served, ok := byID["served-by-vllm"]
+	if !ok {
+		t.Fatal("served-by-vllm missing from the listing")
+	}
+	if served.ContextWindow != 131072 {
+		t.Errorf("served-by-vllm ContextWindow = %d, want the endpoint's own 131072 rather than the %d assumption",
+			served.ContextWindow, defaultContextWindow)
+	}
+	if !served.FromAPI {
+		t.Error("served-by-vllm FromAPI = false, but its window was read off the endpoint")
+	}
+
+	silent, ok := byID["silent-gateway-model"]
+	if !ok {
+		t.Fatal("silent-gateway-model missing from the listing")
+	}
+	if silent.ContextWindow != defaultContextWindow {
+		t.Errorf("silent-gateway-model ContextWindow = %d, want the %d assumption", silent.ContextWindow, defaultContextWindow)
+	}
+	if silent.FromAPI {
+		t.Error("silent-gateway-model FromAPI = true, but nothing was reported about it — the number is an assumption")
+	}
+}

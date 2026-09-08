@@ -13,6 +13,14 @@ import (
 
 // ModelContextWindows maps OpenCode Zen model names to context window sizes.
 // Source: https://opencode.ai/zen/v1 models endpoint.
+//
+// A gateway is the case where a table keyed by model id is least trustworthy:
+// the id names a model, and the limits belong to whichever backend the gateway
+// routes it to. The same model id served by two providers genuinely differs —
+// measured across OpenRouter's backends for one model, context ranged from 1M
+// to 1.05M and the output cap from 16K to 943K, a 58x spread under one name.
+// So anything the endpoint publishes about its own models wins outright, and
+// these entries answer only for a listing that could not be fetched.
 var ModelContextWindows = map[string]int{
 	"big-pickle":             200000,
 	"claude-fable-5":         1000000,

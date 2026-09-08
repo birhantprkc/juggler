@@ -15,6 +15,7 @@ import (
 
 	"juggler/cmd/juggler/core"
 	"juggler/cmd/juggler/providers/provider"
+	"juggler/cmd/juggler/providers/utils"
 	"juggler/cmd/juggler/server/handlers"
 	"juggler/internal/jlog"
 )
@@ -814,13 +815,11 @@ func (s *Server) resolveModelCapabilities(providerName, model string) provider.M
 // value is a catalog artifact (some OpenRouter entries report
 // max_completion_tokens == context_length), not a usable limit; the derived
 // reserve is the conservative interpretation. This is the universal safety net
-// for any provider that misreports; sources may also clamp at their own layer.
+// for any provider that misreports; sources may also clamp at their own layer,
+// through the same shared rule.
 func normalizeOutputLimit(capabilities provider.ModelCapabilities) provider.ModelCapabilities {
-	if capabilities.ContextWindowTokens > 0 {
-		if capabilities.MaxOutputTokens <= 0 || capabilities.MaxOutputTokens >= capabilities.ContextWindowTokens {
-			capabilities.MaxOutputTokens = provider.ContextSafetyReserve(capabilities.ContextWindowTokens)
-		}
-	}
+	capabilities.MaxOutputTokens = int64(utils.ClampOutputToWindow(
+		int(capabilities.ContextWindowTokens), int(capabilities.MaxOutputTokens)))
 	return capabilities
 }
 

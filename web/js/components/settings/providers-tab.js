@@ -913,7 +913,7 @@ export class ProvidersTab {
    * @private
    */
   _buildModelVisibilityRow(provider) {
-    /** @type {Array<{id: string, displayName?: string, hidden?: boolean, contextWindow?: number, maxOutputTokens?: number, providerContextWindow?: number, providerMaxOutputTokens?: number}>} */
+    /** @type {Array<{id: string, displayName?: string, hidden?: boolean, fromAPI?: boolean, contextWindow?: number, maxOutputTokens?: number, providerContextWindow?: number, providerMaxOutputTokens?: number}>} */
     const models = Array.isArray(provider.modelsWithContext) ? provider.modelsWithContext : [];
     if (models.length === 0) return null;
 
@@ -1010,6 +1010,9 @@ export class ProvidersTab {
      * @returns {HTMLInputElement} The input to append to the row.
      */
     const buildLimitInput = (model, field, label) => {
+      const overridden = field === 'contextWindow'
+        ? model.providerContextWindow !== undefined && model.providerContextWindow !== null
+        : model.providerMaxOutputTokens !== undefined && model.providerMaxOutputTokens !== null;
       const reported = field === 'contextWindow'
         ? (model.providerContextWindow ?? model.contextWindow)
         : (model.providerMaxOutputTokens ?? model.maxOutputTokens);
@@ -1025,6 +1028,17 @@ export class ProvidersTab {
       input.autocomplete = 'off';
       input.spellcheck = false;
       input.setAttribute('aria-label', `${label} for ${model.id}`);
+      // Three numbers that look identical in a box: one the provider stated,
+      // one Juggler assumed because the provider states none, and one typed
+      // here. Which it is decides how much to trust it, and nothing else on the
+      // row says.
+      if (overridden) {
+        input.title = `Your figure. Clearing the field goes back to ${reported}.`;
+      } else if (model.fromAPI) {
+        input.title = `${reported} — reported by the provider for this model.`;
+      } else {
+        input.title = `${reported} — Juggler's built-in figure. This provider doesn't publish its limits; correct it here if you know better.`;
+      }
 
       input.addEventListener('change', async () => {
         const previous = limits[model.id] ? { ...limits[model.id] } : undefined;

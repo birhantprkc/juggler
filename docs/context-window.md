@@ -7,14 +7,32 @@ outgrows the window anyway.
 
 ## Where the limits come from
 
-**The provider's own numbers are definitive.** Juggler never guesses from a
-model's name or marketing page; it uses what the provider reports for the
-exact model id you selected:
+Four sources, in order. Each one is only consulted when the one above it has
+nothing to say about that exact model id:
 
-- **Cloud providers** (Claude, OpenAI, Gemini, OpenRouter, Z.AI, Deepseek, …):
-  the context window — and maximum output, when the provider reports one —
-  comes from the provider's model catalog. Refreshing the model list in
-  settings refreshes these numbers.
+1. **What the endpoint says about itself.** Most model-list endpoints publish
+   each model's limits — Claude and Gemini report them directly, and among
+   OpenAI-compatible servers so do vLLM, llama.cpp, LM Studio, LiteLLM, Groq,
+   Together, Mistral, Moonshot, OpenRouter and Copilot. This is the best
+   possible answer, because it describes the machine that will actually serve
+   your request rather than what a documentation page said once. Refreshing the
+   model list in settings refreshes these numbers.
+2. **Juggler's built-in catalog.** Some endpoints publish no limits at all —
+   OpenAI, DeepSeek, Z.AI and Cerebras return a bare list of model ids, and so
+   does Ollama's OpenAI-compatible route. For those, and for any provider that
+   cannot be reached right now, Juggler falls back to figures it ships, taken
+   from each vendor's published documentation.
+3. **A conservative default**, for a model neither of the above knows. It is a
+   guess, and deliberately a low one: guessing low compacts a conversation
+   earlier than it needed to be, while guessing high walks a fully-assembled
+   request into a rejection.
+4. **Your own figure**, which outranks all three. Settings → Providers → expand
+   a provider's model list gives every model a context-window and
+   maximum-output field. Set one when you know better than the list above —
+   most often for a gateway that publishes nothing.
+
+Some providers need more than a lookup:
+
 - **Ollama:** the window that matters is the one the daemon is *serving* with,
   not the model's training maximum. Juggler probes each model's Modelfile for
   a configured `num_ctx`. When nothing reveals the daemon's setting it assumes
@@ -35,6 +53,12 @@ exact model id you selected:
   doesn't report, Juggler refuses to guess — it does *not* inherit the
   provider's default window. The error tells you to check the model id or
   refresh the provider's model list in settings.
+
+A gateway is the awkward case. The same model id served through two different
+backends genuinely has different limits — across one aggregator's providers,
+one model's maximum output ranged from 16K to 943K under a single name — so for
+a gateway only what that gateway reports means anything, and a built-in figure
+is a last resort rather than a fact.
 
 ## The output reserve
 

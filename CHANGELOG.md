@@ -8,6 +8,7 @@ of changes; this project follows semantic versioning.
 - GPT-6 Astra is selectable on a ChatGPT plan, with its reasoning and speed options
 - Any number of custom OpenAI-compatible endpoints, each set up alongside the built-in providers
 - Any model's context window and output limit can now be corrected in Provider Settings
+- Model token limits now come from the provider itself, with every stale figure corrected
 - A large file no longer loses its middle to a second, silent trim on the way to the model
 - A read's footer now names exactly the lines it returned, so paging a file misses nothing
 - batch_read gives each file its own share instead of dropping the ones in the middle

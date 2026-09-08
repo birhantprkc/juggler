@@ -78,28 +78,3 @@ func supportsVision(modelID string) bool {
 		return false
 	}
 }
-
-// isChatModel filters out non-chat OpenAI models (embeddings, audio, image,
-// moderation, legacy GPT-3 base models).
-func isChatModel(modelID string) bool {
-	excludePrefixes := []string{
-		"text-embedding-", "whisper-", "tts-", "dall-e-",
-		"text-moderation-", "omni-moderation-",
-		"babbage-", "davinci-", "curie-", "ada-",
-	}
-	excludeSubstrings := []string{
-		"-audio-", "audio-preview", "realtime-preview",
-	}
-	modelLower := strings.ToLower(modelID)
-	for _, prefix := range excludePrefixes {
-		if strings.HasPrefix(modelLower, prefix) {
-			return false
-		}
-	}
-	for _, substring := range excludeSubstrings {
-		if strings.Contains(modelLower, substring) {
-			return false
-		}
-	}
-	return true
-}

@@ -14,9 +14,17 @@ import (
 	"juggler/internal/jlog"
 )
 
-// Default context/output caps for an endpoint's models. A gateway's model list
-// carries ids and nothing else, so these bound them conservatively; a user who
-// knows better raises them per model through models.limits in settings.
+// Default context/output caps for an endpoint's models, used only for a model
+// the endpoint says nothing about.
+//
+// Most OpenAI-compatible servers do say something — vLLM publishes
+// max_model_len, llama.cpp meta.n_ctx, LM Studio its loaded window, LiteLLM
+// max_input_tokens — and openaibase reads whichever of those a listing carries,
+// which beats anything set here because it describes the server that will serve
+// the request. What is left is a gateway whose rows are bare ids, and for that
+// there is nothing to know: 128000 is a guess, wrong in both directions for
+// somebody, and the per-model override in settings is how a user who knows
+// better corrects it.
 const (
 	defaultContextWindow   = 128000
 	defaultMaxOutputTokens = 16384
@@ -117,7 +125,7 @@ func registerInstance(id string, inst Instance) {
 	openaibase.Register(openaibase.Descriptor{
 		Name:        RegisteredName(id),
 		DisplayName: displayName,
-		Description: "A custom endpoint speaking the OpenAI Chat Completions API. Its base URL and request headers are set in the Custom Providers tab; the API key is optional, for endpoints that need one. Models come from the endpoint's own model list.",
+		Description: "A custom endpoint speaking the OpenAI Chat Completions API. Its base URL and request headers are set in the Custom Providers tab; the API key is optional, for endpoints that need one. Models come from the endpoint's own model list, along with their context windows where it publishes them (vLLM, llama.cpp, LM Studio and LiteLLM all do). For a model it says nothing about, Juggler assumes 128k — set the real figure per model below.",
 		// Per-instance credential slot and environment variable, so several
 		// endpoints hold distinct secrets. The environment form folds the
 		// hyphens an id may carry to underscores, since a shell cannot set a

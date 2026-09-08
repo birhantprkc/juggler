@@ -108,6 +108,19 @@ line you already had and cuts the assertion that says what broke.
   is sent back a document — and this lane is delivered no `popstate` at all. A
   stub answering with a `popstate` of its own, in a later task, reproduces
   everything a real traversal was there to show.
+- **Model limits go stale silently. `TestCatalogDrift` is how you find out.**
+  Providers publish new models and retire old ones constantly, and a wrong
+  context window has no symptom — the model works and merely compacts far
+  sooner than it needed to. The audit compares what each provider serves right
+  now against what the built-in catalogs say, using whatever keys you have
+  configured, and names the providers it had to skip:
+  ```bash
+  JUGGLER_MODELS_AUDIT=1 make test-go RUN='TestCatalogDrift'
+  ```
+  It is opt-in (one network call per provider) and skipped in `make test`. Run
+  it after any vendor announcement, and before a release. The no-network half,
+  `TestCatalogInvariants`, runs every time and checks every catalogued model for
+  limits that cannot be right.
 - Suite timings are load-sensitive. A browser test that fails in a full run and
   passes alone is not a regression in the code it asserts on — re-run the exact
   subtest in isolation before investigating it. It is not automatically "just

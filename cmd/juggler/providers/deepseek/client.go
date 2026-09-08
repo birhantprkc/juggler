@@ -18,7 +18,7 @@ func Register() {
 		EnvVarName:         "DEEPSEEK_API_KEY",
 		APIKeyURL:          "https://platform.deepseek.com/api_keys",
 		DisplayProvider:    "DeepSeek",
-		Filter:             openaibase.PrefixModelFilter("deepseek-", "-embedding", "-vision", "-tts"),
+		Filter:             modelFilter(),
 		ContextWindowCaps:  contextWindowCaps,
 		MaxOutputCaps:      maxOutputCaps,
 		UsageStatsOverride: usageStats,

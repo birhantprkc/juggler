@@ -12,8 +12,13 @@ import (
 )
 
 // TestContextWindow pins the known windows and the unknown-model default: the
-// 1M flagship, the 256K K2.x line, the legacy moonshot-v1 sizes, and a
-// yet-unseen id falling back to the modern default.
+// 1M flagship, the 256K K2.x line, and a yet-unseen id falling back to the
+// conservative default.
+//
+// The retired ids are here too, as defaults rather than entries. Moonshot
+// switched the kimi-k2.5 and moonshot-v1 series off on 2026-08-31 and now 404s
+// them, so a catalogued window for one of those would be a promise about a
+// model that cannot be called at all.
 func TestContextWindow(t *testing.T) {
 	cases := []struct {
 		model string
@@ -23,11 +28,9 @@ func TestContextWindow(t *testing.T) {
 		{"kimi-k2.7-code", 256000},
 		{"kimi-k2.7-code-highspeed", 256000},
 		{"kimi-k2.6", 256000},
-		{"kimi-k2.5", 256000},
-		{"moonshot-v1-8k", 8000},
-		{"moonshot-v1-32k", 32000},
-		{"moonshot-v1-128k", 128000},
-		{"kimi-latest", DefaultContextWindow}, // unlisted → default
+		{"kimi-k2.5", DefaultContextWindow},        // retired 2026-08-31
+		{"moonshot-v1-128k", DefaultContextWindow}, // retired 2026-08-31
+		{"kimi-latest", DefaultContextWindow},      // unlisted → default
 		{"kimi-k4-future", DefaultContextWindow},
 	}
 	for _, tc := range cases {
@@ -46,9 +49,7 @@ func TestOutputCapReasoningHeadroomAndFitsWindow(t *testing.T) {
 		t.Errorf("maxOutput(kimi-k3) = %d, want >= 65536 (reasoning needs headroom)", got)
 	}
 	for _, model := range []string{
-		"kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5",
-		"moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k",
-		"moonshot-v1-8k-vision-preview", "kimi-latest",
+		"kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-latest",
 	} {
 		out := maxOutputCaps.Lookup(model)
 		win := contextWindowCaps.Lookup(model)
@@ -63,8 +64,7 @@ func TestOutputCapReasoningHeadroomAndFitsWindow(t *testing.T) {
 // moonshot-v1) report none.
 func TestInputModalities(t *testing.T) {
 	vision := []string{
-		"kimi-k3", "kimi-k2.5", "kimi-k2.6", "kimi-k2.7-code", "kimi-k2.7-code-highspeed",
-		"moonshot-v1-8k-vision-preview", "moonshot-v1-128k-vision-preview",
+		"kimi-k3", "kimi-k2.6", "kimi-k2.7-code", "kimi-k2.7-code-highspeed",
 	}
 	for _, m := range vision {
 		got := inputModalities(m)
@@ -72,7 +72,7 @@ func TestInputModalities(t *testing.T) {
 			t.Errorf("inputModalities(%q) = %v, want [text image]", m, got)
 		}
 	}
-	textOnly := []string{"moonshot-v1-8k", "moonshot-v1-128k", "kimi-latest"}
+	textOnly := []string{"kimi-latest"}
 	for _, m := range textOnly {
 		if got := inputModalities(m); got != nil {
 			t.Errorf("inputModalities(%q) = %v, want nil (text-only)", m, got)
@@ -89,7 +89,7 @@ func TestThinkingSpec(t *testing.T) {
 	if !slices.Equal(k3.Levels, []string{"max"}) {
 		t.Errorf("thinkingSpec(kimi-k3).Levels = %v, want [max]", k3.Levels)
 	}
-	for _, m := range []string{"kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "moonshot-v1-128k"} {
+	for _, m := range []string{"kimi-k2.7-code", "kimi-k2.6", "kimi-latest"} {
 		if spec := thinkingSpec(m); len(spec.Levels) != 0 {
 			t.Errorf("thinkingSpec(%q).Levels = %v, want empty (no reasoning_effort control)", m, spec.Levels)
 		}
@@ -128,8 +128,10 @@ func TestIsChatModel(t *testing.T) {
 	}{
 		{"kimi-k3", true},
 		{"kimi-k2.7-code", true},
+		// The moonshot-v1 line is retired, but the filter stays permissive:
+		// admitting an id the endpoint no longer lists costs nothing, and
+		// refusing one it might list again would be a bug in waiting.
 		{"moonshot-v1-128k", true},
-		{"moonshot-v1-8k-vision-preview", true},
 		{"moonshot-v1-embedding", false},
 		{"text-embedding-3-large", false},
 		{"gpt-4", false},

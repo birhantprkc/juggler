@@ -11,48 +11,35 @@ import (
 	"juggler/cmd/juggler/providers/utils"
 )
 
-// The model *list* is never hardcoded — ListModelsWithInfo pulls it live from
-// Moonshot's /v1/models endpoint, so new Kimi releases appear automatically.
-// What lives here is the per-model capability metadata that endpoint does NOT
-// return: context window, output cap, image support and reasoning support. The
-// maps are keyed by exact model id; anything unlisted falls back to the
-// defaults, which are tuned to the modern Kimi line.
+// Moonshot's /v1/models publishes each model's own context_length, and that is
+// what a listing uses — it describes the endpoint that will serve the request.
+// This file is the offline answer: what Juggler knows when the list cannot be
+// fetched, plus the metadata the endpoint does not return at all (output cap,
+// image support, reasoning support).
 
 // ModelContextWindows overrides DefaultContextWindow for models whose window is
-// not the default. Kimi K3 is the 1M-token flagship; the K2.x line is 256K; the
-// legacy moonshot-v1-* series carries its size in the id (sunsetting).
+// not the default. Kimi K3 is the 1M-token flagship; the K2.x line is 256K.
 var ModelContextWindows = map[string]int{
-	"kimi-k3":                         1000000,
-	"kimi-k2.7-code":                  256000,
-	"kimi-k2.7-code-highspeed":        256000,
-	"kimi-k2.6":                       256000,
-	"kimi-k2.5":                       256000,
-	"moonshot-v1-8k":                  8000,
-	"moonshot-v1-32k":                 32000,
-	"moonshot-v1-128k":                128000,
-	"moonshot-v1-8k-vision-preview":   8000,
-	"moonshot-v1-32k-vision-preview":  32000,
-	"moonshot-v1-128k-vision-preview": 128000,
+	"kimi-k3":                  1000000,
+	"kimi-k2.7-code":           256000,
+	"kimi-k2.7-code-highspeed": 256000,
+	"kimi-k2.6":                256000,
 }
 
-// DefaultContextWindow is used for unknown models. The current Kimi catalog
-// (kimi-latest, kimi-k2*) sits at 128K or above, so an unlisted id is far more
-// likely 128K than the tiny legacy sizes; a conservative-but-modern default
-// avoids over-promising context on a small model while still fitting new Kimis.
+// DefaultContextWindow is used for unknown models when the endpoint could not
+// be asked. The whole current Kimi catalog sits at 256K or above, so this is a
+// deliberate under-estimate: guessing low compacts a conversation earlier than
+// it needed to be, guessing high walks it into a mid-turn rejection.
 const DefaultContextWindow = 128000
 
-// ModelMaxOutputTokens overrides DefaultMaxOutputTokens per model. Two cases:
-//   - Reasoning models (kimi-k3) spend output budget thinking before they
-//     answer, so they need headroom well above the default — an 8K cap would
-//     throttle the reasoning itself and yield empty `finish=length` turns.
-//   - The small legacy moonshot-v1 windows can't fit the default output cap
-//     alongside any input, so their cap is pinned below the window.
+// ModelMaxOutputTokens overrides DefaultMaxOutputTokens per model. Moonshot
+// publishes no output ceiling anywhere — not in the docs, not on the wire — so
+// every number here is ours: a cap chosen to be accepted, not a limit read off
+// the vendor. Reasoning models (kimi-k3) spend output budget thinking before
+// they answer, so they need headroom well above the default; an 8K cap would
+// throttle the reasoning itself and yield empty `finish=length` turns.
 var ModelMaxOutputTokens = map[string]int{
-	"kimi-k3":                        131072,
-	"moonshot-v1-8k":                 4096,
-	"moonshot-v1-8k-vision-preview":  4096,
-	"moonshot-v1-32k":                16384,
-	"moonshot-v1-32k-vision-preview": 16384,
+	"kimi-k3": 131072,
 }
 
 // DefaultMaxOutputTokens is the per-request output cap for models without an
@@ -92,14 +79,17 @@ func inputModalities(modelID string) []string {
 	return nil
 }
 
-// supportsVision reports whether a Moonshot model accepts image input.
+// supportsVision reports whether a Moonshot model accepts image input. The
+// endpoint answers this itself with a supports_image_in flag per model; this is
+// the offline classification, so it recognises families rather than ids and
+// keeps the retired -vision- naming, which costs nothing and is right if it
+// returns.
 func supportsVision(modelID string) bool {
 	m := strings.ToLower(modelID)
 	switch {
 	case strings.Contains(m, "vision"):
 		return true
 	case strings.HasPrefix(m, "kimi-k3"),
-		strings.HasPrefix(m, "kimi-k2.5"),
 		strings.HasPrefix(m, "kimi-k2.6"),
 		strings.HasPrefix(m, "kimi-k2.7"):
 		return true

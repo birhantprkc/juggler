@@ -99,6 +99,9 @@ function providerFixture() {
         providerContextWindow: 128000,
         providerMaxOutputTokens: 16384,
       },
+      // A model whose endpoint published its own limits, which is a different
+      // kind of number from the two above and has to read as one.
+      { id: 'measured-model', contextWindow: 262144, maxOutputTokens: 32768, fromAPI: true },
     ],
   };
 }
@@ -183,6 +186,25 @@ export async function runTests(_ctx) {
       assert(output.value === '', `output field is blank; got ${JSON.stringify(output.value)}`);
       assert(window_.placeholder === '128000', `context placeholder = ${window_.placeholder}, want 128000`);
       assert(output.placeholder === '16384', `output placeholder = ${output.placeholder}, want 16384`);
+    });
+  });
+
+  await run('each field says where its number came from', async () => {
+    await withTab({}, async (host) => {
+      // Three numbers that look identical in a box and are not: one the server
+      // stated, one Juggler assumed, one the user typed. Without this the only
+      // way to tell an assumption from a measurement is to know the code.
+      const measured = limitInput(host, 'measured-model', 'contextWindow');
+      assert(/reported/i.test(measured.title),
+        `a discovered limit should say the provider reported it; got ${JSON.stringify(measured.title)}`);
+
+      const assumed = limitInput(host, 'plain-model', 'contextWindow');
+      assert(/built-in/i.test(assumed.title),
+        `an undiscovered limit should say it is built in; got ${JSON.stringify(assumed.title)}`);
+
+      const overridden = limitInput(host, 'fixed-model', 'contextWindow');
+      assert(/128000/.test(overridden.title),
+        `an overridden limit should name what clearing restores; got ${JSON.stringify(overridden.title)}`);
     });
   });
 

@@ -8,22 +8,43 @@ import (
 	"testing"
 )
 
-// TestMistralContextWindow pins a couple of known windows and the unknown-model
-// default.
+// TestMistralContextWindow pins the current catalog's windows, the versioned
+// ids and their -latest aliases alike, and the unknown-model default.
 func TestMistralContextWindow(t *testing.T) {
-	if got := contextWindowCaps.Lookup("mistral-large-latest"); got != 262144 {
-		t.Errorf("context window(mistral-large-latest) = %d, want 262144", got)
+	cases := []struct {
+		model string
+		want  int
+	}{
+		{"mistral-large-latest", 256000},
+		{"mistral-large-2512", 256000},
+		{"mistral-medium-latest", 256000},
+		{"ministral-3b-latest", 256000},
+		// Codestral is the one model in the line at half the others' window.
+		{"codestral-latest", 128000},
+		{"codestral-2508", 128000},
+		{"zai-glm-5-2", 1000000},
+		{"mistral-vNext", DefaultContextWindow},
+		// Withdrawn from the catalog: no entry, so no promise.
+		{"magistral-medium-latest", DefaultContextWindow},
+		{"devstral-medium-latest", DefaultContextWindow},
+		{"mistral-tiny-latest", DefaultContextWindow},
 	}
-	if got := contextWindowCaps.Lookup("mistral-vNext"); got != DefaultContextWindow {
-		t.Errorf("context window(unknown) = %d, want default %d", got, DefaultContextWindow)
+	for _, tc := range cases {
+		if got := contextWindowCaps.Lookup(tc.model); got != tc.want {
+			t.Errorf("context window(%q) = %d, want %d", tc.model, got, tc.want)
+		}
 	}
 }
 
-// TestMistralMaxOutput checks a known and an unknown model both resolve to the
-// flat default output cap.
+// TestMistralMaxOutput checks that Mistral's own models take the flat default —
+// the vendor publishes no ceiling for them — while the third-party model it
+// hosts uses the ceiling that model does publish.
 func TestMistralMaxOutput(t *testing.T) {
 	if got := maxOutputCaps.Lookup("mistral-large-latest"); got != DefaultMaxOutputTokens {
 		t.Errorf("max output(mistral-large-latest) = %d, want %d", got, DefaultMaxOutputTokens)
+	}
+	if got := maxOutputCaps.Lookup("zai-glm-5-2"); got != 128000 {
+		t.Errorf("max output(zai-glm-5-2) = %d, want its documented 128000", got)
 	}
 }
 

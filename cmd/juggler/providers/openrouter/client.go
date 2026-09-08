@@ -70,17 +70,15 @@ func listModels(ctx context.Context, apiKey string, headers map[string]string) (
 		if ctxWindow == 0 {
 			ctxWindow = GetContextWindow(m.ID)
 		}
-		maxOut := m.TopProvider.MaxCompletionTokens
 		// OpenRouter's catalog contains entries whose max_completion_tokens
 		// equals context_length; a cap at/above the window leaves no input room
-		// and is a catalog artifact, not a usable limit. Treat it as unset so the
-		// default output cap applies and the UI model list shows a sane number.
-		// (server-side normalizeOutputLimit is the universal net; this keeps the
-		// listed data itself hygienic.)
-		if ctxWindow > 0 && maxOut >= ctxWindow {
-			maxOut = 0
-		}
-		if maxOut == 0 {
+		// and is a catalog artifact, not a usable limit. The shared rule replaces
+		// both that and an unreported cap with the reserve derived from the
+		// window, so the listed data is already hygienic before the server's
+		// normalizeOutputLimit sees it. A model with no window at all keeps the
+		// flat default, since there is nothing to derive a reserve from.
+		maxOut := utils.ClampOutputToWindow(ctxWindow, m.TopProvider.MaxCompletionTokens)
+		if maxOut <= 0 {
 			maxOut = DefaultMaxOutputTokens
 		}
 		// Map OpenRouter's reported input modalities, keeping only the kinds we
