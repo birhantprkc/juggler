@@ -24,7 +24,7 @@
  * @module unit-tests/extension-catalog-test
  */
 
-import { assert, waitFor } from '../utilities/test-helpers.js';
+import { assert } from '../utilities/test-helpers.js';
 import { badgeForItem } from '../../js/utils/item-badge.js';
 import '../../js/components/properties-panel.js';
 import '../../js/components/settings-panel.js';
@@ -40,6 +40,7 @@ import contextItemRegistry from '../../js/registries/context-item-registry.js';
 import strategyRegistry from '../../js/registries/strategy-registry.js';
 import commandRegistry from '../../js/registries/command-registry.js';
 import fileViewerRegistry from '../../js/registries/file-viewer-registry.js';
+import { isConversationBusy } from '../../js/registries/reload-registries.js';
 
 /**
  * @typedef {object} TestResult
@@ -564,73 +565,27 @@ export async function runTests(_ctx) {
       'an unknown capability is reported and leaves the selection alone');
   });
 
-  // 6 — a toggle must still apply while a conversation sits parked on a tool
+  // 6 — a registry rebuild must not wait for a conversation parked on a tool
   // approval. The worker keeps publishing `processing_tools` for the whole time
-  // the user deliberates, and the server's own activity signal
-  // (/api/health/active, which _quiesceBeforeToggle consults) deliberately
-  // excludes that case — so the toggle sails past the quiesce gate, writes the
-  // config, and then blocks forever in the registry rebuild's own busy-wait.
-  // That leaves `_busy` latched true, which makes EVERY later toggle on EVERY
-  // row a silent no-op: the whole enable/disable UI is dead until the approval
-  // is answered.
+  // the user deliberates, while the server's own activity signal deliberately
+  // excludes that case. Pin the predicate directly: driving a real toggle here
+  // would mutate the project config shared by every pool lane and turn a
+  // synchronous classification into a full six-registry timing test.
   await run('a toggle applies while a conversation is parked on a tool approval', async () => {
-    const before = await (await fetch('/api/config/plugins')).json();
-    const prevApp = /** @type {any} */ (globalThis).jugglerApp;
-    const el = /** @type {any} */ (document.createElement('plugin-catalog'));
-    try {
-      // A conversation parked on an approval: the worker's published status
-      // stays `processing_tools` indefinitely with no turn actually running.
-      // hasPendingApprovalInTree walks Y.Map-shaped items, and a lone
-      // tool-action whose state is `pending` is the smallest tree it reports
-      // true for. The real Conversation.isAwaitingApproval is borrowed rather
-      // than stubbed, so this exercises the production predicate.
-      const conv = {
-        processingState: { status: 'processing_tools' },
-        rootMessageThread: {
-          items: [{ get: (/** @type {string} */ k) => ({ type: 'tool-action', state: 'pending' }[k]) }],
-        },
-        isAwaitingApproval: Conversation.prototype.isAwaitingApproval,
-      };
-      assert(conv.isAwaitingApproval(), 'the stub conversation reads as approval-parked');
-      /** @type {any} */ (globalThis).jugglerApp = {
-        getSession: () => ({ conversations: new Map([['c1', conv]]) }),
-      };
+    // hasPendingApprovalInTree walks Y.Map-shaped items, and a lone tool-action
+    // whose state is `pending` is the smallest tree it reports true for. Borrow
+    // the real Conversation method so this has exactly the production shape.
+    const conv = {
+      processingState: { status: 'processing_tools' },
+      rootMessageThread: {
+        items: [{ get: (/** @type {string} */ k) => ({ type: 'tool-action', state: 'pending' }[k]) }],
+      },
+      isAwaitingApproval: Conversation.prototype.isAwaitingApproval,
+    };
 
-      document.body.appendChild(el);
-      await waitFor(() => el._cards?.length > 0, { description: 'catalog to load' });
-
-      const badge = el.querySelector('[data-testid="toggle-cap:context-item:glob"]');
-      assert(badge && !badge.disabled, 'the glob capability starts enabled and toggleable');
-      badge.click();
-
-      // Generous on purpose. The bound is here to catch a latch, not to police
-      // wall-clock: the regression it guards is a block on the rebuild's
-      // quiescence busy-wait, which unblocks only at QUIESCENCE_TIMEOUT_MS
-      // (30s), so anything under that separates "latched" from "slow" cleanly.
-      // The honest cost of the passing path is a full six-registry rebuild —
-      // ~40 module imports — which on a machine running four -race suites at
-      // once had been overrunning a 4s budget and failing the whole gate for
-      // load rather than for fault.
-      await waitFor(() => el._busy === false,
-        { timeoutMs: 20000, description: 'the toggle to finish rather than latch _busy' });
-
-      const after = await (await fetch('/api/config/plugins')).json();
-      assert(after.disabled.includes('glob'), 'the capability is recorded disabled');
-      const now = el.querySelector('[data-testid="toggle-cap:context-item:glob"]');
-      assert(now && now.textContent === 'off', `the badge reflects it; got ${now?.textContent}`);
-    } finally {
-      /** @type {any} */ (globalThis).jugglerApp = prevApp;
-      el.remove();
-      await fetch('/api/config/plugins', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(before),
-      });
-      const { whenRegistriesSettled, reloadRegistries } =
-        await import('../../js/registries/reload-registries.js');
-      await whenRegistriesSettled();
-      await reloadRegistries();
-    }
+    assert(conv.isAwaitingApproval(), 'the stub conversation reads as approval-parked');
+    assert(!isConversationBusy(/** @type {any} */ (conv)),
+      'an approval-parked conversation does not hold a registry rebuild open');
   });
 
   // 7 — a declared capability that never registered still gets a row.

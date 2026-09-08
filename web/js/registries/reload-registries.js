@@ -63,7 +63,7 @@ const QUIESCENCE_TIMEOUT_MS = 30000;
  * @param {import('../model/conversation.js').default} conv
  * @returns {boolean} True while the conversation is running a turn
  */
-function isConversationBusy(conv) {
+export function isConversationBusy(conv) {
   const status = conv.processingState?.status;
   if (!status || status === 'idle' || status === 'error' || status === 'validation-error') return false;
   return !conv.isAwaitingApproval?.();
