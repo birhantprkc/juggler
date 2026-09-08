@@ -36,6 +36,7 @@ const SaveDebounce = 300 * time.Millisecond
 type Window interface {
 	IsMaximised() bool
 	IsFullscreen() bool
+	IsMinimised() bool
 	Position() (int, int)
 	Size() (int, int)
 }
@@ -64,6 +65,13 @@ func NewTracker(seed core.WindowState) *Tracker {
 // sample would only write junk for the frame underneath. Both cases leave the
 // stored frame alone rather than clobbering the user's real geometry.
 func (t *Tracker) Capture(win Window) (core.WindowState, bool) {
+	// Windows parks a minimised HWND outside the virtual desktop. Position() sees
+	// those parking coordinates, not the frame Windows will restore, so saving one
+	// would strand the next window off-screen. Leave both the store and lastPos
+	// untouched until the window has been restored.
+	if win.IsMinimised() {
+		return core.WindowState{}, false
+	}
 	maximised := win.IsMaximised()
 	fullscreen := win.IsFullscreen()
 	if !maximised && !fullscreen {
@@ -134,6 +142,7 @@ type Placement struct {
 	X, Y          int
 	Position      application.WindowStartPosition
 	State         application.WindowState
+	Screen        *application.Screen
 }
 
 // Place turns a saved frame into a Placement, falling back to a centred default
@@ -161,4 +170,70 @@ func Place(saved core.WindowState) Placement {
 		p.State = application.WindowStateFullscreen
 	}
 	return p
+}
+
+// PlaceVisible restores a saved frame only when enough of its top edge remains
+// on a current display to drag it. Absolute desktop coordinates become stale
+// when a monitor is removed, an RDP session changes size, or Windows parking
+// coordinates were saved by an older build. A stranded frame is centred on the
+// primary display and limited to its work area; valid negative coordinates on a
+// display left of the primary are retained.
+func PlaceVisible(saved core.WindowState, screens []*application.Screen) Placement {
+	p := Place(saved)
+	if p.Position != application.WindowXY || hasVisibleHeader(p, screens) {
+		return p
+	}
+
+	primary := primaryScreen(screens)
+	if primary == nil {
+		return p
+	}
+	if primary.WorkArea.Width > 0 && p.Width > primary.WorkArea.Width {
+		p.Width = primary.WorkArea.Width
+	}
+	if primary.WorkArea.Height > 0 && p.Height > primary.WorkArea.Height {
+		p.Height = primary.WorkArea.Height
+	}
+	p.X, p.Y = 0, 0
+	p.Position = application.WindowCentered
+	p.Screen = primary
+	return p
+}
+
+const (
+	minVisibleHeaderWidth  = 80
+	minVisibleHeaderHeight = 16
+	headerHeight           = 40
+)
+
+func hasVisibleHeader(p Placement, screens []*application.Screen) bool {
+	height := min(p.Height, headerHeight)
+	for _, screen := range screens {
+		if screen == nil {
+			continue
+		}
+		area := screen.WorkArea
+		left := max(p.X, area.X)
+		right := min(p.X+p.Width, area.X+area.Width)
+		top := max(p.Y, area.Y)
+		bottom := min(p.Y+height, area.Y+area.Height)
+		if right-left >= minVisibleHeaderWidth && bottom-top >= minVisibleHeaderHeight {
+			return true
+		}
+	}
+	return false
+}
+
+func primaryScreen(screens []*application.Screen) *application.Screen {
+	for _, screen := range screens {
+		if screen != nil && screen.IsPrimary {
+			return screen
+		}
+	}
+	for _, screen := range screens {
+		if screen != nil {
+			return screen
+		}
+	}
+	return nil
 }

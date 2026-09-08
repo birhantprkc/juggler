@@ -23,6 +23,37 @@ import (
 // coming" backstop, not a performance check.
 const windowStartupTimeout = 20 * time.Second
 
+// revealInitialWindowWhenReady works around Wails waiting for WebView2's first
+// navigation before showing a non-hidden Windows window. Run assigns the native
+// implementation before it creates the HWND, so calling Show immediately can
+// race it and create a second implementation. A non-zero native Size proves the
+// HWND exists; Show is safe from that point and makes startup independent of
+// WebView2 navigation timing.
+func (a *appState) revealInitialWindowWhenReady(e *winEntry) {
+	deadline := time.After(windowStartupTimeout)
+	tick := time.NewTicker(25 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-deadline:
+			return
+		case <-tick.C:
+			width, height := e.win.Size()
+			if width <= 0 || height <= 0 {
+				continue
+			}
+			application.InvokeAsync(func() {
+				if e.win.IsVisible() {
+					return
+				}
+				logf("initial window native frame ready but hidden; showing explicitly")
+				a.showWindow(e)
+			})
+			return
+		}
+	}
+}
+
 // fatalf reports an unrecoverable window-startup failure as loudly as possible —
 // to the console (a terminal launch) and to app.log (a windowless launch) — then
 // exits non-zero. It exists to turn an otherwise-silent GUI failure into a

@@ -380,12 +380,11 @@ func (a *appState) run(specs []windowSpec) error {
 
 	a.app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(_ *application.ApplicationEvent) {
 		// The initial window is materialised by Wails during startup in its own
-		// goroutine (go window.Run()). When it was created visible
-		// (platformWindowHidden=false, Windows) Wails auto-shows it after the page
-		// loads — calling Show() ourselves here would race that goroutine's impl
-		// creation and intermittently corrupt the window (two impls → no visible
-		// window). Only reveal it ourselves when it was created hidden (macOS/Linux),
-		// where it won't show on its own.
+		// goroutine (go window.Run()). A hidden initial window can be revealed
+		// directly. On Windows the window is logically created visible, but the
+		// vendored Wails version omits WS_VISIBLE at CreateWindowEx and waits for
+		// WebView2 navigation before calling ShowWindow. Wait until the native frame
+		// exists, then reveal it without racing Run into creating a second impl.
 		if platformWindowHidden {
 			application.InvokeAsync(func() {
 				// A panic while showing the first window would otherwise die in this
@@ -397,6 +396,8 @@ func (a *appState) run(specs []windowSpec) error {
 				}()
 				a.showWindow(initial)
 			})
+		} else {
+			go a.revealInitialWindowWhenReady(initial)
 		}
 		for _, s := range rest {
 			a.openWindow(s, windowOpts{})
@@ -920,7 +921,7 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 	if !hasSaved {
 		frame = core.WindowState{}
 	}
-	place := windowgeom.Place(frame)
+	place := windowgeom.PlaceVisible(frame, a.app.Screen.GetAll())
 	width, height := place.Width, place.Height
 	posX, posY := place.X, place.Y
 	initialPos, startState := place.Position, place.State
@@ -944,6 +945,7 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 		X:               posX,
 		Y:               posY,
 		InitialPosition: initialPos,
+		Screen:          place.Screen,
 		StartState:      startState,
 		Hidden:          platformWindowHidden,
 		Frameless:       platformFrameless,

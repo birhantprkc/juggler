@@ -10,11 +10,9 @@ package main
 // traffic lights via MacTitleBar instead, so it stays false there.
 const platformFrameless = true
 
-// platformWindowHidden: create windows VISIBLE on Windows. Wails' Show()
-// has a race — if the native window impl isn't created yet when Show() runs
-// (which happens when startup is fast), it creates the window with the current
-// options (Hidden:true) and returns without revealing it, so the window never
-// appears. Creating it visible makes it show as soon as the impl materialises,
-// independent of timing. The geometry is set in the window options, so there's
-// no wrong-position flash.
+// platformWindowHidden leaves Windows windows logically visible. Wails creates
+// the HWND without WS_VISIBLE and normally reveals it after WebView2 navigation;
+// revealInitialWindowWhenReady also calls Show once the native frame exists, so
+// a delayed navigation cannot leave the app hidden. Keeping Hidden false ensures
+// either path ends with a visible window.
 const platformWindowHidden = false

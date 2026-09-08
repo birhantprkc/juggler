@@ -23,6 +23,7 @@ of changes; this project follows semantic versioning.
 - The Extensions list shows only capabilities that actually loaded, rather than dead filename rows
 - A capability switched off and then no longer loaded can be switched back on, instead of being stuck off
 - Threads starting together now share one plugin load instead of each running their own
+- Windows windows now appear reliably and recover from stale off-screen positions
 
 ## [0.6.0] - 2026-09-04
 
