@@ -8,6 +8,10 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"juggler/cmd/juggler/core"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 const testCtl = "http://127.0.0.1:5000/win/w1"
@@ -197,6 +201,237 @@ func TestWindowOptsCarriesTheBoard(t *testing.T) {
 	// by the endpoint that knows which window asked — never read from the query.
 	if from := windowOptsFromQuery(url.Values{"view": {"pinboard"}, "openedBy": {"win_9"}}); from.openedBy != "" {
 		t.Errorf("openedBy must not come off the wire, got %q", from.openedBy)
+	}
+}
+
+// A board pops out of a panel the user is looking at, so the page sends where
+// that panel is. Six numbers, because a rect without the page it was measured in
+// cannot be turned into a place on a screen.
+func TestWindowOptsFromQueryTakesThePanelItPoppedOutOf(t *testing.T) {
+	opts := windowOptsFromQuery(url.Values{
+		"view":   {"pinboard"},
+		"panelX": {"656"}, "panelY": {"0"}, "panelW": {"544"}, "panelH": {"800"},
+		"pageW": {"1200"}, "pageH": {"800"},
+	})
+	if !opts.hasPanel {
+		t.Fatal("a fully measured panel is a panel")
+	}
+	want := panelRect{x: 656, y: 0, w: 544, h: 800, pageW: 1200, pageH: 800}
+	if opts.panel != want {
+		t.Errorf("panel = %+v, want %+v", opts.panel, want)
+	}
+}
+
+// The endpoint is loopback, which any process on this machine can reach, so a
+// measurement is held to the same standard as an id: it either describes
+// something or it is not used.
+func TestWindowOptsFromQueryRefusesAPanelThatMeasuresNothing(t *testing.T) {
+	full := func() url.Values {
+		return url.Values{
+			"view":   {"pinboard"},
+			"panelX": {"10"}, "panelY": {"20"}, "panelW": {"544"}, "panelH": {"800"},
+			"pageW": {"1200"}, "pageH": {"800"},
+		}
+	}
+	cases := []struct {
+		name string
+		key  string
+		val  string
+	}{
+		{"a panel with no width places nothing", "panelW", "0"},
+		{"nor one with a negative height", "panelH", "-800"},
+		{"nor one measured in a page of no size", "pageW", "0"},
+		{"nor one whose page has no height", "pageH", "0"},
+		{"a number that is not one says nothing", "panelX", "over there"},
+		{"nor does a missing one", "panelY", ""},
+		{"and nothing may name a coordinate this far out", "panelX", "99999999"},
+		{"in either direction", "panelY", "-99999999"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := full()
+			if tc.val == "" {
+				q.Del(tc.key)
+			} else {
+				q.Set(tc.key, tc.val)
+			}
+			if opts := windowOptsFromQuery(q); opts.hasPanel {
+				t.Errorf("%s=%q was taken as a panel: %+v", tc.key, tc.val, opts.panel)
+			}
+		})
+	}
+	if opts := windowOptsFromQuery(url.Values{"view": {"pinboard"}}); opts.hasPanel {
+		t.Error("a request that measured nothing has no panel")
+	}
+	// Only a board is opened out of a panel. An ordinary new window is opened
+	// from a menu, and has nothing on screen to come out of.
+	ordinary := full()
+	ordinary.Del("view")
+	if opts := windowOptsFromQuery(ordinary); opts.hasPanel {
+		t.Error("a window that is not a board pops out of nothing")
+	}
+}
+
+// The panel places the window. It is not a hint the page reads back, and a child
+// that was told where it came from would have a second opinion about where it is.
+func TestWindowPageURLKeepsThePanelToItself(t *testing.T) {
+	opts := windowOpts{
+		view:     viewPinboard,
+		board:    "board_one",
+		panel:    panelRect{x: 656, y: 0, w: 544, h: 800, pageW: 1200, pageH: 800},
+		hasPanel: true,
+	}
+	q := query(t, opts)
+	for _, key := range []string{"panelX", "panelY", "panelW", "panelH", "pageW", "pageH"} {
+		if q.Has(key) {
+			t.Errorf("%s is for placing the window, not for the page to read", key)
+		}
+	}
+	if q.Get("board") != "board_one" {
+		t.Error("the board still travels")
+	}
+}
+
+// A popped-out board should read as the panel leaving the window: same size,
+// same place, moved clear of where it was.
+func TestFrameFromPanelPlacesTheWindowOverThePanel(t *testing.T) {
+	opener := core.WindowState{X: 100, Y: 50, Width: 1200, Height: 800, HasPos: true}
+	panel := panelRect{x: 656, y: 0, w: 900, h: 780, pageW: 1200, pageH: 800}
+	got, ok := frameFromPanel(panel, opener)
+	if !ok {
+		t.Fatal("a measured panel inside a window this app has the frame of can be placed")
+	}
+	want := core.WindowState{
+		X:      100 + 656 + popOutOffset,
+		Y:      50 + 0 + popOutOffset,
+		Width:  900,
+		Height: 780,
+		HasPos: true,
+	}
+	if got != want {
+		t.Fatalf("frame = %+v, want %+v", got, want)
+	}
+}
+
+// The page's numbers are the page's own. What turns them into the screen's is
+// the window they were measured in, which is the one thing this side knows for
+// certain — so a zoomed page, a scaled display and a title bar all come out in
+// the wash rather than each needing to be known about.
+func TestFrameFromPanelFollowsTheWindowItWasMeasuredIn(t *testing.T) {
+	t.Run("a page drawn at twice the size", func(t *testing.T) {
+		opener := core.WindowState{X: 0, Y: 0, Width: 2400, Height: 1600, HasPos: true}
+		panel := panelRect{x: 656, y: 10, w: 900, h: 700, pageW: 1200, pageH: 800}
+		got, ok := frameFromPanel(panel, opener)
+		if !ok {
+			t.Fatal("a scaled page is still a page")
+		}
+		if got.X != 1312+popOutOffset || got.Y != 20+popOutOffset {
+			t.Errorf("origin = %d,%d, want %d,%d", got.X, got.Y, 1312+popOutOffset, 20+popOutOffset)
+		}
+		if got.Width != 1800 || got.Height != 1400 {
+			t.Errorf("size = %dx%d, want 1800x1400", got.Width, got.Height)
+		}
+	})
+
+	t.Run("a window with chrome above its page", func(t *testing.T) {
+		opener := core.WindowState{X: 0, Y: 100, Width: 1200, Height: 828, HasPos: true}
+		panel := panelRect{x: 0, y: 0, w: 1000, h: 800, pageW: 1200, pageH: 800}
+		got, _ := frameFromPanel(panel, opener)
+		if got.Y != 100+28+popOutOffset {
+			t.Errorf("y = %d, want %d — the page starts below the title bar", got.Y, 100+28+popOutOffset)
+		}
+	})
+
+	t.Run("a window on the display left of the primary", func(t *testing.T) {
+		opener := core.WindowState{X: -1800, Y: -200, Width: 1200, Height: 800, HasPos: true}
+		panel := panelRect{x: 300, y: 100, w: 900, h: 700, pageW: 1200, pageH: 800}
+		got, _ := frameFromPanel(panel, opener)
+		if got.X != -1800+300+popOutOffset || got.Y != -200+100+popOutOffset {
+			t.Errorf("origin = %d,%d — a negative coordinate is a real place", got.X, got.Y)
+		}
+	})
+}
+
+// The panel is narrower than a window is allowed to be, so copying its width
+// exactly would ask for a window nothing can honour.
+func TestFrameFromPanelIsNeverSmallerThanAWindowMayBe(t *testing.T) {
+	opener := core.WindowState{X: 0, Y: 0, Width: 1200, Height: 800, HasPos: true}
+	got, _ := frameFromPanel(panelRect{x: 656, y: 0, w: 544, h: 400, pageW: 1200, pageH: 800}, opener)
+	if got.Width != minWindowWidth || got.Height != minWindowHeight {
+		t.Errorf("size = %dx%d, want the minimum %dx%d", got.Width, got.Height, minWindowWidth, minWindowHeight)
+	}
+}
+
+// Anything that does not add up leaves the window to be placed the way a window
+// with nothing to go on is placed, which is a centred default rather than a guess.
+func TestFrameFromPanelDeclinesWhatItCannotPlace(t *testing.T) {
+	panel := panelRect{x: 656, y: 0, w: 544, h: 800, pageW: 1200, pageH: 800}
+	cases := []struct {
+		name   string
+		opener core.WindowState
+	}{
+		{"a window not yet built has no frame to work from", core.WindowState{HasPos: true}},
+		{"nor has one already gone", core.WindowState{}},
+		{"a page nothing like the window it claims to be in is not a measurement", core.WindowState{X: 0, Y: 0, Width: 12000, Height: 800, HasPos: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, ok := frameFromPanel(panel, tc.opener); ok {
+				t.Error("this should not have placed a window")
+			}
+		})
+	}
+}
+
+// Which of the three answers about where a window goes wins: what this board was
+// last left in, where it was popped out of, or nothing at all.
+func TestOpeningFrameFollowsThePanelOnlyWhenNothingIsRemembered(t *testing.T) {
+	screens := []*application.Screen{
+		{IsPrimary: true, WorkArea: application.Rect{X: 0, Y: 0, Width: 1920, Height: 1040}},
+	}
+	opener := core.WindowState{X: 0, Y: 0, Width: 1200, Height: 800, HasPos: true}
+	popped := windowOpts{
+		view:     viewPinboard,
+		panel:    panelRect{x: 656, y: 0, w: 544, h: 800, pageW: 1200, pageH: 800},
+		hasPanel: true,
+	}
+
+	// A board that has been open before comes back where the user put it. Where
+	// it was popped out of is a year out of date by then.
+	saved := core.WindowState{X: 500, Y: 400, Width: 1000, Height: 700, HasPos: true}
+	if got := openingFrame(saved, true, popped, opener, screens); got != saved {
+		t.Errorf("frame = %+v, want the saved one %+v", got, saved)
+	}
+
+	// The first time, it opens over the panel it came out of, moved clear of it.
+	got := openingFrame(core.WindowState{}, false, popped, opener, screens)
+	want := core.WindowState{X: 656 + popOutOffset, Y: popOutOffset, Width: minWindowWidth, Height: 800, HasPos: true}
+	if got != want {
+		t.Errorf("frame = %+v, want %+v", got, want)
+	}
+
+	// And not off the edge of the screen: the panel is against the right of a
+	// window that is itself against the right of the display.
+	edge := openingFrame(core.WindowState{}, false, popped, core.WindowState{X: 1000, Y: 0, Width: 1200, Height: 800, HasPos: true}, screens)
+	if edge.X+edge.Width > 1920 {
+		t.Errorf("frame = %+v runs off the display it was opened on", edge)
+	}
+
+	// Nothing to go on is the centred default, which is what a zero frame asks
+	// for — never a frame invented out of half a measurement.
+	for _, tc := range []struct {
+		name   string
+		opts   windowOpts
+		opener core.WindowState
+	}{
+		{"a window opened from a menu came out of nothing", windowOpts{view: viewPinboard}, opener},
+		{"nor is there anything to measure against once the opener has gone", popped, core.WindowState{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := openingFrame(core.WindowState{}, false, tc.opts, tc.opener, screens); got != (core.WindowState{}) {
+				t.Errorf("frame = %+v, want the centred default", got)
+			}
+		})
 	}
 }
 

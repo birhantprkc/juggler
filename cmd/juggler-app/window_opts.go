@@ -5,10 +5,16 @@
 package main
 
 import (
+	"math"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"juggler/cmd/juggler/core"
+	"juggler/internal/windowgeom"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 // What a window is for. The role keys the geometry it is placed from — each
@@ -92,6 +98,146 @@ type windowOpts struct {
 	// arrived on. Only a detached board carries one: it is how the app knows
 	// which boards go with a window when it closes.
 	openedBy string
+
+	// panel is where the board was on screen in the window that asked, so the
+	// new window can open over it: a pop-out is the panel leaving the window,
+	// and a window that appeared somewhere else entirely would be a new one.
+	// Only consulted for a board that has no frame of its own yet — see
+	// buildWindow.
+	panel    panelRect
+	hasPanel bool
+}
+
+// panelRect is where a page said the thing a window is being opened from sits:
+// its rect in that page, and the size of the page itself, all in CSS pixels.
+//
+// The page size travels with the rect because it is the scale for the rest. A
+// page may be drawn at any size relative to the window holding it — a zoom, a
+// scaled display — and only the window's own frame, which this side knows,
+// turns one into the other.
+//
+// A page names no screen coordinates. It cannot see the screen, and this
+// endpoint is loopback, which any process on this machine can reach: everything
+// here is relative to a window the app already has the frame of.
+type panelRect struct {
+	x, y, w, h   int
+	pageW, pageH int
+}
+
+// maxPanelDimension bounds every number a page may send. Well past any display
+// this will meet, and short of the point where placing a window overflows.
+const maxPanelDimension = 32000
+
+// panelKeys are the six values, in the order they are read. All or nothing:
+// five of them place nothing.
+var panelKeys = [6]string{"panelX", "panelY", "panelW", "panelH", "pageW", "pageH"}
+
+// panelRectFromQuery reads a panel measurement, or reports that there is none.
+// Held to the same standard as the ids beside it: a number that is not one, is
+// missing, or is out past any real display yields no rect at all rather than a
+// window placed somewhere nobody asked for.
+func panelRectFromQuery(q url.Values) (panelRect, bool) {
+	var n [6]int
+	for i, key := range panelKeys {
+		v, err := strconv.Atoi(q.Get(key))
+		if err != nil || v < -maxPanelDimension || v > maxPanelDimension {
+			return panelRect{}, false
+		}
+		n[i] = v
+	}
+	p := panelRect{x: n[0], y: n[1], w: n[2], h: n[3], pageW: n[4], pageH: n[5]}
+	// A rect or a page with no size is not a measurement of anything. Position
+	// is free to be negative: a display left of the primary is a real place.
+	if p.w <= 0 || p.h <= 0 || p.pageW <= 0 || p.pageH <= 0 {
+		return panelRect{}, false
+	}
+	return p, true
+}
+
+// popOutOffset is how far a window opened from a panel is moved clear of the
+// panel it came out of, in the screen's own units.
+//
+// Not zero, because a window landing exactly over what it came from looks like
+// nothing happening; and small, because the point of the offset is to show that
+// the thing moved, not to throw it across the desk. The user popped the panel
+// out to put it somewhere, and where is theirs to say.
+const popOutOffset = 40
+
+// panelScaleRange is how far a page may plausibly be drawn from its window's own
+// size. Outside it the two numbers are not describing the same window, and a
+// frame computed from them would be arithmetic rather than a placement.
+const (
+	minPanelScale = 0.2
+	maxPanelScale = 5.0
+)
+
+// frameFromPanel turns a panel measured in a page into a frame on the screen,
+// using the frame of the window that page is in.
+//
+// The scale comes out of the two widths rather than being asked for. The window
+// knows how wide it is and the page knows how wide it is; their ratio is every
+// difference between the two — zoom, display scaling, the units each platform
+// counts in — without this having to know which of them applied. The same trick
+// gives the chrome above the page: whatever height the window has that the page
+// does not is the title bar.
+//
+// Reports false for anything it cannot place, which leaves the window to open
+// the way a window with nothing to go on opens.
+func frameFromPanel(p panelRect, opener core.WindowState) (core.WindowState, bool) {
+	if opener.Width <= 0 || opener.Height <= 0 || p.pageW <= 0 || p.pageH <= 0 {
+		return core.WindowState{}, false
+	}
+	scale := float64(opener.Width) / float64(p.pageW)
+	if scale < minPanelScale || scale > maxPanelScale {
+		return core.WindowState{}, false
+	}
+	// Whatever the window has above its page. Zero on a frameless window and on
+	// macOS, where the page is drawn under the title bar.
+	chrome := opener.Height - scaled(p.pageH, scale)
+	if chrome < 0 {
+		chrome = 0
+	}
+	return core.WindowState{
+		X:      opener.X + scaled(p.x, scale) + popOutOffset,
+		Y:      opener.Y + chrome + scaled(p.y, scale) + popOutOffset,
+		Width:  max(scaled(p.w, scale), minWindowWidth),
+		Height: max(scaled(p.h, scale), minWindowHeight),
+		HasPos: true,
+	}, true
+}
+
+// scaled converts one of the page's numbers into the screen's.
+func scaled(v int, scale float64) int {
+	return int(math.Round(float64(v) * scale))
+}
+
+// openingFrame decides the frame a window is built at, from the three things
+// that can have an opinion — in order.
+//
+// The frame this window's role was last left in wins. A board that has been open
+// before is a window the user put somewhere, and where it was popped out of is
+// long out of date by then.
+//
+// Failing that, a board opened out of a panel opens over that panel, moved clear
+// of it — the panel leaving the window rather than a window arriving from
+// nowhere. It is fitted to the display it lands on, since a frame this side
+// worked out is arithmetic and can run off an edge, unlike one a user dragged.
+//
+// Failing that, the zero frame, which is the centred default. It is also what
+// anything that does not add up falls back to: a window placed by a guess is
+// worse than one placed the way every first window is.
+func openingFrame(saved core.WindowState, hasSaved bool, opts windowOpts, opener core.WindowState, screens []*application.Screen) core.WindowState {
+	if hasSaved {
+		return saved
+	}
+	if !opts.hasPanel {
+		return core.WindowState{}
+	}
+	frame, ok := frameFromPanel(opts.panel, opener)
+	if !ok {
+		return core.WindowState{}
+	}
+	return windowgeom.FitOnScreen(frame, screens)
 }
 
 // role reports which geometry slot and which restore rules this window follows.
@@ -127,6 +273,9 @@ func windowOptsFromQuery(q url.Values) windowOpts {
 		opts.owner = normaliseID(q.Get("owner"))
 		opts.pin = normaliseID(q.Get("pin"))
 		opts.conversation = normaliseID(q.Get("conversation"))
+		// Only a board is opened out of something on screen. Every other window
+		// is opened from a menu, with nothing to come out of.
+		opts.panel, opts.hasPanel = panelRectFromQuery(q)
 	}
 	return opts
 }

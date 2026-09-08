@@ -137,6 +137,49 @@ export function detachedBoardURL(boardId, pinId, conversationId) {
 }
 
 /**
+ * Where a window opened from an element should start: the element's place in
+ * this window, and the size of the page it was measured in — all in CSS pixels.
+ * @typedef {object} FrameHint
+ * @property {number} x - The element's left edge, from the left of the page.
+ * @property {number} y - Its top edge, from the top of the page.
+ * @property {number} width - How wide it is.
+ * @property {number} height - How tall it is.
+ * @property {number} viewWidth - The page's own width.
+ * @property {number} viewHeight - The page's own height.
+ */
+
+/**
+ * Measure an element for a window to be opened over it.
+ *
+ * The page's own size travels with the rect because a rect alone says nothing a
+ * window can be placed by: the host knows where the window sits on the screen
+ * and how big it is, and the page size is what turns one into the other. Sent as
+ * a hint rather than a frame for the same reason — a page has no business
+ * naming coordinates on a screen it cannot see.
+ *
+ * Null for anything that would place a window nowhere: no element, or one with
+ * no size on screen.
+ * @param {{getBoundingClientRect: () => {left: number, top: number, width: number, height: number}}|null} [element] -
+ *   The element the window is opened from.
+ * @returns {FrameHint|null} The measurement, or null when there is nothing to measure.
+ */
+export function frameHintOf(element) {
+  const rect = element?.getBoundingClientRect?.();
+  if (!rect || !(rect.width > 0) || !(rect.height > 0)) return null;
+  const viewWidth = Math.round(window.innerWidth);
+  const viewHeight = Math.round(window.innerHeight);
+  if (!(viewWidth > 0) || !(viewHeight > 0)) return null;
+  return {
+    x: Math.round(rect.left),
+    y: Math.round(rect.top),
+    width: Math.round(rect.width),
+    height: Math.round(rect.height),
+    viewWidth,
+    viewHeight,
+  };
+}
+
+/**
  * The owner's end: it opens boards, and carries out the reveals they send back.
  *
  * The list of boards is built from the messages that arrive rather than from the
@@ -218,9 +261,11 @@ export const ownerLink = {
    * @param {string} pinId - The pin the new window opens on, or '' for none.
    * @param {string} conversationId - The conversation it is a view of.
    * @param {import('./pinboard-store.js').Pin[]} pins - What it starts with.
+   * @param {FrameHint|null} [frame] - Where the board is on screen now, for the
+   *   window to open near.
    * @returns {Promise<string>} A complaint for the status line, or '' when it opened.
    */
-  async detach(pinId, conversationId, pins) {
+  async detach(pinId, conversationId, pins, frame = null) {
     if (!canLinkBoards()) return "Couldn't detach the board. This viewer has no address for one to answer.";
     // A board is a view of one conversation, fixed for its life. Without one
     // there is nothing for the window to be a view of, and it would open only to
@@ -233,7 +278,7 @@ export const ownerLink = {
     } catch (err) {
       return `Couldn't detach the board. ${extractErrorMessage(err)}`;
     }
-    return this.openBoardWindow(board, pinId, conversationId);
+    return this.openBoardWindow(board, pinId, conversationId, frame);
   },
 
   /**
@@ -250,17 +295,22 @@ export const ownerLink = {
    * @param {string} boardId - The board the window is.
    * @param {string} pinId - The pin it opens on, or '' for none.
    * @param {string} conversationId - The conversation it is a view of.
+   * @param {FrameHint|null} [frame] - Where the board is on screen now, for the
+   *   window to open near.
    * @returns {string} A complaint for the status line, or '' when it opened.
    */
-  openBoardWindow(boardId, pinId, conversationId) {
+  openBoardWindow(boardId, pinId, conversationId, frame = null) {
     if (hasNativeHost()) {
       // The app opens it on this window's own server, which is what puts the
       // two on one project.
-      void api.openPinboardWindow(wsService.viewerId, boardId, pinId, conversationId).catch((err) => {
+      void api.openPinboardWindow(wsService.viewerId, boardId, pinId, conversationId, frame).catch((err) => {
         console.error('[Pinboard] Could not open a detached board:', err);
       });
       return '';
     }
+    // A tab is opened where the browser opens tabs. The measurement is the
+    // app's to use: sizing a tab is not a thing a page may do, and a popup that
+    // could be sized is the window the user did not ask for.
     const opened = window.open(detachedBoardURL(boardId, pinId, conversationId), '_blank');
     if (!opened) return "Couldn't open that board. The browser blocked the tab.";
     return '';

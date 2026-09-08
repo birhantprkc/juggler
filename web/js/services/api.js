@@ -514,15 +514,29 @@ class APIService {
    * @param {string} board - The board this window is a view of.
    * @param {string} [pin] - The pin it opens on.
    * @param {string} [conversation] - The conversation it is a view of.
+   * @param {import('./pinboard-link.js').FrameHint|null} [frame] - Where the
+   *   board is on screen in this window, for the new one to open near.
    * @returns {Promise<void>} Resolves once the launch was requested.
    */
-  async openPinboardWindow(owner, board, pin = '', conversation = '') {
+  async openPinboardWindow(owner, board, pin = '', conversation = '', frame = null) {
     const params = newWindowParams();
     params.set('view', 'pinboard');
     params.set('owner', owner);
     params.set('board', board);
     if (pin) params.set('pin', pin);
     if (conversation) params.set('conversation', conversation);
+    // Where the board is now, so the window opens as that board moving out of
+    // this one rather than as a new window arriving from nowhere. All six or
+    // none: the page size is what gives the rect a scale, and half a
+    // measurement places nothing.
+    if (frame) {
+      params.set('panelX', String(frame.x));
+      params.set('panelY', String(frame.y));
+      params.set('panelW', String(frame.width));
+      params.set('panelH', String(frame.height));
+      params.set('pageW', String(frame.viewWidth));
+      params.set('pageH', String(frame.viewHeight));
+    }
     const url = windowControlURL('new', `?${params.toString()}`);
     if (!url) return; // no native host (browser tab) — nothing to open
     await fetchJson(url, { method: 'POST', errorPrefix: 'Could not open the board' });

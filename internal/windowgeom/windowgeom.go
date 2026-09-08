@@ -200,6 +200,61 @@ func PlaceVisible(saved core.WindowState, screens []*application.Screen) Placeme
 	return p
 }
 
+// FitOnScreen moves a frame onto the work area of the screen it lands on,
+// without resizing it. For a frame a caller worked out rather than restored —
+// a window opened over something the user is already looking at, whose position
+// is arithmetic and can therefore run off the edge.
+//
+// The screen it lands on is the one it mostly covers, so a window opened on the
+// second display is fitted to that display rather than dragged home. A frame
+// too big for the work area is pinned to its top-left corner and left at its
+// size: moving a window is this function's business, resizing one is the
+// caller's.
+//
+// A frame with no position or no size is returned untouched. There is nothing
+// to fit, and inventing coordinates would take away the centring default.
+func FitOnScreen(frame core.WindowState, screens []*application.Screen) core.WindowState {
+	if !frame.HasPos || frame.Width <= 0 || frame.Height <= 0 {
+		return frame
+	}
+	screen := screenUnder(frame, screens)
+	if screen == nil {
+		return frame
+	}
+	area := screen.WorkArea
+	if area.Width <= 0 || area.Height <= 0 {
+		return frame
+	}
+	frame.X = max(min(frame.X, area.X+area.Width-frame.Width), area.X)
+	frame.Y = max(min(frame.Y, area.Y+area.Height-frame.Height), area.Y)
+	return frame
+}
+
+// screenUnder picks the screen a frame mostly lies on, falling back to the
+// primary for one that lies on none of them.
+func screenUnder(frame core.WindowState, screens []*application.Screen) *application.Screen {
+	var best *application.Screen
+	bestArea := 0
+	for _, screen := range screens {
+		if screen == nil {
+			continue
+		}
+		area := screen.WorkArea
+		width := min(frame.X+frame.Width, area.X+area.Width) - max(frame.X, area.X)
+		height := min(frame.Y+frame.Height, area.Y+area.Height) - max(frame.Y, area.Y)
+		if width <= 0 || height <= 0 {
+			continue
+		}
+		if overlap := width * height; overlap > bestArea {
+			best, bestArea = screen, overlap
+		}
+	}
+	if best != nil {
+		return best
+	}
+	return primaryScreen(screens)
+}
+
 const (
 	minVisibleHeaderWidth  = 80
 	minVisibleHeaderHeight = 16

@@ -33,7 +33,7 @@ import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { openAddPicker } from './pinboard-add-picker.js';
 import { describePin, revealInConversation } from './pinboard-content.js';
 import { raiseThisWindow, closeThisWindow, isDesktopWindow } from '../../sdk/lib/window-control.js';
-import { ownerLink, satelliteLink, canLinkBoards, onLinkAvailability } from '../services/pinboard-link.js';
+import { ownerLink, satelliteLink, canLinkBoards, onLinkAvailability, frameHintOf } from '../services/pinboard-link.js';
 import { isPinboardView, boardConversationId, ownerViewerId } from '../utils/view-mode.js';
 import { dragGuard } from '../utils/drag-guard.js';
 import './pinboard-tabbar.js';
@@ -555,6 +555,10 @@ class PinboardPanel extends JugglerElement {
    */
   async _popOut() {
     const active = this._activeContext();
+    // Measured here, while the panel is still open and still where the user is
+    // looking at it: this is what the window opens over, and the awaited detach
+    // below ends with the panel put away.
+    const frame = frameHintOf(this);
     // The new window starts as a copy of this panel, so detaching changes
     // nothing about what is on screen — it puts what is on screen into a window,
     // which is what the word says. The two go their own ways from there.
@@ -562,6 +566,7 @@ class PinboardPanel extends JugglerElement {
       pinboardView.getActivePinId() || '',
       active.conversation?.id || '',
       pinboardStore.get(),
+      frame,
     );
     pinboardView.setStatus(complaint);
     if (!complaint) pinboardView.close();

@@ -251,6 +251,25 @@ func (a *appState) window(id string) *winEntry {
 	return e
 }
 
+// openerFrame is the live frame of the window that asked for a new one, or the
+// zero frame when there is no longer such a window. What a panel measured in
+// that window's page is relative to, so it is read at the moment the new window
+// is built rather than when the request arrived.
+//
+// Must be called on the main thread: Position and Size read live native state.
+func (a *appState) openerFrame(id string) core.WindowState {
+	if id == "" {
+		return core.WindowState{}
+	}
+	e := a.window(id)
+	if e == nil || e.win == nil {
+		return core.WindowState{}
+	}
+	x, y := e.win.Position()
+	w, h := e.win.Size()
+	return core.WindowState{X: x, Y: y, Width: w, Height: h, HasPos: true}
+}
+
 // windowSpecOf reports what a window views, read on the registry goroutine
 // because the spec is mutable — the page reports its project as it switches, so
 // reading the field off the entry afterwards would race that write. Used to open
@@ -915,13 +934,12 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 	}
 
 	// Place the window at the geometry saved in this project's session (passed in
-	// by the caller, read from the server), falling back to a centred default the
-	// first time a project is opened.
-	frame := saved
-	if !hasSaved {
-		frame = core.WindowState{}
-	}
-	place := windowgeom.PlaceVisible(frame, a.app.Screen.GetAll())
+	// by the caller, read from the server), else over the panel a board was
+	// popped out of, else at a centred default (see openingFrame). The opener's
+	// frame is read live, which is why this is on the main thread.
+	screens := a.app.Screen.GetAll()
+	frame := openingFrame(saved, hasSaved, opts, a.openerFrame(opts.openedBy), screens)
+	place := windowgeom.PlaceVisible(frame, screens)
 	width, height := place.Width, place.Height
 	posX, posY := place.X, place.Y
 	initialPos, startState := place.Position, place.State

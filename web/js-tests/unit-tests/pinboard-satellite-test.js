@@ -29,7 +29,7 @@ import pinboardStore from '../../js/services/pinboard-store.js';
 import pinboardView from '../../js/services/pinboard-view.js';
 import pinboardItemRegistry from '../../js/registries/pinboard-item-registry.js';
 import wsService from '../../js/services/websocket.js';
-import { ownerLink, satelliteLink } from '../../js/services/pinboard-link.js';
+import { ownerLink, satelliteLink, frameHintOf } from '../../js/services/pinboard-link.js';
 import { isMac } from '../../js/services/key-shortcut-manager.js';
 import { __resetPopupManagerForTests, isAnyPopupOpen } from '../../js/utils/popup-manager.js';
 import {
@@ -1419,6 +1419,50 @@ export async function runTests() {
       } finally {
         teardown();
         opened.restore();
+      }
+    });
+
+    // A pop-out is meant to read as the panel leaving the window rather than as
+    // a new window appearing, so the panel's own rect goes with the request.
+    // Only the desktop app can place a window, so what is asserted here is the
+    // measurement it is placed from — the placement itself is the host's.
+    await run('a pop-out is measured from the panel it came from', async () => {
+      const hint = frameHintOf({
+        getBoundingClientRect: () => ({ left: 700.4, top: 12.6, width: 544.2, height: 800.8 }),
+      });
+      assert(hint?.x === 700 && hint?.y === 13,
+        `the panel's place in this window is measured, got ${hint?.x},${hint?.y}`);
+      assert(hint?.width === 544 && hint?.height === 801,
+        `and the size of it, got ${hint?.width}x${hint?.height}`);
+      assert(hint?.viewWidth === window.innerWidth && hint?.viewHeight === window.innerHeight,
+        'and the page it was measured in, which is the only thing that gives those numbers a scale');
+      assert(frameHintOf(null) === null,
+        'nothing to measure is no hint at all rather than a frame of zeros');
+      assert(frameHintOf({ getBoundingClientRect: () => ({ left: 0, top: 0, width: 0, height: 0 }) }) === null,
+        'and a panel with no size on screen would place a window nowhere');
+
+      const opened = stubWindowOpen();
+      const session = makeSession({ conversation: { id: 'conv_main', name: 'Main' } });
+      const { shell, teardown } = await mountShell({ pins: PROBE_BOARD, search: '', session });
+      const detach = ownerLink.detach;
+      /** @type {any} */
+      let sent = null;
+      try {
+        await openBoard();
+        const panel = shell.querySelector('pinboard-panel');
+        ownerLink.detach = async (/** @type {any[]} */ ...args) => { sent = args[3]; return ''; };
+        shell.querySelector('.pinboard-toolbar__popout').click();
+        await settle();
+        const rect = panel.getBoundingClientRect();
+        assert(sent && sent.width === Math.round(rect.width) && sent.height === Math.round(rect.height),
+          `the rect sent is the panel's, got ${JSON.stringify(sent)} for ${rect.width}x${rect.height}`);
+        assert(sent.x === Math.round(rect.left) && sent.y === Math.round(rect.top),
+          `and where the panel is, so the window can open over it, got ${sent.x},${sent.y}`);
+      } finally {
+        ownerLink.detach = detach;
+        teardown();
+        opened.restore();
+        __resetPopupManagerForTests();
       }
     });
 

@@ -99,6 +99,81 @@ func TestPlaceVisibleClampsRescuedFrameToWorkArea(t *testing.T) {
 	}
 }
 
+// A frame the caller worked out for itself — a window opened over something the
+// user was already looking at — is fitted onto the screen it lands on before it
+// is placed. PlaceVisible only promises a header you can drag; a window with its
+// far edge off the screen is one you can drag but cannot read.
+func TestFitOnScreenLeavesAFrameThatAlreadyFits(t *testing.T) {
+	screens := testScreens()
+	frame := core.WindowState{X: 100, Y: 80, Width: 800, Height: 700, HasPos: true}
+
+	if got := FitOnScreen(frame, screens); got != frame {
+		t.Fatalf("FitOnScreen() = %+v, want it untouched", got)
+	}
+}
+
+func TestFitOnScreenPullsBackAnOverhangingFrame(t *testing.T) {
+	screens := testScreens()
+	frame := core.WindowState{X: 1500, Y: 900, Width: 800, Height: 600, HasPos: true}
+
+	got := FitOnScreen(frame, screens)
+	if got.X != 1920-800 || got.Y != 1040-600 {
+		t.Fatalf("FitOnScreen() origin = %d,%d, want %d,%d", got.X, got.Y, 1920-800, 1040-600)
+	}
+	if got.Width != 800 || got.Height != 600 {
+		t.Fatalf("FitOnScreen() size = %dx%d, want it unchanged", got.Width, got.Height)
+	}
+}
+
+// Moving a window is the caller's business; resizing one is not. A frame with
+// nowhere to fit goes to the top-left of the work area with its size intact.
+func TestFitOnScreenPinsAFrameTooBigForTheScreen(t *testing.T) {
+	screens := testScreens()
+	frame := core.WindowState{X: 300, Y: 200, Width: 2400, Height: 1200, HasPos: true}
+
+	got := FitOnScreen(frame, screens)
+	if got.X != 0 || got.Y != 0 {
+		t.Fatalf("FitOnScreen() origin = %d,%d, want the work area's own", got.X, got.Y)
+	}
+	if got.Width != 2400 || got.Height != 1200 {
+		t.Fatalf("FitOnScreen() size = %dx%d, want it unchanged", got.Width, got.Height)
+	}
+}
+
+// The screen it is on is the one it mostly lies on, so a window popped out on
+// the second display is fitted to that display rather than dragged home.
+func TestFitOnScreenStaysOnTheScreenTheFrameIsOn(t *testing.T) {
+	screens := testScreens()
+	frame := core.WindowState{X: -1000, Y: 700, Width: 800, Height: 600, HasPos: true}
+
+	got := FitOnScreen(frame, screens)
+	if got.X != -1000 {
+		t.Errorf("FitOnScreen() x = %d, want it left where it was on the second display", got.X)
+	}
+	if got.Y != 984-600 {
+		t.Errorf("FitOnScreen() y = %d, want %d — that display's work area is shorter", got.Y, 984-600)
+	}
+}
+
+// Nothing to fit: a frame with no position of its own is placed by the centring
+// default, and inventing coordinates for it here would take that away.
+func TestFitOnScreenIgnoresAFrameWithNothingToFit(t *testing.T) {
+	screens := testScreens()
+	for _, frame := range []core.WindowState{
+		{Width: 800, Height: 600},
+		{X: 4000, Y: 4000, HasPos: true},
+		{},
+	} {
+		if got := FitOnScreen(frame, screens); got != frame {
+			t.Errorf("FitOnScreen(%+v) = %+v, want it untouched", frame, got)
+		}
+	}
+	frame := core.WindowState{X: 4000, Y: 4000, Width: 800, Height: 600, HasPos: true}
+	if got := FitOnScreen(frame, nil); got != frame {
+		t.Errorf("FitOnScreen() with no screens = %+v, want it untouched", got)
+	}
+}
+
 func testScreens() []*application.Screen {
 	return []*application.Screen{
 		{IsPrimary: true, WorkArea: application.Rect{X: 0, Y: 0, Width: 1920, Height: 1040}},
