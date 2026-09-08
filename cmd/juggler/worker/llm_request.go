@@ -7,6 +7,7 @@ package worker
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"juggler/cmd/juggler/providers/provider"
 )
@@ -74,6 +75,9 @@ func (r *run) requestContextAndToolsForItemIDs(itemIDs []string) (*ContextResult
 		"type":         "request-tools",
 		"requestId":    toolsRequestID,
 		"threadItemId": r.t.thread.itemID,
+		// Echoed back with the engine's own marks so a slow answer can be
+		// attributed to a stage rather than guessed at (roundtrip_timing.go).
+		"sentAt": time.Now().UnixMilli(),
 	})
 
 	ctxRaw, toolsRaw, err := r.waitForContextAndTools(ContextTimeout, contextReply, toolsReply)

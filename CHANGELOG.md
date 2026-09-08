@@ -22,6 +22,7 @@ of changes; this project follows semantic versioning.
 - Enabling or disabling extensions no longer stops working while a tool approval waits for you
 - The Extensions list shows only capabilities that actually loaded, rather than dead filename rows
 - A capability switched off and then no longer loaded can be switched back on, instead of being stuck off
+- Threads starting together now share one plugin load instead of each running their own
 
 ## [0.6.0] - 2026-09-04
 

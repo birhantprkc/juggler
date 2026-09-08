@@ -89,6 +89,16 @@ class BaseRegistry {
     this.initialized = false;
 
     /**
+     * The load pass currently running, shared by every caller that arrives
+     * while it is in flight. `initialized` only turns true once a pass has
+     * finished, so without this a second caller sees a cold registry and starts
+     * a duplicate pass — imports, validation and config fetches included.
+     * @type {Promise<void>|null}
+     * @protected
+     */
+    this._initInFlight = null;
+
+    /**
      * Module paths that failed to load during init (path -> error message)
      * @type {Map<string, string>}
      * @protected
@@ -156,7 +166,12 @@ class BaseRegistry {
   }
 
   /**
-   * Initialize the registry by loading all items
+   * Initialize the registry by loading all items.
+   *
+   * Callers arriving while a pass is running share it rather than starting
+   * their own: a turn's tool list inits this registry, and read-only sub-agents
+   * dispatch their turns together, so a cold registry could otherwise be loaded
+   * four times over on the one engine thread they share.
    * @async
    * @returns {Promise<void>}
    */
@@ -164,7 +179,20 @@ class BaseRegistry {
     if (this.initialized) {
       return;
     }
+    if (!this._initInFlight) {
+      this._initInFlight = this._runInitPass().finally(() => { this._initInFlight = null; });
+    }
+    return this._initInFlight;
+  }
 
+  /**
+   * Load and resolve every capability module. One pass; {@link init} owns
+   * whether a pass is needed and who waits on it.
+   * @async
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _runInitPass() {
     // getModulePaths() may be async (it fetches the extension catalog). The
     // returned descriptors are ordered by precedence (low→high).
     const descriptors = await this.getModulePaths();
@@ -246,10 +274,10 @@ class BaseRegistry {
    * Fetch the disabled plugin ids from config and split the loaded capabilities
    * between `items` (enabled) and `_disabledItems` (loaded but switched off).
    *
-   * Idempotent, and it has to be: `init()` marks itself initialized only once it
-   * has finished, so two overlapping inits — app startup racing the
-   * `plugin-changed` broadcast that a config write triggers — both run this pass
-   * in full against one registry. It therefore moves capabilities BOTH ways and
+   * Idempotent, and it has to be: a `reset()` landing mid-load — app startup
+   * racing the `plugin-changed` broadcast that a config write triggers — drops
+   * the shared in-flight pass and starts a second one beside it, so two run in
+   * full against one registry. It therefore moves capabilities BOTH ways and
    * never rebuilds a map from scratch: re-deriving `_disabledItems` from `items`
    * would lose every capability the previous pass had already moved out of
    * `items`, leaving it in neither map. Such a capability is not enabled and not
@@ -506,6 +534,10 @@ class BaseRegistry {
    */
   reset() {
     this.initialized = false;
+    // Drop the running pass too: it was started against the state this reset
+    // just invalidated. Left in place it would be handed to every later caller,
+    // and the registry would keep serving the plugin set the user just changed.
+    this._initInFlight = null;
     this.items.clear();
     this.modulePaths.clear();
     this.itemExtensions.clear();

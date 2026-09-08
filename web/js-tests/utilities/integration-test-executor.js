@@ -96,6 +96,8 @@ import { runTests as runAcpSettingsTests } from '../unit-tests/acp-settings-test
 import { runTests as runSystemPromptBuilderTests } from '../unit-tests/system-prompt-builder-test.js';
 import { runTests as runSystemPromptRegistryTests } from '../unit-tests/system-prompt-registry-test.js';
 import { runTests as runExtensionsDisabledTests } from '../unit-tests/extensions-disabled-test.js';
+import { runTests as runRoundTripTimingTests } from '../unit-tests/roundtrip-timing-test.js';
+import { runTests as runRegistryInitRaceTests } from '../unit-tests/registry-init-race-test.js';
 import { runTests as runStrategyInjectionTests } from '../unit-tests/strategy-injection-test.js';
 import { runTests as runObserverDecouplingTests } from '../unit-tests/observer-decoupling-test.js';
 import { runTests as runToolPendingHookTests } from '../unit-tests/tool-pending-hook-test.js';
@@ -410,6 +412,8 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:system-prompt-builder', run: runSystemPromptBuilderTests },
   { name: 'unit:system-prompt-registry', run: runSystemPromptRegistryTests },
   { name: 'unit:extensions-disabled', run: runExtensionsDisabledTests },
+  { name: 'unit:roundtrip-timing', run: runRoundTripTimingTests },
+  { name: 'unit:registry-init-race', run: runRegistryInitRaceTests },
   { name: 'unit:strategy-injection', run: runStrategyInjectionTests },
   { name: 'unit:observer-decoupling', run: runObserverDecouplingTests },
   { name: 'unit:tool-pending-hook', run: runToolPendingHookTests },

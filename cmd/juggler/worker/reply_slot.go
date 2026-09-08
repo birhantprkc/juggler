@@ -117,7 +117,17 @@ func (s *replySlot) run() {
 				continue
 			}
 			current, ok := pending[head.RequestID]
-			if !ok || current.answered {
+			if !ok {
+				// Nothing is waiting on this id: the request either timed out —
+				// failing its turn — or was cancelled, and its registration is
+				// gone. The answer is useless now, but its stamps are the only
+				// surviving account of where the budget went, so they are worth
+				// a line before it is dropped.
+				reportDroppedReply(s.name, command.payload)
+				continue
+			}
+			if current.answered {
+				// A second client answering a broadcast request. Routine.
 				continue
 			}
 			current.answered = true

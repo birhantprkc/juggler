@@ -23,14 +23,6 @@ import { extensionOf } from '../../sdk/file-source.js';
 class FileViewerRegistry extends BaseRegistry {
   constructor() {
     super('FileViewerRegistry', ['id', 'name', 'version', 'description']);
-
-    /**
-     * In-flight {@link ensureInitialized} load, so concurrent callers share one
-     * init rather than each starting their own module load.
-     * @type {Promise<void>|null}
-     * @private
-     */
-    this._initInFlight = null;
   }
 
   /**
@@ -42,14 +34,15 @@ class FileViewerRegistry extends BaseRegistry {
    * that never runs it at all (a test harness). Without this, resolution would
    * quietly find nothing and every file would report "no viewer available",
    * which looks like a verdict rather than a missing registry.
+   *
+   * Deliberately not `async`: it hands back `init()`'s own promise rather than
+   * wrapping it in a second one. A warm registry then settles a caller in one
+   * microtask instead of three, and `<file-view>` paints on the tick its mount
+   * already assumed.
    * @returns {Promise<void>} Resolves once viewers are loaded
    */
-  async ensureInitialized() {
-    if (this.isInitialized()) return;
-    if (!this._initInFlight) {
-      this._initInFlight = this.init().finally(() => { this._initInFlight = null; });
-    }
-    return this._initInFlight;
+  ensureInitialized() {
+    return this.init();
   }
 
   /**

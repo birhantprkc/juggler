@@ -768,10 +768,12 @@ func (r *run) handleCancel(reason cancelReason) {
 // and nothing else.
 
 func (w *ConversationWorker) handleRenderContextItemsResponse(payload json.RawMessage) {
+	reportRoundTrip("context", payload)
 	w.contextReply.deliver(payload)
 }
 
 func (w *ConversationWorker) handleToolsResult(payload json.RawMessage) {
+	reportRoundTrip("tools", payload)
 	w.toolsReply.deliver(payload)
 }
 

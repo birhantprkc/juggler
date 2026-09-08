@@ -28,6 +28,61 @@ import {
   saveAutoApprovalPermission,
 } from '../model/conversation-tool-actions.js';
 
+// ── context/tools round-trip stamps ──────────────────────────────────────────
+//
+// The worker gives `render-context-items-request` and `request-tools` 30s
+// between them (ContextTimeout) and reports a miss as "Failed to get
+// context/tools: context/tools request timed out". Three separate stages can
+// spend that budget — the request's trip to the engine, the engine's own work,
+// and the reply's trip back — and the worker can distinguish them only if the
+// reply says when the engine picked the request up and when it answered. Both
+// realms run on one machine and one wall clock, so those stamps subtract
+// directly against the worker's own.
+//
+// The stamp is taken when the request ARRIVES, not when the reply is built:
+// the context handler awaits a conversation load and a sync flush before it
+// reaches the callback, and that wait is precisely the stage worth measuring.
+// It is therefore parked here between the two, keyed by request id.
+
+/**
+ * Cap on remembered stamps. Both handlers always answer, so entries are
+ * released as fast as they are made; this only bounds the leak from a handler
+ * that throws before replying, and never grows into a long run's memory.
+ */
+const MAX_TRACKED_ROUND_TRIPS = 128;
+
+/**
+ * Record the moment a worker request arrived, so the reply can report how long
+ * each stage of the round-trip took.
+ * @param {any} wm - WorkerManager instance
+ * @param {any} data - Worker message payload, carrying `requestId` and `sentAt`
+ */
+export function beginRoundTrip(wm, data) {
+  const requestId = data?.requestId;
+  if (!requestId) return;
+  if (!wm._roundTripStamps) wm._roundTripStamps = new Map();
+  const stamps = wm._roundTripStamps;
+  if (stamps.size >= MAX_TRACKED_ROUND_TRIPS) {
+    stamps.delete(stamps.keys().next().value);
+  }
+  stamps.set(requestId, { sentAt: Number(data.sentAt) || 0, receivedAt: Date.now() });
+}
+
+/**
+ * Close out a round-trip, yielding the timing fields to attach to its reply.
+ * A request nobody stamped yields nothing rather than invented stamps — a reply
+ * carrying half a measurement is worse than one carrying none.
+ * @param {any} wm - WorkerManager instance
+ * @param {string} requestId - The request being answered
+ * @returns {{sentAt?: number, receivedAt?: number, repliedAt?: number}} Timing fields
+ */
+function finishRoundTrip(wm, requestId) {
+  const started = wm._roundTripStamps?.get(requestId);
+  if (!started) return {};
+  wm._roundTripStamps.delete(requestId);
+  return { sentAt: started.sentAt, receivedAt: started.receivedAt, repliedAt: Date.now() };
+}
+
 // ── tool-execution reporter (level-based liveness, engine-only) ──────────────
 //
 // A single engine-owned timer, armed while any tool-action is executing, that
@@ -164,6 +219,7 @@ export function __resetToolExecutionReporterForTest() {
  */
 export async function handleRenderContextItemsRequest(wm, conversationId, data) {
   if (!wm._onContextRequest) return;
+  beginRoundTrip(wm, data);
   // loadAndFlush applies any batched/deferred syncs before rendering so the
   // callback sees the turn's items (e.g. the just-synced user message / context
   // items). Without this the callback's "requested context-item not in local
@@ -186,7 +242,8 @@ export function sendRenderContextItemsResponse(wm, conversationId, requestId, co
     type: 'render-context-items-response',
     requestId,
     contexts,
-    systemPrompt
+    systemPrompt,
+    ...finishRoundTrip(wm, requestId)
   });
 }
 
@@ -201,6 +258,7 @@ export function sendRenderContextItemsResponse(wm, conversationId, requestId, co
  */
 export function handleRequestTools(wm, conversationId, data) {
   if (wm._onToolsRequest) {
+    beginRoundTrip(wm, data);
     wm._onToolsRequest(data, conversationId);
   }
 }
@@ -216,7 +274,8 @@ export function sendToolsResult(wm, conversationId, requestId, tools) {
   wm.sendToWorker(conversationId, {
     type: 'tools-result',
     requestId,
-    tools
+    tools,
+    ...finishRoundTrip(wm, requestId)
   });
 }
 

@@ -179,6 +179,16 @@ export class WorkerManager {
     this._onToolsRequest = null;
 
     /**
+     * Arrival stamps for in-flight context/tools round-trips, keyed by request
+     * id, so each reply can tell the worker how long it waited to be picked up
+     * and how long the engine then took. Written and released in
+     * worker-manager-protocols.js.
+     * @type {Map<string, {sentAt: number, receivedAt: number}>}
+     * @private
+     */
+    this._roundTripStamps = new Map();
+
+    /**
      * Callback for subthread-spec build requests (delegatesToSubthread tools)
      * @type {((request: object, conversationId: string) => void)|null}
      * @private

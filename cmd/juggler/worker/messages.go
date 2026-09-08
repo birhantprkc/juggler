@@ -608,9 +608,13 @@ type ResummarizeCompactionThreadMessage struct {
 
 // RenderContextItemsRequest requests rendered context item content for LLM context
 type RenderContextItemsRequest struct {
-	Type          string            `json:"type"` // "render-context-items-request"
-	RequestID     string            `json:"requestId"`
-	ItemIDs       []string          `json:"itemIds"`
+	Type      string   `json:"type"` // "render-context-items-request"
+	RequestID string   `json:"requestId"`
+	ItemIDs   []string `json:"itemIds"`
+	// SentAt is the wall-clock millisecond this request left the worker. The
+	// engine echoes it back beside its own marks so a slow round-trip can be
+	// split into the stage that was slow (roundtrip_timing.go).
+	SentAt        int64             `json:"sentAt,omitempty"`
 	ContextParams map[string]string `json:"contextParams,omitempty"`
 }
 

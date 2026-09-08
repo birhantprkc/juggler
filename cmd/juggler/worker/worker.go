@@ -1656,6 +1656,7 @@ func (w *ConversationWorker) sendRenderContextItemsRequest(requestID string, ite
 		Type:      "render-context-items-request",
 		RequestID: requestID,
 		ItemIDs:   itemIDs,
+		SentAt:    time.Now().UnixMilli(),
 	})
 }
 
