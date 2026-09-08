@@ -7,6 +7,7 @@ package customprovider
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -92,8 +93,12 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 }
 
 // TestSaveWritesOwnerOnly pins the 0600: an entry's headers are where a gateway
-// auth header goes, so this file is credential-adjacent.
+// auth header goes. Windows has no permission bits to carry that meaning, and
+// os.Stat reports 0666 for writable files there.
 func TestSaveWritesOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		return
+	}
 	userpathstest.Isolate(t)
 	if err := Save(map[string]Instance{"acme": {BaseURL: "https://gateway.test/v1"}}); err != nil {
 		t.Fatalf("Save: %v", err)
