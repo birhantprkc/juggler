@@ -16,3 +16,10 @@ import "github.com/wailsapp/wails/v3/pkg/application"
 // tests. In a production build it is excluded deliberately — see the macOS file
 // for why the SPI must not reach a shipped binary.
 func unthrottleHiddenPageTimers(_ *application.WebviewWindow) bool { return false }
+
+// ensureHiddenPoolWebViewSized reports that the pool's web view has a size,
+// because on these platforms it always has: a hidden Cocoa or WebView2 window
+// is still an allocated one, so its web view is the size the window was asked
+// for and the lanes in it lay out in a page of that size. GTK4 is the port that
+// leaves an unmapped window's web view at 0x0 — see the Linux file.
+func ensureHiddenPoolWebViewSized(_ *application.WebviewWindow, _, _ int) bool { return true }

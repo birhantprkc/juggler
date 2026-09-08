@@ -330,14 +330,15 @@ func (s *Server) serveTestPool(w http.ResponseWriter, r *http.Request) {
   const rows = Math.ceil(n / cols);
   const grid = document.getElementById('grid');
   // Each lane is given a page of its own, floored at the size the host window
-  // is built from (600x450 per lane — runTestPoolWindowApp, cmd/juggler/app).
-  // A hidden window is not necessarily an allocated one: the pool window is
-  // never shown, and a GTK window that is never mapped hands its web view no
-  // allocation at all, so tracks sized only in viewport units collapse and
-  // every lane lays its DOM out in a page 0 pixels wide. Tests that measure
-  // anything then measure nothing, and say so as an assertion about the thing
-  // they were testing. The floor gives a lane the same page on every platform
-  // whether or not the window it sits in has a size.
+  // is built from (600x450 per lane — runTestPoolWindowApp, cmd/juggler/app),
+  // so a lane lays out in the same page on every platform and a test that
+  // measures something measures it in the size the pool was built for rather
+  // than in whatever the window ended up with.
+  //
+  // The floor is a minimum, not the size: the window is sized to hold exactly
+  // this grid, and the tracks take the rest as 1fr. It stays a floor because a
+  // lane must not collapse — a lane with no size measures every rect as empty,
+  // and the tests that measure something then pass vacuously.
   grid.style.gridTemplateColumns = 'repeat(' + cols + ', minmax(600px, 1fr))';
   grid.style.gridTemplateRows = 'repeat(' + rows + ', minmax(450px, 1fr))';
   for (let i = 0; i < n; i++) {

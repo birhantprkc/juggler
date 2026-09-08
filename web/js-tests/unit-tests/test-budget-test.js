@@ -172,13 +172,17 @@ export async function runTests(_ctx) {
   }
 
   // Underneath every budget is a timer, and a hidden window's timers are not
-  // the ones a suite thinks it is scheduling: WebKit and WebKitGTK both snap a
-  // hidden page's DOM timers to a 1s grid once a chain passes its nesting
-  // limit. The pool window is permanently hidden, so it switches that alignment
-  // off at startup (unthrottleHiddenPageTimers, cmd/juggler/app) — and when
-  // that does not take, a suite awaiting eighty timers takes eighty seconds and
-  // is reported as a suite that stopped making progress. Nothing else would
-  // notice: the tax is spread a tick at a time across every wait in the run.
+  // the ones a suite thinks it is scheduling. Two mechanisms coarsen them to a
+  // 1s grid and the pool window is exposed to both: WebKit and WebKitGTK snap a
+  // hidden page's DOM timers once a chain passes its nesting limit, switched off
+  // at startup (unthrottleHiddenPageTimers, cmd/juggler/app); and WebCore
+  // throttles any frame that has a box but intersects nothing visible, which is
+  // every lane of a window nothing ever allocated, answered by giving the pool's
+  // web view a size of its own (ensureHiddenPoolWebViewSized, same package).
+  // When either does not take, a suite awaiting eighty timers takes eighty
+  // seconds and is reported as a suite that stopped making progress. Nothing
+  // else would notice: the tax is spread a tick at a time across every wait in
+  // the run. The page size goes in the failure because it says which one it is.
   try {
     // Past the ten-deep nesting the alignment applies from, and short enough
     // to cost nothing when the timers are the ones we asked for.
@@ -190,7 +194,7 @@ export async function runTests(_ctx) {
     const elapsed = Date.now() - started;
     assert(
       elapsed < 3000,
-      `${links} chained zero-delay timers took ${elapsed}ms; unthrottled they cost a few ms each, and this is what a 1s grid looks like — the pool window's hidden-page timer alignment is still on, and every wait in every suite is being charged a tick`
+      `${links} chained zero-delay timers took ${elapsed}ms in a page of ${window.innerWidth}x${window.innerHeight}; unthrottled they cost a few ms each, and this is what a 1s grid looks like — a page of no size means the pool's web view never took one, a page with a size means the hidden-page alignment is still on, and either way every wait in every suite is being charged a tick`
     );
     passed++;
   } catch (e) {
@@ -199,19 +203,19 @@ export async function runTests(_ctx) {
   }
 
   // A lane is a page as well as a clock, and a page has to have a size. The
-  // pool window is permanently hidden, and a hidden window is not necessarily
-  // an allocated one — a GTK window that is never mapped hands its web view no
-  // allocation, and a lane inside one lays every element out in a page 0 pixels
-  // wide, where every rect is empty and every measurement is zero. Nothing
-  // fails for that reason on its own: the tests that measure something pass
-  // vacuously, and the one test that needs a measurement to exist reports it as
-  // a fault in the thing it was measuring.
+  // pool window is permanently hidden, and a hidden window is not necessarily an
+  // allocated one — GTK sizes a widget in a layout pass and only runs one for a
+  // window that is mapped, so nothing there measures anything and a lane inside
+  // lays every element out in a page 0 pixels wide, where every rect is empty and
+  // every measurement is zero. Nothing fails for that reason on its own: the
+  // tests that measure something pass vacuously, and the one test that needs a
+  // measurement to exist reports it as a fault in the thing it was measuring.
   try {
     const width = window.innerWidth;
     const height = window.innerHeight;
     assert(
       width > 0 && height > 0,
-      `this lane lays out in a page of ${width}x${height}, so every rect in every test here is empty and anything measured is measured as zero — the pool page's lane size floor (serveTestPool, cmd/juggler/server) is not reaching this lane`
+      `this lane lays out in a page of ${width}x${height}, so every rect in every test here is empty and anything measured is measured as zero — either the pool's web view never took a size (ensureHiddenPoolWebViewSized, cmd/juggler/app) or the lane size floor is not reaching this lane (serveTestPool, cmd/juggler/server)`
     );
     passed++;
   } catch (e) {

@@ -101,3 +101,10 @@ func unthrottleHiddenPageTimers(win *application.WebviewWindow) bool {
 	}
 	return C.unthrottleHiddenPageTimers(handle) != 0
 }
+
+// ensureHiddenPoolWebViewSized reports that the pool's web view has a size,
+// because on this platform it always has: a hidden NSWindow is still an
+// allocated one, so its web view is the size the window was asked for and the
+// lanes in it lay out in a page of that size. GTK4 is the port that leaves an
+// unmapped window's web view at 0x0 — see the Linux file.
+func ensureHiddenPoolWebViewSized(_ *application.WebviewWindow, _, _ int) bool { return true }

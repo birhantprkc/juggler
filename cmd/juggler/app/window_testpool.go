@@ -108,34 +108,45 @@ func (a *windowApp) startup() {
 	a.win.Show()
 }
 
-// unthrottleWhenReady switches the pool window's hidden-page timer alignment
-// off as soon as there is a web view to configure, and says so if it never
-// takes: a pool that kept the alignment fires every timer a suite waits on a
-// second apart, which reads from the test output as a suite that stopped rather
-// than one that is being taxed a tick at a time.
+// prepareHiddenPool makes the pool's never-shown window a page the suites can
+// be measured in: a web view the size the window was asked for, and timers that
+// fire when they are due. Both are settled as soon as there is a web view to
+// configure, and both say so if they never take — a pool that kept the timer
+// alignment fires every timer a suite waits on a second apart, which reads from
+// the test output as a suite that stopped rather than one that is being taxed a
+// tick at a time, and a pool that never took a size measures every rect in every
+// suite as empty.
 //
-// Attempted more than once because the switch needs the window's web view and
-// this runs at application start, which on GTK4 is where the widget is still
-// being built — WebviewWindow.Run sets the window's impl and only then, after
-// activation, creates the widget. macOS has it on the first attempt.
+// Attempted more than once because both need the window's web view and this runs
+// at application start, which on GTK4 is where the widget is still being built —
+// WebviewWindow.Run sets the window's impl and only then, after activation,
+// creates the widget. macOS has them on the first attempt.
 //
-// Scoped to the two ports that align a hidden page's timers at all. WebView2
-// keeps the pool's controller visible instead, so there is nothing there to
-// switch and nothing to report.
-func unthrottleWhenReady(win *application.WebviewWindow) {
+// Scoped to the two ports that background a hidden page at all. WebView2 keeps
+// the pool's controller visible and its window allocated instead, so there is
+// nothing there to switch and nothing to report.
+func prepareHiddenPool(win *application.WebviewWindow, width, height int) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		return
 	}
 	const attempts = 40
 	const between = 100 * time.Millisecond
+	sized, unthrottled := false, false
 	var attempt func(left int)
 	attempt = func(left int) {
 		application.InvokeAsync(func() {
-			if unthrottleHiddenPageTimers(win) {
+			sized = sized || ensureHiddenPoolWebViewSized(win, width, height)
+			unthrottled = unthrottled || unthrottleHiddenPageTimers(win)
+			if sized && unthrottled {
 				return
 			}
 			if left <= 1 {
-				jlog.Error("[test-pool] hidden-page timer alignment is still on: every timer a suite waits on fires on a ~1s grid")
+				if !sized {
+					jlog.Error("[test-pool] the pool's web view never took a size: every lane lays out in a page of no width, and a lane with a box in an unallocated page has its timers aligned to a ~1s grid too (asked for %dx%d)", width, height)
+				}
+				if !unthrottled {
+					jlog.Error("[test-pool] hidden-page timer alignment is still on: every timer a suite waits on fires on a ~1s grid")
+				}
 				return
 			}
 			time.AfterFunc(between, func() { attempt(left - 1) })
@@ -409,11 +420,11 @@ func runTestPoolWindowApp(srv *server.Server, devMode bool, headless bool, testI
 		// to the test pool: production's main UI window *should* yield CPU when
 		// hidden — its hidden engine window does the background work.
 		// KeepRunningWhenHidden gets the lanes scheduled; it does not decide how
-		// coarsely their timers fire once they are. That second half is the
-		// hidden-page timer alignment, switched off separately once the window
-		// exists — see unthrottleHiddenPageTimers, called from the startup hook
-		// below. WebKitGTK aligns a hidden page the same way and is dealt with
-		// there too; WebView2 has no equivalent grid.
+		// coarsely their timers fire once they are, nor whether the window they
+		// sit in has a size. Those are settled once the window exists — see
+		// prepareHiddenPool, called from the startup hook below. WebKitGTK aligns
+		// a hidden page the same way and leaves an unmapped one unallocated on
+		// top of it; WebView2 has neither.
 		macWindow.WebviewPreferences = application.MacWebviewPreferences{
 			KeepRunningWhenHidden: application.Enabled,
 		}
@@ -509,10 +520,12 @@ func runTestPoolWindowApp(srv *server.Server, devMode bool, headless bool, testI
 		application.InvokeAsync(func() { applyWindowChrome(win, themeColours[themeDark]) })
 		if isTestPoolHost {
 			// Only the pool host: this window's lanes do timed work nobody is
-			// watching, so there is nothing to save by coarsening their timers.
-			// A production window that goes idle when hidden is behaving
-			// correctly and must keep doing so.
-			unthrottleWhenReady(win)
+			// watching, so there is nothing to save by coarsening their timers,
+			// and they need the page they were sized for whether or not the
+			// platform allocates a window it never shows. A production window
+			// that goes idle when hidden is behaving correctly and must keep
+			// doing so.
+			prepareHiddenPool(win, width, height)
 		}
 		wa.startup()
 	})
