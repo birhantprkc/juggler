@@ -85,9 +85,16 @@ func (c *idleStubClient) IdleOutbound() time.Duration { return c.idle }
 // said nothing at all — no beat, no worker message, nothing — is a viewer that
 // may no longer exist, and holding its socket open serves nobody. Closing it is
 // the whole treatment: a page that IS still there reconnects in under a second.
+// Silence is measured from the last inbound message, so the stamp is what these
+// move: a window no scheduler can cross, and a viewer made silent by backdating
+// its stamp past that window rather than by sleeping. A test that instead sleeps
+// its way across a window of a few tens of milliseconds is asking a loaded
+// machine to schedule it more tightly than the window it is measuring, and a
+// machine that starves it for longer reads as a server that evicted a viewer it
+// should have kept.
 func TestLinkSupervisor_EvictsASilentViewer(t *testing.T) {
 	s := newTestServerState(t)
-	s.setViewerSilenceWindow(50 * time.Millisecond)
+	s.setViewerSilenceWindow(time.Hour)
 	client := newStubClient(ClientRoleViewer)
 	link := newLinkSupervisor(s, client)
 
@@ -96,7 +103,7 @@ func TestLinkSupervisor_EvictsASilentViewer(t *testing.T) {
 		t.Fatal("a viewer that has only just connected was closed")
 	}
 
-	time.Sleep(80 * time.Millisecond)
+	link.lastInbound = time.Now().Add(-2 * time.Hour) // a page that went away
 	link.tick()
 	if client.closeCount() != 1 {
 		t.Fatalf("a silent viewer must have its socket closed so it reconnects; closes=%d", client.closeCount())
@@ -116,12 +123,14 @@ func TestLinkSupervisor_EvictsASilentViewer(t *testing.T) {
 // rather than typing — nobody's session may be torn down for being quiet.
 func TestLinkSupervisor_KeepsAViewerThatIsMerelyIdle(t *testing.T) {
 	s := newTestServerState(t)
-	s.setViewerSilenceWindow(200 * time.Millisecond)
+	s.setViewerSilenceWindow(time.Minute)
 	client := newStubClient(ClientRoleViewer)
 	link := newLinkSupervisor(s, client)
 
 	for i := 0; i < 6; i++ {
-		time.Sleep(50 * time.Millisecond)
+		// Silent for long enough to be evicted on the next tick, were traffic not
+		// counted as proof of the link.
+		link.lastInbound = time.Now().Add(-time.Hour)
 		link.noteInbound() // the viewer's beat, or any other traffic
 		link.tick()
 	}

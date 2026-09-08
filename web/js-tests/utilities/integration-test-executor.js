@@ -114,6 +114,7 @@ import { runTests as runConversationReleaseTests } from '../unit-tests/conversat
 import { runTests as runLoadQueueRecycleTests } from '../unit-tests/load-queue-recycle-test.js';
 import { runTests as runUnloadedTabHydrationTests } from '../unit-tests/unloaded-tab-hydration-test.js';
 import { runTests as runRefreshMergeTests } from '../unit-tests/refresh-merge-test.js';
+import { runTests as runWorkerInitDeclinedTests } from '../unit-tests/worker-init-declined-test.js';
 import { runTests as runTabOrderMergeTests } from '../unit-tests/tab-order-merge-test.js';
 import { runTests as runTabDragOrderTests } from '../unit-tests/tab-drag-order-test.js';
 import { runTests as runToolExecutionOrderTests } from '../unit-tests/tool-execution-order-test.js';
@@ -440,6 +441,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:load-queue-recycle', run: runLoadQueueRecycleTests },
   { name: 'unit:unloaded-tab-hydration', run: runUnloadedTabHydrationTests },
   { name: 'unit:refresh-merge', run: runRefreshMergeTests },
+  { name: 'unit:worker-init-declined', run: runWorkerInitDeclinedTests },
   { name: 'unit:tab-order-merge', run: runTabOrderMergeTests },
   { name: 'unit:tab-drag-order', run: runTabDragOrderTests },
   { name: 'unit:tool-execution-order', run: runToolExecutionOrderTests },

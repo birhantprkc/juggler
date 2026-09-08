@@ -374,14 +374,22 @@ export class WorkerManager {
     // generous: a longer wait is strictly better than losing user data.
     /** @type {Promise<void>} */
     const readyPromise = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error('Worker initialization timeout'));
+      }, WORKER_READY_TIMEOUT_MS);
       entry.readyCallbacks.push((/** @type {object|null} */ _metadata) => {
+        clearTimeout(timer);
         resolve();  // Ignore metadata here - caller uses _waitForWorkerReady to get it
       });
-      setTimeout(() => {
-        if (!entry.ready) {
-          reject(new Error('Worker initialization timeout'));
-        }
-      }, WORKER_READY_TIMEOUT_MS);
+      // A worker that fails its init reports an error and then says nothing —
+      // and the error path unwinds REJECTORS, so a wait registered without one
+      // is a wait that answer cannot reach. This is the first wait of a load, so
+      // without it the whole timeout above is spent on a conversation the server
+      // has already said it cannot open.
+      (entry.readyRejectors ??= []).push((/** @type {Error} */ err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
     });
 
     // Send init message via WebSocket (or alternate transport)
