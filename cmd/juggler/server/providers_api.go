@@ -603,16 +603,11 @@ func (s *Server) handleSetCheapModel(w http.ResponseWriter, r *http.Request) {
 		handlers.WriteError(w, r, http.StatusServiceUnavailable, "Cheap model is not available")
 		return
 	}
-	req, ok := handlers.DecodeJSON[struct {
-		Provider    string `json:"provider"`
-		Model       string `json:"model"`
-		Thinking    string `json:"thinking"`
-		ServiceTier string `json:"serviceTier"`
-	}](w, r)
+	req, ok := handlers.DecodeJSON[core.ModelRef](w, r)
 	if !ok {
 		return
 	}
-	if err := s.cheapModelStore.Save(core.ModelRef{Provider: req.Provider, Model: req.Model, Thinking: req.Thinking, ServiceTier: req.ServiceTier}); err != nil {
+	if err := s.cheapModelStore.Save(req); err != nil {
 		handlers.WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to save cheap model: %v", err))
 		return
 	}
@@ -655,16 +650,11 @@ func (s *Server) handleDefaultModel(w http.ResponseWriter, r *http.Request) {
 // see and change it, and is never applied by the provider on the caller's
 // behalf (see openaibase.ServiceTierSpec.tierFor).
 func (s *Server) handleSetDefaultModel(w http.ResponseWriter, r *http.Request) {
-	req, ok := handlers.DecodeJSON[struct {
-		Provider    string `json:"provider"`
-		Model       string `json:"model"`
-		Thinking    string `json:"thinking"`
-		ServiceTier string `json:"serviceTier"`
-	}](w, r)
+	req, ok := handlers.DecodeJSON[core.ModelRef](w, r)
 	if !ok {
 		return
 	}
-	if err := s.defaultModelStore.Save(core.ModelRef{Provider: req.Provider, Model: req.Model, Thinking: req.Thinking, ServiceTier: req.ServiceTier}); err != nil {
+	if err := s.defaultModelStore.Save(req); err != nil {
 		handlers.WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to save default model: %v", err))
 		return
 	}
@@ -716,16 +706,11 @@ func (s *Server) handleRecentModelsPost(w http.ResponseWriter, r *http.Request) 
 
 	// Both dials are recorded: a recent entry is re-applied verbatim, so one
 	// stored without its tier would silently re-select standard serving.
-	req, ok := handlers.DecodeJSON[struct {
-		Provider    string `json:"provider"`
-		Model       string `json:"model"`
-		Thinking    string `json:"thinking"`
-		ServiceTier string `json:"serviceTier"`
-	}](w, r)
+	req, ok := handlers.DecodeJSON[core.ModelRef](w, r)
 	if !ok {
 		return
 	}
-	if err := s.recentModelsStore.Add(core.ModelRef{Provider: req.Provider, Model: req.Model, Thinking: req.Thinking, ServiceTier: req.ServiceTier}); err != nil {
+	if err := s.recentModelsStore.Add(req); err != nil {
 		handlers.WriteError(w, r, http.StatusInternalServerError, fmt.Sprintf("Failed to record recent model: %v", err))
 		return
 	}

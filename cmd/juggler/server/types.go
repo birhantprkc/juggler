@@ -14,17 +14,6 @@ type ToolDefinition struct {
 	Category    string          `json:"category,omitempty"` // Tool category: "read", "write", "meta"
 }
 
-// ModelConfig represents LLM provider and model configuration: a concrete
-// (Provider, Model) pair.
-type ModelConfig struct {
-	Provider string `json:"provider"`           // LLM provider name (e.g., "anthropic", "openai")
-	Model    string `json:"model"`              // LLM model name (e.g., "claude-sonnet-4-20250514")
-	Thinking string `json:"thinking,omitempty"` // Thinking level in the provider's own vocabulary; empty ⇒ provider default
-	// ServiceTier is the optional serving class, named by the id the model
-	// advertised (e.g. "priority"); empty ⇒ standard serving.
-	ServiceTier string `json:"serviceTier,omitempty"`
-}
-
 // ViewerFault is an uncaught fault reported by a viewer page.
 //
 // A viewer runs in a window whose console cannot be opened in a release build,

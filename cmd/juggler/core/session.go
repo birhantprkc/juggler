@@ -350,51 +350,6 @@ func (s *Session) Validate() error {
 	return nil
 }
 
-// --- V5 Schema Structs (Yjs CRDT Support) ---
-
-// ModelConfig represents LLM provider and model configuration
-type ModelConfig struct {
-	Provider string `json:"provider"` // e.g., "anthropic", "gemini", "openai"
-	Model    string `json:"model"`    // Model ID
-}
-
-// PermissionRule represents a single auto-approval rule. The framework treats
-// `Kind` and `Value` opaquely; each context-item plugin interprets its own
-// rules. See web/js/model/message-thread-permissions.js for the contract.
-type PermissionRule struct {
-	ID       string      `json:"id"`
-	ItemType string      `json:"itemType"`
-	Kind     string      `json:"kind"`
-	Value    interface{} `json:"value"`
-	Scope    string      `json:"scope,omitempty"`
-	Enabled  bool        `json:"enabled"`
-}
-
-// BranchPoint represents the branch origin for branched conversations
-type BranchPoint struct {
-	ParentConvID string `json:"parentConvId"` // Parent conversation ID
-	BranchOpID   string `json:"branchOpId"`   // Operation ID where branch occurred
-}
-
-// Conversation represents a conversation using Yjs CRDT.
-type Conversation struct {
-	ID              string       `json:"id"`              // Conversation ID
-	Name            string       `json:"name"`            // Display name
-	Created         string       `json:"created"`         // Creation timestamp (ISO 8601)
-	ModelConfig     *ModelConfig `json:"modelConfig"`     // LLM configuration
-	CurrentStrategy string       `json:"currentStrategy"` // Active strategy ID
-
-	// Yjs CRDT state (binary, base64-encoded when marshaled to JSON)
-	YjsState    []byte `json:"yjsState"`    // Full Yjs document state
-	StateVector []byte `json:"stateVector"` // Yjs state vector for sync
-
-	// UI state and metadata (not in Yjs doc)
-	PermissionRules []PermissionRule `json:"permissionRules,omitempty"` // Generic permission rules
-	AllowedPaths    []string         `json:"allowedPaths,omitempty"`    // Allowed filesystem roots
-	Status          string           `json:"status"`                    // Status: "active", "archived", etc.
-	BranchPoint     *BranchPoint     `json:"branchPoint,omitempty"`     // Branch origin (if branched)
-}
-
 // Common errors
 var (
 	ErrSessionNotFound      = fmt.Errorf("session not found")

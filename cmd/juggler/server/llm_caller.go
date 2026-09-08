@@ -124,7 +124,7 @@ func (s *Server) createLLMCaller() worker.LLMCallFunc {
 			Tools                []ToolDefinition     `json:"tools"`
 			ConversationID       string               `json:"conversationId"`
 			ThreadID             string               `json:"threadId"`
-			ModelConfig          ModelConfig          `json:"modelConfig"`
+			ModelConfig          core.ModelRef        `json:"modelConfig"`
 			TransactionID        string               `json:"transactionId"`
 			ToolChoice           *provider.ToolChoice `json:"toolChoice,omitempty"`
 			MaxOutputTokens      int64                `json:"maxOutputTokens,omitempty"`

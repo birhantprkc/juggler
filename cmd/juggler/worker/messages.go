@@ -53,6 +53,7 @@ import (
 	"strings"
 	"time"
 
+	"juggler/cmd/juggler/core"
 	"juggler/cmd/juggler/providers/provider"
 )
 
@@ -201,19 +202,13 @@ type SerializedConversation struct {
 	LoadFromDisk bool         `json:"loadFromDisk,omitempty"` // If true, load Yjs state from disk and extract metadata
 }
 
-// ModelConfig represents LLM provider and model configuration
-type ModelConfig struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	// Thinking is the optional thinking/reasoning-effort level, named in the
-	// provider's own vocabulary; empty ⇒ provider default. It rides atomically
-	// with the (Provider, Model) pair through the thread tree.
-	Thinking string `json:"thinking,omitempty"`
-	// ServiceTier is the optional serving class, named by the id the model
-	// advertised (e.g. "priority"); empty ⇒ standard serving. Rides with the
-	// pair on the same terms as Thinking, and is orthogonal to it.
-	ServiceTier string `json:"serviceTier,omitempty"`
-}
+// ModelConfig is the worker's name for a model selection. It IS core.ModelRef
+// — the same type the default/cheap/recent model stores persist and the server
+// decodes an LLM request into — so the (provider, model, thinking, serviceTier)
+// quadruple is declared once and a new dial reaches every layer at once. The
+// whole selection rides atomically through the thread tree: a thread override
+// replaces it entire, never dial by dial.
+type ModelConfig = core.ModelRef
 
 // WorkerConfig contains worker configuration
 type WorkerConfig struct {

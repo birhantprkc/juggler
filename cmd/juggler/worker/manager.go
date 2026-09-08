@@ -568,9 +568,12 @@ func (m *Manager) GetOrCreate(conversationID, authorID string) *ConversationWork
 // loaded afterwards, so the creating viewer attaches through the normal init
 // reconnect path.
 func (m *Manager) SeedNewConversation(conversationID, name, projectPath, created string, model *core.ModelRef) error {
+	// Copied rather than aliased: the seed must not change under the worker if
+	// the caller reuses its ModelRef.
 	var modelConfig *ModelConfig
 	if model != nil && model.Provider != "" && model.Model != "" {
-		modelConfig = &ModelConfig{Provider: model.Provider, Model: model.Model, Thinking: model.Thinking, ServiceTier: model.ServiceTier}
+		seed := *model
+		modelConfig = &seed
 	}
 	init := &InitMessage{
 		Type: "init",
