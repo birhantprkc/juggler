@@ -198,5 +198,26 @@ export async function runTests(_ctx) {
     errors.push(`the pool's timers are the ones the suite asked for: ${e instanceof Error ? e.message : String(e)}`);
   }
 
+  // A lane is a page as well as a clock, and a page has to have a size. The
+  // pool window is permanently hidden, and a hidden window is not necessarily
+  // an allocated one — a GTK window that is never mapped hands its web view no
+  // allocation, and a lane inside one lays every element out in a page 0 pixels
+  // wide, where every rect is empty and every measurement is zero. Nothing
+  // fails for that reason on its own: the tests that measure something pass
+  // vacuously, and the one test that needs a measurement to exist reports it as
+  // a fault in the thing it was measuring.
+  try {
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    assert(
+      width > 0 && height > 0,
+      `this lane lays out in a page of ${width}x${height}, so every rect in every test here is empty and anything measured is measured as zero — the pool page's lane size floor (serveTestPool, cmd/juggler/server) is not reaching this lane`
+    );
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`a lane has a page with a size to lay out in: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
   return { passed, failed, errors };
 }

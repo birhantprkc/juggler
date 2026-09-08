@@ -1430,8 +1430,12 @@ export async function runTests() {
       const hint = frameHintOf({
         getBoundingClientRect: () => ({ left: 700.4, top: 12.6, width: 544.2, height: 800.8 }),
       });
+      // The page the measurement is taken in is named in the failure: a hint is
+      // withheld from a page of no size, so a lane laid out in one fails this
+      // as a measurement that did not happen rather than as a page that has
+      // nothing to measure in.
       assert(hint?.x === 700 && hint?.y === 13,
-        `the panel's place in this window is measured, got ${hint?.x},${hint?.y}`);
+        `the panel's place in this window is measured, got ${hint?.x},${hint?.y} in a page of ${window.innerWidth}x${window.innerHeight}`);
       assert(hint?.width === 544 && hint?.height === 801,
         `and the size of it, got ${hint?.width}x${hint?.height}`);
       assert(hint?.viewWidth === window.innerWidth && hint?.viewHeight === window.innerHeight,
