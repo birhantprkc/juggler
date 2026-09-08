@@ -189,7 +189,16 @@ func (a *appState) handleWindowControl(w http.ResponseWriter, r *http.Request) {
 		a.setWindowProject(e, r.URL.Query().Get("project"))
 		w.WriteHeader(http.StatusNoContent)
 	case "control":
-		done := make(chan bool, 1)
+		// The reply reports the window's state after the action, which is how page
+		// chrome that mirrors it stays in step: the maximise/restore glyph
+		// (window-caption-controls.js) and the macOS traffic-light gutter
+		// (window-fullscreen.js), which a window restored straight into fullscreen
+		// has no event to learn about.
+		type windowState struct {
+			Maximised  bool `json:"maximised"`
+			Fullscreen bool `json:"fullscreen"`
+		}
+		done := make(chan windowState, 1)
 		application.InvokeAsync(func() {
 			switch r.URL.Query().Get("action") {
 			case "minimise":
@@ -207,10 +216,10 @@ func (a *appState) handleWindowControl(w http.ResponseWriter, r *http.Request) {
 				e.win.Show()
 				e.win.Focus()
 			}
-			done <- e.win.IsMaximised()
+			done <- windowState{Maximised: e.win.IsMaximised(), Fullscreen: e.win.IsFullscreen()}
 		})
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]bool{"maximised": <-done})
+		_ = json.NewEncoder(w).Encode(<-done)
 	case "attention":
 		// Bounce the Dock icon once to pull the user back to a window that needs
 		// them (a tool awaiting approval, or a turn that just came to rest). The
