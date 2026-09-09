@@ -25,7 +25,7 @@ import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { isEngine } from '../../sdk/lib/client-role.js';
 import { recordTape } from '../utils/event-tape.js';
 import { isTabReorderEnabled } from '../utils/attention-manager.js';
-import { setupWorkerCallbacks } from './session-worker-callbacks.js';
+import { setupWorkerCallbacks, setupViewerWorkerCallbacks } from './session-worker-callbacks.js';
 import { approvePermittedPendingApprovals } from './conversation-tool-actions.js';
 import { ensureUserPresetsLoaded, getDefaultPresetSeed } from '../services/system-prompt-presets.js';
 import { isDefaultFileEditingOn, setFileEditingAllowed } from '../services/file-editing-permission.js';
@@ -1526,8 +1526,16 @@ class Session {
           apiBaseUrl: globalThis.location.origin
         }, this);
 
-        // Set up callbacks for worker requests
-        setupWorkerCallbacks(this);
+        // Set up callbacks for worker requests, by role. Context rendering and
+        // tool definitions belong to the engine — a viewer holding those
+        // callbacks answers the worker's broadcast requests as well, and the
+        // turn then runs on whichever realm's replica replied first. A viewer
+        // handles approvals and nothing else.
+        if (isEngine()) {
+          setupWorkerCallbacks(this);
+        } else {
+          setupViewerWorkerCallbacks(this);
+        }
 
         this._workerManagerInitialized = true;
       }

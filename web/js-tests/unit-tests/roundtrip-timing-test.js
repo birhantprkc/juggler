@@ -83,7 +83,18 @@ export async function runTests(_ctx) {
       sendToolsResult(wm, 'conv-1', req.requestId, []);
     };
 
-    handleRequestTools(wm, 'conv-1', { requestId: 'req-1', sentAt });
+    // Answering the broadcast is the engine's job (see unit:worker-broadcast),
+    // so the handler only reaches the callback in that role.
+    const g = /** @type {any} */ (globalThis);
+    const had = Object.prototype.hasOwnProperty.call(g, 'JUGGLER_ENGINE');
+    const previous = g.JUGGLER_ENGINE;
+    g.JUGGLER_ENGINE = true;
+    try {
+      handleRequestTools(wm, 'conv-1', { requestId: 'req-1', sentAt });
+    } finally {
+      if (had) g.JUGGLER_ENGINE = previous;
+      else delete g.JUGGLER_ENGINE;
+    }
 
     assert(wm.sent.length === 1, `expected one reply, got ${wm.sent.length}`);
     const reply = wm.sent[0];

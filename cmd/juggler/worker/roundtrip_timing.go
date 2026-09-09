@@ -85,11 +85,13 @@ func reportRoundTrip(name string, payload json.RawMessage) {
 }
 
 // reportDroppedReply logs a reply that arrived for a request no longer waiting
-// for it — the shape a round-trip leaves when it misses ContextTimeout and the
-// turn has already been failed. Its stamps are the only account of where those
-// 30s went, so they are worth a line even though nothing can use the answer.
+// for it: the turn that asked has ended — it missed ContextTimeout, or it was
+// cancelled — so nothing can use the answer. Its stamps are the only account of
+// where that budget went, so they are worth a line anyway. Read the elapsed
+// time before concluding anything: near the timeout is the round-trip that lost
+// the turn; a fast one means the request was abandoned, or answered twice.
 func reportDroppedReply(name string, payload json.RawMessage) {
 	if desc, ok := describeRoundTrip(payload, time.Now().UnixMilli()); ok {
-		jlog.Info("[roundtrip] %s answered a request that had already given up — %s", name, desc)
+		jlog.Info("[roundtrip] %s answered a request nothing was waiting for — %s", name, desc)
 	}
 }

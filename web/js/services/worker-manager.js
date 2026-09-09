@@ -1267,7 +1267,14 @@ export class WorkerManager {
 
       case 'status':
         // Processing state syncs via Yjs metadata (doc.metadata.processingState),
-        // which LLMState observes directly — nothing to handle here.
+        // which LLMState observes directly — this message carries nothing of its
+        // own. What it is, is the worker announcing a state transition, and the
+        // write it announces is sitting in the inbound sync batch behind a 50ms
+        // timer. Everything that asks "is this conversation busy" reads that
+        // metadata (llmState, the bin guard, the attention edges), so applying
+        // the batch here is what keeps those answers from being one window out
+        // of date. Transitions only — the streaming firehose stays batched.
+        this._session?.conversations.get(conversationId)?.flushPendingSyncs?.();
         break;
 
       case 'ack':

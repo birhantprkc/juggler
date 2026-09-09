@@ -201,23 +201,31 @@ export function __resetToolExecutionReporterForTest() {
 
 /**
  * Dispatch a render-context-items-request from the worker to the registered
- * callback (set via setOnContextRequest — engine-only; viewers never set it).
+ * callback (set via setOnContextRequest).
+ *
+ * The request is BROADCAST, so it reaches viewers too, and the engine is the
+ * only realm that may answer it: two answers make the turn's system prompt a
+ * race between two replicas, and the loser reaches a worker that has already
+ * taken the other one (logged there as a round-trip that "answered a request
+ * nothing was waiting for"). A viewer therefore returns before it stamps,
+ * renders, or loads anything.
  *
  * Like every other engine command handler (handleExecuteTool, handleCancelTool,
  * handleRunStrategyHook), this first ensures the engine has actually LOADED the
- * conversation. Context rendering is engine-only, so this callback is the sole
- * responder and MUST always reply — an unanswered request wedges the worker's
- * requestContextAndTools for the whole 30s ContextTimeout. Awaiting the load
- * here (a freshly-created conversation or cold engine can have its first context
- * request arrive before auto-load finishes) narrows that race; the callback
- * itself closes it by waiting briefly for still-in-flight item syncs and then
- * responding regardless (see setOnContextRequest in session-worker-callbacks.js).
+ * conversation. Being the sole responder, the engine MUST always reply — an
+ * unanswered request wedges the worker's requestContextAndTools for the whole
+ * 30s ContextTimeout. Awaiting the load here (a freshly-created conversation or
+ * cold engine can have its first context request arrive before auto-load
+ * finishes) narrows that race; the callback itself closes it by waiting briefly
+ * for still-in-flight item syncs and then responding regardless (see
+ * setOnContextRequest in session-worker-callbacks.js).
  * @param {any} wm - WorkerManager instance
  * @param {string} conversationId
  * @param {any} data - Worker message payload
  * @returns {Promise<void>}
  */
 export async function handleRenderContextItemsRequest(wm, conversationId, data) {
+  if (!isEngine()) return;
   if (!wm._onContextRequest) return;
   beginRoundTrip(wm, data);
   // loadAndFlush applies any batched/deferred syncs before rendering so the
@@ -251,12 +259,15 @@ export function sendRenderContextItemsResponse(wm, conversationId, requestId, co
 
 /**
  * Dispatch a request-tools message from the worker to the registered
- * callback (set via setOnToolsRequest).
+ * callback (set via setOnToolsRequest). Broadcast like the context request and
+ * answered by the engine alone, for the same reason: the tool list a turn is
+ * offered must come from one realm, not from whichever replica replied first.
  * @param {any} wm
  * @param {string} conversationId
  * @param {any} data
  */
 export function handleRequestTools(wm, conversationId, data) {
+  if (!isEngine()) return;
   if (wm._onToolsRequest) {
     beginRoundTrip(wm, data);
     wm._onToolsRequest(data, conversationId);
