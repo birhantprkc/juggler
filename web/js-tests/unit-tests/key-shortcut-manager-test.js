@@ -6,17 +6,23 @@
  * KeyShortcutManager + file-editing-permission unit tests.
  *
  * Covers the central shortcut table, platform-agnostic binding matching, the
- * customisation override seam, platform-correct display formatting, and the
- * shared file-editing toggle the "toggle file editing" shortcut drives. Tests
- * are platform-independent: display/matching assertions branch on the same
- * exported {@link isMac} the manager itself uses. Nothing registers a handler on
- * a real dispatchable id, so the shared singleton's handler map is never
- * clobbered for other suites.
+ * customisation override seam, platform-correct display formatting, the
+ * dispatcher's text-field policy for the bin chord, and the shared file-editing
+ * toggle the "toggle file editing" shortcut drives. Tests are
+ * platform-independent: display/matching assertions branch on the same exported
+ * {@link isMac} the manager itself uses. The one suite that does register a
+ * handler on a real dispatchable id puts the page's own handler back afterwards,
+ * so the shared singleton is never left clobbered for other suites.
  * @module unit-tests/key-shortcut-manager-test
  */
 
 import { assert } from '../utilities/test-helpers.js';
-import keyShortcutManager, { isMac, eventMatchesBinding, formatBindingForPlatform } from '../../js/services/key-shortcut-manager.js';
+import keyShortcutManager, {
+  isMac,
+  eventMatchesBinding,
+  formatBindingForPlatform,
+  EDIT_GESTURE_WINDOW_MS,
+} from '../../js/services/key-shortcut-manager.js';
 import {
   isFileEditingAllowed,
   toggleFileEditing,
@@ -403,6 +409,81 @@ export async function runTests(_ctx) {
     a();
     b();
   });
+
+  // ── Dispatcher: the 'empty' input policy and its editing cooldown ────
+  // ⌘⌫ / Ctrl+⌫ deletes text in a composer and bins the conversation when the
+  // composer is empty, so these drive the manager's real document listener with
+  // a real textarea as the target: every gate under test (is it editable, is it
+  // empty, was the chord just deleting text) reads the live event.
+
+  /**
+   * Press the bin chord at an element. Both command modifiers are set so the
+   * binding matches whichever one this platform calls `mod`.
+   * @param {EventTarget} target - Element to dispatch from; the event bubbles to document.
+   * @param {boolean} [repeat] - Mark the press as an auto-repeat (key held down).
+   * @returns {void}
+   */
+  const pressBinChord = (target, repeat = false) => {
+    target.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Backspace', metaKey: true, ctrlKey: true, repeat, bubbles: true, cancelable: true,
+    }));
+  };
+
+  /**
+   * Run a test body with a counting stand-in for the real bin command, then put
+   * the app's own handler back — the singleton is shared with the live page.
+   * @param {function({presses: function(): number, textarea: HTMLTextAreaElement}): (void|Promise<void>)} fn
+   * @returns {Promise<void>} Resolves when the body has run and the handler is restored.
+   */
+  const withBinChord = async (fn) => {
+    const appHandler = keyShortcutManager._handlers.get('bin-conversation');
+    keyShortcutManager._lastEditingUseAt.delete('bin-conversation');
+    let count = 0;
+    const unregister = keyShortcutManager.register('bin-conversation', () => { count += 1; return true; });
+    const textarea = document.createElement('textarea');
+    document.body.appendChild(textarea);
+    try {
+      await fn({ presses: () => count, textarea });
+    } finally {
+      unregister();
+      if (appHandler) keyShortcutManager._handlers.set('bin-conversation', appHandler);
+      keyShortcutManager._lastEditingUseAt.delete('bin-conversation');
+      textarea.remove();
+    }
+  };
+
+  await run('the bin chord fires from an empty composer, not from a draft', () => withBinChord(({ presses, textarea }) => {
+    pressBinChord(textarea);
+    assert(presses() === 1, 'an empty composer hands the chord to the command');
+    textarea.value = 'a draft';
+    pressBinChord(textarea);
+    assert(presses() === 1, 'a composer with text keeps the chord for its own delete');
+  }));
+
+  await run('the press after the one that emptied a composer does not bin', () => withBinChord(({ presses, textarea }) => {
+    textarea.value = 'the last word';
+    pressBinChord(textarea); // deletes the text, natively — the field ends up empty
+    textarea.value = '';
+    pressBinChord(textarea); // the press one too many
+    assert(presses() === 0, 'a press moments after deleting text must not bin');
+    // A cooldown, not a latch: once the gesture is over the same press bins.
+    keyShortcutManager._lastEditingUseAt.set('bin-conversation', Date.now() - EDIT_GESTURE_WINDOW_MS - 1);
+    pressBinChord(textarea);
+    assert(presses() === 1, 'the chord still bins when it isn\u2019t following an edit');
+  }));
+
+  await run('holding the chord down to eat a draft never runs into the bin', () => withBinChord(async ({ presses, textarea }) => {
+    textarea.value = 'a draft being eaten word by word';
+    pressBinChord(textarea, true);
+    textarea.value = '';
+    // Wind the gesture back to just inside the window, then hold the key across
+    // the moment it would otherwise expire: each repeat carries the window along.
+    keyShortcutManager._lastEditingUseAt.set('bin-conversation', Date.now() - (EDIT_GESTURE_WINDOW_MS - 60));
+    pressBinChord(textarea, true);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    pressBinChord(textarea, true);
+    assert(presses() === 0, 'auto-repeat extends the cooldown for as long as the key is held');
+  }));
 
   // ── File-editing permission toggle ──────────────────────────────────
   await run('toggleFileEditing turns editing on then off', () => {

@@ -68,6 +68,9 @@ import { isAnyPopupOpen } from '../utils/popup-manager.js';
  *   the user is typing. `true`: always. `'empty'`: only when the field is empty,
  *   so a live edit still runs natively (e.g. ⌘⌫ deletes to line start in a
  *   non-empty composer, but bins the conversation when the composer is empty).
+ *   An `'empty'` command also stands down for {@link EDIT_GESTURE_WINDOW_MS}
+ *   after its chord was last used to edit text, so emptying a field with it
+ *   doesn't hand the very next press to the command.
  * @property {boolean} [external] - This shortcut's dispatch is owned by a
  *   dedicated controller (e.g. the strategy switcher's hold-to-cycle UX). The
  *   manager still lists it (settings, tooltips) but never dispatches it — the
@@ -302,7 +305,9 @@ const SHORTCUT_DEFS = [
     category: 'Conversations',
     // Fires from the composer only when it's empty, so it works when you'd press
     // it (the composer is focused most of the time) without hijacking ⌘⌫ /
-    // Ctrl+Backspace "delete to line start" while there's text to delete.
+    // Ctrl+Backspace "delete to line start" while there's text to delete — and,
+    // via the same policy, not for a moment after that chord last deleted text,
+    // so clearing a draft with it can't overrun into the bin.
     defaultBinding: { mod: true, key: 'Backspace' },
     allowInInput: 'empty',
   },
@@ -481,6 +486,20 @@ const SHORTCUT_DEFS = [
 ];
 
 /**
+ * How long an `allowInInput: 'empty'` command stays out of the way after its own
+ * chord was last used to edit text.
+ *
+ * Such a command shares its keys with an editing keystroke: ⌘⌫ / Ctrl+⌫ deletes
+ * the previous word (Linux/Windows) or back to the line start (macOS), and bins
+ * the conversation once the field is empty. Clearing a draft with it therefore
+ * ends one keystroke away from the bin, and the press that goes one too far is
+ * the easiest mistake in the app to make and the hardest to explain. Two seconds
+ * covers the momentum press that follows a deletion run without making a
+ * deliberate press feel broken: press it again and it bins.
+ */
+export const EDIT_GESTURE_WINDOW_MS = 2000;
+
+/**
  * @param {EventTarget|null} target
  * @returns {boolean} True when the target is a text field / editable element.
  */
@@ -515,6 +534,12 @@ class KeyShortcutManager {
     this._overrides = new Map();
     /** @type {Map<string, function(KeyboardEvent): (boolean|undefined)>} @private */
     this._handlers = new Map();
+    /**
+     * Command id → when its chord was last pressed into a text field that had
+     * something to edit. Drives the {@link EDIT_GESTURE_WINDOW_MS} stand-down.
+     * @type {Map<string, number>} @private
+     */
+    this._lastEditingUseAt = new Map();
     /** @type {boolean} @private */
     this._installed = false;
     this._onKeyDown = this._onKeyDown.bind(this);
@@ -707,6 +732,26 @@ class KeyShortcutManager {
   }
 
   /**
+   * Is this press still part of the deletion run that the command's chord was
+   * just performing in a text field? An auto-repeat is the same physical gesture
+   * continuing, so it extends the window: holding the chord down to eat a draft
+   * empties the field in well under a second, and the key is still down after
+   * it. A discrete press is not extended — press it again and the command fires.
+   * @param {string} id
+   * @param {KeyboardEvent} e
+   * @returns {boolean} True when the command should stand down.
+   * @private
+   */
+  _withinEditingGesture(id, e) {
+    const last = this._lastEditingUseAt.get(id);
+    if (last === undefined) return false;
+    const now = Date.now();
+    if (now - last >= EDIT_GESTURE_WINDOW_MS) return false;
+    if (e.repeat) this._lastEditingUseAt.set(id, now);
+    return true;
+  }
+
+  /**
    * @param {KeyboardEvent} e
    * @private
    */
@@ -720,17 +765,24 @@ class KeyShortcutManager {
       if (def.external) continue;
       const handler = this._handlers.get(def.id);
       if (!handler) continue;
-      if (editable) {
-        // In a text field, only fire if the command opts in — and for the
-        // 'empty' policy, only when there's no text the keystroke would edit.
-        if (!def.allowInInput) continue;
-        if (def.allowInInput === 'empty' && !isEditableEmpty(e.target)) continue;
-      }
+      // In a text field, only fire if the command opts in.
+      if (editable && !def.allowInInput) continue;
       // Any of the command's keys fires it — the advertised binding or a shipped
       // alias for surfaces where that binding never arrives. getBindings() is
       // scoped to the running platform, so a chord we left unbound here (⌥⌘↑ off
       // macOS) is not among them.
       if (!this.getBindings(def.id).some((binding) => eventMatchesBinding(binding, e))) continue;
+      if (def.allowInInput === 'empty') {
+        // The chord doubles as an editing keystroke. In a field with text in it,
+        // that is what this press is: leave it to the field and note the time,
+        // so the press that lands on the newly emptied field is read as the tail
+        // of the same deletion rather than as the command.
+        if (editable && !isEditableEmpty(e.target)) {
+          this._lastEditingUseAt.set(def.id, Date.now());
+          continue;
+        }
+        if (this._withinEditingGesture(def.id, e)) continue;
+      }
       const acted = handler(e);
       if (acted) {
         e.preventDefault();

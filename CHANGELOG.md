@@ -15,6 +15,7 @@ of changes; this project follows semantic versioning.
 - A window that starts up off-screen is now brought back, instead of running where you can't see it
 - Window edges are easier to grab, and show a resize cursor over buttons and the composer
 - Typing while a thread runs no longer waits on the whole transcript to relayout
+- Deleting a draft word by word can no longer overrun into binning the conversation
 
 ## [0.6.1] - 2026-09-09
 
