@@ -4,7 +4,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import PinboardItemType from 'juggler/pinboard-item-type';
-import { createElement, injectStylesOnce } from 'juggler/ui';
+import { createElement, createFileActions, injectStylesOnce } from 'juggler/ui';
+import { createLineDiffstat, fillLineDiffstat } from '../lib/line-diffstat.js';
 import { reconcileParts, reconcileRows, setText } from '../lib/reconcile.js';
 import { pinEmpty } from '../lib/pin-empty.js';
 import {
@@ -55,21 +56,64 @@ injectStylesOnce('git-pin-styles', `
 .git-pin__files {
   display: flex;
   flex-direction: column;
+  gap: 0.125rem;
   margin-top: 0.25rem;
 }
 .git-pin__file {
   display: flex;
+  align-items: center;
   gap: 0.5rem;
-  font-family: var(--font-mono);
+  min-width: 0;
+  padding: 0.25rem 0.375rem;
+  border-radius: 0.375rem;
   font-size: var(--font-size-sm);
-  line-height: 1.6;
+  line-height: 1.4;
+}
+.git-pin__file:hover {
+  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
+}
+.git-pin__file--conflicted {
+  background: color-mix(in srgb, var(--error-color) 8%, transparent);
 }
 .git-pin__code {
+  flex-shrink: 0;
   color: var(--text-tertiary);
+  font-family: var(--font-mono);
   white-space: pre;
 }
+.git-pin__file--conflicted .git-pin__code,
+.git-pin__file--conflicted .git-pin__status {
+  color: var(--error-color, var(--text-secondary));
+}
+.git-pin__file-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
 .git-pin__path {
+  font-family: var(--font-mono);
   overflow-wrap: anywhere;
+}
+.git-pin__status {
+  color: var(--text-tertiary);
+}
+.git-pin__file .properties-panel-filepath-actions {
+  flex-shrink: 0;
+  opacity: 0;
+}
+.git-pin__file:hover .properties-panel-filepath-actions,
+.git-pin__file:focus-within .properties-panel-filepath-actions {
+  opacity: 1;
+}
+.git-pin__summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.git-pin__summary-alert {
+  color: var(--error-color, var(--text-secondary));
 }
 `);
 
@@ -85,48 +129,138 @@ injectStylesOnce('git-pin-styles', `
  * @returns {void}
  */
 function fillRepoHead(head, root, repo, showName) {
-  /** @type {{cls: string, text: string}[]} */
+  /** @type {{key: string, cls: string, text: string}[]} */
   const spans = [];
-  if (showName) spans.push({ cls: 'git-pin__name', text: repoLabel(root, repo.path) });
-  spans.push({ cls: 'git-pin__branch', text: branchPhrase(repo) });
+  if (showName) spans.push({ key: 'name', cls: 'git-pin__name', text: repoLabel(root, repo.path) });
+  spans.push({ key: 'branch', cls: 'git-pin__branch', text: branchPhrase(repo) });
+  if (repo.upstream) {
+    spans.push({ key: 'upstream', cls: 'git-pin__meta', text: `→ ${repo.upstream}` });
+  }
+  if (repo.initial) {
+    spans.push({ key: 'head', cls: 'git-pin__meta', text: 'No commits yet' });
+  } else if (repo.head) {
+    spans.push({ key: 'head', cls: 'git-pin__meta', text: repo.head.slice(0, 7) });
+  }
 
   const divergence = divergencePhrase(repo);
-  if (divergence) spans.push({ cls: 'git-pin__meta', text: divergence });
-  else if (repo.upstream) spans.push({ cls: 'git-pin__meta', text: 'Up to date' });
+  if (divergence) spans.push({ key: 'divergence', cls: 'git-pin__meta', text: divergence });
+  else if (repo.upstream) {
+    spans.push({ key: 'divergence', cls: 'git-pin__meta', text: 'Up to date' });
+  }
+  if (repo.stashes > 0) {
+    spans.push({
+      key: 'stashes',
+      cls: 'git-pin__meta',
+      text: `${repo.stashes} ${repo.stashes === 1 ? 'stash' : 'stashes'}`,
+    });
+  }
 
   reconcileRows(
     head,
     spans,
-    (span) => span.cls,
+    (span) => span.key,
     (span) => createElement('span', span.cls),
     (el, span) => setText(el, span.text)
   );
 }
 
 /**
- * One changed file's row: its status letters, and the path they apply to.
+ * Absolute path of one repository-relative file.
+ * @param {string} root - Project root.
+ * @param {string} repoPath - Repository path relative to the project.
+ * @param {string} filePath - File path relative to the repository.
+ * @returns {string} Absolute file path.
+ */
+function absoluteFilePath(root, repoPath, filePath) {
+  return [root.replace(/[/\\]+$/, ''), repoPath, filePath]
+    .filter(Boolean)
+    .join('/');
+}
+
+/**
+ * One changed file's row: its status, path, line tally and standard actions.
  * @param {import('juggler/pinboard-item-type').PinGitFile} file - The file.
+ * @param {string} path - Absolute path for file actions.
  * @returns {HTMLElement} The row.
  */
-function buildFileRow(file) {
+function buildFileRow(file, path) {
   const row = createElement('div', 'git-pin__file');
+  row.dataset.filePath = path;
   row.appendChild(createElement('span', 'git-pin__code'));
-  row.appendChild(createElement('span', 'git-pin__path', file.path));
+  const text = createElement('span', 'git-pin__file-text');
+  text.appendChild(createElement('span', 'git-pin__path'));
+  text.appendChild(createElement('span', 'git-pin__status'));
+  row.appendChild(text);
+  const actions = createFileActions(path, { pin: path });
+  if (actions) row.appendChild(actions);
   return row;
 }
 
 /**
- * A file's current status. The path is the row's key, so only the letters and the
- * words behind them can have moved.
+ * A file's current status. The absolute path is the row's key, so its controls
+ * stay fixed while the status, rename and line counts can move around them.
  * @param {HTMLElement} row - The row for this path.
  * @param {import('juggler/pinboard-item-type').PinGitFile} file - The file.
  * @returns {void}
  */
 function fillFileRow(row, file) {
-  const code = /** @type {HTMLElement} */ (row.firstElementChild);
+  const code = /** @type {HTMLElement} */ (row.querySelector('.git-pin__code'));
   setText(code, fileCode(file));
-  const words = fileStatusWords(file);
+  const words = file.conflicted ? 'Conflicted' : fileStatusWords(file);
   if (code.title !== words) code.title = words;
+  setText(/** @type {HTMLElement} */ (row.querySelector('.git-pin__path')),
+    file.oldPath ? `${file.oldPath} → ${file.path}` : file.path);
+  setText(/** @type {HTMLElement} */ (row.querySelector('.git-pin__status')), words);
+  row.classList.toggle('git-pin__file--conflicted', file.conflicted === true);
+
+  let stat = /** @type {HTMLElement|null} */ (row.querySelector('.line-diffstat'));
+  const added = file.added;
+  const removed = file.removed;
+  const hasStat = typeof added === 'number' && typeof removed === 'number'
+    && Number.isFinite(added) && Number.isFinite(removed) && (added > 0 || removed > 0);
+  if (hasStat) {
+    if (stat) fillLineDiffstat(stat, added, removed);
+    else {
+      stat = createLineDiffstat(added, removed);
+      row.insertBefore(stat, row.querySelector('.properties-panel-filepath-actions'));
+    }
+  } else {
+    stat?.remove();
+  }
+}
+
+/**
+ * Fill the repository-level counts without rebuilding an unchanged line tally.
+ * @param {HTMLElement} summary - Summary row.
+ * @param {import('juggler/pinboard-item-type').PinGitRepo} repo - Repository state.
+ * @returns {void}
+ */
+function fillRepoSummary(summary, repo) {
+  let counts = /** @type {HTMLElement|null} */ (summary.querySelector('.git-pin__counts'));
+  if (!counts) {
+    counts = createElement('span', 'git-pin__counts');
+    summary.appendChild(counts);
+  }
+  setText(counts, countsPhrase(repo));
+
+  let conflicts = /** @type {HTMLElement|null} */ (summary.querySelector('.git-pin__summary-alert'));
+  if (repo.conflicted > 0) {
+    if (!conflicts) {
+      conflicts = createElement('span', 'git-pin__summary-alert');
+      summary.appendChild(conflicts);
+    }
+    setText(conflicts, `${repo.conflicted} conflicted`);
+  } else {
+    conflicts?.remove();
+  }
+
+  const stat = /** @type {HTMLElement|null} */ (summary.querySelector('.line-diffstat'));
+  if (repo.added > 0 || repo.removed > 0) {
+    if (stat) fillLineDiffstat(stat, repo.added, repo.removed);
+    else summary.appendChild(createLineDiffstat(repo.added, repo.removed));
+  } else {
+    stat?.remove();
+  }
 }
 
 /**
@@ -155,8 +289,8 @@ function fillRepoBlock(block, root, repo, showName) {
   } else {
     parts.push({
       key: 'counts',
-      build: () => createElement('div', 'git-pin__meta'),
-      fill: (el) => setText(el, counts),
+      build: () => createElement('div', 'git-pin__summary git-pin__meta'),
+      fill: (el) => fillRepoSummary(el, repo),
     });
     parts.push({
       key: 'files',
@@ -164,7 +298,13 @@ function fillRepoBlock(block, root, repo, showName) {
       // A poll every few seconds over a tree of a few hundred changed files is
       // where this pin's cost lives, and almost none of it differs from the poll
       // before.
-      fill: (el) => reconcileRows(el, repo.files || [], (file) => file.path, buildFileRow, fillFileRow),
+      fill: (el) => reconcileRows(
+        el,
+        repo.files || [],
+        (file) => absoluteFilePath(root, repo.path, file.path),
+        (file) => buildFileRow(file, absoluteFilePath(root, repo.path, file.path)),
+        fillFileRow
+      ),
     });
     const note = truncationNote(repo);
     if (note) {

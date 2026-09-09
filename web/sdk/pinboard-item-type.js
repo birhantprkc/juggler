@@ -218,8 +218,12 @@ import { validateManifest } from './lib/manifest.js';
  * unmodified, so a file staged and then edited again reads 'M'/'M'.
  * @typedef {object} PinGitFile
  * @property {string} path - Path relative to its repository, forward-slashed
+ * @property {string} [oldPath] - Former path for a rename or copy
  * @property {string} index - Staged status letter, '.' when unmodified
  * @property {string} worktree - Working-tree status letter, '?' for untracked
+ * @property {boolean} [conflicted] - Whether this is an unmerged entry
+ * @property {number} [added] - Added tracked text lines; absent for untracked/binary files
+ * @property {number} [removed] - Removed tracked text lines; absent for untracked/binary files
  */
 
 /**
@@ -228,12 +232,18 @@ import { validateManifest } from './lib/manifest.js';
  * @property {string} path - Location relative to the project root, '' for the root repo
  * @property {number} changed - Files with working-tree changes, untracked included
  * @property {number} staged - Files with staged changes
+ * @property {number} conflicted - Files with unresolved merges
  * @property {number} total - Files git reported, listed in `files` or not. Not
  *   `changed + staged`: a file staged and then edited again is one file on both sides.
+ * @property {number} added - Added tracked text lines relative to HEAD
+ * @property {number} removed - Removed tracked text lines relative to HEAD
  * @property {string} branch - Current branch, '' on a detached head
  * @property {string} upstream - Tracking branch, '' when it has none
+ * @property {string} head - Full HEAD object id, '' before the first commit
+ * @property {boolean} initial - Whether the repository has no commits yet
  * @property {number} ahead - Commits this branch has that its upstream does not
  * @property {number} behind - Commits its upstream has that this branch does not
+ * @property {number} stashes - Entries in the stash
  * @property {boolean} detached - Whether HEAD is on a commit rather than a branch
  * @property {PinGitFile[]} files - The changed files, bounded by the host
  * @property {boolean} truncated - True when the tree holds more files than `files` lists.

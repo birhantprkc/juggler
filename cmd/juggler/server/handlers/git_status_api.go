@@ -47,9 +47,20 @@ const (
 // are porcelain status letters — "M", "A", "D", "?" and so on — where "." means
 // that side is unmodified.
 type gitFileStatus struct {
-	Path     string `json:"path"`
-	Index    string `json:"index"`
-	Worktree string `json:"worktree"`
+	Path       string `json:"path"`
+	OldPath    string `json:"oldPath,omitempty"`
+	Index      string `json:"index"`
+	Worktree   string `json:"worktree"`
+	Conflicted bool   `json:"conflicted,omitempty"`
+	Added      *int   `json:"added,omitempty"`
+	Removed    *int   `json:"removed,omitempty"`
+}
+
+// gitDiffstat is the numeric part of one `git diff --numstat` record. Binary
+// files have no numeric record and therefore never masquerade as +0/-0.
+type gitDiffstat struct {
+	Added   int
+	Removed int
 }
 
 // gitRepoStatus is one repository's summary. Path is relative to the project
@@ -57,17 +68,23 @@ type gitFileStatus struct {
 // at gitStatusMaxFile entries; Truncated says the tree holds more than that and
 // Total says how many. Changed, Staged and Total count the whole tree either way.
 type gitRepoStatus struct {
-	Path      string          `json:"path"`
-	Changed   int             `json:"changed"` // files with working-tree changes (incl. untracked)
-	Staged    int             `json:"staged"`  // files with staged (index) changes
-	Total     int             `json:"total"`   // files git reported, listed or not
-	Branch    string          `json:"branch"`  // "" on a detached head or an unreadable ref
-	Upstream  string          `json:"upstream"`
-	Ahead     int             `json:"ahead"`
-	Behind    int             `json:"behind"`
-	Detached  bool            `json:"detached"`
-	Files     []gitFileStatus `json:"files"`
-	Truncated bool            `json:"truncated"`
+	Path       string          `json:"path"`
+	Changed    int             `json:"changed"` // files with working-tree changes (incl. untracked)
+	Staged     int             `json:"staged"`  // files with staged (index) changes
+	Conflicted int             `json:"conflicted"`
+	Total      int             `json:"total"` // files git reported, listed or not
+	Added      int             `json:"added"`
+	Removed    int             `json:"removed"`
+	Branch     string          `json:"branch"` // "" on a detached head or an unreadable ref
+	Upstream   string          `json:"upstream"`
+	Head       string          `json:"head"`
+	Initial    bool            `json:"initial"`
+	Ahead      int             `json:"ahead"`
+	Behind     int             `json:"behind"`
+	Stashes    int             `json:"stashes"`
+	Detached   bool            `json:"detached"`
+	Files      []gitFileStatus `json:"files"`
+	Truncated  bool            `json:"truncated"`
 }
 
 // gitStatusResponse is the JSON response shape for GET /api/git/status.
@@ -182,17 +199,32 @@ func repoStatus(ctx context.Context, dir string) (gitRepoStatus, bool) {
 	// otherwise reach the UI as \303\251 rather than é.
 	//
 	// Porcelain v2 with --branch reports the branch, its upstream, ahead/behind
-	// and per-file detail in this one invocation — everything shown, for the cost
-	// of the counts alone.
+	// and per-file detail in one invocation. --show-stash adds the stash count to
+	// that same header block.
 	cmd := exec.CommandContext(cctx, "git",
 		"--no-optional-locks", "-c", "core.quotePath=false",
-		"status", "--porcelain=v2", "--branch")
+		"status", "--porcelain=v2", "--branch", "--show-stash")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
 		return gitRepoStatus{}, false
 	}
-	return parseGitStatusV2(out), true
+	status := parseGitStatusV2(out)
+
+	// One combined diff against HEAD answers what the checked-out files amount to,
+	// rather than separately reporting the index and worktree versions of a file.
+	// An unborn repository has no HEAD, and untracked/binary files have no honest
+	// line count; all three simply carry no per-file diffstat.
+	if !status.Initial {
+		diff := exec.CommandContext(cctx, "git",
+			"--no-optional-locks", "-c", "core.quotePath=false",
+			"diff", "--numstat", "-z", "HEAD", "--")
+		diff.Dir = dir
+		if diffOut, diffErr := diff.Output(); diffErr == nil {
+			applyGitDiffstats(&status, parseGitNumstat(diffOut))
+		}
+	}
+	return status, true
 }
 
 // parseGitStatusV2 reads `git status --porcelain=v2 --branch` output.
@@ -225,7 +257,7 @@ func parseGitStatusV2(out []byte) gitRepoStatus {
 			continue
 		}
 
-		var index, worktree, path string
+		var index, worktree, path, oldPath string
 		switch kind {
 		case "?":
 			// Untracked. v1 wrote "??": unmodified in the index, present in the
@@ -237,7 +269,7 @@ func parseGitStatusV2(out []byte) gitRepoStatus {
 				continue
 			}
 			index, worktree = string(xy[0]), string(xy[1])
-			path = gitEntryPath(kind, tail)
+			path, oldPath = gitEntryPaths(kind, tail)
 		default:
 			continue
 		}
@@ -246,6 +278,9 @@ func parseGitStatusV2(out []byte) gitRepoStatus {
 		}
 
 		status.Total++
+		if kind == "u" {
+			status.Conflicted++
+		}
 		if index != "." {
 			status.Staged++
 		}
@@ -257,9 +292,11 @@ func parseGitStatusV2(out []byte) gitRepoStatus {
 			continue
 		}
 		status.Files = append(status.Files, gitFileStatus{
-			Path:     unquoteGitPath(path),
-			Index:    index,
-			Worktree: worktree,
+			Path:       unquoteGitPath(path),
+			OldPath:    unquoteGitPath(oldPath),
+			Index:      index,
+			Worktree:   worktree,
+			Conflicted: kind == "u",
 		})
 	}
 
@@ -274,6 +311,12 @@ func parseGitBranchHeader(header string, status *gitRepoStatus) {
 		return
 	}
 	switch key {
+	case "branch.oid":
+		if value == "(initial)" {
+			status.Initial = true
+			return
+		}
+		status.Head = value
 	case "branch.head":
 		// A detached head is reported as the literal "(detached)", which is a
 		// state rather than a name — so say so, and leave the name empty.
@@ -291,14 +334,16 @@ func parseGitBranchHeader(header string, status *gitRepoStatus) {
 		}
 		status.Ahead = gitCount(ahead)
 		status.Behind = gitCount(behind)
+	case "stash":
+		status.Stashes, _ = strconv.Atoi(value)
 	}
 }
 
-// gitEntryPath pulls the path out of an entry line's tail. A rename or copy
-// ("2") ends with the new path, a tab, then the old one; everything else ends
-// with the path alone. The fixed-width fields before it hold no spaces, so the
-// path is what follows the last one.
-func gitEntryPath(kind, tail string) string {
+// gitEntryPaths pulls the current and former paths out of an entry line's tail.
+// A rename or copy ("2") ends with the new path, a tab, then the old one;
+// everything else ends with the current path alone. The fixed-width fields
+// before it hold no spaces, so the path is what follows the last one.
+func gitEntryPaths(kind, tail string) (string, string) {
 	fields := 6 // 1: <sub> <mH> <mI> <mW> <hH> <hI>
 	switch kind {
 	case "2":
@@ -309,15 +354,70 @@ func gitEntryPath(kind, tail string) string {
 	for i := 0; i < fields; i++ {
 		_, rest, ok := strings.Cut(tail, " ")
 		if !ok {
-			return ""
+			return "", ""
 		}
 		tail = rest
 	}
 	if kind == "2" {
-		path, _, _ := strings.Cut(tail, "\t")
-		return path
+		path, oldPath, _ := strings.Cut(tail, "\t")
+		return path, oldPath
 	}
-	return tail
+	return tail, ""
+}
+
+// parseGitNumstat reads the NUL-delimited form of `git diff --numstat -z`.
+// Rename records put an empty path after the two counts, followed by old and new
+// path records. A binary file writes "-" for both counts and has no line stat.
+func parseGitNumstat(out []byte) map[string]gitDiffstat {
+	stats := make(map[string]gitDiffstat)
+	records := bytes.Split(out, []byte{0})
+	for i := 0; i < len(records); i++ {
+		record := string(records[i])
+		if record == "" {
+			continue
+		}
+		fields := strings.SplitN(record, "\t", 3)
+		if len(fields) != 3 {
+			continue
+		}
+		added, addErr := strconv.Atoi(fields[0])
+		removed, removeErr := strconv.Atoi(fields[1])
+		if addErr != nil || removeErr != nil {
+			continue
+		}
+		path := fields[2]
+		if path == "" {
+			// The old name is the next record and the current name the one after.
+			if i+2 >= len(records) {
+				continue
+			}
+			i += 2
+			path = string(records[i])
+		}
+		if path != "" {
+			stats[path] = gitDiffstat{Added: added, Removed: removed}
+		}
+	}
+	return stats
+}
+
+// applyGitDiffstats attaches known line counts to listed files and totals them
+// for the repository. Files omitted by the status bound still count in the
+// repository total; untracked and binary files remain unknown rather than zero.
+func applyGitDiffstats(status *gitRepoStatus, stats map[string]gitDiffstat) {
+	for _, stat := range stats {
+		status.Added += stat.Added
+		status.Removed += stat.Removed
+	}
+	for i := range status.Files {
+		stat, ok := stats[status.Files[i].Path]
+		if !ok {
+			continue
+		}
+		added, removed := stat.Added, stat.Removed
+		status.Files[i].Added = &added
+		status.Files[i].Removed = &removed
+	}
 }
 
 // gitCount reads a signed "+3"/"-0" divergence count as a plain magnitude.

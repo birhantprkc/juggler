@@ -7,6 +7,7 @@ import PinboardItemType from 'juggler/pinboard-item-type';
 import { basename, formatDisplayPath } from 'juggler/item-utils';
 import { createElement, createFileActions, injectStylesOnce } from 'juggler/ui';
 import { reconcileRows, setText } from '../lib/reconcile.js';
+import { createLineDiffstat, fillLineDiffstat } from '../lib/line-diffstat.js';
 import { pinEmpty } from '../lib/pin-empty.js';
 
 injectStylesOnce('changed-files-pin-styles', `
@@ -96,20 +97,11 @@ injectStylesOnce('changed-files-pin-styles', `
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.changed-files-pin__count,
-.changed-files-pin__stat {
+.changed-files-pin__count {
   flex-shrink: 0;
+  color: var(--text-tertiary);
   font-family: var(--font-mono);
   font-size: var(--font-size-sm);
-}
-.changed-files-pin__count {
-  color: var(--text-tertiary);
-}
-.changed-files-pin__added {
-  color: var(--success-color, var(--text-secondary));
-}
-.changed-files-pin__removed {
-  color: var(--error-color, var(--text-secondary));
 }
 .changed-files-pin__diff {
   display: flex;
@@ -386,7 +378,7 @@ function fillFileRow(file, entry, isOpen, fileEdits) {
     fillDiffPanel(panel, entry, fileEdits);
   }
 
-  const stat = meta.querySelector('.changed-files-pin__stat');
+  const stat = meta.querySelector('.line-diffstat');
   const count = meta.querySelector('.changed-files-pin__count');
   if (entry.edits > 1) {
     const text = `×${entry.edits}`;
@@ -401,16 +393,8 @@ function fillFileRow(file, entry, isOpen, fileEdits) {
   // A tool that skipped its diffstat reports nothing rather than zero, and a
   // silent "+0 -0" would read as "changed nothing at all".
   if (entry.added || entry.removed) {
-    if (stat) {
-      setText(/** @type {HTMLElement} */ (stat.querySelector('.changed-files-pin__added')), `+${entry.added}`);
-      setText(/** @type {HTMLElement} */ (stat.querySelector('.changed-files-pin__removed')), `-${entry.removed}`);
-    } else {
-      const fresh = createElement('span', 'changed-files-pin__stat');
-      fresh.appendChild(createElement('span', 'changed-files-pin__added', `+${entry.added}`));
-      fresh.appendChild(document.createTextNode(' '));
-      fresh.appendChild(createElement('span', 'changed-files-pin__removed', `-${entry.removed}`));
-      meta.appendChild(fresh);
-    }
+    if (stat) fillLineDiffstat(/** @type {HTMLElement} */ (stat), entry.added, entry.removed);
+    else meta.appendChild(createLineDiffstat(entry.added, entry.removed));
   } else if (stat) {
     stat.remove();
   }

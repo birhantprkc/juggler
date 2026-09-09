@@ -31,9 +31,16 @@ func TestGitStatusParsesBranchHeaders(t *testing.T) {
 		"# branch.head develop",
 		"# branch.upstream origin/develop",
 		"# branch.ab +3 -2",
+		"# stash 4",
 	}, "\n")
 
 	got := parseGitStatusV2([]byte(out))
+	if got.Head != "1111111111111111111111111111111111111111" {
+		t.Errorf("Head = %q, want the commit oid", got.Head)
+	}
+	if got.Stashes != 4 {
+		t.Errorf("Stashes = %d, want 4", got.Stashes)
+	}
 	if got.Branch != "develop" {
 		t.Errorf("Branch = %q, want %q", got.Branch, "develop")
 	}
@@ -66,6 +73,12 @@ func TestGitStatusWithoutUpstreamHasNoDivergence(t *testing.T) {
 	out := "# branch.oid (initial)\n# branch.head main\n"
 
 	got := parseGitStatusV2([]byte(out))
+	if !got.Initial {
+		t.Error("Initial = false for a repository with no commits")
+	}
+	if got.Head != "" {
+		t.Errorf("Head = %q, want empty before the first commit", got.Head)
+	}
 	if got.Branch != "main" {
 		t.Errorf("Branch = %q, want %q", got.Branch, "main")
 	}
@@ -99,6 +112,49 @@ func TestGitStatusCountsMatchPorcelainV1Semantics(t *testing.T) {
 	}
 	if got.Changed != 5 {
 		t.Errorf("Changed = %d, want 5", got.Changed)
+	}
+	if got.Conflicted != 1 {
+		t.Errorf("Conflicted = %d, want 1", got.Conflicted)
+	}
+}
+
+func TestGitNumstatAddsTrackedLineCounts(t *testing.T) {
+	out := []byte("12\t3\tweb/app.js\x00-\t-\tassets/logo.png\x005\t0\t\x00old name.js\x00new name.js\x00")
+	got := parseGitNumstat(out)
+
+	want := map[string]gitDiffstat{
+		"web/app.js":  {Added: 12, Removed: 3},
+		"new name.js": {Added: 5, Removed: 0},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("parseGitNumstat returned %d entries, want %d: %+v", len(got), len(want), got)
+	}
+	for path, stat := range want {
+		if got[path] != stat {
+			t.Errorf("parseGitNumstat[%q] = %+v, want %+v", path, got[path], stat)
+		}
+	}
+}
+
+func TestGitStatusAppliesDiffstats(t *testing.T) {
+	status := parseGitStatusV2([]byte(strings.Join([]string{
+		ordinary(".M", "web/app.js"),
+		ordinary(".M", "assets/logo.png"),
+		"? notes.txt",
+	}, "\n")))
+	applyGitDiffstats(&status, map[string]gitDiffstat{
+		"web/app.js": {Added: 12, Removed: 3},
+	})
+
+	if status.Added != 12 || status.Removed != 3 {
+		t.Errorf("Added/Removed = %d/%d, want 12/3", status.Added, status.Removed)
+	}
+	if status.Files[0].Added == nil || *status.Files[0].Added != 12 ||
+		status.Files[0].Removed == nil || *status.Files[0].Removed != 3 {
+		t.Errorf("tracked file diffstat = %+v, want +12 -3", status.Files[0])
+	}
+	if status.Files[1].Added != nil || status.Files[2].Added != nil {
+		t.Errorf("binary/untracked files must not claim zero lines: %+v", status.Files)
 	}
 }
 
@@ -141,7 +197,7 @@ func TestGitStatusReadsFileDetail(t *testing.T) {
 
 // A rename line ends with the new path, a tab, then the old one. Taking the
 // whole tail would show the user "new.go\told.go" as a single filename.
-func TestGitStatusRenameReportsTheNewPath(t *testing.T) {
+func TestGitStatusRenameReportsBothPaths(t *testing.T) {
 	got := parseGitStatusV2([]byte(rename("R.", "web/js/renamed.js", "web/js/original.js") + "\n"))
 
 	if len(got.Files) != 1 {
@@ -149,6 +205,9 @@ func TestGitStatusRenameReportsTheNewPath(t *testing.T) {
 	}
 	if got.Files[0].Path != "web/js/renamed.js" {
 		t.Errorf("Files[0].Path = %q, want %q", got.Files[0].Path, "web/js/renamed.js")
+	}
+	if got.Files[0].OldPath != "web/js/original.js" {
+		t.Errorf("Files[0].OldPath = %q, want %q", got.Files[0].OldPath, "web/js/original.js")
 	}
 	if got.Staged != 1 {
 		t.Errorf("Staged = %d, want 1 for a staged rename", got.Staged)
@@ -248,7 +307,7 @@ func TestGitStatusCleanTreeIsEmptyNotNil(t *testing.T) {
 func TestGitStatusSkipsLinesItCannotRead(t *testing.T) {
 	out := strings.Join([]string{
 		"# branch.head main",
-		"# stash 3",
+		"# future.value 3",
 		"! target/ignored.o",
 		"1 bogus",
 		"",

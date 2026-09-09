@@ -63,8 +63,14 @@ export async function runTests(_ctx) {
     total: 0,
     branch: 'develop',
     upstream: '',
+    head: '1111111111111111111111111111111111111111',
+    initial: false,
     ahead: 0,
     behind: 0,
+    stashes: 0,
+    conflicted: 0,
+    added: 0,
+    removed: 0,
     detached: false,
     files: [],
     truncated: false,
@@ -213,6 +219,59 @@ export async function runTests(_ctx) {
     const text = m.text();
     assert(text.includes('web/js/app.js') && text.includes('notes.md'), `paths missing:\n${text}`);
     assert(text.includes('1 changed, 1 staged'), `counts missing:\n${text}`);
+    m.teardown();
+  });
+
+  await test('changed rows show useful detail and standard file controls', () => {
+    const m = mount({
+      root: '/tmp/proj',
+      repos: [repo({
+        branch: 'develop',
+        upstream: 'origin/develop',
+        head: 'abcdef1234567890',
+        stashes: 2,
+        conflicted: 1,
+        changed: 2,
+        staged: 1,
+        total: 2,
+        added: 14,
+        removed: 3,
+        files: [
+          {
+            path: 'web/new.js', oldPath: 'web/old.js', index: 'R', worktree: '.',
+            added: 12, removed: 3,
+          },
+          { path: 'notes.md', index: 'U', worktree: 'U', conflicted: true },
+        ],
+      })],
+    });
+    const text = m.text();
+    assert(text.includes('develop') && text.includes('origin/develop'), `upstream missing:\n${text}`);
+    assert(text.includes('abcdef1'), `short HEAD missing:\n${text}`);
+    assert(text.includes('2 stashes'), `stash count missing:\n${text}`);
+    assert(text.includes('1 conflicted'), `conflict count missing:\n${text}`);
+    assert(text.includes('web/old.js') && text.includes('web/new.js'), `rename paths missing:\n${text}`);
+    assert(text.includes('Renamed and staged'), `human status missing:\n${text}`);
+
+    const stats = m.body.querySelectorAll('.line-diffstat');
+    assert(stats.length === 2, `expected repo and file diffstats, got ${stats.length}:\n${m.body.innerHTML}`);
+    assert(stats[0].textContent?.includes('+14') && stats[0].textContent?.includes('-3'),
+      `repo diffstat missing:\n${m.body.innerHTML}`);
+    assert(stats[1].textContent?.includes('+12') && stats[1].textContent?.includes('-3'),
+      `file diffstat missing:\n${m.body.innerHTML}`);
+
+    const row = /** @type {HTMLElement|null} */ (m.body.querySelector('.git-pin__file'));
+    assert(row?.dataset.filePath === '/tmp/proj/web/new.js',
+      `row should name its absolute file, got ${JSON.stringify(row?.dataset.filePath)}`);
+    assert(row?.querySelector('.properties-panel-filepath-actions'),
+      `standard file controls missing:\n${row?.outerHTML}`);
+    assert(m.body.querySelector('.git-pin__file--conflicted'), 'conflict row should be visually distinct');
+    m.teardown();
+  });
+
+  await test('an unborn repository says so instead of inventing a commit', () => {
+    const m = mount({ root: '/tmp/proj', repos: [repo({ head: '', initial: true })] });
+    assert(m.text().includes('No commits yet'), `initial state missing:\n${m.text()}`);
     m.teardown();
   });
 
@@ -394,6 +453,11 @@ export async function runTests(_ctx) {
       assert(typeof found.path === 'string', `repo.path missing: ${JSON.stringify(found)}`);
       assert(typeof found.changed === 'number' && typeof found.staged === 'number',
         `counts missing: ${JSON.stringify(found)}`);
+      assert(typeof found.conflicted === 'number' && typeof found.added === 'number'
+        && typeof found.removed === 'number' && typeof found.stashes === 'number',
+      `rich counts missing: ${JSON.stringify(found)}`);
+      assert(typeof found.head === 'string' && typeof found.initial === 'boolean',
+        `HEAD state missing: ${JSON.stringify(found)}`);
       assert(typeof found.total === 'number', `total missing: ${JSON.stringify(found)}`);
       assert(typeof found.branch === 'string', `branch missing: ${JSON.stringify(found)}`);
       assert(Array.isArray(found.files), `files missing: ${JSON.stringify(found)}`);

@@ -60,8 +60,12 @@ import { fetchJson } from './http.js';
 /**
  * @typedef {object} GitFileStatus
  * @property {string} path - File path relative to its repository.
+ * @property {string} [oldPath] - Former path for a rename or copy.
  * @property {string} index - Staged status letter ("M", "A", "D", …), "." when unmodified.
  * @property {string} worktree - Working-tree status letter, "?" for untracked, "." when unmodified.
+ * @property {boolean} [conflicted] - Whether this is an unmerged entry.
+ * @property {number} [added] - Added tracked text lines; absent for untracked/binary files.
+ * @property {number} [removed] - Removed tracked text lines; absent for untracked/binary files.
  */
 
 /**
@@ -69,11 +73,17 @@ import { fetchJson } from './http.js';
  * @property {string} path - Repo location relative to the project root ("" for the root repo).
  * @property {number} changed - Count of files with working-tree changes (incl. untracked).
  * @property {number} staged - Count of files with staged (index) changes.
+ * @property {number} conflicted - Count of files with unresolved merges.
  * @property {number} total - Count of files git reported, listed in `files` or not.
+ * @property {number} added - Added tracked text lines relative to HEAD.
+ * @property {number} removed - Removed tracked text lines relative to HEAD.
  * @property {string} branch - Current branch, "" on a detached head.
  * @property {string} upstream - Tracking branch, "" when there is none.
+ * @property {string} head - Full HEAD object id, "" before the first commit.
+ * @property {boolean} initial - Whether the repository has no commits yet.
  * @property {number} ahead - Commits this branch has that its upstream does not.
  * @property {number} behind - Commits its upstream has that this branch does not.
+ * @property {number} stashes - Entries in the stash.
  * @property {boolean} detached - Whether HEAD is detached rather than on a branch.
  * @property {GitFileStatus[]} files - The changed files, bounded server-side.
  * @property {boolean} truncated - Whether the tree holds more files than `files` lists.
