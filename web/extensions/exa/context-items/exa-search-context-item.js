@@ -9,6 +9,14 @@ import { extensionConfigResolve, httpRequest } from 'juggler/ops';
 const EXTENSION_ID = '@juggler/exa';
 const SEARCH_URL = 'https://api.exa.ai/search';
 const SEARCH_TYPES = new Set(['instant', 'fast', 'auto', 'deep-lite', 'deep', 'deep-reasoning']);
+const CONTENTS_MODES = new Set(['highlights', 'text', 'none']);
+
+// Exa applies no length limit of its own: `contents.text: true` returns whole
+// pages, and a single result can run to hundreds of thousands of characters. The
+// request carries a per-result cap derived from the conversation's budget, so the
+// bytes are never fetched, paid for, or waited on; getSummary caps the total.
+const MAX_RESULT_CHARS = 10000;
+const MIN_RESULT_CHARS = 500;
 
 /**
  * @typedef {object} ExaSearchParams
@@ -17,7 +25,8 @@ const SEARCH_TYPES = new Set(['instant', 'fast', 'auto', 'deep-lite', 'deep', 'd
  * @property {'instant'|'fast'|'auto'|'deep-lite'|'deep'|'deep-reasoning'} [type] - Search mode
  * @property {string[]} [include_domains] - Domains to include
  * @property {string[]} [exclude_domains] - Domains to exclude
- * @property {boolean} [text] - Include extracted page text
+ * @property {'highlights'|'text'|'none'} [contents] - How much of each page to return
+ * @property {number} [maxCharacters] - Per-result character cap
  */
 
 /**
@@ -26,10 +35,27 @@ const SEARCH_TYPES = new Set(['instant', 'fast', 'auto', 'deep-lite', 'deep', 'd
  * @property {string} url - Result URL
  * @property {string} [id] - Exa result id
  * @property {string} [text] - Extracted page text
+ * @property {string[]} [highlights] - Relevant snippets from the page
  * @property {string} [publishedDate] - Publication date
  * @property {string} [author] - Author
  * @property {number} [score] - Relevance score
  */
+
+/**
+ * Characters of page content to request per result, sized so a full set of
+ * results fits the conversation's budget. Exa honours any cap asked of it, so
+ * {@link MAX_RESULT_CHARS} is this tool's own ceiling: a search result is a lead
+ * to follow, and a page worth reading whole is worth a WebFetch.
+ * @param {number} budget - Total character budget for the tool result
+ * @param {number} numResults - Number of results requested
+ * @param {number} [override] - Explicit cap from the caller
+ * @returns {number} Per-result character cap
+ */
+function resultCharBudget(budget, numResults, override) {
+  if (override !== undefined) return override;
+  const share = Math.floor(budget / Math.max(1, numResults));
+  return Math.min(MAX_RESULT_CHARS, Math.max(MIN_RESULT_CHARS, share));
+}
 
 /**
  * @typedef {object} ExaSearchResult
@@ -61,7 +87,7 @@ class ExaSearchContextItem extends ContextItem {
     return [{
       name: 'exa_search',
       category: 'read',
-      description: 'Search the web with Exa and return ranked results with optional extracted page text.',
+      description: 'Search the web with Exa. Returns ranked results with the passages that match the query; ask for full page text only when the surrounding page matters.',
       input_schema: {
         type: 'object',
         properties: {
@@ -93,10 +119,17 @@ class ExaSearchContextItem extends ContextItem {
             items: { type: 'string' },
             description: 'Exclude results from these domains or domain paths'
           },
-          text: {
-            type: 'boolean',
-            default: true,
-            description: 'Include extracted page text in results (default true)'
+          contents: {
+            type: 'string',
+            enum: ['highlights', 'text', 'none'],
+            default: 'highlights',
+            description: 'How much of each page to return: "highlights" for the passages matching the query (default), "text" for full page text, "none" for titles and links only'
+          },
+          maxCharacters: {
+            type: 'integer',
+            minimum: 1,
+            maximum: MAX_RESULT_CHARS,
+            description: `Characters of content per result (defaults to a share of the context budget, at most ${MAX_RESULT_CHARS})`
           }
         },
         required: ['query']
@@ -127,8 +160,12 @@ class ExaSearchContextItem extends ContextItem {
         return { valid: false, error: `Parameter "${key}" must be an array of non-empty strings` };
       }
     }
-    if (params.text !== undefined && typeof params.text !== 'boolean') {
-      return { valid: false, error: 'Parameter "text" must be a boolean' };
+    if (params.contents !== undefined && !CONTENTS_MODES.has(params.contents)) {
+      return { valid: false, error: 'Parameter "contents" must be one of: highlights, text, none' };
+    }
+    if (params.maxCharacters !== undefined &&
+        (!Number.isInteger(params.maxCharacters) || params.maxCharacters < 1 || params.maxCharacters > MAX_RESULT_CHARS)) {
+      return { valid: false, error: `Parameter "maxCharacters" must be an integer from 1 to ${MAX_RESULT_CHARS}` };
     }
     return { valid: true, params: { ...toolInput, query: params.query.trim() } };
   }
@@ -147,12 +184,18 @@ class ExaSearchContextItem extends ContextItem {
       throw new Error('Exa API key is not configured. Set it in Settings → Extensions → Exa Search.');
     }
 
+    const numResults = searchParams.numResults ?? 10;
+    const mode = searchParams.contents ?? 'highlights';
+    const perResult = resultCharBudget(this.truncationBudget(), numResults, searchParams.maxCharacters);
+
     /** @type {Record<string, unknown>} */
     const body = {
       query: searchParams.query,
-      numResults: searchParams.numResults ?? 10,
+      numResults,
       type: searchParams.type ?? 'auto',
-      contents: { text: searchParams.text ?? true }
+      contents: mode === 'none'
+        ? { text: false }
+        : { [mode]: { maxCharacters: perResult } }
     };
     if (searchParams.include_domains?.length) body.includeDomains = searchParams.include_domains;
     if (searchParams.exclude_domains?.length) body.excludeDomains = searchParams.exclude_domains;
@@ -214,10 +257,11 @@ class ExaSearchContextItem extends ContextItem {
       lines.push(`- [${item.title || item.url}](${item.url})`);
       const metadata = [item.author, item.publishedDate].filter(Boolean).join(' — ');
       if (metadata) lines.push(`  ${metadata}`);
+      for (const highlight of item.highlights || []) lines.push(`  ${highlight}`);
       if (item.text) lines.push(`  ${item.text}`);
       lines.push('');
     }
-    return this.successSummary(lines.join('\n'));
+    return this.successSummary(this.truncateForLLM(lines.join('\n'), { keywords: [query] }));
   }
 
   /**

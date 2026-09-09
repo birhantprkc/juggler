@@ -45,6 +45,34 @@ function opResponse(data) {
 }
 
 /**
+ * Run a search against a stubbed Exa endpoint and hand back the request it sent.
+ * @param {ExaSearchContextItem} item - Item under test.
+ * @param {Record<string, unknown>} params - Tool parameters.
+ * @param {object[]} [results] - Results the stub returns.
+ * @returns {Promise<{body: any, result: any}>} Parsed Exa request body and normalized result.
+ */
+async function captureSearch(item, params, results = []) {
+  const realFetch = globalThis.fetch;
+  /** @type {any} */
+  let body = null;
+  try {
+    globalThis.fetch = /** @type {any} */ (async (_url, init) => {
+      const request = JSON.parse(init.body);
+      if (request.toolId === 'extconfig') return opResponse({ api_key: 'secret-key' });
+      body = JSON.parse(request.params.body);
+      return opResponse({
+        status: 200, statusText: 'OK', headers: {}, truncated: false,
+        body: JSON.stringify({ results })
+      });
+    });
+    const result = await item.execute(params);
+    return { body, result };
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+/**
  * Run Exa extension tests.
  * @param {object} _ctx
  * @returns {Promise<TestResult>} Aggregate test results.
@@ -87,7 +115,10 @@ export async function runTests(_ctx) {
     assert(!(await item.validate({ query: 'ok', numResults: 101 })).valid, 'out-of-range count should fail');
     assert(!(await item.validate({ query: 'ok', type: 'neural' })).valid, 'unsupported current search type should fail');
     assert(!(await item.validate({ query: 'ok', include_domains: [''] })).valid, 'blank domain should fail');
-    const result = await item.validate({ query: '  exa search  ', text: false });
+    assert(!(await item.validate({ query: 'ok', contents: 'summary' })).valid, 'unsupported contents mode should fail');
+    assert(!(await item.validate({ query: 'ok', maxCharacters: 0 })).valid, 'out-of-range maxCharacters should fail');
+    assert(!(await item.validate({ query: 'ok', maxCharacters: 20000 })).valid, 'above-ceiling maxCharacters should fail');
+    const result = await item.validate({ query: '  exa search  ', contents: 'none' });
     assert(result.valid && result.params?.query === 'exa search', 'valid query should be trimmed');
   });
 
@@ -114,7 +145,7 @@ export async function runTests(_ctx) {
         type: 'fast',
         include_domains: ['exa.ai'],
         exclude_domains: ['example.com'],
-        text: false
+        contents: 'none'
       });
       assert(calls.length === 2, `expected two ops calls, got ${calls.length}`);
       assert(calls[0].toolId === 'extconfig' && calls[0].operation === 'resolve', 'first call should resolve config');
@@ -124,12 +155,56 @@ export async function runTests(_ctx) {
       assert(http.url === 'https://api.exa.ai/search' && http.method === 'POST', 'unexpected Exa endpoint request');
       assert(http.headers['x-api-key'] === 'secret-key', 'API key header missing');
       assert(body.query === 'search engines' && body.numResults === 3 && body.type === 'fast', 'basic request fields missing');
-      assert(body.contents.text === false, 'text option was not forwarded');
+      assert(body.contents.text === false && body.contents.highlights === undefined,
+        'contents "none" should ask Exa for no page content');
       assert(body.includeDomains[0] === 'exa.ai' && body.excludeDomains[0] === 'example.com', 'domain filters missing');
       assert(result.count === 1 && result.provider === 'Exa' && result.requestId === 'req-1', 'unexpected normalized result');
     } finally {
       globalThis.fetch = realFetch;
     }
+  });
+
+  await test('search asks for highlights by default, capped per result', async () => {
+    const item = createItem(session, conversation);
+    const { body } = await captureSearch(item, { query: 'exa', numResults: 8 });
+    assert(body.contents.text === undefined, 'default search should not ask for full page text');
+    const cap = body.contents.highlights?.maxCharacters;
+    assert(Number.isInteger(cap) && cap > 0 && cap <= 10000, `highlights should carry a character cap, got ${cap}`);
+    assert(cap <= item.truncationBudget(), `per-result cap ${cap} exceeds the whole budget`);
+  });
+
+  await test('full text is capped per result and shrinks as results are added', async () => {
+    const item = createItem(session, conversation);
+    const few = await captureSearch(item, { query: 'exa', contents: 'text', numResults: 2 });
+    const many = await captureSearch(item, { query: 'exa', contents: 'text', numResults: 40 });
+    assert(few.body.contents.highlights === undefined, 'text mode should not also request highlights');
+    const fewCap = few.body.contents.text?.maxCharacters;
+    const manyCap = many.body.contents.text?.maxCharacters;
+    assert(Number.isInteger(fewCap) && fewCap <= 10000, `text should carry a character cap, got ${fewCap}`);
+    assert(manyCap < fewCap, `cap should fall as results rise, got ${fewCap} then ${manyCap}`);
+    assert(manyCap > 0, 'cap should never reach zero');
+  });
+
+  await test('an explicit maxCharacters overrides the derived cap', async () => {
+    const item = createItem(session, conversation);
+    const { body } = await captureSearch(item, { query: 'exa', contents: 'text', maxCharacters: 750 });
+    assert(body.contents.text.maxCharacters === 750, `explicit cap ignored, got ${body.contents.text?.maxCharacters}`);
+  });
+
+  await test('summary of oversized results stays within the truncation budget', () => {
+    const item = createItem(session, conversation);
+    const budget = item.truncationBudget();
+    const results = [1, 2, 3].map(n => ({
+      title: `Result ${n}`, url: `https://example.com/${n}`, text: 'x'.repeat(300000)
+    }));
+    const summary = item.getSummary(/** @type {any} */ ({
+      success: true,
+      prepared: { params: { query: 'test' } },
+      result: { query: 'test', count: 3, provider: 'Exa', results }
+    }));
+    assert(summary.summary.length <= budget + 200,
+      `summary was ${summary.summary.length} chars against a budget of ${budget}`);
+    assert(/Output truncated from/.test(summary.summary), 'oversized summary should say it was truncated');
   });
 
   await test('execute reports missing configuration without making a search request', async () => {
@@ -211,6 +286,20 @@ export async function runTests(_ctx) {
     }));
     assert(summary.success && summary.summary.includes('[Result](https://example.com)'), 'summary should include result link');
     assert(summary.summary.includes('Author — 2026-01-01') && summary.summary.includes('Snippet'), 'summary should include metadata and text');
+  });
+
+  await test('summary renders highlight snippets', () => {
+    const item = createItem(session, conversation);
+    const summary = item.getSummary(/** @type {any} */ ({
+      success: true,
+      prepared: { params: { query: 'test' } },
+      result: {
+        query: 'test', count: 1, provider: 'Exa',
+        results: [{ title: 'Result', url: 'https://example.com', highlights: ['First snippet', 'Second snippet'] }]
+      }
+    }));
+    assert(summary.summary.includes('First snippet') && summary.summary.includes('Second snippet'),
+      'summary should include every highlight');
   });
 
   return { passed, failed, errors };

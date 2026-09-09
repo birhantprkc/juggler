@@ -16,6 +16,7 @@ of changes; this project follows semantic versioning.
 - Window edges are easier to grab, and show a resize cursor over buttons and the composer
 - Typing while a thread runs no longer waits on the whole transcript to relayout
 - Deleting a draft word by word can no longer overrun into binning the conversation
+- Exa search returns the passages that match, not whole pages, and can no longer flood the context
 
 ## [0.6.1] - 2026-09-09
 
