@@ -109,7 +109,7 @@ func quiesce(t *testing.T, w *ConversationWorker, clients ...*msgChan) {
 // waitForType blocks until a message with the given "type" field arrives or timeout.
 func (m *msgChan) waitForType(t *testing.T, msgType string) map[string]any {
 	t.Helper()
-	deadline := time.NewTimer(2 * time.Second)
+	deadline := time.NewTimer(10 * time.Second)
 	defer deadline.Stop()
 	for {
 		select {

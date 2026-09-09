@@ -413,7 +413,9 @@ func (a *appState) run(specs []windowSpec) error {
 						fatalf("panic while showing initial window: %v", r)
 					}
 				}()
-				a.rescueStrandedWindow(initial)
+				if a.rescueStrandedWindow(initial) {
+					initial.triggerSave()
+				}
 				a.showWindow(initial)
 			})
 		} else {
@@ -1087,6 +1089,11 @@ func (e *winEntry) triggerSave() {
 // left to flush here. Runs on its own goroutine for the window's lifetime.
 func (a *appState) saveLoop(e *winEntry) {
 	e.saves.Run(e.stopSave, func() {
+		// The settled frame is also the moment to notice the window has ended up
+		// somewhere it cannot be seen — most often by being un-maximised back onto
+		// a stale frame. Rescuing before the capture means the frame that gets
+		// written is the corrected one.
+		a.rescueIfStranded(e)
 		if s, ok := a.currentWindowState(e); ok {
 			putWindowState(e.serverURL, e.role, s)
 		}

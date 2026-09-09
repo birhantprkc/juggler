@@ -303,6 +303,32 @@ func TestCaptureMaximisedWithNoSeedDeclines(t *testing.T) {
 	}
 }
 
+// The loop this closes: a window restored from a stranded frame has nothing
+// true to persist while it is maximised, so it is rescued on every launch and
+// repaired on none. Reseeding it with the frame it was actually moved to lets
+// the very next capture write a frame that will come back.
+func TestReseedRepairsAStrandedMaximisedWindow(t *testing.T) {
+	tracker := NewTracker(core.WindowState{X: -32000, Y: -32000, Width: 1400, Height: 900, HasPos: true}, testScreens)
+	maximised := fakeWindow{maximised: true, width: 1920, height: 1040}
+
+	if got, ok := tracker.Capture(maximised); ok {
+		t.Fatalf("Capture() = (%+v, true), want the stranded frame refused", got)
+	}
+
+	tracker.Reseed(core.WindowState{X: 0, Y: 0, Width: 1920, Height: 1040, HasPos: true})
+
+	got, ok := tracker.Capture(maximised)
+	if !ok {
+		t.Fatal("Capture() after Reseed returned false, want the rescued frame")
+	}
+	if got.X != 0 || got.Y != 0 || got.Width != 1920 || got.Height != 1040 {
+		t.Errorf("Capture() = %+v, want the rescued frame", got)
+	}
+	if !got.Maximised {
+		t.Error("Capture() lost the maximised flag")
+	}
+}
+
 func testScreens() []*application.Screen {
 	return []*application.Screen{
 		{IsPrimary: true, WorkArea: application.Rect{X: 0, Y: 0, Width: 1920, Height: 1040}},

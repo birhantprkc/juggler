@@ -63,6 +63,14 @@ func NewTracker(seed core.WindowState, screens func() []*application.Screen) *Tr
 	return &Tracker{lastPos: seed, screens: screens}
 }
 
+// Reseed replaces the remembered normal-state frame with one the caller has
+// just put the window at itself. For a window moved out from under the tracker
+// — a rescue off a display that no longer exists — where the new frame is both
+// true and, while the window is maximised, the only one anybody knows.
+func (t *Tracker) Reseed(frame core.WindowState) {
+	t.lastPos = frame
+}
+
 // stranded reports whether a frame is unrecoverable on the displays present
 // right now, and false whenever there is no way to tell.
 func (t *Tracker) stranded(frame core.WindowState) bool {

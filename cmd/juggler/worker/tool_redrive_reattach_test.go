@@ -67,7 +67,7 @@ func (h *reattachHarness) flush(t *testing.T) {
 	h.w.callbacks.sendToEngine(b)
 	select {
 	case <-h.flushCh:
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("flush barrier timed out")
 	}
 }

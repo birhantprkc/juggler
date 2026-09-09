@@ -45,7 +45,12 @@ func (a *appState) revealInitialWindowWhenReady(e *winEntry) {
 				continue
 			}
 			application.InvokeAsync(func() {
-				a.rescueStrandedWindow(e)
+				if a.rescueStrandedWindow(e) {
+					// Persist the corrected frame rather than waiting for the user to
+					// move the window: a session poisoned by an older build otherwise
+					// strands every launch from here on, which is the loop this breaks.
+					e.triggerSave()
+				}
 				if e.win.IsVisible() {
 					return
 				}
@@ -70,34 +75,69 @@ func (a *appState) revealInitialWindowWhenReady(e *winEntry) {
 // undermined afterwards, as when Wails maximises a window and then moves it to
 // the saved coordinates anyway.
 //
-// Runs on the main thread, before the window is revealed, so a rescue is not a
-// visible jump. Must not run before the native frame exists: Position and Size
-// answer zeros until then, which reads as a window with nothing to judge.
-func (a *appState) rescueStrandedWindow(e *winEntry) {
+// It is asked again whenever this window's geometry settles, because a window
+// does not only strand at startup. Un-maximising is the sharpest case: Windows
+// returns the window to the frame it held before it was maximised, so a window
+// maximised to escape a stale position drops straight back onto it the moment
+// the user touches the restore button. Asking on the settled frame rather than
+// on each move keeps this clear of a drag in progress — and a drag cannot
+// strand a window anyway, since Windows will not let go of its title bar.
+//
+// Runs on the main thread, at startup before the window is revealed, so a
+// rescue is not a visible jump. Must not run before the native frame exists:
+// Position and Size answer zeros until then, which reads as a window with
+// nothing to judge. Reports whether it moved anything.
+func (a *appState) rescueStrandedWindow(e *winEntry) bool {
 	if e.win.IsMinimised() {
-		return
+		return false
 	}
 	x, y := e.win.Position()
 	width, height := e.win.Size()
 	if width <= 0 || height <= 0 {
-		return
+		return false
 	}
 	live := core.WindowState{X: x, Y: y, Width: width, Height: height, HasPos: true}
 	screens := a.app.Screen.GetAll()
 	rescued, moved := windowgeom.RescueFrame(live, screens)
 	if !moved {
-		return
+		return false
 	}
 	logf("window %s came up unreachable at %s (screens %s); moving it to %s",
 		e.id, describeFrame(live), describeScreens(screens), describeFrame(rescued))
+	// A maximised window cannot simply be moved. Windows maximises onto whichever
+	// display the window is on and holds it there — SetWindowPos on a WS_MAXIMIZE
+	// window is not reliably honoured, and the maximised rect wins back anything
+	// that is. Drop it to a normal frame, move that onto the primary display, and
+	// maximise it again once it is there.
+	maximised := e.win.IsMaximised()
+	if maximised {
+		e.win.Restore()
+	}
 	if rescued.Width != live.Width || rescued.Height != live.Height {
 		e.win.SetSize(rescued.Width, rescued.Height)
 	}
 	e.win.SetPosition(rescued.X, rescued.Y)
-	// Write the corrected frame back rather than waiting for the user to move the
-	// window: a session poisoned by an older build otherwise strands every launch
-	// from here on, which is exactly the loop this is here to break.
-	e.triggerSave()
+	if maximised {
+		e.win.Maximise()
+	}
+	// The window has genuinely been at the rescued frame, so it is now the honest
+	// restore frame — and the only one available while the window is maximised.
+	// Without this the capture below is refused and a session poisoned by an
+	// older build is rescued on every launch but never actually repaired.
+	e.geom.Reseed(rescued)
+	return true
+}
+
+// rescueIfStranded hops onto the main thread to ask rescueStrandedWindow, for a
+// caller that is not already there. The native getters it reads are only
+// answered correctly on the main thread.
+func (a *appState) rescueIfStranded(e *winEntry) {
+	done := make(chan struct{})
+	application.InvokeAsync(func() {
+		defer close(done)
+		a.rescueStrandedWindow(e)
+	})
+	<-done
 }
 
 // describeFrame renders a frame as one log token.
