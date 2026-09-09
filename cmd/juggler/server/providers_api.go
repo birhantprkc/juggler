@@ -391,7 +391,20 @@ func (s *Server) providersReadyNow() bool {
 // ProvidersReadyTimeout elapses — whichever comes first. In steady state the
 // gate is already open and this returns immediately; it only ever waits during
 // the startup discovery window (or a watchdog re-exec restart).
+//
+// A test server has nothing to wait for and says so by opening the gate. Its
+// provider list is mocked, so no discovery will ever populate the cache, and
+// the one thing that would open the gate — RefreshProviders — is called at
+// startup only by the background services, which start after the engine
+// connects. A test server that never reaches them keeps the gate shut for its
+// whole life, and every conversation created on it is then charged the full
+// timeout inside its create request, since the handler resolves the default
+// model before it seeds the doc.
 func (s *Server) awaitProvidersReady(ctx context.Context) {
+	if s.testMode {
+		s.markProvidersReady()
+		return
+	}
 	select {
 	case <-s.providersReady:
 	case <-ctx.Done():
