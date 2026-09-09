@@ -161,6 +161,8 @@ import { runTests as runRestoreSelectPanelTests } from '../unit-tests/restore-se
 import { runTests as runConversationFocusPolicyTests } from '../unit-tests/conversation-focus-policy-test.js';
 import { runTests as runMobileComposerTests } from '../unit-tests/mobile-composer-test.js';
 import { runTests as runComposerSendLatchTests } from '../unit-tests/composer-send-latch-test.js';
+import { runTests as runComposerAutoresizeDeferTests } from '../unit-tests/composer-autoresize-defer-test.js';
+import { runTests as runWindowResizeCursorTests } from '../unit-tests/window-resize-cursor-test.js';
 import { runTests as runScheduledSendTests } from '../unit-tests/scheduled-send-test.js';
 import { runTests as runSidebarDrawerTests } from '../unit-tests/sidebar-drawer-test.js';
 import { runTests as runSwipeDismissTests } from '../unit-tests/swipe-dismiss-test.js';
@@ -432,6 +434,8 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:path-input-quotes', run: runPathInputQuotesTests },
   { name: 'unit:mobile-composer', run: runMobileComposerTests },
   { name: 'unit:composer-send-latch', run: runComposerSendLatchTests },
+  { name: 'unit:composer-autoresize-defer', run: runComposerAutoresizeDeferTests },
+  { name: 'unit:window-resize-cursor', run: runWindowResizeCursorTests },
   { name: 'unit:scheduled-send', run: runScheduledSendTests },
   { name: 'unit:sidebar-drawer', run: runSidebarDrawerTests },
   { name: 'unit:swipe-dismiss', run: runSwipeDismissTests },

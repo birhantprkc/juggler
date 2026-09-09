@@ -3658,6 +3658,25 @@ thread-column-actions {
     --wails-draggable: no-drag;
 }
 
+/* A frameless window (Windows + Linux) has no native resize border, so the
+   Wails runtime hit-tests the pointer itself and reports a hit by setting the
+   cursor on <body>. `cursor` inherits, which makes that report invisible: any
+   element with a cursor of its own overrides it, and along the window edges
+   that is nearly all of them — every button's `pointer`, the composer's `text`,
+   the header's `default`. The window resized perfectly well, but nothing ever
+   said so, which reads as an edge that isn't there.
+
+   The marker on <html> says the pointer is on an edge (utils/window-resize-cursor.js);
+   this hands body's cursor down through whatever would otherwise mask it. One
+   `inherit` covers all eight edge cursors, so the marker stays a gate and the
+   cursor itself has a single source.
+
+   `body *` rather than `*`: body must keep the inline cursor the runtime wrote
+   on it, and an !important author rule would beat an inline style. */
+:root[data-resize-cursor] body * {
+    cursor: inherit !important;
+}
+
 /* ============================================================================
    PROJECT NEW-WINDOW BUTTON
    The inline button welded to the project chip opens another desktop window.

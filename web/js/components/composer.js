@@ -119,6 +119,9 @@ class Composer extends HTMLElement {
     /** @type {boolean} @private */
     this._sending = false;
 
+    /** @type {number|null} @private */
+    this._autoResizeFrame = null;
+
     // History navigation state
     /** @type {import('../model/session.js').default|null} @private */
     this.session = null;           // Session reference for accessing messages
@@ -282,6 +285,9 @@ class Composer extends HTMLElement {
   }
 
   disconnectedCallback() {
+    // Drop a queued height measurement: it would resolve against a detached box
+    // and measure nothing.
+    this._cancelScheduledAutoResize();
     // Tear down an open commands menu (surface, scrim, observer, dismissal).
     if (this._popupCleanup) {
       this._popupCleanup();
@@ -343,21 +349,16 @@ class Composer extends HTMLElement {
     // Two guards keep this from emitting "ResizeObserver loop completed with
     // undelivered notifications": (1) act on width only, since autoResize
     // mutates height and reacting to that would feed back into the observer;
-    // (2) defer the height write to the next frame so it lands outside the
-    // observer's own delivery cycle rather than mutating layout mid-delivery.
+    // (2) defer the height write to the next frame — _scheduleAutoResize, whose
+    // deferral this depends on — so it lands outside the observer's own
+    // delivery cycle rather than mutating layout mid-delivery.
     /** @type {number|null|undefined} */
     let lastWidth = null;
-    let resizeScheduled = false;
     const resizeObserver = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width;
       if (width === lastWidth) return;
       lastWidth = width;
-      if (resizeScheduled) return;
-      resizeScheduled = true;
-      requestAnimationFrame(() => {
-        resizeScheduled = false;
-        this.autoResize(textarea);
-      });
+      this._scheduleAutoResize(textarea);
     });
     resizeObserver.observe(textarea);
 
@@ -613,7 +614,7 @@ class Composer extends HTMLElement {
       // caret/selection interceptors (autocorrect/spell replace, dictation,
       // drag-drop, exotic IME) — the caret can otherwise never rest in a token.
       this._reconcileTokens(textarea);
-      this.autoResize(textarea);
+      this._scheduleAutoResize(textarea);
       this._updateSendButtonState();
       // Debounced draft save for page reload restoration
       this._scheduleDraftSave(textarea.value);
@@ -1168,16 +1169,62 @@ class Composer extends HTMLElement {
   }
 
   /**
-   * Auto-resize textarea to fit content
+   * Auto-resize textarea to fit content.
+   *
+   * Resetting the height and then reading `scrollHeight` is a forced synchronous
+   * layout: the read cannot be answered until every pending layout in the
+   * document has been resolved, the whole transcript included. That is cheap
+   * against a settled page and expensive against a streaming one, so the
+   * per-keystroke path goes through _scheduleAutoResize instead of here.
    * @param {HTMLTextAreaElement} textarea
    */
   autoResize(textarea) {
+    // This measurement supersedes any frame already queued for the same job.
+    this._cancelScheduledAutoResize();
     textarea.style.overflowY = 'hidden'; // Temporarily hide scrollbar for accurate measurement
     textarea.style.height = 'auto'; // Reset height to auto to get correct scrollHeight
     const newHeight = Math.min(textarea.scrollHeight, MAX_TEXTAREA_HEIGHT_PX);
     textarea.style.height = newHeight + 'px';
     // Enable scrolling if the maximum height is reached
     textarea.style.overflowY = newHeight < MAX_TEXTAREA_HEIGHT_PX ? 'hidden' : 'auto';
+  }
+
+  /**
+   * Coalesce an autoResize onto the next frame, for callers that fire faster
+   * than the box can meaningfully change size.
+   *
+   * Typing is the case that matters. Measuring inline makes every keystroke wait
+   * on a full-document layout, and while a turn streams the document is dirtied
+   * again between one keystroke and the next — so each character pays for a
+   * relayout of the entire conversation before it is echoed, which is what turns
+   * a busy window's composer to treacle. Deferring collapses a burst of
+   * keystrokes into one measurement per frame and, more to the point, takes the
+   * layout off the keystroke entirely: the character lands now and the box
+   * catches up on the next frame.
+   *
+   * The height is one frame late, which is not a perceptible thing for a box
+   * that grows a line at a time. Callers that need the new height to have landed
+   * — anything about to measure or scroll to it — call autoResize directly.
+   * @param {HTMLTextAreaElement} textarea
+   * @private
+   */
+  _scheduleAutoResize(textarea) {
+    if (this._autoResizeFrame !== null) return;
+    this._autoResizeFrame = requestAnimationFrame(() => {
+      this._autoResizeFrame = null;
+      this.autoResize(textarea);
+    });
+  }
+
+  /**
+   * Drop a queued autoResize.
+   * @returns {void}
+   * @private
+   */
+  _cancelScheduledAutoResize() {
+    if (this._autoResizeFrame === null) return;
+    cancelAnimationFrame(this._autoResizeFrame);
+    this._autoResizeFrame = null;
   }
 
   /**

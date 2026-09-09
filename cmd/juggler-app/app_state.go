@@ -32,6 +32,37 @@ const (
 	minWindowHeight     = 600
 )
 
+// resizeHandleEdgePx and resizeHandleCornerExtraPx size the edge-resize band of
+// a frameless window. Dropping the native decorations also drops the invisible
+// resize border a decorated window reserves outside its content, so the only
+// thing left to grab is the Wails runtime's own pointer hit-test — and that
+// falls back to 5px for the edges and 5+10px for the corners when the app
+// publishes no flags. Five pixels against a layout whose content runs to the
+// last pixel is close to ungrabbable; these match the ~8px a GTK
+// client-side-decorated window reserves for the same job.
+const (
+	resizeHandleEdgePx        = 8
+	resizeHandleCornerExtraPx = 8
+)
+
+// resizeHandleFlags publishes that band to the Wails runtime as frontend flags.
+//
+// The keys are FLAT and must stay that way. The runtime reads them with
+// GetFlag("system.resizeHandleWidth"), which is a single map lookup and not a
+// dotted path walk, so a nested {"system": {...}} value is never found — which
+// is exactly why Wails' own Windows GetFlags, the only platform that populates
+// these, silently gets the 5px fallback too.
+//
+// Published unconditionally: macOS gates its resize hit-test off entirely (it
+// keeps a decorated frame, so AppKit resizes it), and never reads them.
+func resizeHandleFlags() map[string]any {
+	return map[string]any{
+		"system.resizeHandleWidth":  resizeHandleEdgePx,
+		"system.resizeHandleHeight": resizeHandleEdgePx,
+		"resizeCornerExtra":         resizeHandleCornerExtraPx,
+	}
+}
+
 // closeFlushTimeout bounds the whole close-requested handshake — every window
 // flushing its composer drafts and confirming they reached disk. Generous enough
 // to cover a page whose worker is mid-turn (the page allows 2.5s per
@@ -333,7 +364,9 @@ func (a *appState) initApplication() {
 		// closes the windows — which is the last moment the open set is still the
 		// set the user left.
 		OnShutdown: a.onShutdown,
-		Linux:      application.LinuxOptions{ProgramName: "Juggler"},
+		// Widen the frameless window's edge-resize band (see resizeHandleFlags).
+		Flags: resizeHandleFlags(),
+		Linux: application.LinuxOptions{ProgramName: "Juggler"},
 		Windows: application.WindowsOptions{
 			AdditionalBrowserArgs: []string{"--disable-logging"},
 		},

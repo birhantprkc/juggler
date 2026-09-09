@@ -435,6 +435,43 @@ func TestOpeningFrameFollowsThePanelOnlyWhenNothingIsRemembered(t *testing.T) {
 	}
 }
 
+// The runtime reads these with GetFlag("system.resizeHandleWidth"), which is one
+// lookup in the flag map and not a walk down a dotted path — so a nested
+// {"system": {...}} value is never found, and the band silently stays at the
+// 5px fallback. That is not a hypothetical: it is what Wails' own Windows
+// GetFlags does, which is why the only platform that ever populated these got
+// the fallback too. Nothing downstream reports a flag that was never read, so
+// the mistake is invisible from the outside — hence a test on the shape.
+func TestResizeHandleFlagsAreFlatKeys(t *testing.T) {
+	flags := resizeHandleFlags()
+	for _, key := range []string{"system.resizeHandleWidth", "system.resizeHandleHeight", "resizeCornerExtra"} {
+		if _, ok := flags[key]; !ok {
+			t.Errorf("%q is the name the runtime looks up; flags = %v", key, flags)
+		}
+	}
+	if _, nested := flags["system"]; nested {
+		t.Error(`a "system" sub-map is never read: the keys are flat`)
+	}
+}
+
+// Publishing the band is only worth doing if it is bigger than the fallback it
+// replaces. A frameless window has no native resize border, so this is the whole
+// of what there is to grab: at the default 5px, against a layout whose content
+// runs to the last pixel, the bottom-right corner is about a pixel of target.
+func TestResizeHandleFlagsBeatTheRuntimeFallback(t *testing.T) {
+	// The fallbacks in the runtime's own hit-test (drag.ts): 5px edges, +10px at
+	// the corners. Ours must improve on the edge, which is the hard one to hit.
+	const runtimeEdgeFallback = 5
+	if resizeHandleEdgePx <= runtimeEdgeFallback {
+		t.Errorf("edge band = %dpx, which is no better than the %dpx fallback it overrides",
+			resizeHandleEdgePx, runtimeEdgeFallback)
+	}
+	flags := resizeHandleFlags()
+	if flags["system.resizeHandleWidth"] != resizeHandleEdgePx || flags["system.resizeHandleHeight"] != resizeHandleEdgePx {
+		t.Errorf("the published band must be the one the constants describe, got %v", flags)
+	}
+}
+
 // The theme/mode/zoom hand-off is read exactly as it was before the struct
 // existed, so an opener that has always sent them keeps working.
 func TestWindowOptsFromQueryReadsTheInheritedTrio(t *testing.T) {
