@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-09
+
 - GPT-6 Astra is selectable on a ChatGPT plan, with its reasoning and speed options
 - Any number of custom OpenAI-compatible endpoints, each set up alongside the built-in providers
 - Any model's context window and output limit can now be corrected in Provider Settings
