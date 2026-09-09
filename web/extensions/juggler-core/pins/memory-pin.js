@@ -4,9 +4,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import PinboardItemType from 'juggler/pinboard-item-type';
-import { readFile } from 'juggler/ops';
-import { createElement, injectStylesOnce } from 'juggler/ui';
-import { parseMemory } from '../lib/memory-format.js';
+import { readFile, writeFile } from 'juggler/ops';
+import { createElement, extractErrorMessage, injectStylesOnce } from 'juggler/ui';
+import { parseMemory, removeEntry } from '../lib/memory-format.js';
 import { pinEmpty } from '../lib/pin-empty.js';
 
 injectStylesOnce('memory-pin-styles', `
@@ -15,6 +15,12 @@ injectStylesOnce('memory-pin-styles', `
   flex-direction: column;
   gap: 0.5rem;
   height: 100%;
+}
+.memory-pin .memory-delete { flex-shrink: 0; opacity: 0.5; transition: opacity 0.15s; }
+.memory-pin .memory-delete:hover { opacity: 1; }
+.memory-pin__error {
+  color: var(--error-color, var(--text-secondary));
+  font-size: 0.75rem;
 }
 `);
 
@@ -63,8 +69,8 @@ function memoryPath(config) {
  * file that comes back unchanged redraws nothing. `Refresh` covers the rest — a
  * hand edit, or another window's write — and nothing polls.
  *
- * Read-only: `remember` and `forget` go through the tool, and the memory item's
- * own properties panel is where an entry is deleted.
+ * The entries can be deleted in place. Each deletion reads the file again before
+ * writing, so it preserves changes made since the card was drawn.
  * @class
  * @augments PinboardItemType
  */
@@ -124,9 +130,10 @@ class MemoryPin extends PinboardItemType {
 
     const render = async () => {
       const mine = ++generation;
+      const path = memoryPath(context.pin.config);
       let content = '';
       try {
-        const result = await readFile({ path: memoryPath(context.pin.config) }, context.signal);
+        const result = await readFile({ path }, context.signal);
         content = typeof result?.content === 'string' ? result.content : '';
       } catch {
         // No memory file yet is the ordinary case, not a failure: the file is
@@ -159,6 +166,31 @@ class MemoryPin extends PinboardItemType {
         const li = createElement('li', 'memory-entry');
         if (entry.date) li.appendChild(createElement('span', 'memory-date', entry.date));
         li.appendChild(createElement('span', 'memory-text', entry.text));
+
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'memory-delete icon-btn';
+        del.title = 'Forget this';
+        del.setAttribute('aria-label', 'Delete memory item');
+        del.innerHTML = '<span class="icon-trashcan"></span>';
+        del.addEventListener('click', async (event) => {
+          event.stopPropagation();
+          del.disabled = true;
+          try {
+            const latest = await readFile({ path }, context.signal);
+            const current = typeof latest?.content === 'string' ? latest.content : '';
+            const { content: next, removed } = removeEntry(current, entry);
+            if (removed) await writeFile({ path, content: next, outOfRootApproved: true });
+            drawn = null;
+            await render();
+          } catch (error) {
+            if (context.signal.aborted) return;
+            del.disabled = false;
+            body.querySelector('.memory-pin__error')?.remove();
+            body.prepend(createElement('div', 'memory-pin__error', `Couldn't delete it. ${extractErrorMessage(error)}`));
+          }
+        });
+        li.appendChild(del);
         list.appendChild(li);
       }
       body.replaceChildren(list);

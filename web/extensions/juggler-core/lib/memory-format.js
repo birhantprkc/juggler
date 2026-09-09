@@ -114,6 +114,22 @@ export function appendEntry(content, text, date) {
 }
 
 /**
+ * Remove the first entry exactly matching a displayed item.
+ * @param {string|null|undefined} content - Existing file content
+ * @param {{date?: string|null, text?: string}|null|undefined} target - Entry to remove
+ * @returns {{content: string, removed: boolean}} Updated content and whether the entry was found
+ */
+export function removeEntry(content, target) {
+  const { entries } = parseMemory(content);
+  const targetDate = target?.date || null;
+  const targetText = target?.text || '';
+  const index = entries.findIndex((entry) => entry.date === targetDate && entry.text === targetText);
+  if (index < 0) return { content: serializeMemory(entries), removed: false };
+  entries.splice(index, 1);
+  return { content: serializeMemory(entries), removed: true };
+}
+
+/**
  * Remove every entry whose text contains `match` (case-insensitive substring).
  * @param {string|null|undefined} content - Existing file content
  * @param {string} match - Substring to match against entry text

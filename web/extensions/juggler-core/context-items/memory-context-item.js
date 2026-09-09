@@ -6,7 +6,7 @@
 import ContextItem from 'juggler/context-item';
 import { readFile, writeFile, stat } from 'juggler/ops';
 import { createElement, injectStylesOnce } from 'juggler/ui';
-import { parseMemory, appendEntry, removeMatching } from '../lib/memory-format.js';
+import { parseMemory, appendEntry, removeEntry, removeMatching } from '../lib/memory-format.js';
 
 /**
  * Last-known-good memory content per path. A transient read failure on an
@@ -594,7 +594,7 @@ class MemoryContextItem extends ContextItem {
       del.addEventListener('click', async (ev) => {
         ev.stopPropagation();
         const cur = await this._read(this._memoryPath());
-        const { content: next } = removeMatching(cur, entry.text);
+        const { content: next } = removeEntry(cur, entry);
         await this._write(this._memoryPath(), next);
         this._renderPanel(container);
       });

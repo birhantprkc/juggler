@@ -5,6 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Project memory entries can be deleted directly from the Memory pin
 - Syntax highlighting for C, C++, Rust, Java, C#, Ruby, PHP, Swift, Kotlin, YAML, TOML, SQL and Sass
 - Build files are highlighted too: Makefile, CMakeLists.txt, Dockerfile, .ini, .env, Gradle
 - Code blocks in replies are syntax-highlighted, as are diffs, in the language of the file

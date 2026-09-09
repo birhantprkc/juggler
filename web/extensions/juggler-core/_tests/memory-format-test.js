@@ -26,6 +26,7 @@ import {
   parseMemory,
   serializeMemory,
   appendEntry,
+  removeEntry,
   removeMatching
 } from '../lib/memory-format.js';
 import { assert } from '../../../js-tests/utilities/test-helpers.js';
@@ -153,6 +154,18 @@ export async function runTests(_ctx) {
     const { entries } = parseMemory(out);
     assert(entries.length === 3, `expected 3, got ${entries.length}`);
     assert(entries[2].text === 'third fact' && entries[2].date === '2026-06-15', 'new entry is last');
+  });
+
+  // ---- removeEntry ----
+
+  await test('removeEntry deletes one exact displayed item', () => {
+    const withSimilar = appendEntry(CANONICAL, 'Build is `make build` elsewhere', '2026-06-15');
+    const target = parseMemory(withSimilar).entries[0];
+    const { content, removed } = removeEntry(withSimilar, target);
+    const { entries } = parseMemory(content);
+    assert(removed, 'the displayed entry should be found');
+    assert(entries.length === 2, `expected one deletion, got ${entries.length} entries`);
+    assert(entries.some((entry) => entry.text.endsWith('elsewhere')), 'a similar entry should survive');
   });
 
   // ---- removeMatching ----

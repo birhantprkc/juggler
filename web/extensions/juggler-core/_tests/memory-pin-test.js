@@ -316,12 +316,28 @@ export async function runTests(ctx) {
     m.teardown();
   });
 
-  await test('the pin offers no way to forget an entry', async () => {
-    const path = await writeMemory('readonly', TWO_FACTS);
+  await test('an entry can be deleted from the pin', async () => {
+    const path = await writeMemory('delete', TWO_FACTS);
     const m = mount(path);
     await settled(m.body);
-    assert(!m.body.querySelector('.memory-delete'),
-      `deleting a fact belongs to the memory item's own panel:\n${m.body.innerHTML}`);
+
+    const entries = m.body.querySelectorAll('.memory-entry');
+    const del = entries[0]?.querySelector('.memory-delete');
+    assert(del, `the first fact has no delete control:\n${m.body.innerHTML}`);
+    /** @type {HTMLButtonElement} */ (del).click();
+
+    const text = await until(m.body, (t) => !t.includes('Build is `make build`'));
+    assert(text.includes('Tests are `make test-all`'), `deleting one fact removed another:\n${text}`);
+    assert(m.body.querySelectorAll('.memory-entry').length === 1,
+      `expected one entry after deletion:\n${m.body.innerHTML}`);
+
+    // The pin is a view of the file, not board-local state. A fresh mount must
+    // see the deletion too.
+    const fresh = mount(path);
+    const freshText = await settled(fresh.body);
+    assert(!freshText.includes('Build is `make build`'), `the deletion was not persisted:\n${freshText}`);
+    assert(freshText.includes('Tests are `make test-all`'), `the surviving fact was not persisted:\n${freshText}`);
+    fresh.teardown();
     m.teardown();
   });
 
