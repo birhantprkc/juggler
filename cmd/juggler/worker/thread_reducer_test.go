@@ -430,6 +430,42 @@ func TestDecideNextAction_ThreadItemNoResult(t *testing.T) {
 	}
 }
 
+// stoppedThreadMsg returns the parent's view of a delegated call whose run was
+// STOPPED: the call's coordinates on the item, and a transcript whose run record
+// says it was cancelled. This is what settleThreadRun leaves behind when a
+// sub-agent is stopped from its own column.
+func stoppedThreadMsg(itemID, toolUseID string) ConversationItem {
+	nested, _ := json.Marshal([]ConversationItem{{
+		Type: ItemTypeUser, ItemID: itemID + "-u1", Content: "go and look",
+		RunToolUseID: toolUseID, RunStatus: runStatusCancelled,
+		RunResult: "[The run was cancelled before it finished.]",
+	}})
+	return ConversationItem{
+		Type: ItemTypeThread, ItemID: itemID, Goal: "test thread",
+		RunToolUseID: toolUseID, Items: nested,
+	}
+}
+
+// TestDecideNextAction_ThreadRunCancelled: a sub-agent the user STOPPED does not
+// drive the caller parked on it. The run settles so the caller stops waiting —
+// its Continue comes back — but a stop is not an answer, and resuming on one
+// spends a turn on "[The run was cancelled before it finished.]" while the work
+// sits undone. Same rule as a denied tool: the automatic loop ends, an explicit
+// Continue still proceeds.
+func TestDecideNextAction_ThreadRunCancelled(t *testing.T) {
+	items := []ConversationItem{
+		userMsg("research it"),
+		assistantMsg("sending an agent"),
+		stoppedThreadMsg("child-1", "call_1"),
+	}
+	if got := decideNextAction(items, ActivityAwaitingLLM, true, false); got != ActionGoIdle {
+		t.Errorf("stopped sub-agent/awaiting: expected GoIdle, got %s", got)
+	}
+	if got := decideNextAction(items, ActivityAwaitingLLM, true, true); got != ActionCallLLM {
+		t.Errorf("stopped sub-agent/explicit continue: expected CallLLM, got %s", got)
+	}
+}
+
 // TestDecideNextAction_ThreadItemExplicitNull: a thread.Result set to
 // literal JSON null should NOT count as a result.
 func TestDecideNextAction_ThreadItemExplicitNull(t *testing.T) {

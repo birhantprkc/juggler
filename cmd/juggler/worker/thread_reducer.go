@@ -176,12 +176,12 @@ func decideNextAction(items []ConversationItem, activity string, isRoot bool, ex
 				return ActionNone // still in flight — wait
 			}
 		}
-		if anyBatchCancelled(batch) {
-			// At least one tool was denied. A denial stops the automatic
-			// loop — the LLM shouldn't proceed with partial information on
-			// its own. But an explicit user Continue means "proceed anyway",
-			// so honour it (same as the assistant-last branch above);
-			// otherwise clear the awaiting marker and rest.
+		if anyBatchCancelled(items, batch) {
+			// At least one member was denied or stopped. Either stops the
+			// automatic loop — the LLM shouldn't proceed with partial
+			// information on its own. But an explicit user Continue means
+			// "proceed anyway", so honour it (same as the assistant-last branch
+			// above); otherwise clear the awaiting marker and rest.
 			if explicitContinuation {
 				return ActionCallLLM
 			}
@@ -287,17 +287,27 @@ func isToolTerminal(t ConversationItem) bool {
 	return t.State == StateCompleted || t.State == StateCancelled
 }
 
-// anyBatchCancelled returns true if at least one tool-action in the
-// batch was cancelled (the user denied it). A single denial stops
-// the turn — the LLM shouldn't proceed with partial tool results.
+// anyBatchCancelled returns true if at least one member of the batch came back
+// cancelled: a tool-action the user denied, or a sub-thread whose run was
+// stopped. A single one stops the automatic loop — the LLM shouldn't proceed
+// with partial results — while an explicit Continue still proceeds.
 //
-// Asked only of tool-actions, the only batch members a user is prompted to
-// approve. A child thread carries no approval state of its own; a run of its
-// that was stopped settles as a stopped run, and the parent acts on that the way
-// it acts on any other answer.
-func anyBatchCancelled(batch []ConversationItem) bool {
+// A stopped run has to count. It settles, because a caller parked on a thread
+// nobody is driving would wait for good; but settling is how the caller stops
+// WAITING, not a reason for it to start TALKING. Resuming on one spends a turn
+// on "[The run was cancelled before it finished.]" with the work sitting undone
+// — the exact turn the user's Stop was asking not to happen. A receipt is
+// exempt: it stands for a run nobody here asked for, so it is news rather than
+// this batch's answer.
+func anyBatchCancelled(siblings, batch []ConversationItem) bool {
 	for _, t := range batch {
 		if t.Type == ItemTypeToolAction && t.State == StateCancelled {
+			return true
+		}
+		if t.Type != ItemTypeThread || isReceiptItem(t) {
+			continue
+		}
+		if _, run, _, ok := itemThreadRun(siblings, t); ok && run.status == runStatusCancelled {
 			return true
 		}
 	}
