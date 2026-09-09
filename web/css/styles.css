@@ -130,6 +130,11 @@ select {
     --accent-red: #f85149;
     --accent-purple: #bc8cff;
 
+    /* Text-selection highlight (see TEXT SELECTION POLICY). The colour WebKit
+       paints for a dark-appearance selection on macOS: the system blue at 80%,
+       a tint the selected text still reads through. */
+    --selection-bg: rgb(63 99 139 / 80%);
+
     /* Markdown task-list states (`- [/] step`). Box fill and glyph are separate
        variables so a theme can retint either without touching the geometry.
        Every value derives from an accent the light theme also defines, so these
@@ -486,6 +491,11 @@ select {
     --accent-red: #d1242f;
     --accent-purple: #8250df;
 
+    /* Text-selection highlight (see TEXT SELECTION POLICY). The colour WebKit
+       paints for a light-appearance selection on macOS: over white it settles
+       at the familiar #b3d7ff, and over a darker surface it stays a tint. */
+    --selection-bg: rgb(128 188 254 / 60%);
+
     /* showNotice toast — a prominent warm-yellow fill with dark text. */
     --notice-bg: #ffdf7e;
     --notice-text: #3d2c00;
@@ -760,8 +770,8 @@ app-container {
 /* ============================================================================
    TEXT SELECTION POLICY
 
-   The single place that decides what a mouse drag may select. The split is
-   chrome vs content:
+   The single place that decides what a mouse drag may select, and what the
+   highlight looks like when it does. The split is chrome vs content:
 
      Chrome:  surfaces the user aims *clicks* at, never text: menus and
               popups, the header, the sidebar, the composer's status row,
@@ -781,6 +791,24 @@ app-container {
        so the carve-outs below (and component-level ones such as
        `settings-panel .settings-content`) hold no matter where they sit.
    ============================================================================ */
+
+/* The highlight itself, so every platform draws the same one. An unstyled
+   selection takes the engine's own colour, which on Linux is the GTK theme's
+   accent — pinks and reds against these greys. `--selection-bg` is a
+   translucent blue in both themes, so the highlight tints message bubbles, code
+   blocks, diffs and images rather than filling over them.
+
+   Only the background is set, deliberately: the pseudo-element inherits `color`
+   from the text it covers, so selected text keeps its own colour and syntax
+   highlighting survives being selected. Authoring the rule at all is also what
+   stops a platform substituting its selected-text colour (macOS recolours
+   selected text to white in dark appearance; GTK does its own thing).
+
+   The cost is that selection no longer greys out when the window loses focus —
+   one colour, both states. */
+::selection {
+    background-color: var(--selection-bg);
+}
 
 /* Transient surfaces: every anchored dropdown (strategy, model, permissions,
    completions, info-cards, path recents), the phone bottom sheets those same

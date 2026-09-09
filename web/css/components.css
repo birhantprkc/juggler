@@ -716,6 +716,9 @@ conversation-bar .conversation-tab.active .conversation-tab-bin:hover {
     outline: none;
 }
 
+/* The one surface that opts out of the shared --selection-bg: this field sits on
+   the accent-blue rename overlay in white text, where a blue tint would barely
+   show. A white wash is the readable equivalent there. */
 .conversation-tab-rename-input::selection {
     background: rgb(255 255 255 / 35%);
 }

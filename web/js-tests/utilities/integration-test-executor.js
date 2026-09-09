@@ -142,6 +142,7 @@ import { runTests as runStreamingRowScopeTests } from '../unit-tests/streaming-r
 import { runTests as runStreamingMarkdownTests } from '../unit-tests/streaming-markdown-test.js';
 import { runTests as runMarkdownSanitizerTests } from '../unit-tests/markdown-sanitizer-test.js';
 import { runTests as runMarkdownScopedCssTests } from '../unit-tests/markdown-scoped-css-test.js';
+import { runTests as runSelectionColourTests } from '../unit-tests/selection-colour-test.js';
 import { runTests as runMarkdownTaskListTests } from '../unit-tests/markdown-task-list-test.js';
 import { runTests as runUserMessageMarkdownTests } from '../unit-tests/user-message-markdown-test.js';
 import { runTests as runExternalLinkTests } from '../unit-tests/external-link-test.js';
@@ -471,6 +472,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:streaming-markdown', run: runStreamingMarkdownTests },
   { name: 'unit:markdown-sanitizer', run: runMarkdownSanitizerTests },
   { name: 'unit:markdown-scoped-css', run: runMarkdownScopedCssTests },
+  { name: 'unit:selection-colour', run: runSelectionColourTests },
   { name: 'unit:markdown-task-list', run: runMarkdownTaskListTests },
   { name: 'unit:user-message-markdown', run: runUserMessageMarkdownTests },
   { name: 'unit:external-link', run: runExternalLinkTests },
