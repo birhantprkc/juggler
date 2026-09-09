@@ -3,6 +3,8 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
 // SPDX-License-Identifier: Apache-2.0
 
+import { validateManifest } from './lib/manifest.js';
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -143,7 +145,7 @@ class CommandType {
     this.messageThread = context.messageThread;
 
     // Validate manifest on construction
-    this._validateManifest();
+    validateManifest(this.constructor);
   }
 
   /**
@@ -194,31 +196,6 @@ class CommandType {
   getManifest() {
     const ctor = /** @type {typeof CommandType} */ (this.constructor);
     return ctor.MANIFEST;
-  }
-
-  /**
-   * Validate that the command class has a properly structured MANIFEST
-   * @private
-   * @throws {Error} If MANIFEST is missing or has missing required fields
-   */
-  _validateManifest() {
-    /** @type {any} */
-    const ctor = this.constructor;
-    const className = ctor.name;
-    const manifest = this.getManifest();
-
-    if (!manifest) {
-      throw new Error(`${className} must define a static MANIFEST`);
-    }
-
-    const requiredFields = ['id', 'name', 'version', 'description'];
-    const missingFields = requiredFields.filter(field => !(field in manifest));
-
-    if (missingFields.length > 0) {
-      throw new Error(
-        `${className}.MANIFEST is missing required fields: ${missingFields.join(', ')}`
-      );
-    }
   }
 }
 

@@ -3,6 +3,16 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
 // SPDX-License-Identifier: Apache-2.0
 
+import { REQUIRED_MANIFEST_FIELDS, validateManifest } from './lib/manifest.js';
+
+/**
+ * The card's own required manifest fields: the common set plus `eyebrow`, the
+ * label its header prints. A card with no eyebrow renders a header with nothing
+ * in it, so the rail has no way to say what it is showing.
+ * @type {string[]}
+ */
+export const REQUIRED_INFO_CARD_MANIFEST_FIELDS = [...REQUIRED_MANIFEST_FIELDS, 'eyebrow'];
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -81,6 +91,9 @@ class InfoCardType {
     if (new.target === InfoCardType) {
       throw new Error('InfoCardType is an abstract class and cannot be instantiated directly');
     }
+
+    // Validate manifest on construction
+    validateManifest(this.constructor, REQUIRED_INFO_CARD_MANIFEST_FIELDS);
   }
 
   /** @returns {InfoCardManifest} This card's manifest. */

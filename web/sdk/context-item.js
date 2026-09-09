@@ -8,6 +8,7 @@ import { FormattingHelpers } from './lib/formatting-helpers.js';
 import { isEngine, isViewer } from './lib/client-role.js';
 import { coerceToolInputToSchema } from './coerce-schema-types.js';
 import { smartTruncate } from './lib/smart-truncate.js';
+import { validateManifest } from './lib/manifest.js';
 
 /**
  * Fallback character budget for LLM-facing tool output (~7500 tokens). The live
@@ -327,9 +328,11 @@ class ContextItem {
      */
     this.data = {};
 
-    // Validate manifest if the subclass defines one
+    // Validate the manifest only when the subclass defines one: the abstract
+    // bases other items extend (edit-base.js, subagent-item.js) declare none of
+    // their own, and it is their concrete subclasses the registry checks.
     if (/** @type {any} */ (this.constructor).MANIFEST) {
-      this._validateManifest();
+      validateManifest(this.constructor);
     }
 
     // Dev-mode: wrap context-exclusive methods with guards that throw
@@ -1309,41 +1312,6 @@ class ContextItem {
         includeInConversation: true,
         error: extractErrorMessage(err)
       };
-    }
-  }
-
-  // ============================================================================
-  // MANIFEST VALIDATION
-  // ============================================================================
-
-  /**
-   * Validate that the item class has a properly structured MANIFEST
-   * @private
-   * @throws {Error} If MANIFEST is missing or has missing required fields
-   */
-  _validateManifest() {
-    /** @type {any} */
-    const ctor = this.constructor;
-    const className = ctor.name;
-    const manifest = ctor.MANIFEST;
-
-    if (!manifest) {
-      throw new Error(`${className} must define a static MANIFEST`);
-    }
-
-    const requiredFields = [
-      'id',
-      'name',
-      'version',
-      'description'
-    ];
-
-    const missingFields = requiredFields.filter(field => !(field in manifest));
-
-    if (missingFields.length > 0) {
-      throw new Error(
-        `${className}.MANIFEST is missing required fields: ${missingFields.join(', ')}`
-      );
     }
   }
 

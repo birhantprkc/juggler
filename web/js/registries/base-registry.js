@@ -4,6 +4,7 @@
 
 import { resolveAssetUrl, importModuleUrl } from '../utils/asset-url.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
+import { REQUIRED_MANIFEST_FIELDS, validateManifest } from '../../sdk/lib/manifest.js';
 import { fetchDisabledPluginIds } from '../services/extensions.js';
 
 /**
@@ -39,7 +40,7 @@ class BaseRegistry {
    * @param {string} name - Registry name for logging
    * @param {string[]} requiredManifestFields - Required fields in manifest
    */
-  constructor(name, requiredManifestFields = ['id', 'name', 'version', 'description']) {
+  constructor(name, requiredManifestFields = REQUIRED_MANIFEST_FIELDS) {
     if (new.target === BaseRegistry) {
       throw new Error('BaseRegistry is abstract and cannot be instantiated directly');
     }
@@ -143,7 +144,10 @@ class BaseRegistry {
   /**
    * Validate a class
    *
-   * Can be overridden by subclasses for additional validation
+   * Can be overridden by subclasses for additional validation. The manifest
+   * itself is checked by the shared SDK validator, so a class rejected here and
+   * a class rejected by its own constructor fail for the same reasons and say
+   * so in the same words.
    * @param {T} ItemClass - Class to validate
    * @throws {Error} If class is invalid
    * @protected
@@ -153,16 +157,7 @@ class BaseRegistry {
       throw new Error(`${this.name} item must be a class`);
     }
 
-    const ItemClassWithManifest = /** @type {any} */ (ItemClass);
-    if (!ItemClassWithManifest.MANIFEST) {
-      throw new Error(`${this.name} class must have a static MANIFEST property`);
-    }
-
-    for (const field of this.requiredManifestFields) {
-      if (!ItemClassWithManifest.MANIFEST[field]) {
-        throw new Error(`${this.name} manifest missing required field: ${field}`);
-      }
-    }
+    validateManifest(ItemClass, this.requiredManifestFields);
   }
 
   /**

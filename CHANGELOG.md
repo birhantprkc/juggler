@@ -25,6 +25,7 @@ of changes; this project follows semantic versioning.
 - A capability switched off and then no longer loaded can be switched back on, instead of being stuck off
 - Threads starting together now share one plugin load instead of each running their own
 - Windows windows now appear reliably and recover from stale off-screen positions
+- A plugin with an incomplete manifest is now rejected the same way everywhere, and named
 
 ## [0.6.0] - 2026-09-04
 

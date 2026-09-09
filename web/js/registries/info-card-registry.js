@@ -3,6 +3,7 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 import BaseRegistry from './base-registry.js';
+import { REQUIRED_INFO_CARD_MANIFEST_FIELDS } from '../../sdk/info-card-type.js';
 import { getExtensionCapabilities } from '../services/extensions.js';
 
 /**
@@ -19,7 +20,7 @@ import { getExtensionCapabilities } from '../services/extensions.js';
  */
 class InfoCardRegistry extends BaseRegistry {
   constructor() {
-    super('InfoCardRegistry', ['id', 'name', 'version', 'description', 'eyebrow']);
+    super('InfoCardRegistry', REQUIRED_INFO_CARD_MANIFEST_FIELDS);
 
     /**
      * One lazily-created instance per registered card id, so a card's mount

@@ -3,6 +3,8 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   Apache-2.0 - see LICENSE
 // SPDX-License-Identifier: Apache-2.0
 
+import { validateManifest } from './lib/manifest.js';
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -545,6 +547,9 @@ class PinboardItemType {
     if (new.target === PinboardItemType) {
       throw new Error('PinboardItemType is an abstract class and cannot be instantiated directly');
     }
+
+    // Validate manifest on construction
+    validateManifest(this.constructor);
   }
 
   /** @returns {PinboardItemManifest} This item type's manifest. */

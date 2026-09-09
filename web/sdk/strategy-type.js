@@ -152,6 +152,7 @@
  */
 
 import { submitPendingRequest } from '../js/services/thread-orchestrator.js';
+import { validateManifest } from './lib/manifest.js';
 
 // ============================================================================
 // Approval Policy Constants
@@ -357,8 +358,9 @@ class StrategyType {
      */
     this._abortController = null;
 
-    // Validate manifest on construction
-    this._validateManifest();
+    // Validate manifest on construction. FallbackStrategy reaches the app
+    // without ever being registered, so this is its only check.
+    validateManifest(this.constructor);
   }
 
   // ============================================================================
@@ -612,36 +614,6 @@ class StrategyType {
   getManifest() {
     const ctor = /** @type {typeof StrategyType} */ (this.constructor);
     return ctor.MANIFEST;
-  }
-
-  /**
-   * Validate that the strategy class has a properly structured MANIFEST
-   * @private
-   * @throws {Error} If MANIFEST is missing or has missing required fields
-   */
-  _validateManifest() {
-    const className = this.constructor.name;
-    const manifest = this.getManifest();
-
-    if (!manifest) {
-      throw new Error(`${className} must define a static MANIFEST`);
-    }
-    // Required fields match the other capability types (id/name/version/
-    // description). `author` is optional metadata.
-    const requiredFields = [
-      'id',
-      'name',
-      'version',
-      'description'
-    ];
-
-    const missingFields = requiredFields.filter(field => !(field in manifest));
-
-    if (missingFields.length > 0) {
-      throw new Error(
-        `${className}.MANIFEST is missing required fields: ${missingFields.join(', ')}`
-      );
-    }
   }
 }
 

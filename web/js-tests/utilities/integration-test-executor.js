@@ -219,6 +219,7 @@ import { runTests as runFileViewerRegistryTests } from '../unit-tests/file-viewe
 import { runTests as runPdfViewerTests } from '../unit-tests/pdf-viewer-test.js';
 import { runTests as runFileViewTests } from '../unit-tests/file-view-test.js';
 import { runTests as runSdkFacadeParityTests } from '../unit-tests/sdk-facade-parity-test.js';
+import { runTests as runSdkManifestValidationTests } from '../unit-tests/sdk-manifest-validation-test.js';
 import { runTests as runExtensionCollisionTests } from '../unit-tests/extension-collision-test.js';
 import { runTests as runExtensionCatalogTests } from '../unit-tests/extension-catalog-test.js';
 import { runTests as runExtensionReloadFailureTests } from '../unit-tests/extension-reload-failure-test.js';
@@ -528,6 +529,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:pdf-viewer', run: runPdfViewerTests },
   { name: 'unit:file-view', run: runFileViewTests },
   { name: 'unit:sdk-facade-parity', run: runSdkFacadeParityTests },
+  { name: 'unit:sdk-manifest-validation', run: runSdkManifestValidationTests },
   { name: 'unit:extension-collision', run: runExtensionCollisionTests },
   { name: 'unit:extension-catalog', run: runExtensionCatalogTests },
   { name: 'unit:extension-reload-failure', run: runExtensionReloadFailureTests },
