@@ -63,6 +63,7 @@ export const createCopyableText = () => domUnavailable('createCopyableText');
 export const addSubsection = () => domUnavailable('addSubsection');
 export const labeledSubsection = () => domUnavailable('labeledSubsection');
 export const addFilePath = () => domUnavailable('addFilePath');
+export const createFileActions = () => domUnavailable('createFileActions');
 export const addDiffViewer = () => domUnavailable('addDiffViewer');
 export const openImageLightbox = () => domUnavailable('openImageLightbox');
 export const createImageThumb = () => domUnavailable('createImageThumb');

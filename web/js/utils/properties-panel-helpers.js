@@ -198,7 +198,7 @@ async function showPath(path) {
  * in the file manager, and — when `options.pin` names an absolute path — pin it
  * to the Pinboard. Shared so that everywhere a path is shown offers the same
  * controls in the same order, whether that is a properties panel, a settings
- * tab, or the Pinboard's own item toolbar.
+ * tab, the Pinboard's own item toolbar, or a pin listing files of its own.
  * @param {string} path - The path to act on. An empty one yields no row at all.
  * @param {{pin?: string}} [options] - `pin` is the absolute path to pin.
  * @returns {HTMLElement|null} The actions container, or null with no path.

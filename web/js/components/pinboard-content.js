@@ -1029,6 +1029,7 @@ class PinboardContent extends JugglerElement {
         },
         fileEdits: {
           list: (query) => this._listFileEdits(query),
+          snapshot: (itemId) => this._snapshotForEdit(itemId),
           onChange: (listener) => this._watchFileEdits(listener, signal),
           reveal: (itemId) => this._reveal({ kind: 'item', id: itemId }),
         },
@@ -1346,6 +1347,52 @@ class PinboardContent extends JugglerElement {
     // first rather than last, and walk order settles the rest.
     found.sort((a, b) => (b.at - a.at) || (b._order - a._order));
     return found.slice(0, limit).map(({ _order, ...edit }) => edit);
+  }
+
+  /**
+   * The two whole files one edit sits between, read off the tool action that made
+   * it. {@link _listFileEdits} refuses to touch these on purpose — a list that
+   * carried them would cost the size of everything ever written — so they are
+   * fetched one action at a time, by a display that is about to show one.
+   *
+   * An edit stores its before and after under `displayData.diffData`, promoted
+   * onto the item whether the action was approved or auto-approved. A `write` that
+   * created the file stores `contentData` instead and no before, which is not a
+   * gap to report: the file began empty, so that is what is returned.
+   *
+   * Null means the transcript does not have this, which a caller must say rather
+   * than draw: two empty strings would render as a file that changed in no way.
+   * @param {string} itemId - The tool action to read.
+   * @returns {import('juggler/pinboard-item-type').PinFileSnapshot|null} Both sides, or null.
+   * @private
+   */
+  _snapshotForEdit(itemId) {
+    if (!itemId) return null;
+    const conversationId = this._active?.conversation?.id;
+    const conversation = conversationId ? this._session?.getConversation?.(conversationId) : null;
+    if (!conversation) return null;
+
+    for (const thread of conversation.getAllMessageThreads?.() || []) {
+      for (const ymap of thread.items || []) {
+        if (typeof ymap?.get !== 'function') continue;
+        if (ymap.get('itemId') !== itemId) continue;
+
+        const display = ymap.get('displayData');
+        const diff = yget(display, 'diffData');
+        if (diff) {
+          const oldContent = yget(diff, 'oldContent');
+          const newContent = yget(diff, 'newContent');
+          if (typeof oldContent !== 'string' || typeof newContent !== 'string') return null;
+          return { oldContent, newContent };
+        }
+
+        const created = yget(display, 'contentData');
+        const content = yget(created, 'content');
+        if (typeof content === 'string') return { oldContent: '', newContent: content };
+        return null;
+      }
+    }
+    return null;
   }
 
   /**

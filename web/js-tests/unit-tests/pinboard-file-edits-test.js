@@ -173,11 +173,12 @@ export async function runTests() {
    * @param {number} [spec.added] - Lines added, reported on the ops payload.
    * @param {number} [spec.removed] - Lines removed.
    * @param {boolean} [spec.dated] - False to leave it unstamped, as a just-inserted item is.
+   * @param {any} [spec.display] - The item-level displayData, for the cases about snapshots.
    * @returns {string} The action's item id.
    */
   function addAction(thread, spec) {
     const {
-      tool, path, filePath, state = 'completed', added = 0, removed = 0, dated = true,
+      tool, path, filePath, state = 'completed', added = 0, removed = 0, dated = true, display,
     } = spec;
     /** @type {any} */
     const input = {};
@@ -204,6 +205,7 @@ export async function runTests() {
     // Find the Y.Map just appended so the stamp goes on the stored item.
     const items = thread.items;
     const ymap = items[items.length - 1];
+    if (display) ymap.set('displayData', display);
     if (dated) {
       // Rising stamps, a second apart, so ordering is unambiguous.
       ymap.set('timestamp', new Date(1700000000000 + clock * 1000).toISOString());
@@ -515,6 +517,59 @@ export async function runTests() {
       service().reveal('item_that_does_not_exist');
       assert(JSON.stringify(tab._selection.selections) === chain,
         'an unknown item must leave the reader where they were');
+    });
+
+    // --- the two files an edit sits between -----------------------------------
+
+    await run('an edit hands back the whole file on both sides', () => {
+      const id = addAction(root, {
+        tool: 'edit',
+        path: 'snapshot/edited.js',
+        display: { diffData: { oldContent: 'one\ntwo\n', newContent: 'one\nTWO\n', path: 'snapshot/edited.js' } },
+      });
+      const snap = service().snapshot(id);
+      assert(!!snap, 'an edit that recorded its diff has both sides');
+      assert(snap.oldContent === 'one\ntwo\n' && snap.newContent === 'one\nTWO\n',
+        `expected both files back, got ${JSON.stringify(snap)}`);
+    });
+
+    await run('a file the tool created has an empty before, not a missing one', () => {
+      // A write to a path that did not exist stores contentData and no diff.
+      // There is nothing missing here — the file began empty — so answering null
+      // would send a caller looking for a fault instead of showing the new file.
+      const id = addAction(root, {
+        tool: 'write',
+        path: 'snapshot/created.js',
+        display: { contentData: { content: 'fresh\n', path: 'snapshot/created.js', fileExists: false } },
+      });
+      const snap = service().snapshot(id);
+      assert(!!snap, 'a created file is a change with a knowable before');
+      assert(snap.oldContent === '' && snap.newContent === 'fresh\n',
+        `expected an empty before and the new file, got ${JSON.stringify(snap)}`);
+    });
+
+    await run('an edit that kept no diff says so, rather than saying nothing changed', () => {
+      const id = addAction(root, { tool: 'write', path: 'snapshot/undocumented.js' });
+      assert(service().snapshot(id) === null,
+        'null is the only honest answer; two empty strings would draw as an unchanged file');
+    });
+
+    await run('a snapshot of nothing is null', () => {
+      assert(service().snapshot('item_that_does_not_exist') === null,
+        'an unknown item has no snapshot');
+      assert(service().snapshot('') === null, 'and neither has no item at all');
+    });
+
+    await run('a snapshot is found wherever the edit happened', () => {
+      const sub = conversation.resolveMessageThread(subThread);
+      const id = addAction(sub, {
+        tool: 'edit',
+        path: 'snapshot/in-sub.js',
+        display: { diffData: { oldContent: 'a\n', newContent: 'b\n', path: 'snapshot/in-sub.js' } },
+      });
+      const snap = service().snapshot(id);
+      assert(snap?.newContent === 'b\n',
+        `a sub-thread's edit is the conversation's edit; got ${JSON.stringify(snap)}`);
     });
 
     // --- the pin gets a copy, not the model -----------------------------------

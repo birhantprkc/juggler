@@ -701,7 +701,7 @@ exist:
 | `services.files` | `onChange(listener)` — files changing on disk, absolute paths. Only inside the open project, and never dot-files: the watcher is rooted at the project and skips them. Offer a way to re-read rather than trusting it to be complete, and never poll for what it does not tell you. |
 | `services.contextItems` | `find(type, from?)` — the nearest context item of a type, as a copy, with the thread it came from; `onChange(listener)` — the items or the focused thread moved, call `find` again; `reveal(threadId)` — bring that thread's column into view. |
 | `services.git` | `status()` — every repository under the project with its branch, upstream divergence, counts and bounded file list, or null before the first read; `error()` — the last read's failure, shown beside the last good status rather than instead of it; `onChange(listener)`; `refresh()`. |
-| `services.fileEdits` | `list({tools, limit})` — the file edits this conversation's transcript records for the tools you name, newest first; `onChange(listener)`; `reveal(itemId)` — select the tool action that made one. You supply the tool names: which tools mutate a file is your knowledge, not the host's. |
+| `services.fileEdits` | `list({tools, limit})` — the file edits this conversation's transcript records for the tools you name, newest first; `snapshot(itemId)` — one edit's before and after, as two whole files, or null; `onChange(listener)`; `reveal(itemId)` — select the tool action that made one. You supply the tool names: which tools mutate a file is your knowledge, not the host's. |
 | `services.tasks` | `list()` — the background tasks this conversation has running, newest first, or null before the first check; `error()`; `onChange(listener)`; `reveal(itemId)` — select the tool action that started one; `stop(taskId)`. |
 
 `contextItems.find()` resolves the way the columns do: the thread the user is
@@ -735,6 +735,13 @@ it is exactly as durable as the conversation and no broader than it. It lists
 what these tools did — never what changed. A shell command or another editor
 writing a file is not here and cannot be, because nothing attributes a bare
 filesystem write to anyone. Say which of the two you are showing.
+
+`fileEdits.snapshot` is the expensive half of that service, and `list` is cheap
+because of it: a snapshot is the file twice over, so ask for one edit at a time,
+at the moment something is going to show it, and never in a loop over a list.
+Null means the transcript did not keep them — say so rather than drawing two
+empty strings, which every diff renderer will show as a file that changed in no
+way.
 
 `services.tasks` is a **live inventory, not a history**: a task leaves the list
 the moment it ends, however it ended, and nothing survives a server restart. That

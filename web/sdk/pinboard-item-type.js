@@ -286,6 +286,14 @@ import { validateManifest } from './lib/manifest.js';
  */
 
 /**
+ * The file as one edit found it and as that edit left it, both in full.
+ * @typedef {object} PinFileSnapshot
+ * @property {string} oldContent - The whole file before the edit, `''` for a file
+ *   the edit created
+ * @property {string} newContent - The whole file after it
+ */
+
+/**
  * What this conversation's tools have done to files, read from the transcript
  * rather than from a ledger kept beside it. Nothing here is inferred: an edit
  * appears because a tool action for it completed successfully, so the list is
@@ -305,6 +313,12 @@ import { validateManifest } from './lib/manifest.js';
  * @property {(listener: () => void) => (() => void)} onChange - Called when the
  *   transcript may have changed. Carries nothing: call `list` again. Returns an
  *   unsubscribe function; the host also drops the subscription on teardown.
+ * @property {(itemId: string) => PinFileSnapshot|null} snapshot - What one edit
+ *   did, as the two whole files it did it to, or null when the transcript did not
+ *   keep them. This is the expensive half of the service and is why `list` is the
+ *   cheap one: a snapshot is the file twice over, so it is asked for one edit at a
+ *   time, at the moment something is going to show it, and never in a loop over a
+ *   list. Hold the result no longer than the display that needed it.
  * @property {(itemId: string) => void} reveal - Select that tool action in the
  *   conversation, opening whatever columns it takes to reach it. Like every
  *   reveal, it happens in the window that has the columns — a detached board's
