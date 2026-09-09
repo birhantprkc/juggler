@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"juggler/internal/apipaths"
 	"juggler/internal/jlog"
 
 	"github.com/gofrs/flock"
@@ -237,7 +238,7 @@ func fetchInstanceHealth(info *InstanceInfo) (*instanceHealth, error) {
 	if info == nil {
 		return nil, nil
 	}
-	url := fmt.Sprintf("http://%s:%d/api/health/instance", info.Host, info.Port)
+	url := fmt.Sprintf("http://%s:%d%s", info.Host, info.Port, apipaths.HealthInstance)
 	client := &http.Client{Timeout: instanceHealthTimeout}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -322,7 +323,7 @@ func RequestGracefulShutdown(info *InstanceInfo) (bool, error) {
 	}
 
 	// Build URL for shutdown endpoint
-	url := fmt.Sprintf("http://%s:%d/api/shutdown", info.Host, info.Port)
+	url := fmt.Sprintf("http://%s:%d%s", info.Host, info.Port, apipaths.Shutdown)
 
 	client := &http.Client{Timeout: shutdownRequestTimeout}
 
@@ -343,7 +344,7 @@ func WaitForShutdown(info *InstanceInfo, timeout time.Duration) bool {
 		return true
 	}
 
-	url := fmt.Sprintf("http://%s:%d/api/health/instance", info.Host, info.Port)
+	url := fmt.Sprintf("http://%s:%d%s", info.Host, info.Port, apipaths.HealthInstance)
 	client := &http.Client{Timeout: shutdownPollInterval * 5}
 
 	deadline := time.Now().Add(timeout)

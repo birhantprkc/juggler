@@ -9,10 +9,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/gorilla/mux"
+
+	"juggler/cmd/juggler/server/handlers"
+	"juggler/internal/apipaths"
 )
 
 const testAPIToken = "test-instance-token-abc123"
@@ -284,6 +288,63 @@ func TestAPIAuthAllowsIPHost(t *testing.T) {
 	}
 }
 
+// TestAPIAuthExemptRoutesAreRegistered pins the correspondence the exempt list
+// asserts and that nothing else can check: every path the gate lets through
+// without a token must be a route this server actually registers.
+//
+// The two are three files apart and the compiler sees neither against the other,
+// so the failure this catches is silent in both directions — a route renamed out
+// from under the gate leaves the desktop app unable to save a window frame, and
+// a gate entry outliving its route leaves an unauthenticated path standing for
+// whatever is registered there next. Walking the real router is what makes the
+// exempt list an assertion rather than a claim.
+func TestAPIAuthExemptRoutesAreRegistered(t *testing.T) {
+	s := &Server{router: mux.NewRouter()}
+	s.setupBootstrapRoutes()
+	// The remaining exempt paths are session routes; a zero SessionAPI is enough
+	// to register them, since nothing here serves a request.
+	s.setupSessionRoutes(&handlers.SessionAPI{})
+
+	var registered []string
+	if err := s.router.Walk(func(route *mux.Route, _ *mux.Router, _ []*mux.Route) error {
+		// A route matched by a function rather than a path has no template.
+		if tmpl, err := route.GetPathTemplate(); err == nil {
+			registered = append(registered, tmpl)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("walking the router: %v", err)
+	}
+
+	for path := range exemptRoutes {
+		if !slices.Contains(registered, path) {
+			t.Errorf("apiAuthExempt admits %s without a token, but no route serves it — "+
+				"registered: %v", path, registered)
+		}
+	}
+}
+
+// TestAPIAuthExemptsNothingByPrefix pins the shape of the exemption rather than
+// its contents: an entry admits its own path and nothing below it, so a route
+// registered beneath an exempt one is gated like any other. A prefix rule is the
+// one way this list could grow to cover a route nobody weighed, since the route
+// it admits need not exist when the rule is written.
+func TestAPIAuthExemptsNothingByPrefix(t *testing.T) {
+	for path := range exemptRoutes {
+		for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete} {
+			if apiAuthExempt(method, path+"/anything") {
+				t.Errorf("%s %s/anything is exempt: an exemption must not extend past its own path",
+					method, path)
+			}
+		}
+	}
+	for _, path := range []string{"/api/test/run", "/api/engine/status", "/api/ops/call"} {
+		if apiAuthExempt(http.MethodPost, path) {
+			t.Errorf("POST %s is exempt from the token gate", path)
+		}
+	}
+}
+
 // TestAPIAuthExemptEndpointsSkipToken confirms cross-process discovery endpoints
 // (probed by peers that cannot know this instance's token) stay reachable.
 func TestAPIAuthExemptEndpointsSkipToken(t *testing.T) {
@@ -293,12 +354,12 @@ func TestAPIAuthExemptEndpointsSkipToken(t *testing.T) {
 		method string
 		path   string
 	}{
-		{http.MethodGet, "/api/health"},
-		{http.MethodGet, "/api/session/window-state"},
-		{http.MethodPut, "/api/session/window-state"},
+		{http.MethodGet, apipaths.Health},
+		{http.MethodGet, apipaths.SessionWindowState},
+		{http.MethodPut, apipaths.SessionWindowState},
 		// The desktop app forgets a closed window's board over this, with no
 		// page and so no token to quote.
-		{http.MethodDelete, "/api/session/pinboard/boards"},
+		{http.MethodDelete, apipaths.SessionPinboardBoards},
 	} {
 		*reached = false
 		req := httptest.NewRequest(tc.method, tc.path, nil)

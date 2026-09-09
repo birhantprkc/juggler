@@ -23,6 +23,7 @@ import (
 	"juggler/cmd/juggler/providers/provider"
 	"juggler/cmd/juggler/server/handlers"
 	"juggler/cmd/juggler/worker"
+	"juggler/internal/apipaths"
 	"juggler/internal/jlog"
 	"juggler/internal/userpaths"
 	"juggler/web"
@@ -167,9 +168,11 @@ func (s *Server) setupSessionRoutes(sessionAPI *handlers.SessionAPI) {
 	api.HandleFunc("/session", sessionAPI.HandleUpdateSession).Methods("PUT")
 	api.HandleFunc("/session/metadata", sessionAPI.HandlePatchSessionMetadata).Methods("PATCH")
 	// Native-window geometry lives with the session (per project), set/read by
-	// the desktop app so each project's window reopens where it was left.
-	api.HandleFunc("/session/window-state", sessionAPI.HandleGetWindowState).Methods("GET")
-	api.HandleFunc("/session/window-state", sessionAPI.HandleSetWindowState).Methods("PUT")
+	// the desktop app so each project's window reopens where it was left. The
+	// desktop app is a second process, so the path is named once in
+	// internal/apipaths rather than here (as is the board delete below).
+	api.HandleFunc(apiRoute(apipaths.SessionWindowState), sessionAPI.HandleGetWindowState).Methods("GET")
+	api.HandleFunc(apiRoute(apipaths.SessionWindowState), sessionAPI.HandleSetWindowState).Methods("PUT")
 	// UI zoom (root font-size) also lives with the session (per project), so a
 	// reopened project window paints at the size the user left it. Unlike
 	// geometry it is applied by the web viewer, which reads the server-injected
@@ -191,8 +194,8 @@ func (s *Server) setupSessionRoutes(sessionAPI *handlers.SessionAPI) {
 	// opening, deleting one is a window being closed for good, and `restore` is a
 	// window asking which boards outlived the last run — answered once, since the
 	// answer is an instruction to open them.
-	api.HandleFunc("/session/pinboard/boards", sessionAPI.HandleCreateBoard).Methods("POST")
-	api.HandleFunc("/session/pinboard/boards", sessionAPI.HandleDeleteBoard).Methods("DELETE")
+	api.HandleFunc(apiRoute(apipaths.SessionPinboardBoards), sessionAPI.HandleCreateBoard).Methods("POST")
+	api.HandleFunc(apiRoute(apipaths.SessionPinboardBoards), sessionAPI.HandleDeleteBoard).Methods("DELETE")
 	api.HandleFunc("/session/pinboard/boards/restore", sessionAPI.HandleRestoreBoards).Methods("POST")
 	api.HandleFunc("/session/ui-zoom", sessionAPI.HandleGetUIZoom).Methods("GET")
 	api.Handle("/session/ui-zoom", localViewerOnly(sessionAPI.HandleSetUIZoom)).Methods("PUT")
@@ -423,16 +426,35 @@ func (s *Server) SetTestLLMCaller(fn worker.LLMCallFunc) {
 	}
 }
 
+// apiRoute is a cross-process path constant as the "/api" subrouter takes it:
+// the same path with the prefix the subrouter already supplies removed. Only
+// the routes named in internal/apipaths are registered this way — the rest are
+// spelled in one place already, so a literal is the clearer thing to read.
+func apiRoute(path string) string {
+	return strings.TrimPrefix(path, apipaths.Prefix)
+}
+
+// setupBootstrapRoutes registers the endpoints a caller reaches before, or
+// without ever, holding this instance's API token: liveness and instance
+// discovery probed by another juggler process, and the two transports whose
+// handshake is what would carry a token. They are the routes apiAuthExempt lets
+// through, so they are registered from the same constants it is keyed by.
+func (s *Server) setupBootstrapRoutes() {
+	api := s.router.PathPrefix(apipaths.Prefix).Subrouter()
+	api.HandleFunc(apiRoute(apipaths.WebSocket), s.handleWebSocket).Methods("GET")
+	api.HandleFunc(apiRoute(apipaths.WebRTCSignal), s.handleWebRTCSignal).Methods("POST")
+	api.HandleFunc(apiRoute(apipaths.Health), s.handleHealth).Methods("GET")
+	api.HandleFunc(apiRoute(apipaths.HealthActive), s.handleHealthActive).Methods("GET")
+	api.HandleFunc(apiRoute(apipaths.HealthInstance), s.handleHealthInstance).Methods("GET")
+	api.HandleFunc(apiRoute(apipaths.Shutdown), s.handleShutdown).Methods("POST")
+}
+
 // setupRoutes configures all HTTP routes
 func (s *Server) setupRoutes() {
+	s.setupBootstrapRoutes()
+
 	// API routes
 	api := s.router.PathPrefix("/api").Subrouter()
-	api.HandleFunc("/ws", s.handleWebSocket).Methods("GET")
-	api.HandleFunc("/webrtc/signal", s.handleWebRTCSignal).Methods("POST")
-	api.HandleFunc("/health", s.handleHealth).Methods("GET")
-	api.HandleFunc("/health/active", s.handleHealthActive).Methods("GET")
-	api.HandleFunc("/health/instance", s.handleHealthInstance).Methods("GET")
-	api.HandleFunc("/shutdown", s.handleShutdown).Methods("POST")
 	api.HandleFunc("/ops/call", s.opsAPI.HandleOperationCall).Methods("POST")
 	api.HandleFunc("/completions/files", s.completionsAPI.HandleFileCompletions).Methods("GET")
 	api.HandleFunc("/completions/path", s.completionsAPI.HandlePathCompletions).Methods("GET")

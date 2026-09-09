@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"syscall"
 	"time"
+
+	"juggler/internal/apipaths"
 )
 
 // StopSubprocess sends SIGTERM and waits up to 5s before killing. Safe to call
@@ -28,7 +30,7 @@ func StopSubprocess(cmd *exec.Cmd) {
 	}
 }
 
-// WaitForServer polls url+/api/health every 100ms until the server returns 200
+// WaitForServer polls url+apipaths.Health every 100ms until the server returns 200
 // or the timeout elapses. Each request is bounded by the readiness budget: the
 // default http client never times out, so a server that accepts the connection
 // but stalls before replying (a wedged engine main thread) would block this
@@ -37,7 +39,7 @@ func WaitForServer(url string, timeout time.Duration) error {
 	client := &http.Client{Timeout: timeout}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		resp, err := client.Get(url + "/api/health")
+		resp, err := client.Get(url + apipaths.Health)
 		if err == nil && resp.StatusCode == http.StatusOK {
 			resp.Body.Close()
 			return nil

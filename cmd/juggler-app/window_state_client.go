@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"juggler/cmd/juggler/core"
+	"juggler/internal/apipaths"
 )
 
 // Window geometry lives with the session it applies to, server-side: the server
@@ -33,7 +34,7 @@ var windowStateHTTP = &http.Client{Timeout: 4 * time.Second}
 // windowStateURL addresses one role's saved frame in the server's current
 // session.
 func windowStateURL(serverURL, role string) string {
-	return strings.TrimRight(serverURL, "/") + "/api/session/window-state?role=" + url.QueryEscape(role)
+	return strings.TrimRight(serverURL, "/") + apipaths.SessionWindowState + "?role=" + url.QueryEscape(role)
 }
 
 // fetchWindowState reads the saved geometry for the project the server is
@@ -123,7 +124,7 @@ func forgetBoard(serverURL, boardID string) {
 		return
 	}
 	endpoint := strings.TrimRight(serverURL, "/") +
-		"/api/session/pinboard/boards?board=" + url.QueryEscape(boardID)
+		apipaths.SessionPinboardBoards + "?board=" + url.QueryEscape(boardID)
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, endpoint, nil)
 	if err != nil {
 		return

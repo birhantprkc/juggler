@@ -10,7 +10,10 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
+
+	"juggler/internal/apipaths"
 )
 
 // mintAPIToken returns a cryptographically-random per-instance token used to
@@ -30,22 +33,24 @@ func mintAPIToken() string {
 	return hex.EncodeToString(b)
 }
 
-// apiAuthExempt reports whether an /api path is reachable without the
-// per-instance token. These are cross-process or bootstrap endpoints a caller
-// legitimately hits before (or without ever) loading the token-bearing page:
+// exemptRoutes is the set of /api paths reachable without the per-instance
+// token, mapped to the methods admitted on each. A nil method list admits every
+// method the route is registered for.
+//
+// These are cross-process or bootstrap endpoints a caller legitimately hits
+// before (or without ever) loading the token-bearing page:
 //   - liveness/instance discovery and cross-instance shutdown coordination,
 //     probed by *other* juggler processes that cannot know this instance's token
 //     (core/lockfile.go, cmd/juggler-app/busy_guard.go);
 //   - native desktop window geometry, read/written by cmd/juggler-app before the
 //     viewer page (and its embedded token) has loaded;
-//   - forgetting the board a window held (DELETE /api/session/pinboard/boards),
-//     which cmd/juggler-app posts as that window closes. It is the other half of
-//     the geometry above — the same call drops the same window's frame — and the
-//     app has no page and so no token to quote;
-//   - the SDP exchange that bootstraps a WebRTC DataChannel;
-//   - the loopback engine's own endpoints (/api/engine/*), served from a page
-//     that carries no token and already gated to the in-process WebView;
-//   - the test harness (/api/test/*), which drives the server headlessly.
+//   - forgetting the board a window held, which cmd/juggler-app posts as that
+//     window closes. It is the other half of the geometry above — the same call
+//     drops the same window's frame — and the app has no page and so no token
+//     to quote;
+//   - the SDP exchange that bootstraps a WebRTC DataChannel, and the viewer
+//     WebSocket, whose upgrade carries the token as a query param instead
+//     (see websocket_loop.go).
 //
 // None of these execute tools or expose credentials, so leaving them open does
 // not reopen the RCE vector the token closes.
@@ -56,16 +61,33 @@ func mintAPIToken() string {
 // random, and every route that would reveal one — the boards themselves, the
 // session — stays gated. Reading is what the token is really protecting, and
 // none of it is opened here.
+//
+// Every key is a path constant from internal/apipaths, which is also what
+// registers the route — so the gate and the route cannot be renamed apart, and
+// TestAPIAuthExemptRoutesAreRegistered pins that each one still names a route
+// the server actually serves.
+var exemptRoutes = map[string][]string{
+	apipaths.Health:                nil,
+	apipaths.HealthActive:          nil,
+	apipaths.HealthInstance:        nil,
+	apipaths.Shutdown:              nil,
+	apipaths.SessionWindowState:    nil,
+	apipaths.WebRTCSignal:          nil,
+	apipaths.WebSocket:             nil,
+	apipaths.SessionPinboardBoards: {http.MethodDelete},
+}
+
+// apiAuthExempt reports whether an /api request is reachable without the
+// per-instance token (see exemptRoutes for which, and why).
+//
+// The exempt set is exactly those paths: nothing is admitted by prefix. The
+// test harness (/api/test/*) and the engine's status endpoint (/api/engine/*)
+// need no exemption of their own, because the only server that serves them is
+// one RegisterTestRoutes has run against — and that sets testMode, which takes
+// this gate out of the request path altogether.
 func apiAuthExempt(method, path string) bool {
-	switch path {
-	case "/api/health", "/api/health/active", "/api/health/instance",
-		"/api/session/window-state",
-		"/api/shutdown", "/api/webrtc/signal", "/api/ws":
-		return true
-	case "/api/session/pinboard/boards":
-		return method == http.MethodDelete
-	}
-	return strings.HasPrefix(path, "/api/engine/") || strings.HasPrefix(path, "/api/test/")
+	methods, ok := exemptRoutes[path]
+	return ok && (methods == nil || slices.Contains(methods, method))
 }
 
 // hostAllowed is the DNS-rebinding defense (§S.2): a gated /api request's Host

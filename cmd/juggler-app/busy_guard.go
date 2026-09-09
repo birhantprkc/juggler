@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"juggler/internal/apipaths"
+
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
@@ -34,7 +36,7 @@ var busyHTTP = &http.Client{Timeout: 2 * time.Second}
 // turn (approval-parked turns excluded — see /api/health/active). Returns 0 on
 // any error (fail-open: an unreachable server has nothing to lose).
 func serverBusy(serverURL string) int {
-	url := strings.TrimRight(serverURL, "/") + "/api/health/active"
+	url := strings.TrimRight(serverURL, "/") + apipaths.HealthActive
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
 	if err != nil {
 		return 0
