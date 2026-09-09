@@ -276,11 +276,14 @@ func runTestPoolWindowApp(srv *server.Server, devMode bool, headless bool, testI
 	}
 
 	wa := &windowApp{
-		srv:           srv,
-		headless:      headless,
-		testMode:      testMode,
-		saved:         saved,
-		geom:          windowgeom.NewTracker(saved),
+		srv:      srv,
+		headless: headless,
+		testMode: testMode,
+		saved:    saved,
+		// No screen provider: this window is parked off-screen on purpose, so the
+		// reachability check Capture makes for the desktop app has nothing useful
+		// to say here and would only refuse every write.
+		geom:          windowgeom.NewTracker(saved, nil),
 		saves:         windowgeom.NewDebouncer(),
 		onWindowReady: onWindowReady,
 	}

@@ -29,7 +29,7 @@ func (w fakeWindow) Size() (int, int) {
 
 func TestCaptureIgnoresMinimisedWindow(t *testing.T) {
 	seed := core.WindowState{X: 120, Y: 80, Width: 1400, Height: 900, HasPos: true}
-	tracker := NewTracker(seed)
+	tracker := NewTracker(seed, testScreens)
 
 	if got, ok := tracker.Capture(fakeWindow{
 		minimised: true,
@@ -47,6 +47,26 @@ func TestCaptureIgnoresMinimisedWindow(t *testing.T) {
 	}
 	if got.X != 150 || got.Y != 100 || got.Width != 1300 || got.Height != 800 {
 		t.Fatalf("Capture() after restore = %+v, want restored frame", got)
+	}
+}
+
+// A window restored from a stale off-screen frame and then maximised by the
+// user has never been at the frame it was seeded with. Capture must not write
+// that frame back, or the rescue survives only until the window is closed and
+// the next launch is stranded all over again.
+func TestCaptureMaximisedDoesNotPersistAStrandedSeed(t *testing.T) {
+	stranded := core.WindowState{X: -32000, Y: -32000, Width: 1400, Height: 900, HasPos: true}
+	tracker := NewTracker(stranded, testScreens)
+
+	got, ok := tracker.Capture(fakeWindow{
+		maximised: true,
+		x:         0,
+		y:         0,
+		width:     1920,
+		height:    1040,
+	})
+	if ok && got.X == stranded.X && got.Y == stranded.Y {
+		t.Fatalf("Capture() while maximised = (%+v, true), want it to refuse the stranded seed", got)
 	}
 }
 
@@ -171,6 +191,115 @@ func TestFitOnScreenIgnoresAFrameWithNothingToFit(t *testing.T) {
 	frame := core.WindowState{X: 4000, Y: 4000, Width: 800, Height: 600, HasPos: true}
 	if got := FitOnScreen(frame, nil); got != frame {
 		t.Errorf("FitOnScreen() with no screens = %+v, want it untouched", got)
+	}
+}
+
+// The startup hole this whole rescue exists for: Wails fills its screen cache
+// inside Run(), and the initial window is placed before Run, so the frame is
+// judged against nothing. Nothing can be decided from an empty screen list, so
+// the saved frame has to pass through untouched — which is why the live frame
+// is re-checked once the app is up.
+func TestStrandedCannotJudgeWithoutScreens(t *testing.T) {
+	frame := core.WindowState{X: -32000, Y: -32000, Width: 1400, Height: 900, HasPos: true}
+
+	if Stranded(frame, nil) {
+		t.Error("Stranded() with no screens = true, want false — there is nothing to judge against")
+	}
+	if Stranded(frame, []*application.Screen{}) {
+		t.Error("Stranded() with an empty screen list = true, want false")
+	}
+	if !Stranded(frame, testScreens()) {
+		t.Error("Stranded() with real screens = false, want true for a parked frame")
+	}
+
+	saved := PlaceVisible(frame, nil)
+	if saved.Position != application.WindowXY || saved.X != frame.X || saved.Y != frame.Y {
+		t.Errorf("PlaceVisible() with no screens = %+v, want the saved frame passed through", saved)
+	}
+}
+
+// A frame with no position cannot strand: it is placed by the centring default,
+// which is on-screen by construction.
+func TestStrandedIgnoresAFrameWithNoPosition(t *testing.T) {
+	if Stranded(core.WindowState{Width: 1400, Height: 900}, testScreens()) {
+		t.Error("Stranded() for a frame with no position = true, want false")
+	}
+}
+
+func TestRescueFrameCentresOnPrimaryAndShrinksToFit(t *testing.T) {
+	screens := testScreens()
+	got, moved := RescueFrame(core.WindowState{X: -32000, Y: -32000, Width: 3000, Height: 2000, HasPos: true}, screens)
+	if !moved {
+		t.Fatal("RescueFrame() moved = false, want true for a parked frame")
+	}
+	if got.Width != 1920 || got.Height != 1040 {
+		t.Errorf("RescueFrame() size = %dx%d, want it shrunk to the 1920x1040 work area", got.Width, got.Height)
+	}
+	if got.X != 0 || got.Y != 0 {
+		t.Errorf("RescueFrame() position = %d,%d, want it centred on the primary work area", got.X, got.Y)
+	}
+
+	smaller, _ := RescueFrame(core.WindowState{X: 9000, Y: 9000, Width: 920, Height: 40, HasPos: true}, screens)
+	if smaller.X != (1920-920)/2 || smaller.Y != (1040-40)/2 {
+		t.Errorf("RescueFrame() position = %d,%d, want it centred", smaller.X, smaller.Y)
+	}
+}
+
+// A window that is reachable, and a window with no display to be moved onto,
+// are both left exactly where they are.
+func TestRescueFrameLeavesAReachableWindowAlone(t *testing.T) {
+	onScreen := core.WindowState{X: 100, Y: 100, Width: 800, Height: 600, HasPos: true}
+	if got, moved := RescueFrame(onScreen, testScreens()); moved || got != onScreen {
+		t.Errorf("RescueFrame() = (%+v, %v), want it untouched and false", got, moved)
+	}
+
+	// The second display's frame, which is stranded only if you forget it exists.
+	onSecond := core.WindowState{X: -1200, Y: 50, Width: 1000, Height: 800, HasPos: true}
+	if got, moved := RescueFrame(onSecond, testScreens()); moved || got != onSecond {
+		t.Errorf("RescueFrame() on the second display = (%+v, %v), want it untouched", got, moved)
+	}
+
+	parked := core.WindowState{X: -32000, Y: -32000, Width: 800, Height: 600, HasPos: true}
+	if got, moved := RescueFrame(parked, nil); moved || got != parked {
+		t.Errorf("RescueFrame() with no screens = (%+v, %v), want it untouched", got, moved)
+	}
+}
+
+// Seeding the tracker from the saved frame rather than the placement is what
+// let a rescued window write back the frame it was rescued from. A refused
+// frame becomes a centred placement, which seeds a size and no position.
+func TestSeedTakesThePlacementNotTheSavedFrame(t *testing.T) {
+	strandedSave := core.WindowState{X: -32000, Y: -32000, Width: 1400, Height: 900, HasPos: true}
+
+	seed := Seed(PlaceVisible(strandedSave, testScreens()))
+	if seed.HasPos {
+		t.Errorf("Seed() of a rescued placement = %+v, want no position", seed)
+	}
+	if seed.Width != 1400 || seed.Height != 900 {
+		t.Errorf("Seed() size = %dx%d, want the saved 1400x900 kept", seed.Width, seed.Height)
+	}
+
+	kept := core.WindowState{X: 120, Y: 80, Width: 1000, Height: 800, HasPos: true}
+	seed = Seed(PlaceVisible(kept, testScreens()))
+	if !seed.HasPos || seed.X != 120 || seed.Y != 80 {
+		t.Errorf("Seed() of an honoured placement = %+v, want the saved position", seed)
+	}
+}
+
+// A tracker seeded from a rescued placement has no restore frame to offer while
+// the window is maximised, and must say so rather than invent one.
+func TestCaptureMaximisedWithNoSeedDeclines(t *testing.T) {
+	tracker := NewTracker(Seed(PlaceVisible(
+		core.WindowState{X: -32000, Y: -32000, Width: 1400, Height: 900, HasPos: true}, testScreens())), testScreens)
+
+	if got, ok := tracker.Capture(fakeWindow{maximised: true, width: 1920, height: 1040}); ok {
+		t.Fatalf("Capture() = (%+v, true), want (_, false) with no normal-state frame known", got)
+	}
+
+	// Restored: the live frame is real, so it is both kept and reported.
+	got, ok := tracker.Capture(fakeWindow{x: 200, y: 150, width: 1000, height: 800})
+	if !ok || got.X != 200 || got.Y != 150 {
+		t.Fatalf("Capture() after restore = (%+v, %v), want the live frame", got, ok)
 	}
 }
 

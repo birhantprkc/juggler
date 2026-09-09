@@ -11,8 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"juggler/cmd/juggler/core"
 	"juggler/internal/jlog"
 	"juggler/internal/webviewenv"
+	"juggler/internal/windowgeom"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -43,6 +45,7 @@ func (a *appState) revealInitialWindowWhenReady(e *winEntry) {
 				continue
 			}
 			application.InvokeAsync(func() {
+				a.rescueStrandedWindow(e)
 				if e.win.IsVisible() {
 					return
 				}
@@ -52,6 +55,94 @@ func (a *appState) revealInitialWindowWhenReady(e *winEntry) {
 			return
 		}
 	}
+}
+
+// rescueStrandedWindow moves a window that has come up where the user can
+// neither see nor drag it back onto the primary display, and persists the
+// corrected frame.
+//
+// It exists because the placement decision at build time cannot be trusted to
+// have been an informed one. Wails populates its screen cache inside Run(), and
+// the initial window is built before Run, so windowgeom.PlaceVisible judges the
+// saved frame against an empty screen list and passes anything through. This is
+// the same question asked once the answer is available, against the frame the
+// window actually ended up in — which also covers the placement being
+// undermined afterwards, as when Wails maximises a window and then moves it to
+// the saved coordinates anyway.
+//
+// Runs on the main thread, before the window is revealed, so a rescue is not a
+// visible jump. Must not run before the native frame exists: Position and Size
+// answer zeros until then, which reads as a window with nothing to judge.
+func (a *appState) rescueStrandedWindow(e *winEntry) {
+	if e.win.IsMinimised() {
+		return
+	}
+	x, y := e.win.Position()
+	width, height := e.win.Size()
+	if width <= 0 || height <= 0 {
+		return
+	}
+	live := core.WindowState{X: x, Y: y, Width: width, Height: height, HasPos: true}
+	screens := a.app.Screen.GetAll()
+	rescued, moved := windowgeom.RescueFrame(live, screens)
+	if !moved {
+		return
+	}
+	logf("window %s came up unreachable at %s (screens %s); moving it to %s",
+		e.id, describeFrame(live), describeScreens(screens), describeFrame(rescued))
+	if rescued.Width != live.Width || rescued.Height != live.Height {
+		e.win.SetSize(rescued.Width, rescued.Height)
+	}
+	e.win.SetPosition(rescued.X, rescued.Y)
+	// Write the corrected frame back rather than waiting for the user to move the
+	// window: a session poisoned by an older build otherwise strands every launch
+	// from here on, which is exactly the loop this is here to break.
+	e.triggerSave()
+}
+
+// describeFrame renders a frame as one log token.
+func describeFrame(f core.WindowState) string {
+	if !f.HasPos {
+		return fmt.Sprintf("%dx%d@centred", f.Width, f.Height)
+	}
+	return fmt.Sprintf("%dx%d@%d,%d", f.Width, f.Height, f.X, f.Y)
+}
+
+// describeScreens renders the work areas a frame was judged against, primary
+// marked with a star. "none" is a diagnosis rather than a missing detail: it
+// means the screen cache was empty and no frame could be judged at all.
+func describeScreens(screens []*application.Screen) string {
+	if len(screens) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(screens))
+	for _, s := range screens {
+		if s == nil {
+			continue
+		}
+		mark := ""
+		if s.IsPrimary {
+			mark = "*"
+		}
+		parts = append(parts, fmt.Sprintf("%s%dx%d@%d,%d", mark, s.WorkArea.Width, s.WorkArea.Height, s.WorkArea.X, s.WorkArea.Y))
+	}
+	return strings.Join(parts, " ")
+}
+
+// describePlacement renders the placement a window is about to be opened with.
+func describePlacement(p windowgeom.Placement) string {
+	where := fmt.Sprintf("%d,%d", p.X, p.Y)
+	if p.Position != application.WindowXY {
+		where = "centred"
+	}
+	state := ""
+	switch p.State {
+	case application.WindowStateMaximised:
+		state = " maximised"
+	case application.WindowStateFullscreen:
+		state = " fullscreen"
+	}
+	return fmt.Sprintf("%dx%d@%s%s", p.Width, p.Height, where, state)
 }
 
 // fatalf reports an unrecoverable window-startup failure as loudly as possible —

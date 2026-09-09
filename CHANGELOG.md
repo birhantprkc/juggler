@@ -10,6 +10,7 @@ of changes; this project follows semantic versioning.
 - Code blocks in replies are syntax-highlighted, as are diffs, in the language of the file
 - A block comment or multi-line string keeps its colour across every line it covers
 - A file in the Changed files pin opens onto everything this conversation did to it, as one diff
+- A window that starts up off-screen is now brought back, instead of running where you can't see it
 
 ## [0.6.1] - 2026-09-09
 

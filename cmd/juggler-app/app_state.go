@@ -413,6 +413,7 @@ func (a *appState) run(specs []windowSpec) error {
 						fatalf("panic while showing initial window: %v", r)
 					}
 				}()
+				a.rescueStrandedWindow(initial)
 				a.showWindow(initial)
 			})
 		} else {
@@ -893,7 +894,7 @@ func (a *appState) buildLockedProjectWindow(spec windowSpec, message, inheritedT
 	if win == nil {
 		fatalf("Window.NewWithOptions returned nil for locked project %s", id)
 	}
-	e := &winEntry{id: id, win: win, spec: spec, role: roleMain, currentTheme: startupTheme, geom: windowgeom.NewTracker(core.WindowState{}), saves: windowgeom.NewDebouncer(), stopSave: make(chan struct{})}
+	e := &winEntry{id: id, win: win, spec: spec, role: roleMain, currentTheme: startupTheme, geom: windowgeom.NewTracker(core.WindowState{}, a.app.Screen.GetAll), saves: windowgeom.NewDebouncer(), stopSave: make(chan struct{})}
 	a.reg(func(st *regState) { st.windows[id] = e })
 	a.persistWorkspace()
 	win.OnWindowEvent(events.Common.WindowClosing, func(_ *application.WindowEvent) { a.handleWindowClosed(e) })
@@ -937,9 +938,15 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 	// by the caller, read from the server), else over the panel a board was
 	// popped out of, else at a centred default (see openingFrame). The opener's
 	// frame is read live, which is why this is on the main thread.
+	//
+	// Wails fills its screen cache inside Run(), so the initial window — built
+	// before Run — is placed against no screens at all and PlaceVisible cannot
+	// judge it. rescueStrandedWindow re-checks the live frame once the app is up;
+	// this log line is what says which of the two decided the outcome.
 	screens := a.app.Screen.GetAll()
 	frame := openingFrame(saved, hasSaved, opts, a.openerFrame(opts.openedBy), screens)
 	place := windowgeom.PlaceVisible(frame, screens)
+	logf("placing window %s: saved=%s screens=%s → %s", id, describeFrame(frame), describeScreens(screens), describePlacement(place))
 	width, height := place.Width, place.Height
 	posX, posY := place.X, place.Y
 	initialPos, startState := place.Position, place.State
@@ -948,6 +955,7 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 	// down-right until its top-left no longer coincides with another window.
 	if initialPos == application.WindowXY {
 		posX, posY = a.cascadeFrom(posX, posY)
+		place.X, place.Y = posX, posY
 	}
 
 	win := a.app.Window.NewWithOptions(application.WebviewWindowOptions{
@@ -1024,7 +1032,7 @@ func (a *appState) buildWindow(spec windowSpec, serverURL string, serverProc *ex
 		role:         opts.role(),
 		board:        opts.board,
 		openedBy:     opts.openedBy,
-		geom:         windowgeom.NewTracker(frame),
+		geom:         windowgeom.NewTracker(windowgeom.Seed(place), a.app.Screen.GetAll),
 		saves:        windowgeom.NewDebouncer(),
 		stopSave:     make(chan struct{}),
 		currentTheme: startupTheme,
