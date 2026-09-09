@@ -24,6 +24,14 @@
  *
  * The text is assumed to only ever GROW at the end. A rewrite of the sealed
  * prefix is detected by fingerprint and answered with a full re-render.
+ *
+ * Syntax highlighting follows the same split. Anything parsed once and left
+ * alone — a sealed segment, or a whole message rendered from history — is
+ * coloured as it is parsed. The live tail is not: a fence that is still arriving
+ * would be re-tokenised on every delta, for tokens that are wrong until it
+ * closes. The tail is coloured once the text stops growing (see SETTLE_MS),
+ * which is also what covers a code block at the very end of a reply, where
+ * nothing follows it to seal it.
  * @module utils/streaming-markdown
  */
 
@@ -51,6 +59,33 @@ const FINGERPRINT_LEN = 64;
  * line), so the detector never starts exactly where the last one stopped.
  */
 const DETECT_OVERLAP = 512;
+
+/**
+ * Quiet period after which the live tail is syntax-highlighted. Deltas arrive
+ * far faster than this while a reply streams, so in practice the pass runs once,
+ * when the text stops growing; a provider that stalls mid-block pays for one
+ * extra pass, which is idempotent.
+ */
+const SETTLE_MS = 250;
+
+/**
+ * Whether `text` stops inside an unclosed fenced code block.
+ *
+ * Only ever asked of text about to be rendered whole, to tell a reply that has
+ * finished arriving from one caught mid-block: the first is worth colouring
+ * immediately, the second would be coloured on tokens that are still wrong.
+ * @param {string} text - The full accumulated text.
+ * @returns {boolean} True when a fence is still open at the end of the text.
+ */
+function endsInsideFence(text) {
+  /** The marker that opened the fence we are inside, or '' when outside one. */
+  let fence = '';
+  for (const line of text.split('\n')) {
+    const opener = FENCE_RE.exec(line)?.[1];
+    if (opener && (!fence || opener === fence)) fence = fence ? '' : opener;
+  }
+  return fence !== '';
+}
 
 /**
  * The end of the longest prefix of `text` that can be parsed now and never
@@ -110,7 +145,9 @@ export function findSealPoint(text, from) {
  * @param {boolean} [options.detect=true] - Choose between Markdown and verbatim
  *   per update. False renders as Markdown always, for a source that is known to
  *   be Markdown (an assistant reply) rather than possibly raw prose.
- * @returns {{update: (text: string) => void, reset: () => void}} Controller.
+ * @returns {{update: (text: string) => void, reset: () => void, settle: () => void}}
+ *   Controller. `settle` highlights the live tail immediately; it is armed
+ *   automatically on a quiet period, so callers rarely need to call it.
  */
 export function createStreamingMarkdown(host, options = {}) {
   const { escapeXml = true, detect = true } = options;
@@ -128,6 +165,30 @@ export function createStreamingMarkdown(host, options = {}) {
   let marker = null;
   /** How much of the text the Markdown detector has already looked at. */
   let detectedUpTo = 0;
+  /** Pending settle pass, re-armed by each update. */
+  let settleTimer = 0;
+
+  const disarmSettle = () => {
+    if (settleTimer) clearTimeout(settleTimer);
+    settleTimer = 0;
+  };
+
+  /**
+   * Colour what is still live. Sealed nodes were coloured as they were sealed;
+   * this catches the tail — above all a fenced block at the very end of a reply,
+   * which never seals because nothing follows it. Idempotent, since
+   * decorateCodeBlocks leaves a block it has already coloured alone.
+   */
+  const settle = () => {
+    disarmSettle();
+    if (mode === 'markdown') decorateCodeBlocks(host, { highlight: true });
+  };
+
+  /** Push the settle pass out past the next delta. */
+  const armSettle = () => {
+    disarmSettle();
+    settleTimer = setTimeout(settle, SETTLE_MS);
+  };
 
   const reset = () => {
     mode = null;
@@ -136,6 +197,7 @@ export function createStreamingMarkdown(host, options = {}) {
     refDefSeen = false;
     marker = null;
     detectedUpTo = 0;
+    disarmSettle();
     host.replaceChildren();
   };
 
@@ -160,12 +222,16 @@ export function createStreamingMarkdown(host, options = {}) {
    * holder. Decorating before insertion keeps the pass proportional to the new
    * segment rather than to everything rendered so far.
    * @param {string} md - Markdown source for one or more whole blocks.
+   * @param {boolean} highlight - Syntax-highlight this segment's code blocks.
+   *   True for text that will not be parsed again — a sealed segment, or a whole
+   *   message rendered from history, which is the shape of every reply already
+   *   on screen when a conversation opens.
    * @returns {HTMLElement} Holder whose children are the rendered nodes.
    */
-  const parse = (md) => {
+  const parse = (md, highlight) => {
     const holder = document.createElement('div');
     holder.innerHTML = renderMarkdown(md, { escapeXml });
-    decorateCodeBlocks(holder);
+    decorateCodeBlocks(holder, { highlight });
     return holder;
   };
 
@@ -182,7 +248,11 @@ export function createStreamingMarkdown(host, options = {}) {
     host.replaceChildren();
     marker = document.createComment('live');
     host.appendChild(marker);
-    moveInto(parse(text), null);
+    // The one place the tail is worth colouring up front: a reply restored from
+    // history renders here exactly once, and waiting out the settle pass would
+    // show every code block in the conversation uncoloured first. Text stopping
+    // inside an open fence is a reply still arriving, so it waits.
+    moveInto(parse(text, !endsInsideFence(text)), null);
     sealedUpTo = 0;
     fingerprint = '';
   };
@@ -202,6 +272,7 @@ export function createStreamingMarkdown(host, options = {}) {
 
   return {
     reset,
+    settle,
 
     /** @param {string} text - The full accumulated text, so far. */
     update(text) {
@@ -212,6 +283,7 @@ export function createStreamingMarkdown(host, options = {}) {
         renderPlain(text);
         mode = 'plain';
         host.className = 'plain';
+        disarmSettle();
         return;
       }
 
@@ -226,6 +298,7 @@ export function createStreamingMarkdown(host, options = {}) {
 
       if (restart) {
         renderWhole(text);
+        armSettle();
         return;
       }
 
@@ -239,16 +312,18 @@ export function createStreamingMarkdown(host, options = {}) {
           // was sealed may now be wrong: re-parse the lot, and stop sealing.
           refDefSeen = true;
           renderWhole(text);
+          armSettle();
           return;
         }
         if (seal > sealedUpTo) {
-          moveInto(parse(text.slice(sealedUpTo, seal)), live);
+          moveInto(parse(text.slice(sealedUpTo, seal), true), live);
           sealedUpTo = seal;
           fingerprint = text.slice(Math.max(0, seal - FINGERPRINT_LEN), seal);
         }
       }
 
-      moveInto(parse(text.slice(sealedUpTo)), null);
+      moveInto(parse(text.slice(sealedUpTo), false), null);
+      armSettle();
     },
   };
 }

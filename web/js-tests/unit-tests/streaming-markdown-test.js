@@ -100,6 +100,9 @@ export async function runTests(_ctx) {
       for (let i = 1; i <= steps; i++) {
         s.update(text.slice(0, Math.round((text.length * i) / steps)));
       }
+      // Settle rather than waiting out the debounce: the comparison is against
+      // fully-rendered output, and a timing-dependent test would be flaky.
+      s.settle();
       return { html: markup(host), parsedChars };
     } finally {
       Object.defineProperty(window, 'marked', { configurable: true, writable: true, value: real });
@@ -115,7 +118,9 @@ export async function runTests(_ctx) {
   const oneShot = (text) => {
     const host = mount();
     try {
-      createStreamingMarkdown(host, { escapeXml: true }).update(text);
+      const s = createStreamingMarkdown(host, { escapeXml: true });
+      s.update(text);
+      s.settle();
       return markup(host);
     } finally { host.remove(); }
   };
@@ -251,6 +256,45 @@ export async function runTests(_ctx) {
       assert(host.className === 'markdown', `expected a switch to Markdown, was "${host.className}"`);
       assert(!!host.querySelector('strong'), 'the construct renders');
       assert(!host.textContent.includes('**'), 'the markers are consumed, not shown');
+    } finally { host.remove(); }
+  });
+
+  await run('a complete reply is highlighted on the spot, a half-arrived fence is not', () => {
+    const host = mount();
+    try {
+      // A reply restored from history: complete, rendered in one go, coloured
+      // immediately — the shape of every message on screen when a tab opens.
+      const s = createStreamingMarkdown(host, { escapeXml: false, detect: false });
+      s.update('Here:\n\n```js\nconst a = 1;\n```\n');
+      assert(host.querySelector('pre code .token') !== null, 'a complete reply should be coloured');
+
+      const live = mount();
+      try {
+        const t = createStreamingMarkdown(live, { escapeXml: false, detect: false });
+        t.update('Trying this:\n\n```js\nconst a = 1;');
+        assert(live.querySelector('pre code') !== null, 'the partial block should still render');
+        assert(live.querySelector('pre code .token') === null,
+          'a fence that is still arriving must not be tokenised');
+      } finally { live.remove(); }
+    } finally { host.remove(); }
+  });
+
+  await run('a sealed fence is highlighted, and the trailing one when it settles', () => {
+    const host = mount();
+    try {
+      const s = createStreamingMarkdown(host, { escapeXml: false, detect: false });
+      s.update('Trying this:\n\n```js\nconst a = 1;');
+      // Closed, with a blank line and more text after it: the block seals.
+      s.update('Trying this:\n\n```js\nconst a = 1;\n```\n\nThat should do it.\n\nAnd then:\n\n```js\nconst b = 2;');
+      const blocks = host.querySelectorAll('pre code');
+      assert(blocks.length === 2, `expected two blocks, got ${blocks.length}`);
+      assert(blocks[0]?.querySelector('.token') !== null, 'the sealed fence should be coloured');
+      assert(blocks[1]?.querySelector('.token') === null, 'the live tail should not be');
+      assert(blocks[0]?.textContent?.trim() === 'const a = 1;', 'highlighting changed the visible text');
+
+      s.settle();
+      assert(host.querySelectorAll('pre code')[1]?.querySelector('.token') !== null,
+        'settling should colour the trailing block');
     } finally { host.remove(); }
   });
 

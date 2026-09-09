@@ -4,11 +4,21 @@
 
 import { computeDiff } from '../lib/diff-utils.js';
 import { escapeHtml } from '../../sdk/lib/html.js';
+import { highlightCodeLines } from '../../sdk/lib/syntax-highlight.js';
+import { languageForPath } from '../../sdk/lib/languages.js';
 import { registerContextMenuProvider } from '../services/context-menu-service.js';
 import { copyToClipboard } from '../../sdk/lib/clipboard.js';
 
 /** @typedef {import('../lib/diff-types.js').DiffHunk} DiffHunk */
 /** @typedef {import('../lib/diff-types.js').DiffLine} DiffLine */
+/** @typedef {{source: string[], markup: string[]}} DiffSide */
+
+/**
+ * Largest side of a diff that is syntax-highlighted. Both sides are tokenised
+ * whole so a hunk sees the file around it, which is linear but not free; past
+ * this the diff stays plain rather than stalling the panel it renders into.
+ */
+const MAX_HIGHLIGHT_CHARS = 200_000;
 
 /**
  * DiffViewer - Display file diffs in inline view
@@ -26,6 +36,8 @@ class DiffViewer extends HTMLElement {
     this.filePath = '';
     /** @type {number} @private */
     this.startLineNumber = 1;
+    /** @type {{old: DiffSide, new: DiffSide}|null} @private */
+    this.highlighted = null;
   }
 
   connectedCallback() {
@@ -47,10 +59,36 @@ class DiffViewer extends HTMLElement {
     this.render();
   }
 
+  /**
+   * Tokenise both sides of the diff, once, into per-line markup.
+   *
+   * Highlighting the whole of each side rather than the visible hunks is
+   * deliberate: a hunk is a window into the middle of a file, and a line taken
+   * on its own tokenises wrong — the inside of a block comment reads as code.
+   * The arrays are indexed by `lineNum - startLineNumber`, the numbering
+   * `computeDiff` derives from splitting these same two strings; the source
+   * lines are kept beside the markup so a line is only ever coloured when the
+   * text at that index is provably the line being rendered.
+   * @returns {{old: DiffSide, new: DiffSide}|null} Per-line markup, or null when
+   *   the diff is left plain (unknown file type, or too large to be worth it).
+   * @private
+   */
+  highlightSides() {
+    const language = languageForPath(this.filePath);
+    if (language === 'text') return null;
+    if (this.oldContent.length > MAX_HIGHLIGHT_CHARS) return null;
+    if (this.newContent.length > MAX_HIGHLIGHT_CHARS) return null;
+    return {
+      old: { source: this.oldContent.split('\n'), markup: highlightCodeLines(this.oldContent, language) },
+      new: { source: this.newContent.split('\n'), markup: highlightCodeLines(this.newContent, language) },
+    };
+  }
+
   /** @private */
   render() {
     // compute hunks via shared util; cast to any to satisfy checkJs where needed
     const hunks = /** @type {any} */ (computeDiff(this.oldContent, this.newContent, this.startLineNumber));
+    this.highlighted = this.highlightSides();
 
     this.innerHTML = `
       <diff-content>
@@ -100,25 +138,80 @@ class DiffViewer extends HTMLElement {
   }
 
   /**
-   * Render a line, applying character highlights if present
+   * The syntax-highlighted markup for a line, or its escaped text when the diff
+   * is not being highlighted.
+   * @param {DiffLine} line
+   * @returns {string} Safe HTML for the line's content.
+   * @private
+   */
+  lineMarkup(line) {
+    const sides = this.highlighted;
+    if (sides) {
+      const side = line.type === 'add' ? sides.new : sides.old;
+      const number = line.type === 'add' ? line.newLineNum : line.oldLineNum;
+      const index = (number ?? 0) - this.startLineNumber;
+      // Only take the tokenised line when the text at that index is the line in
+      // hand: an index that has drifted would show the wrong line's content and
+      // look like a diff bug rather than a highlighting one.
+      if (side.source[index] === line.content) return side.markup[index] ?? escapeHtml(line.content);
+    }
+    return escapeHtml(line.content);
+  }
+
+  /**
+   * Render a line, applying character highlights if present.
+   *
+   * The character ranges and the syntax tokens are two layers over the same
+   * text, so the marks go onto the *rendered* line rather than being spliced
+   * into the source: the line is parsed, its text nodes are walked to find the
+   * range, and only that run is wrapped. A range straddling a token boundary
+   * therefore yields one `<mark>` per token instead of breaking either layer.
    * @param {DiffLine} line
    * @returns {string} HTML string of the line with character changes highlighted.
    * @private
    */
   renderLineWithCharChanges(line) {
-    if (!line.charChanges || line.charChanges.length === 0) return escapeHtml(line.content);
+    const html = this.lineMarkup(line);
+    const changes = line.charChanges;
+    if (!changes || changes.length === 0) return html;
 
-    let html = '';
-    let pos = 0;
-    const changes = [...line.charChanges].sort((a, b) => a.start - b.start);
-    for (const change of changes) {
-      if (change.start > pos) html += escapeHtml(line.content.substring(pos, change.start));
-      const changedText = line.content.substring(change.start, change.start + change.length);
-      html += `<mark class="char-${change.type}">${escapeHtml(changedText)}</mark>`;
-      pos = change.start + change.length;
+    const template = document.createElement('template');
+    template.innerHTML = html;
+
+    /** @type {{node: Text, start: number}[]} */
+    const nodes = [];
+    let offset = 0;
+    const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const node = /** @type {Text} */ (walker.currentNode);
+      nodes.push({ node, start: offset });
+      offset += node.data.length;
     }
-    if (pos < line.content.length) html += escapeHtml(line.content.substring(pos));
-    return html;
+
+    for (const { node, start } of nodes) {
+      const end = start + node.data.length;
+      // Clipped to this text node, then applied right to left: splitting keeps
+      // the head in `node`, so every range still to come stays addressable.
+      const ranges = changes
+        .map((change) => ({
+          from: Math.max(change.start, start) - start,
+          to: Math.min(change.start + change.length, end) - start,
+          type: change.type,
+        }))
+        .filter((range) => range.to > range.from)
+        .sort((a, b) => b.from - a.from);
+
+      for (const range of ranges) {
+        node.splitText(range.to);
+        const changed = node.splitText(range.from);
+        const mark = document.createElement('mark');
+        mark.className = `char-${range.type}`;
+        changed.parentNode?.insertBefore(mark, changed);
+        mark.appendChild(changed);
+      }
+    }
+
+    return template.innerHTML;
   }
 
   /**

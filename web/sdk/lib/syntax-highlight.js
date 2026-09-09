@@ -9,9 +9,14 @@
  * Every place that turns code + a language into coloured DOM funnels through
  * `highlightCode` here: tile summaries (`createHighlightedCode`), properties-
  * panel subsections (`createCopyableText({ language })`), the shared file-code
- * renderer (`createCodeBlock`), and the `<code-block>` element. Add a new
+ * renderer (`createCodeBlock`), fenced blocks in rendered markdown, and the
+ * `<code-block>` element. A surface that lays code out a line at a time — a
+ * line-numbered grid, a diff row — uses `highlightCodeLines` instead. Add a new
  * highlighted surface by calling one of these — don't reach for a second
  * highlighter.
+ *
+ * Which grammar a file or fence resolves to is `./languages.js`; this module
+ * only asks it to canonicalise whatever name it is handed.
  *
  * Thin wrapper over the vendored Prism.js loaded on `window` (see index.html).
  * We read `window.Prism` at call time — never import it — so this module stays
@@ -24,6 +29,7 @@
  */
 
 import { escapeHtml } from './html.js';
+import { normalizeLanguageId } from './languages.js';
 
 const BASH_SEGMENT_CLASS_COUNT = 6;
 const BASH_OPERATOR_STARTS = new Set(['&', '|', ';', '<', '>', '\n']);
@@ -42,26 +48,110 @@ const BASH_REDIRECT_OPERATORS = new Set(['<', '>', '<<', '>>', '<<<', '<&', '>&'
  * assign to `innerHTML`. When Prism or the grammar is missing we fall back to
  * `escapeHtml`, so the return value is always insertion-safe.
  * @param {string} code - Source code to highlight
- * @param {string} language - Prism language id (e.g. 'bash', 'json', 'python')
+ * @param {string} language - Language id or alias (e.g. 'bash', 'json', 'py')
  * @returns {string} Highlighted (or escaped) HTML
  */
 export function highlightCode(code, language) {
   const text = (code === null || code === undefined) ? '' : String(code);
-  if (language === 'bash' || language === 'sh' || language === 'shell') {
+  const id = normalizeLanguageId(language);
+  if (id === 'bash') {
     return highlightBashCommand(text);
   }
 
   /** @type {any} */
   const Prism = typeof window !== 'undefined' ? (/** @type {any} */ (window)).Prism : undefined;
-  const grammar = Prism?.languages?.[language];
+  const grammar = Prism?.languages?.[id];
   if (Prism && grammar) {
     try {
-      return Prism.highlight(text, grammar, language);
+      return Prism.highlight(text, grammar, id);
     } catch (error) {
       console.error('[syntax-highlight] highlighting failed:', error);
     }
   }
   return escapeHtml(text);
+}
+
+/**
+ * Highlight a block and hand back one safe HTML string per source line.
+ *
+ * A surface that lays code out line by line — a line-numbered grid, a diff row —
+ * cannot use one blob of markup, but highlighting each line separately gets the
+ * tokens wrong: a block comment or a multi-line template literal is only
+ * recognisable as a whole. So the block is highlighted once and the markup split
+ * at newlines, closing every element still open at the end of a line and
+ * reopening it on the next. Each line is therefore balanced markup on its own,
+ * and their concatenation is the original block.
+ * @param {string} code - Source code to highlight
+ * @param {string} language - Language id or alias
+ * @returns {string[]} One highlighted (or escaped) HTML string per line
+ */
+export function highlightCodeLines(code, language) {
+  const text = (code === null || code === undefined) ? '' : String(code);
+  return splitHighlightedLines(highlightCode(text, language));
+}
+
+/**
+ * Matches one tag: the name, then attributes in which a quoted value may hold
+ * any character, including `>`. Only ever run over markup produced by
+ * `highlightCode` (Prism's `<span>`s, or `highlightBashCommand`'s), which is why
+ * this is a scanner rather than a parser — it never sees caller HTML, comments,
+ * CDATA or unquoted attribute values.
+ */
+const HIGHLIGHT_TAG_PATTERN = /<(\/?)([a-zA-Z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>/g;
+
+/**
+ * Split highlighted markup into per-line strings, re-balancing open elements.
+ * @param {string} html - Markup from {@link highlightCode}
+ * @returns {string[]} One balanced HTML string per line
+ */
+function splitHighlightedLines(html) {
+  /** @type {string[]} */
+  const lines = [];
+  /**
+   * Elements open at the current position, outermost first.
+   * @type {{ tag: string, open: string }[]}
+   */
+  const open = [];
+  let current = '';
+
+  /** @param {string} chunk - Text (already escaped) between two tags. */
+  const addText = (chunk) => {
+    if (!chunk) return;
+    const parts = chunk.split('\n');
+    for (let i = 0; i < parts.length; i++) {
+      if (i > 0) {
+        for (let j = open.length - 1; j >= 0; j--) current += `</${open[j]?.tag}>`;
+        lines.push(current);
+        current = open.map((entry) => entry.open).join('');
+      }
+      current += parts[i] ?? '';
+    }
+  };
+
+  HIGHLIGHT_TAG_PATTERN.lastIndex = 0;
+  let textFrom = 0;
+  /** @type {RegExpExecArray|null} */
+  let match;
+  while ((match = HIGHLIGHT_TAG_PATTERN.exec(html)) !== null) {
+    addText(html.slice(textFrom, match.index));
+    textFrom = HIGHLIGHT_TAG_PATTERN.lastIndex;
+    const tag = match[0];
+    const name = match[2] || '';
+    const attributes = match[3] || '';
+    if (match[1]) {
+      // A close with nothing open can only come from markup we did not emit;
+      // drop it rather than unbalancing every line that follows.
+      if (open.length === 0) continue;
+      open.pop();
+    } else if (!attributes.endsWith('/')) {
+      open.push({ tag: name, open: tag });
+    }
+    current += tag;
+  }
+  addText(html.slice(textFrom));
+  lines.push(current);
+
+  return lines;
 }
 
 /**

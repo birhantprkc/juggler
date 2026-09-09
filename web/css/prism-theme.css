@@ -48,7 +48,6 @@ pre[class*="language-"] {
 }
 
 .token.attr-name,
-.token.deleted,
 .token.namespace,
 .token.tag {
   color: var(--syntax-tag);
@@ -106,8 +105,15 @@ pre[class*="language-"] {
   cursor: help;
 }
 
+/* `inserted` and `deleted` come from the diff grammar, i.e. a ```diff fence.
+   Colour them from the app's own diff palette so a diff in a reply reads like
+   one in the diff viewer, in both themes; Prism's value here is a bare `green`. */
 .token.inserted {
-  color: green;
+  color: var(--diff-added-text);
+}
+
+.token.deleted {
+  color: var(--diff-removed-text);
 }
 
 .token.bash-command-operator {

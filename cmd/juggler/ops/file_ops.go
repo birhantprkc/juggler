@@ -998,49 +998,47 @@ func (ops *FileOperations) editFileLines(params map[string]any) (any, error) {
 	}, nil
 }
 
-// detectLanguage is a helper to detect language from file extension
+// languageByExt maps a lower-case file extension to the language id the client
+// highlights it as. The browser keeps the same table in web/sdk/lib/languages.js
+// (a file dropped into the UI never reaches us, so it has to work this out on
+// its own); TestDetectLanguageMatchesClient fails when the two disagree.
+var languageByExt = map[string]string{
+	"js": "javascript", "mjs": "javascript", "cjs": "javascript", "jsx": "javascript",
+	"ts": "typescript", "tsx": "typescript", "mts": "typescript", "cts": "typescript",
+	"py": "python", "rb": "ruby", "go": "go", "rs": "rust", "java": "java",
+	"c": "c", "h": "c",
+	"cpp": "cpp", "cc": "cpp", "cxx": "cpp", "c++": "cpp",
+	"hpp": "cpp", "hxx": "cpp", "h++": "cpp", "ipp": "cpp", "inl": "cpp",
+	"cu": "cpp", "cuh": "cpp",
+	"cs": "csharp", "php": "php", "swift": "swift", "kt": "kotlin", "kts": "kotlin",
+	"sh": "bash", "bash": "bash", "zsh": "bash", "fish": "bash",
+	"json": "json", "yaml": "yaml", "yml": "yaml", "toml": "toml",
+	"xml": "xml", "html": "html", "htm": "html", "css": "css", "scss": "scss", "sass": "sass",
+	"md": "markdown", "sql": "sql", "txt": "text",
+	"ini": "ini", "cfg": "ini", "conf": "ini", "env": "ini", "editorconfig": "ini",
+	"properties": "properties", "gradle": "groovy",
+	"mk": "makefile", "cmake": "cmake", "dockerfile": "docker",
+	"diff": "diff", "patch": "diff",
+}
+
+// languageByFilename maps a lower-case whole file name to a language id, for the
+// build files that carry their type in the name rather than an extension.
+var languageByFilename = map[string]string{
+	"dockerfile": "docker", "containerfile": "docker",
+	"makefile": "makefile", "gnumakefile": "makefile",
+	"cmakelists.txt": "cmake",
+}
+
+// detectLanguage names the language of a file from its path, for the UI to
+// highlight it with. A whole-name match wins over an extension, so CMakeLists.txt
+// is CMake rather than the plain text its .txt claims.
 func detectLanguage(filePath string) string {
-	ext := strings.ToLower(filepath.Ext(filePath))
-
-	langMap := map[string]string{
-		".go":    "go",
-		".py":    "python",
-		".js":    "javascript",
-		".ts":    "typescript",
-		".jsx":   "javascript",
-		".tsx":   "typescript",
-		".java":  "java",
-		".c":     "c",
-		".cpp":   "cpp",
-		".cc":    "cpp",
-		".h":     "c",
-		".hpp":   "cpp",
-		".cs":    "csharp",
-		".rb":    "ruby",
-		".php":   "php",
-		".swift": "swift",
-		".kt":    "kotlin",
-		".rs":    "rust",
-		".sh":    "bash",
-		".bash":  "bash",
-		".zsh":   "bash",
-		".fish":  "bash",
-		".sql":   "sql",
-		".html":  "html",
-		".htm":   "html",
-		".xml":   "xml",
-		".css":   "css",
-		".scss":  "scss",
-		".sass":  "sass",
-		".json":  "json",
-		".yaml":  "yaml",
-		".yml":   "yaml",
-		".toml":  "toml",
-		".md":    "markdown",
-		".txt":   "text",
+	name := strings.ToLower(filepath.Base(filePath))
+	if lang, ok := languageByFilename[name]; ok {
+		return lang
 	}
-
-	if lang, ok := langMap[ext]; ok {
+	ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(name)), ".")
+	if lang, ok := languageByExt[ext]; ok {
 		return lang
 	}
 

@@ -26,10 +26,31 @@ adds to its size.
 | `marked.min.js` | [marked](https://github.com/markedjs/marked) | 18.0.10 | jsDelivr (`npm/marked@18.0.10/lib/marked.umd.js`) | MIT | 2026-08-22 |
 | `yjs.mjs` | [Yjs](https://github.com/yjs/yjs) | 13.6.x (bundled with its `lib0` dependencies) | Yjs release, bundled | MIT | before this file existed |
 | `y-generic-sync.js` | Yjs sync protocol helper | — | bundled alongside `yjs.mjs` | MIT | before this file existed |
-| `prism-*.js` | [Prism](https://github.com/PrismJS/prism) | 1.29.0 | jsDelivr (`npm/prismjs@1.29.0`), minified by Terser 5.37.0 | MIT | before this file existed |
+| `prism-core.js`, `prism-{markup,css,javascript,typescript,python,go,bash,json,markdown}.js` | [Prism](https://github.com/PrismJS/prism) | 1.29.0 | jsDelivr (`npm/prismjs@1.29.0`), minified by Terser 5.37.0 | MIT | before this file existed |
+| `prism-{markup-templating,scss,sass,c,cpp,csharp,java,kotlin,ruby,rust,swift,php,yaml,toml,sql,diff,ini,docker,makefile,cmake,properties,groovy}.js` | Prism | 1.29.0 | jsDelivr (`npm/prismjs@1.29.0/components/prism-<lang>.min.js`) | MIT | 2026-09-09 |
 
 The rows marked "before this file existed" were backfilled from the version
 banners inside the files themselves; treat their vendored dates as unknown.
+
+## Prism notes
+
+**`prism-core.js` is not `components/prism-core.js`** — it is the whole default
+`prism.js` bundle, so it already carries markup, css, **clike** and javascript.
+That is why no `prism-clike.js` is vendored even though c, cpp, csharp, java,
+kotlin, ruby and groovy all depend on it.
+
+The grammars in the second row are upstream's own pre-minified
+`components/*.min.js`, so they are byte-for-byte what npm ships; the local names
+drop `.min` to match the files vendored before them. A grammar that extends
+another must be loaded after it, which is why the script tags list
+`markup-templating` before `php`, `scss`/`sass` after css, and `cpp` after `c`.
+
+`web/index.html` and `web/js-tests/headless-test.html` must load the **same**
+set: the browser tests run against the harness page, so a grammar missing there
+fails only in tests, and one missing from `index.html` fails only in the app.
+`unit:language-coverage` fails when a language `web/sdk/lib/languages.js` can
+resolve has no grammar loaded — a missing grammar otherwise degrades silently to
+uncoloured plain text, which nothing else would notice.
 
 ## marked notes
 

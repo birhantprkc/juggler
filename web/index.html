@@ -196,6 +196,30 @@
     <script src="/v{{.StaticVersion}}/js/vendor/prism-bash.js"></script>
     <script src="/v{{.StaticVersion}}/js/vendor/prism-json.js"></script>
     <script src="/v{{.StaticVersion}}/js/vendor/prism-markdown.js"></script>
+    <!-- A grammar that extends another must load after it: markup-templating
+         before php, scss/sass after css, cpp after c. -->
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-markup-templating.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-scss.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-sass.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-c.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-cpp.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-csharp.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-java.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-kotlin.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-groovy.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-ruby.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-rust.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-swift.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-php.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-yaml.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-toml.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-ini.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-properties.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-sql.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-docker.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-makefile.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-cmake.js"></script>
+    <script src="/v{{.StaticVersion}}/js/vendor/prism-diff.js"></script>
 
     <!-- diff-match-patch for proper diff algorithm -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/diff_match_patch/20121119/diff_match_patch.js"></script>

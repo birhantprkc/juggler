@@ -160,11 +160,14 @@ if [ ${#js_files[@]} -gt 0 ]; then
 	if [ -n "${FIX:-}" ]; then
 		echo "==> eslint --fix (${#js_files[@]} file(s))"
 		NODE_NO_WARNINGS=1 "$NPM_BIN/eslint" --config tooling/eslint.config.js \
-			--fix --ignore-pattern 'web/js/vendor/**' "${js_files[@]}" || status=1
+			--fix --ignore-pattern 'web/js/vendor/**' --no-warn-ignored "${js_files[@]}" || status=1
 	else
 		echo "==> eslint (${#js_files[@]} file(s))"
+		# --no-warn-ignored: naming an ignored file on the command line is a
+		# warning, and --max-warnings 0 turns that into a failure — so without it
+		# any change that touches web/js/vendor fails the lint it is exempt from.
 		NODE_NO_WARNINGS=1 "$NPM_BIN/eslint" --config tooling/eslint.config.js \
-			--max-warnings 0 --ignore-pattern 'web/js/vendor/**' "${js_files[@]}" || status=1
+			--max-warnings 0 --ignore-pattern 'web/js/vendor/**' --no-warn-ignored "${js_files[@]}" || status=1
 	fi
 fi
 

@@ -4291,7 +4291,11 @@ diff-viewer .line-content {
     color: var(--diff-neutral-text);
 }
 
-/* Character-level highlighting (GitHub style) */
+/* Character-level highlighting (GitHub style). Line content is syntax-
+   highlighted, so a mark can contain `.token` spans: the mark supplies the
+   background while each token keeps its own colour, which is what lets a changed
+   identifier still read as an identifier. The `color` below therefore reaches
+   only the parts of the range that carry no token of their own. */
 diff-viewer .line-content mark.char-add {
     background: var(--diff-char-add-bg);
     color: var(--diff-char-add-text);

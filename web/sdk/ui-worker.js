@@ -25,8 +25,16 @@ export { FormattingHelpers } from './lib/formatting-helpers.js';
 
 // Pure (DOM-free): highlightCode returns escaped/highlighted HTML as a string
 // and no-ops to escaped text when `window.Prism` is absent — which it always is
-// off the main thread — so it is safe to surface for real in the worker.
-export { highlightCode } from './lib/syntax-highlight.js';
+// off the main thread — so it is safe to surface for real in the worker. The
+// per-line variant splits that string, and the language lookups beside it are
+// plain string tables.
+export { highlightCode, highlightCodeLines } from './lib/syntax-highlight.js';
+export {
+  languageForPath,
+  normalizeLanguageId,
+  LANGUAGE_BY_EXT,
+  LANGUAGE_BY_FILENAME,
+} from './lib/languages.js';
 
 // Pure string lookups, and needed for real off the main thread: a context item
 // composes its LLM text (plan steps, todo items) inside the engine worker.

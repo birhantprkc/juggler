@@ -18,7 +18,7 @@
  * @module sdk/lib/code-lines
  */
 
-import { highlightCode } from './syntax-highlight.js';
+import { highlightCode, highlightCodeLines } from './syntax-highlight.js';
 
 /**
  * Line count up to which every line is rendered. Sized from measurement: at
@@ -48,22 +48,16 @@ const MEASURE_RETRY_MS = 50;
 const MEASURE_ATTEMPTS = 40;
 
 /**
- * Build one rendered line.
- * @param {string} text - The line's source text
+ * Build one rendered line from its highlighted markup.
+ * @param {string} html - Safe HTML for the line, from the shared highlighter
  * @param {number} number - Line number to show in the gutter
- * @param {string} language - Prism language id
  * @returns {HTMLElement} The line element
  */
-function buildLine(text, number, language) {
+function buildLine(html, number) {
   const line = document.createElement('span');
   line.className = 'ci-line';
   line.dataset.line = String(number);
-  // Highlight each line independently so it aligns with its own line number,
-  // and so a windowed render only ever highlights what is on screen. The
-  // tradeoff is that a construct spanning multiple lines — a block comment, a
-  // multi-line template literal — is tokenised per line rather than as a whole;
-  // the shared engine still falls back to escaped text for unbundled languages.
-  line.innerHTML = highlightCode(text, language);
+  line.innerHTML = html;
   return line;
 }
 
@@ -106,8 +100,14 @@ export function renderLineNumberedCode(code, lines, language, lineNumberStart) {
   code.style.setProperty('--line-digits', String(String(lastNumber).length));
 
   if (lines.length <= EAGER_LINE_LIMIT) {
+    // One pass over the whole block, split into per-line markup: each line still
+    // gets its own row (so it aligns with its number and wraps on its own), but
+    // a construct spanning several lines — a block comment, a multi-line
+    // template literal — is tokenised as a whole rather than restarting on every
+    // line. Affordable here precisely because the block is short.
+    const markup = highlightCodeLines(lines.join('\n'), language);
     for (let i = 0; i < lines.length; i++) {
-      code.appendChild(buildLine(lines[i] || '', lineNumberStart + i, language));
+      code.appendChild(buildLine(markup[i] ?? '', lineNumberStart + i));
     }
     return null;
   }
@@ -148,7 +148,12 @@ function mountWindowed(code, lines, language, lineNumberStart) {
   const draw = (first, last) => {
     const fragment = document.createDocumentFragment();
     for (let i = first; i < last; i++) {
-      fragment.appendChild(buildLine(lines[i] || '', lineNumberStart + i, language));
+      // Each drawn line is highlighted on its own, so the cost of a scroll is
+      // the window rather than the file. The price is that a construct spanning
+      // several lines is tokenised per line here — the whole-block pass the
+      // eager path uses would mean highlighting a file we are windowing exactly
+      // because it is too big for that.
+      fragment.appendChild(buildLine(highlightCode(lines[i] || '', language), lineNumberStart + i));
     }
     while (topSpacer.nextSibling && topSpacer.nextSibling !== bottomSpacer) {
       topSpacer.nextSibling.remove();
