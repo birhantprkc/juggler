@@ -126,6 +126,11 @@ func TestAttachWithoutStateVectorBroadcastsFullState(t *testing.T) {
 
 	asker := newMsgChan()
 	w.SetCallback("client-asking", asker.callback)
+	// Setting up the worker left traffic owed to every registered client — the
+	// undo-state write that follows the seeded item is a broadcast of its own,
+	// and it carries no item at all. Drain it, or the attach below is answered
+	// by a frame written before it was ever sent.
+	quiesce(t, w, asker)
 
 	w.SendFromClient("client-asking", "init", initPayload(t, "conv-attach", nil))
 
@@ -145,6 +150,7 @@ func TestAttachWithAnEmptyStateVectorStillGetsFullState(t *testing.T) {
 	empty := NewConversationDocument("conv-attach", "user:empty")
 	asker := newMsgChan()
 	w.SetCallback("client-asking", asker.callback)
+	quiesce(t, w, asker)
 
 	w.SendFromClient("client-asking", "init", initPayload(t, "conv-attach", empty.GetStateVector()))
 
