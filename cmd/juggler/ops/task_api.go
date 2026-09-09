@@ -13,32 +13,38 @@ import "time"
 // generic read/stop surface and nothing more. Every call is serialized through
 // the registry goroutine, so they are safe from any goroutine.
 
-// TaskSnapshot is an immutable view of a background task's state.
-type TaskSnapshot struct {
-	Status          string // "running" | "completed" | "failed"
-	Output          string // accumulated stdout+stderr (head+tail capped)
-	ExitCode        int
-	Error           string
-	OutputFile      string
-	OutputBytes     int64
-	OutputTruncated bool
-	Found           bool // false when no task with this id exists (or it was reaped)
-}
-
-// BackgroundTaskSnapshot is the durable, observable state of a background task.
-// The live process handle remains in the shell registry; consumers persist this
-// bounded snapshot so its output and terminal result survive registry reaping.
-type BackgroundTaskSnapshot struct {
-	TaskID          string `json:"taskId"`
-	ConvID          string `json:"-"`
-	ToolUseID       string `json:"toolUseId"`
-	Status          string `json:"status"`
-	Output          string `json:"output"`
+// TaskOutputState is everything a background task's run produces: what it is
+// doing, what it wrote, and how it ended. It is the one shape carried from the
+// registry actor to every reader — the shell's own state copy, the read
+// accessor's answer, and the durable snapshot persisted on a tool action all
+// embed this rather than restating it, so a field added here reaches all three.
+type TaskOutputState struct {
+	Status          string `json:"status"` // "running" | "completed" | "failed"
+	Output          string `json:"output"` // accumulated stdout+stderr (head+tail capped)
 	ExitCode        int    `json:"exitCode"`
 	Error           string `json:"error,omitempty"`
 	OutputFile      string `json:"outputFile,omitempty"`
 	OutputBytes     int64  `json:"outputBytes,omitempty"`
 	OutputTruncated bool   `json:"truncated,omitempty"`
+}
+
+// TaskSnapshot is an immutable view of a background task's state.
+type TaskSnapshot struct {
+	TaskOutputState
+	Found bool // false when no task with this id exists (or it was reaped)
+}
+
+// BackgroundTaskSnapshot is the durable, observable state of a background task.
+// The live process handle remains in the shell registry; consumers persist this
+// bounded snapshot so its output and terminal result survive registry reaping.
+//
+// The embedded state flattens into the same JSON object as the three ids, so the
+// payload the worker decodes is one flat object.
+type BackgroundTaskSnapshot struct {
+	TaskID    string `json:"taskId"`
+	ConvID    string `json:"-"`
+	ToolUseID string `json:"toolUseId"`
+	TaskOutputState
 }
 
 // BackgroundTaskObserver receives bounded snapshots outside the registry actor.
@@ -58,16 +64,7 @@ func TaskState(taskID string) TaskSnapshot {
 	if s.Status == "" {
 		return TaskSnapshot{}
 	}
-	return TaskSnapshot{
-		Status:          s.Status,
-		Output:          s.Output,
-		ExitCode:        s.ExitCode,
-		Error:           s.Error,
-		OutputFile:      s.OutputFile,
-		OutputBytes:     s.OutputBytes,
-		OutputTruncated: s.OutputTruncated,
-		Found:           true,
-	}
+	return TaskSnapshot{TaskOutputState: s, Found: true}
 }
 
 // StopBackgroundTasks stops every running background task under projectRoot, or

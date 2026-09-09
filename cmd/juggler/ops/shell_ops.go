@@ -91,17 +91,6 @@ func exitCodeOf(err error) (int, bool) {
 	return 0, false
 }
 
-// shellStateSnapshot is a snapshot of a shell's mutable state
-type shellStateSnapshot struct {
-	Status          string
-	Output          string
-	ExitCode        int
-	Error           string
-	OutputFile      string
-	OutputBytes     int64
-	OutputTruncated bool
-}
-
 // BackgroundShell represents a background shell process.
 // Mutable state (status, output, exitCode, errMsg, cmd) is owned by the
 // registry goroutine — never accessed directly from other goroutines.
@@ -150,8 +139,8 @@ type BackgroundShell struct {
 }
 
 // snapshot returns a copy of the mutable state. Only call from the registry goroutine.
-func (shell *BackgroundShell) snapshot() shellStateSnapshot {
-	return shellStateSnapshot{
+func (shell *BackgroundShell) snapshot() TaskOutputState {
+	return TaskOutputState{
 		Status:          shell.status,
 		Output:          shell.output.String(),
 		ExitCode:        shell.exitCode,
@@ -188,7 +177,7 @@ type registryOp struct {
 type registryResp struct {
 	shell    *BackgroundShell
 	shells   []map[string]any
-	snapshot shellStateSnapshot
+	snapshot TaskOutputState
 	observer BackgroundTaskObserver
 	current  bool
 	stopped  int
@@ -232,9 +221,9 @@ func runShellRegistry() {
 			if current && shell.ConvID != "" && shell.ToolUseID != "" {
 				current = latestByOwner[shell.ConvID+"\x00"+shell.ToolUseID] == shell.ID
 			}
-			op.resp <- registryResp{shell: shell, snapshot: func() shellStateSnapshot {
+			op.resp <- registryResp{shell: shell, snapshot: func() TaskOutputState {
 				if shell == nil {
-					return shellStateSnapshot{}
+					return TaskOutputState{}
 				}
 				return shell.snapshot()
 			}(), observer: observer, current: current}
@@ -361,7 +350,7 @@ func runShellRegistry() {
 				if shell != nil {
 					status = shell.status
 				}
-				op.resp <- registryResp{snapshot: shellStateSnapshot{Status: status}}
+				op.resp <- registryResp{snapshot: TaskOutputState{Status: status}}
 				continue
 			}
 
@@ -462,7 +451,7 @@ func setBackgroundTaskObserver(observer BackgroundTaskObserver) {
 func publishBackgroundTaskSnapshots(shellID string) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
-	last := shellStateSnapshot{}
+	last := TaskOutputState{}
 	for {
 		respCh := make(chan registryResp, 1)
 		registryCh <- registryOp{kind: "persistenceState", id: shellID, resp: respCh}
@@ -474,8 +463,7 @@ func publishBackgroundTaskSnapshots(shellID string) {
 		if state != last && resp.observer != nil {
 			resp.observer(BackgroundTaskSnapshot{
 				TaskID: shellID, ConvID: resp.shell.ConvID, ToolUseID: resp.shell.ToolUseID,
-				Status: state.Status, Output: state.Output, ExitCode: state.ExitCode, Error: state.Error,
-				OutputFile: state.OutputFile, OutputBytes: state.OutputBytes, OutputTruncated: state.OutputTruncated,
+				TaskOutputState: state,
 			})
 			last = state
 		}
@@ -492,7 +480,7 @@ func removeBackgroundShell(id string) {
 }
 
 // getShellState gets a state snapshot via the registry goroutine
-func getShellState(id string) shellStateSnapshot {
+func getShellState(id string) TaskOutputState {
 	resp := make(chan registryResp, 1)
 	registryCh <- registryOp{kind: "getState", id: id, resp: resp}
 	return (<-resp).snapshot
@@ -501,7 +489,7 @@ func getShellState(id string) shellStateSnapshot {
 // getShellDelta returns the shell's output produced since the previous
 // getShellDelta call (advancing the read cursor) alongside its current status.
 // Snapshot.Output carries the delta, not the full accumulated output.
-func getShellDelta(id string) shellStateSnapshot {
+func getShellDelta(id string) TaskOutputState {
 	resp := make(chan registryResp, 1)
 	registryCh <- registryOp{kind: "getDelta", id: id, resp: resp}
 	return (<-resp).snapshot
@@ -533,7 +521,7 @@ func updateShellStatus(id string, status, output string, exitCode int, errMsg st
 }
 
 // killShell sends a kill request via the registry goroutine and waits for completion
-func killShell(id string) shellStateSnapshot {
+func killShell(id string) TaskOutputState {
 	resp := make(chan registryResp, 1)
 	registryCh <- registryOp{kind: "kill", id: id, resp: resp}
 	return (<-resp).snapshot

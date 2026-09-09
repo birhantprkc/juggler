@@ -90,12 +90,7 @@ func (s *Server) wireWorkerManager() {
 	// Route snapshots through the worker actor so normal Yjs sync/save semantics
 	// apply and registry reaping cannot erase the user's history.
 	ops.SetBackgroundTaskObserver(func(snapshot ops.BackgroundTaskSnapshot) {
-		s.workerManager.RecordBackgroundTaskSnapshot(snapshot.ConvID, worker.BackgroundTaskSnapshot{
-			TaskID: snapshot.TaskID, ToolUseID: snapshot.ToolUseID, Status: snapshot.Status,
-			Output: snapshot.Output, ExitCode: snapshot.ExitCode, Error: snapshot.Error,
-			OutputFile: snapshot.OutputFile, OutputBytes: snapshot.OutputBytes,
-			OutputTruncated: snapshot.OutputTruncated,
-		})
+		s.workerManager.RecordBackgroundTaskSnapshot(snapshot.ConvID, snapshot)
 	})
 
 	// Out-of-band tab auto-naming: the worker fires this on a conversation's

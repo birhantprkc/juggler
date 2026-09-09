@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"juggler/cmd/juggler/core"
+	"juggler/cmd/juggler/ops"
 	"juggler/internal/jlog"
 )
 
@@ -71,18 +72,10 @@ type PathProviderFunc func(convID string) (string, bool)
 // atomically.
 type SaveBinaryFunc func(convID string, data []byte) error
 
-// BackgroundTaskSnapshot is the bounded task history persisted on its tool action.
-type BackgroundTaskSnapshot struct {
-	TaskID          string `json:"taskId"`
-	ToolUseID       string `json:"toolUseId"`
-	Status          string `json:"status"`
-	Output          string `json:"output"`
-	ExitCode        int    `json:"exitCode"`
-	Error           string `json:"error,omitempty"`
-	OutputFile      string `json:"outputFile,omitempty"`
-	OutputBytes     int64  `json:"outputBytes,omitempty"`
-	OutputTruncated bool   `json:"truncated,omitempty"`
-}
+// BackgroundTaskSnapshot is the bounded task history persisted on its tool
+// action — the shell registry's own snapshot type under the worker's name, so a
+// snapshot travels from the registry to the document without being restated.
+type BackgroundTaskSnapshot = ops.BackgroundTaskSnapshot
 
 // managerOp is a message sent to the Manager's run goroutine.
 type managerOp struct {
