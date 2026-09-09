@@ -605,12 +605,12 @@ func TestParser_ParallelToolUseBlocks(t *testing.T) {
 func TestParser_MessageDeltaStopReasonMapping(t *testing.T) {
 	cases := []struct {
 		clistop string
-		want    string
+		want    provider.StopReason
 	}{
-		{"end_turn", "end_turn"},
-		{"stop_sequence", "end_turn"},
-		{"max_tokens", "end_turn"},
-		{"refusal", "refusal"}, // unknown passes through
+		{"end_turn", provider.StopReasonEndTurn},
+		{"stop_sequence", provider.StopReasonEndTurn},
+		{"max_tokens", provider.StopReasonEndTurn},
+		{"refusal", provider.StopReasonRefusal}, // unmapped, passes through
 	}
 	for _, tc := range cases {
 		t.Run(tc.clistop, func(t *testing.T) {

@@ -124,7 +124,7 @@ type turnResult struct {
 	OutputTokens     int
 	CacheReadTokens  int
 	CacheWriteTokens int
-	StopReason       string
+	StopReason       provider.StopReason
 	SessionID        string // captured from system/init; used for --resume
 	Blocks           []provider.ContentBlock
 
@@ -195,7 +195,7 @@ func (c *Client) readUntilPauseOrComplete(ctx context.Context, callback provider
 	// leaves a trace of which arm it took.
 	armedAt := time.Now()
 	defer func() {
-		stop := ""
+		var stop provider.StopReason
 		if res != nil {
 			stop = res.StopReason
 		}
@@ -349,13 +349,13 @@ func (c *Client) readUntilPauseOrComplete(ctx context.Context, callback provider
 			}
 
 			if pause {
-				result.StopReason = "tool_use"
+				result.StopReason = provider.StopReasonToolUse
 				return result, toolUseCount, nil
 			}
 
 			// End-of-turn detected from the stream (persistent CLI keeps running).
 			switch result.StopReason {
-			case "end_turn", "empty_response":
+			case provider.StopReasonEndTurn, provider.StopReasonEmptyResponse:
 				return result, toolUseCount, nil
 			}
 		}
@@ -415,7 +415,10 @@ func (c *Client) processStreamLineWithEarlyReturn(line string, result *turnResul
 					result.CacheReadTokens = resultContent.CacheReadInputTokens
 					result.CacheWriteTokens = resultContent.CacheCreationInputTokens
 				}
-				result.StopReason = resultContent.StopReason
+				// The result envelope repeats the API's own stop_reason, in the
+				// vocabulary provider.StopReason is modelled on; a value with
+				// no constant there carries through as itself.
+				result.StopReason = provider.StopReason(resultContent.StopReason)
 			}
 		} else if msg.Subtype == "init" {
 			// The CLI has booted and loaded the session — the slow spawn/resume
@@ -496,9 +499,9 @@ func (c *Client) processStreamLineWithEarlyReturn(line string, result *turnResul
 			markClaudeLoginConfirmed()
 			var resultStr string
 			if json.Unmarshal(msg.Result, &resultStr) == nil && resultStr == "" {
-				result.StopReason = "empty_response"
+				result.StopReason = provider.StopReasonEmptyResponse
 			} else {
-				result.StopReason = "end_turn"
+				result.StopReason = provider.StopReasonEndTurn
 			}
 		case "error":
 			// CLI exhausted retries or hit a fatal error — return as a proper error
@@ -817,7 +820,7 @@ func (c *Client) handleStreamEvent(ev *StreamEventDetail, result *turnResult, ca
 					}
 					return false, 0, nil
 				}
-				result.StopReason = "tool_use"
+				result.StopReason = provider.StopReasonToolUse
 				// Count emitted tool_use blocks for the caller's tally.
 				count := 0
 				for _, b := range result.Blocks {
@@ -827,9 +830,9 @@ func (c *Client) handleStreamEvent(ev *StreamEventDetail, result *turnResult, ca
 				}
 				return true, count, nil
 			case "end_turn", "stop_sequence", "max_tokens":
-				result.StopReason = "end_turn"
+				result.StopReason = provider.StopReasonEndTurn
 			default:
-				result.StopReason = ev.Delta.StopReason
+				result.StopReason = provider.StopReason(ev.Delta.StopReason)
 			}
 		}
 		if ev.Usage != nil {

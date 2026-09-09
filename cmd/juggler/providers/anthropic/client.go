@@ -23,11 +23,6 @@ import (
 // defaultMaxOutputTokens is Anthropic's standard per-request output limit.
 const defaultMaxOutputTokens = 8192
 
-// stopReasonRefusal is the stop reason a safety classifier produces. It arrives
-// as an ordinary HTTP 200 whose turn carries no content, so it is distinguished
-// from a blank turn only by this value and the stop_details beside it.
-const stopReasonRefusal = "refusal"
-
 // toolUseAccumulator tracks a tool_use block being assembled from streaming chunks
 type toolUseAccumulator struct {
 	id          string
@@ -469,8 +464,8 @@ func closeTrailingPrefill(model string, messages []anthropicsdk.BetaMessageParam
 // request three times and then files a deliberate decision under "no further
 // response". Naming the policy area is also the only way the user can tell a
 // refusal from an outage.
-func refusalNotice(stopReason string, details anthropicsdk.BetaRefusalStopDetails) (provider.StreamChunk, bool) {
-	if stopReason != stopReasonRefusal {
+func refusalNotice(stopReason provider.StopReason, details anthropicsdk.BetaRefusalStopDetails) (provider.StreamChunk, bool) {
+	if stopReason != provider.StopReasonRefusal {
 		return provider.StreamChunk{}, false
 	}
 
@@ -657,7 +652,7 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 	// cacheRead/cacheWrite are reported as their own subset fields.
 	var inputTokens, outputTokens int
 	var cacheReadTokens, cacheWriteTokens *int
-	var stopReason string
+	var stopReason provider.StopReason
 
 	// Process streaming events in order
 	for stream.Next() {
@@ -806,7 +801,12 @@ func (c *Client) sendMessageStreaming(ctx context.Context, req provider.MessageR
 		case "message_delta":
 			// Extract stop_reason and output token count
 			if event.Delta.StopReason != "" {
-				stopReason = string(event.Delta.StopReason)
+				// provider.StopReason is modelled on this vocabulary, so
+				// Anthropic's values carry across as themselves. The four with
+				// no constant there — "stop_sequence", "pause_turn",
+				// "compaction" and "model_context_window_exceeded" — reach the
+				// turn loop as themselves and take its default arm.
+				stopReason = provider.StopReason(event.Delta.StopReason)
 				// A refusal arrives as a 200 with no content, so it reads as a
 				// blank turn unless it is named here.
 				if notice, ok := refusalNotice(stopReason, event.Delta.StopDetails); ok {

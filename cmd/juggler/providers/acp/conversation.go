@@ -221,7 +221,10 @@ func (t *threadSession) submitTurn(ctx context.Context, promptText string, callb
 	}
 
 	return &provider.StreamResult{
-		StopReason:             pr.StopReason,
+		// ACP spells its stop reasons the way provider.StopReason does, so the
+		// agent's value carries across as itself; the ones with no constant
+		// there ("max_turn_requests") reach the turn loop as themselves.
+		StopReason:             provider.StopReason(pr.StopReason),
 		InputTokens:            provider.EstimateTokens(promptText),
 		InputTokensApproximate: true,
 		OutputTokens:           provider.EstimateTokens(ts.outputString()),

@@ -650,7 +650,7 @@ func (r *run) partialCancelledResponse() *LLMResponse {
 		blocks = append(blocks, LLMResponseBlock{Type: provider.ContentBlockTypeText, Content: r.t.streaming.textContent})
 	}
 	response := &LLMResponse{
-		StopReason:  "cancelled",
+		StopReason:  provider.StopReasonCancelled,
 		Blocks:      blocks,
 		InputTokens: r.t.streaming.inputTokens,
 	}

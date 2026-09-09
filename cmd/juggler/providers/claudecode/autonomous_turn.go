@@ -116,7 +116,7 @@ func (c *Client) flushBufferedTurns() {
 		turn, _, err := c.readUntilPauseOrComplete(ctx, discardStreamChunks)
 		cancel()
 		if err != nil || turn == nil ||
-			(turn.StopReason != "end_turn" && turn.StopReason != "empty_response") {
+			(turn.StopReason != provider.StopReasonEndTurn && turn.StopReason != provider.StopReasonEmptyResponse) {
 			// Deadline hit mid-emit (incomplete turn), an error, or a tool_use
 			// turn we cannot drive from here: stop. The partial/remaining content
 			// is handled by the foreground read or the next drain — never a
@@ -140,7 +140,7 @@ func (c *Client) maybeStartAutonomousDrain(res *provider.StreamResult, err error
 	if s == nil || !s.hasLiveCLI() {
 		return
 	}
-	if res == nil || (res.StopReason != "end_turn" && res.StopReason != "empty_response") {
+	if res == nil || (res.StopReason != provider.StopReasonEndTurn && res.StopReason != provider.StopReasonEmptyResponse) {
 		return
 	}
 	c.startAutonomousDrain()
@@ -175,7 +175,7 @@ func (c *Client) startAutonomousDrain() {
 				return
 			}
 			handler(turn)
-			if turn.StopReason == "tool_use" {
+			if turn.StopReason == provider.StopReasonToolUse {
 				// An autonomous turn that calls a tool parks the CLI awaiting
 				// results we cannot supply from here. Stop draining.
 				return

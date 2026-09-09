@@ -550,7 +550,7 @@ func (r *run) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVe
 	// Worse, each round's thinking is persisted and replayed, so every attempt
 	// starts nearer the limit than the last. Surface it once, here, naming the
 	// budget that ended it.
-	if response.StopReason == "max_tokens" {
+	if response.StopReason == provider.StopReasonMaxTokens {
 		r.insertTruncationNotice(response)
 		r.batcher.Flush()
 		// Truncated before it emitted anything usable: there is nothing to
@@ -566,7 +566,7 @@ func (r *run) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVe
 	// refused three times over, each round billed, before the barren cap files a
 	// deliberate answer under "no further response". The provider already
 	// composed the notice naming the policy area, so resting is all that is left.
-	if response.StopReason == "refusal" {
+	if response.StopReason == provider.StopReasonRefusal {
 		r.batcher.Flush()
 		if !r.turnProducedAction(response) {
 			return turnDone
@@ -606,7 +606,7 @@ func (r *run) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVe
 		}
 		return turnDone
 	}
-	if response.StopReason == "end_turn" && hasAssistantText(response) {
+	if response.StopReason == provider.StopReasonEndTurn && hasAssistantText(response) {
 		if r.hasPendingItems(r.t.thread.itemID) {
 			return turnContinue
 		}

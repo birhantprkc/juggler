@@ -229,11 +229,46 @@ type ContentBlock struct {
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
+// StopReason names why a turn ended, in one vocabulary that every provider
+// normalises onto at its own boundary. Upstreams spell this differently and
+// disagree about which endings are worth distinguishing, so a provider that
+// passes its own wire value straight through hands the turn loop a name it does
+// not branch on — the failure being silent, since an unrecognised reason simply
+// takes the default arm.
+//
+// The set is deliberately small: a reason earns a constant only where a
+// consumer acts on it. An upstream reason with no equivalent here maps onto the
+// closest one rather than being invented.
+type StopReason string
+
+const (
+	StopReasonEndTurn   StopReason = "end_turn"   // Model finished of its own accord
+	StopReasonToolUse   StopReason = "tool_use"   // Model asked for tools; the loop must resolve them before it can end
+	StopReasonMaxTokens StopReason = "max_tokens" // Cut off at the output budget, mid-answer
+
+	// StopReasonContentFilter is an upstream filter ending the turn. Kept
+	// distinct from a clean finish because a filtered completion is often empty
+	// and would otherwise be indistinguishable from one.
+	StopReasonContentFilter StopReason = "content_filter"
+
+	// StopReasonRefusal is a safety classifier declining. It arrives as an
+	// ordinary HTTP 200 whose turn carries no content, so it is distinguished
+	// from a blank turn only by this value and the stop_details beside it.
+	StopReasonRefusal StopReason = "refusal"
+
+	// StopReasonEmptyResponse is a turn that completed with nothing in it. A
+	// finish, not a failure: the request was served and the answer was blank.
+	StopReasonEmptyResponse StopReason = "empty_response"
+
+	StopReasonCancelled StopReason = "cancelled" // Ended by the user, mid-stream
+	StopReasonError     StopReason = "error"     // Ended by a failure; the error text carries the detail
+)
+
 // StructuredResponse represents a response with structured content blocks.
 // Token-field semantics match StreamResult — see that type for the contract.
 type StructuredResponse struct {
 	Blocks                 []ContentBlock `json:"blocks"`
-	StopReason             string         `json:"stopReason,omitempty"`
+	StopReason             StopReason     `json:"stopReason,omitempty"`
 	InputTokens            int            `json:"inputTokens,omitempty"`
 	InputTokensApproximate bool           `json:"inputTokensApproximate,omitempty"`
 	OutputTokens           int            `json:"outputTokens,omitempty"`
@@ -273,12 +308,12 @@ type StructuredResponse struct {
 //     contract as CachedTokens: providers without
 //     an explicit cache-write phase leave it nil.
 type StreamResult struct {
-	StopReason             string `json:"stopReason,omitempty"`
-	InputTokens            int    `json:"inputTokens,omitempty"`
-	InputTokensApproximate bool   `json:"inputTokensApproximate,omitempty"`
-	OutputTokens           int    `json:"outputTokens,omitempty"`
-	CachedTokens           *int   `json:"cachedTokens,omitempty"`
-	CacheWriteTokens       *int   `json:"cacheWriteTokens,omitempty"`
+	StopReason             StopReason `json:"stopReason,omitempty"`
+	InputTokens            int        `json:"inputTokens,omitempty"`
+	InputTokensApproximate bool       `json:"inputTokensApproximate,omitempty"`
+	OutputTokens           int        `json:"outputTokens,omitempty"`
+	CachedTokens           *int       `json:"cachedTokens,omitempty"`
+	CacheWriteTokens       *int       `json:"cacheWriteTokens,omitempty"`
 
 	// AdmissionEstimateTokens is what admission estimated this request's input
 	// at before dispatching it. Unlike every field above it is a local

@@ -858,7 +858,7 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 
 	// Stop reason reported by a response.incomplete event, applied to a
 	// text-only turn below. Empty until such an event arrives.
-	var incompleteStop string
+	var incompleteStop provider.StopReason
 
 	// Process the stream - events are ResponseStreamEventUnion
 	for stream.Next() {
@@ -1050,10 +1050,10 @@ func (c *Client) streamMessageResponses(ctx context.Context, req provider.Messag
 
 	// A truncated turn that still asked for tools stays "tool_use": the calls
 	// were emitted above and the loop has to resolve them.
-	stopReason := "end_turn"
+	stopReason := provider.StopReasonEndTurn
 	switch {
 	case len(functionCalls) > 0:
-		stopReason = "tool_use"
+		stopReason = provider.StopReasonToolUse
 	case incompleteStop != "":
 		stopReason = incompleteStop
 	}
@@ -1736,36 +1736,35 @@ func responsesErrorText(code, message, param string) string {
 }
 
 // mapResponsesIncompleteReason maps a Responses-API incomplete_details.reason
-// onto the stop-reason vocabulary mapOpenAIFinishReason uses. An unrecognised
-// reason returns "", leaving the computed stop reason alone: inventing a stop
-// reason the rest of the pipeline doesn't know is worse than the finish it
-// already inferred.
-func mapResponsesIncompleteReason(reason string) string {
+// onto provider.StopReason. An unrecognised reason returns "", leaving the
+// computed stop reason alone: inventing a stop reason the rest of the pipeline
+// doesn't know is worse than the finish it already inferred.
+func mapResponsesIncompleteReason(reason string) provider.StopReason {
 	switch reason {
 	case "max_output_tokens":
-		return "max_tokens"
+		return provider.StopReasonMaxTokens
 	case "content_filter":
-		return "content_filter"
+		return provider.StopReasonContentFilter
 	default:
 		jlog.Trace("[openai-responses] unmapped incomplete reason %q", reason)
 		return ""
 	}
 }
 
-func mapOpenAIFinishReason(reason string) string {
+func mapOpenAIFinishReason(reason string) provider.StopReason {
 	switch reason {
 	case "stop":
-		return "end_turn"
+		return provider.StopReasonEndTurn
 	case "tool_calls", "function_call":
-		return "tool_use"
+		return provider.StopReasonToolUse
 	case "length":
-		return "max_tokens"
+		return provider.StopReasonMaxTokens
 	case "content_filter":
 		// Preserve the signal rather than collapsing into a clean end_turn — a
 		// filtered (often empty) completion would otherwise be indistinguishable
 		// from a normal finish.
-		return "content_filter"
+		return provider.StopReasonContentFilter
 	default:
-		return "end_turn"
+		return provider.StopReasonEndTurn
 	}
 }

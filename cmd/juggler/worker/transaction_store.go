@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"juggler/cmd/juggler/providers/provider"
 	"juggler/internal/atomicio"
 )
 
@@ -86,7 +87,7 @@ func (s *TransactionStore) SaveBlob(in TransactionBlobInput) error {
 	}
 
 	if in.ErrMsg != "" {
-		blob["stopReason"] = "error"
+		blob["stopReason"] = provider.StopReasonError
 		output["error"] = in.ErrMsg
 	}
 

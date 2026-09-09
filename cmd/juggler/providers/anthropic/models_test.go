@@ -593,7 +593,7 @@ func TestTransformNeverEmitsEmptyTextBlock(t *testing.T) {
 // retry that will be refused identically.
 func TestRefusalNotice(t *testing.T) {
 	t.Run("names the policy area and keeps the explanation verbatim", func(t *testing.T) {
-		chunk, ok := refusalNotice(stopReasonRefusal, anthropicsdk.BetaRefusalStopDetails{
+		chunk, ok := refusalNotice(provider.StopReasonRefusal, anthropicsdk.BetaRefusalStopDetails{
 			Category:    anthropicsdk.BetaRefusalStopDetailsCategoryCyber,
 			Explanation: "This request asks for working exploit code.",
 		})
@@ -619,7 +619,7 @@ func TestRefusalNotice(t *testing.T) {
 	})
 
 	t.Run("still says something when the details are empty", func(t *testing.T) {
-		chunk, ok := refusalNotice(stopReasonRefusal, anthropicsdk.BetaRefusalStopDetails{})
+		chunk, ok := refusalNotice(provider.StopReasonRefusal, anthropicsdk.BetaRefusalStopDetails{})
 		if !ok {
 			t.Fatal("no notice produced for a refusal carrying no details")
 		}
@@ -631,7 +631,7 @@ func TestRefusalNotice(t *testing.T) {
 	})
 
 	t.Run("silent for every other stop reason", func(t *testing.T) {
-		for _, reason := range []string{"end_turn", "tool_use", "max_tokens", ""} {
+		for _, reason := range []provider.StopReason{provider.StopReasonEndTurn, provider.StopReasonToolUse, provider.StopReasonMaxTokens, ""} {
 			if _, ok := refusalNotice(reason, anthropicsdk.BetaRefusalStopDetails{}); ok {
 				t.Errorf("stop reason %q produced a refusal notice", reason)
 			}

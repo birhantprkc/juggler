@@ -496,7 +496,7 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 			c.activeSession = nil
 		}
 		return &provider.StreamResult{
-			StopReason:       "error",
+			StopReason:       provider.StopReasonError,
 			InputTokens:      inTok,
 			OutputTokens:     outTok,
 			CachedTokens:     cacheR,
@@ -508,7 +508,7 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 	// freshly-spawned sessions that hadn't been touched at StreamMessage entry.
 	c.activeSession.lastUsedAt = time.Now()
 
-	if turn.StopReason == "tool_use" {
+	if turn.StopReason == provider.StopReasonToolUse {
 		// Mid-LLM-turn pause. It reports its usage exactly as the end_turn arm
 		// below does, because it is a round-trip like any other: the prompt it
 		// sent is fresh + cache read + cache write, and cache read / cache write
@@ -561,7 +561,7 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 			// The anchor is no longer safe to resume, so the sidecar goes too.
 			c.dropSession(req.ConversationID)
 			return &provider.StreamResult{
-				StopReason:       "error",
+				StopReason:       provider.StopReasonError,
 				InputTokens:      turn.InputTokens + turn.CacheReadTokens + turn.CacheWriteTokens,
 				CachedTokens:     provider.Reported(turn.CacheReadTokens),
 				CacheWriteTokens: provider.Reported(turn.CacheWriteTokens),

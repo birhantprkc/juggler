@@ -627,18 +627,18 @@ func (c *Client) processStreamResult(lastFinishReason genai.FinishReason, sentAn
 	}, nil
 }
 
-// mapGeminiFinishReason maps Gemini's FinishReason to normalized stop_reason values.
+// mapGeminiFinishReason maps Gemini's FinishReason onto provider.StopReason.
 // Note: Gemini uses FinishReasonStop for both natural endings AND tool calls,
 // so tool_use detection must happen at the content block level, not here.
-func mapGeminiFinishReason(reason genai.FinishReason) string {
+func mapGeminiFinishReason(reason genai.FinishReason) provider.StopReason {
 	switch reason {
 	case genai.FinishReasonMaxTokens:
-		return "max_tokens"
+		return provider.StopReasonMaxTokens
 	case genai.FinishReasonStop:
-		return "end_turn"
+		return provider.StopReasonEndTurn
 	default:
 		// Safety, Recitation, etc. are already handled as errors above
-		return "end_turn"
+		return provider.StopReasonEndTurn
 	}
 }
 

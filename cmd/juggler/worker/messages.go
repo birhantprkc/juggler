@@ -354,15 +354,15 @@ func sanitizeCancelReason(reason string) cancelReason {
 // best-effort, not guaranteed. The handler lands it as a normal assistant
 // turn in the root conversation.
 type ProviderTurnMessage struct {
-	Type                   string             `json:"type"` // "provider-turn"
-	Blocks                 []LLMResponseBlock `json:"blocks"`
-	StopReason             string             `json:"stopReason"`
-	InputTokens            int                `json:"inputTokens"`
-	InputTokensApproximate bool               `json:"inputTokensApproximate,omitempty"`
-	OutputTokens           int                `json:"outputTokens"`
-	CachedTokens           *int               `json:"cachedTokens,omitempty"`
-	CacheWriteTokens       *int               `json:"cacheWriteTokens,omitempty"`
-	Autonomous             bool               `json:"autonomous"`
+	Type                   string              `json:"type"` // "provider-turn"
+	Blocks                 []LLMResponseBlock  `json:"blocks"`
+	StopReason             provider.StopReason `json:"stopReason"`
+	InputTokens            int                 `json:"inputTokens"`
+	InputTokensApproximate bool                `json:"inputTokensApproximate,omitempty"`
+	OutputTokens           int                 `json:"outputTokens"`
+	CachedTokens           *int                `json:"cachedTokens,omitempty"`
+	CacheWriteTokens       *int                `json:"cacheWriteTokens,omitempty"`
+	Autonomous             bool                `json:"autonomous"`
 }
 
 // StreamChunk represents a streamed LLM content chunk
@@ -429,18 +429,18 @@ func (e *deliveredLLMError) Unwrap() error { return e.err }
 // cache usage for the call (unknown — NOT a miss); an explicit 0 means the
 // provider reported zero. See provider.StreamResult for the full contract.
 type LLMResponse struct {
-	Blocks                  []LLMResponseBlock `json:"blocks"`
-	InputTokens             int                `json:"inputTokens"`
-	InputTokensApproximate  bool               `json:"inputTokensApproximate,omitempty"`
-	OutputTokens            int                `json:"outputTokens"`
-	CachedTokens            *int               `json:"cachedTokens,omitempty"`
-	CacheWriteTokens        *int               `json:"cacheWriteTokens,omitempty"`
-	StopReason              string             `json:"stopReason"`                        // "end_turn", "tool_use", "max_tokens"
-	AdmissionEstimateTokens int                `json:"admissionEstimateTokens,omitempty"` // Local pre-dispatch estimate; compare against InputTokens
-	AdmissionAnchored       bool               `json:"admissionAnchored,omitempty"`       // Estimate projected from the previous turn's measured count
-	Error                   string             `json:"error,omitempty"`
-	TransactionID           string             `json:"transactionId,omitempty"`
-	CacheTTLMs              int64              `json:"cacheTTLMs,omitempty"` // Provider's prompt-cache TTL in ms; 0 if no cache concept
+	Blocks                  []LLMResponseBlock  `json:"blocks"`
+	InputTokens             int                 `json:"inputTokens"`
+	InputTokensApproximate  bool                `json:"inputTokensApproximate,omitempty"`
+	OutputTokens            int                 `json:"outputTokens"`
+	CachedTokens            *int                `json:"cachedTokens,omitempty"`
+	CacheWriteTokens        *int                `json:"cacheWriteTokens,omitempty"`
+	StopReason              provider.StopReason `json:"stopReason"`
+	AdmissionEstimateTokens int                 `json:"admissionEstimateTokens,omitempty"` // Local pre-dispatch estimate; compare against InputTokens
+	AdmissionAnchored       bool                `json:"admissionAnchored,omitempty"`       // Estimate projected from the previous turn's measured count
+	Error                   string              `json:"error,omitempty"`
+	TransactionID           string              `json:"transactionId,omitempty"`
+	CacheTTLMs              int64               `json:"cacheTTLMs,omitempty"` // Provider's prompt-cache TTL in ms; 0 if no cache concept
 }
 
 // LLMResponseBlock represents a block in an LLM response
@@ -815,12 +815,12 @@ type SetMockResponsesMessage struct {
 
 // MockResponse represents a scripted LLM response for testing.
 type MockResponse struct {
-	Blocks                 []LLMResponseBlock `json:"blocks"`
-	StopReason             string             `json:"stopReason"`
-	InputTokens            int                `json:"inputTokens,omitempty"`
-	InputTokensApproximate bool               `json:"inputTokensApproximate,omitempty"`
-	OutputTokens           int                `json:"outputTokens,omitempty"`
-	CachedTokens           int                `json:"cachedTokens,omitempty"`
+	Blocks                 []LLMResponseBlock  `json:"blocks"`
+	StopReason             provider.StopReason `json:"stopReason"`
+	InputTokens            int                 `json:"inputTokens,omitempty"`
+	InputTokensApproximate bool                `json:"inputTokensApproximate,omitempty"`
+	OutputTokens           int                 `json:"outputTokens,omitempty"`
+	CachedTokens           int                 `json:"cachedTokens,omitempty"`
 	// PauseBeforeReturn, when true, causes popMockResponse to deliver the
 	// response (streaming chunks) and then block on the worker's mockReleaseChan
 	// until the test sends a "release-mock" message. Tests use this to inject
