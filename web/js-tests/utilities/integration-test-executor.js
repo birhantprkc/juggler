@@ -168,6 +168,7 @@ import { runTests as runUnclaimedConversationsTests } from '../unit-tests/unclai
 import { runTests as runThreadColumnSelectionTests } from '../unit-tests/thread-column-selection-test.js';
 import { runTests as runThreadSelectionPinTests } from '../unit-tests/thread-selection-pin-test.js';
 import { runTests as runThreadPinSurvivesRevealTests } from '../unit-tests/thread-pin-survives-reveal-test.js';
+import { runTests as runThreadStreamPinTests } from '../unit-tests/thread-stream-pin-test.js';
 import { runTests as runParallelThreadSelectionTests } from '../unit-tests/parallel-thread-selection-test.js';
 import { runTests as runPinboardThreadSourceTests } from '../unit-tests/pinboard-thread-source-test.js';
 import { runTests as runPinboardFileEditsTests } from '../unit-tests/pinboard-file-edits-test.js';
@@ -488,6 +489,7 @@ const UNIT_TEST_SUITES = [
   // Exclusive: it asserts on document.activeElement, which every lane in the
   // shared origin can move.
   { name: 'unit:thread-pin-survives-reveal', run: runThreadPinSurvivesRevealTests, needsExclusiveRun: true },
+  { name: 'unit:thread-stream-pin', run: runThreadStreamPinTests },
   { name: 'unit:parallel-thread-selection', run: runParallelThreadSelectionTests },
   { name: 'unit:pinboard-thread-source', run: runPinboardThreadSourceTests },
   { name: 'unit:pinboard-file-edits', run: runPinboardFileEditsTests },

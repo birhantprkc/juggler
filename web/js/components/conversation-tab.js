@@ -544,12 +544,22 @@ class ConversationTab extends JugglerElement {
   // except action-confirmation which manages its own button focus.
 
   /**
-   * Focus the visible input column's textarea (enter typing mode).
+   * Focus an input column's textarea (enter typing mode).
+   *
+   * `column` names the box to type into when the caller already knows it.
+   * Rule 15's move is one of those: it fires because a column opened or closed,
+   * and the box it means is that column's — whereas {@link _inputColumn}
+   * answers "where is the user working", which during a reveal is still the
+   * column they clicked in. Focusing that one instead lands the keyboard in the
+   * PARENT's composer, and rule B reads a composer taking focus as the user
+   * turning to compose, retiring the pin that opening the sub-thread just set.
+   * @param {HTMLElement|null} [column] - Column whose box to focus; defaults to
+   *   the column the user is working in.
    * @private
    */
-  _focusInput() {
+  _focusInput(column = null) {
     const textarea = /** @type {HTMLTextAreaElement|null} */ (
-      this._inputColumn()?.querySelector('composer-box textarea')
+      (column ?? this._inputColumn())?.querySelector('composer-box textarea')
     );
     if (!textarea) return;
     // Force a synchronous layout flush before focusing. When this runs during a
@@ -591,7 +601,7 @@ class ConversationTab extends JugglerElement {
     if (!inTarget) {
       const lost = !active || active === document.body;
       const onStale = !!(staleCol && active && staleCol.contains(active));
-      if (lost || onStale) this._focusInput();
+      if (lost || onStale) this._focusInput(target);
     }
     // Keep watching even when focus currently looks right: a subsequent
     // re-render can still bounce it to <body> within this window.
@@ -1723,7 +1733,7 @@ class ConversationTab extends JugglerElement {
       // doesn't steal focus from item navigation.
       const newInputCol = this._deepestInputColumn();
       if (newInputCol && newInputCol !== prevInputCol && !this._isKeyboardNavigating) {
-        this._focusInput();
+        this._focusInput(newInputCol);
         // A synchronous focus() during the rebuild silently no-ops for a
         // freshly-built column — the new thread's box is in the DOM but not yet
         // focusable at that instant, and late re-renders of the new column can
