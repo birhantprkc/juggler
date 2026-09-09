@@ -629,7 +629,7 @@ func (cp *controlProtocol) deliverNextToolResultLocked(recordedKey mcpMatchKey, 
 	// ITSELF — symmetric to recordPendingToolCallLocked's roundClosed handling.
 	// Otherwise the park that follows opens a generation PAST this stash, the two
 	// land in different generations, and they never pair: the CLI hangs on the
-	// unanswered tools/call until teardown error-releases it (the 2-minute
+	// unanswered tools/call until teardown error-releases it (the idle-window
 	// "stream stalled" → "conversation session ended"). The match attempts above
 	// run at the current generation FIRST, so the normal park-then-pause-then-deliver
 	// order still answers the already-parked call without advancing.

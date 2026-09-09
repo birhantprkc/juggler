@@ -52,7 +52,7 @@ func TestMockTransientErrorTriggersRetry(t *testing.T) {
 	t.Parallel()
 	ts := strategyPreamble(t)
 	seq := ts.SetMockSequence(
-		helpers.ErrorMock("claude CLI stream stalled: no output for 2m0s (connection may have dropped, e.g. across system sleep)"),
+		helpers.ErrorMock("claude CLI stream stalled: no output for 3m0s (connection may have dropped, e.g. across system sleep)"),
 		helpers.PlainResponse(helpers.TextResponse("After retry")),
 	)
 

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"juggler/cmd/juggler/providers/provider"
+	"juggler/cmd/juggler/providers/utils"
 )
 
 // fastRetryBackoff shrinks the retry backoff to keep tests quick, restoring
@@ -102,12 +103,12 @@ func TestRetry_TransientCLIExitGivesUp(t *testing.T) {
 //     upstream that is already refusing traffic. Report it instead.
 func TestRetry_OverloadedUpstreamSurfacesWithoutColdStart(t *testing.T) {
 	fastRetryBackoff(t)
-	prevIdle, prevLadder := streamIdleTimeout, retryLadderCap
+	prevIdle, prevLadder := utils.StreamIdleTimeout, retryLadderCap
 	// A silence window long enough that only the ladder cap can end this turn:
 	// the notices never stop arriving, so the idle watchdog never fires.
-	streamIdleTimeout = 30 * time.Second
+	utils.StreamIdleTimeout = 30 * time.Second
 	retryLadderCap = 300 * time.Millisecond
-	t.Cleanup(func() { streamIdleTimeout, retryLadderCap = prevIdle, prevLadder })
+	t.Cleanup(func() { utils.StreamIdleTimeout, retryLadderCap = prevIdle, prevLadder })
 
 	tracePath := installFakeClaude(t, fakeModeLadderOnResume, "uuid-ladder-resume")
 	c := mkClient(t, "claude-sonnet-4-6")
@@ -168,14 +169,14 @@ func TestRetry_OverloadedUpstreamSurfacesWithoutColdStart(t *testing.T) {
 // history), so the turn recovers instead of locking up.
 func TestRetry_WedgedResumeColdStartsInsteadOfLockingUp(t *testing.T) {
 	fastRetryBackoff(t)
-	prevIdle := streamIdleTimeout
+	prevIdle := utils.StreamIdleTimeout
 	// The wedged --resume emits nothing, so it stalls deterministically at ANY
 	// idle window; but the SAME window also bounds the healthy cold-start's
 	// first-output latency. Keep it well above CI scheduling jitter (a 150ms
 	// window flaked on loaded runners — the fresh session's first text turn
 	// hadn't arrived yet) so the recovery path isn't throttled into a false stall.
-	streamIdleTimeout = time.Second
-	t.Cleanup(func() { streamIdleTimeout = prevIdle })
+	utils.StreamIdleTimeout = time.Second
+	t.Cleanup(func() { utils.StreamIdleTimeout = prevIdle })
 
 	tracePath := installFakeClaude(t, fakeModeWedgeOnResume, "uuid-wedge")
 	c := mkClient(t, "claude-sonnet-4-6")

@@ -40,7 +40,7 @@ const (
 	// LLMTimeout is a coarse wall-clock backstop on one waitForLLMResponse,
 	// NOT the primary stream-liveness guard. Liveness now lives at the provider
 	// boundary: every streaming provider arms an idle watchdog
-	// (utils.StreamIdleTimeout of silence; claudecode's own streamIdleTimeout)
+	// (utils.EffectiveStreamIdleTimeout of silence, the claude CLI included)
 	// that aborts a stalled stream and surfaces a transient error within
 	// seconds of the upstream going quiet. This timer only catches the
 	// pathological case a provider watchdog somehow misses — a turn that never

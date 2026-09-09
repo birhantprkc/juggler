@@ -1088,7 +1088,7 @@ func TestControlProtocol_ProductionParkThenPauseDelivers(t *testing.T) {
 }
 
 // TestControlProtocol_StarvedReaderPauseThenDeliverThenPark reproduces the
-// multi-CLI 2-minute stall ("stream stalled: no output" → teardown). In
+// multi-CLI idle-window stall ("stream stalled: no output" → teardown). In
 // production a round's
 // stop_reason=tool_use pause can be processed by the always-on reader BEFORE its
 // tools/call park arrives (the order seen in the logs: pause at 09:29:03, park 5s

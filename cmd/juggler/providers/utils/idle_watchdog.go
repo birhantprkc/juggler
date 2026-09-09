@@ -14,19 +14,19 @@ import (
 
 // StreamIdleTimeout bounds how long a streaming provider will wait for the next
 // stream event before declaring the upstream connection dead and aborting the
-// turn. It is the provider-boundary liveness guarantee: the SDK stream iterators
-// (anthropic Messages, openai Responses/ChatCompletions, gemini
-// GenerateContentStream) block on a socket read with no deadline of their own,
-// so without this a half-open connection — server stalls mid-response, the
-// machine sleeps and the TCP connection silently dies — would park the turn
-// forever with no error and no recovery.
+// turn. It is the provider-boundary liveness guarantee, and it covers every
+// streaming provider: the SDK stream iterators (anthropic Messages, openai
+// Responses/ChatCompletions, gemini GenerateContentStream) block on a socket
+// read with no deadline of their own, and the claude CLI's stdout read blocks
+// the same way, so without this a half-open connection — server stalls
+// mid-response, the machine sleeps and the TCP connection silently dies —
+// would park the turn forever with no error and no recovery.
 //
 // It is an IDLE window, not an absolute deadline: every received event resets
 // it, so a slow-but-progressing turn (a long cold start, extended reasoning)
 // never trips it. The window must therefore exceed worst-case time-to-first-
 // token on a large prompt; the providers' own keepalive/ping events reset it
-// well before then in practice. A package var so tests can shrink it. Mirrors
-// claudecode's own streamIdleTimeout, which already guards the CLI transport.
+// well before then in practice. A package var so tests can shrink it.
 //
 // This is the DEFAULT/fallback; the effective per-stream value comes from
 // EffectiveStreamIdleTimeout, which a user setting can override at runtime

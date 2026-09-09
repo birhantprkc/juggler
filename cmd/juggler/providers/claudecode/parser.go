@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"juggler/cmd/juggler/providers/provider"
+	"juggler/cmd/juggler/providers/utils"
 	"juggler/internal/jlog"
 )
 
@@ -93,22 +94,19 @@ func annotateExit(err error, diag string) error {
 	return err
 }
 
-// streamIdleTimeout bounds how long readUntilPauseOrComplete will wait for
-// the next line of CLI output before declaring the stream stalled. The CLI
-// streams incrementally under --include-partial-messages (content deltas,
-// and api_retry events during rate-limit backoff), so a long stretch of
-// total silence means the upstream connection is dead — most commonly
-// because the machine slept mid-request and the TCP connection dropped.
-// Failing here (rather than blocking until the worker's 5-minute LLMTimeout)
-// lets the turn surface a clear error and be retried. Generous so it never
-// trips on first-token latency; a package var so tests can shrink it.
-var streamIdleTimeout = 120 * time.Second
+// stallNoOutputMsg is the idle-stall error text, assembled from the two markers
+// the worker's transient classifier matches on (utils.StallMarker /
+// StallDroppedMarker) so this provider's wording cannot drift out of that
+// contract. Takes the idle window that elapsed; the stderr variant appends the
+// CLI's own last words.
+const stallNoOutputMsg = "claude CLI " + utils.StallMarker + ": no output for %s (" +
+	utils.StallDroppedMarker + ", e.g. across system sleep)"
 
 // retryLadderCap bounds how long a single turn may sit in the CLI's own in-band
 // backoff ladder without making progress. The CLI retries an overloaded
 // upstream (HTTP 529) itself, announcing each attempt as a system/api_retry
-// line. Those lines are LIVENESS, not PROGRESS: they keep resetting
-// streamIdleTimeout, so the silence watchdog alone can never end a turn whose
+// line. Those lines are LIVENESS, not PROGRESS: they keep resetting the idle
+// watchdog, so the silence watchdog alone can never end a turn whose
 // upstream is persistently overloaded — the turn would run until the worker's
 // 30-minute LLMTimeout backstop with the UI still claiming to receive.
 //
@@ -218,10 +216,21 @@ func (c *Client) readUntilPauseOrComplete(ctx context.Context, callback provider
 	result := &turnResult{progress: provider.NewProgressEmitter(callback)}
 	toolUseCount := 0
 
-	// Idle watchdog: reset on every line. If it fires, the CLI has gone
-	// silent without completing the turn — treat it as a dropped connection
-	// (e.g. the machine slept mid-request) rather than blocking forever.
-	idle := time.NewTimer(streamIdleTimeout)
+	// Idle watchdog: reset on every line. If it fires, the CLI has gone silent
+	// without completing the turn — treat it as a dropped connection (most
+	// commonly the machine slept mid-request and the TCP connection died)
+	// rather than blocking until the worker's coarse LLMTimeout backstop. The
+	// CLI streams incrementally under --include-partial-messages (content
+	// deltas, and api_retry events during its own backoff), so a long stretch
+	// of total silence is the connection, not the model thinking.
+	//
+	// The window is the same one every other streaming provider arms, user
+	// setting included: this transport is a subprocess rather than a socket,
+	// but the failure it guards against and the setting that tunes it are
+	// shared. Resolved once per read loop and reused for the error text, so
+	// the reported timeout is the one that actually fired.
+	idleTimeout := utils.EffectiveStreamIdleTimeout()
+	idle := time.NewTimer(idleTimeout)
 	defer idle.Stop()
 	resetIdle := func() {
 		if !idle.Stop() {
@@ -230,7 +239,7 @@ func (c *Client) readUntilPauseOrComplete(ctx context.Context, callback provider
 			default:
 			}
 		}
-		idle.Reset(streamIdleTimeout)
+		idle.Reset(idleTimeout)
 	}
 
 	// Retry-ladder cap: armed by the first api_retry notice of a stretch and
@@ -270,7 +279,7 @@ func (c *Client) readUntilPauseOrComplete(ctx context.Context, callback provider
 		case <-ladder.C:
 			ladderArmed = false
 			return result, toolUseCount, &transientCLIError{
-				msg: fmt.Sprintf("claude CLI stream stalled: %s of provider retries with no progress (upstream persistently overloaded)",
+				msg: fmt.Sprintf("claude CLI "+utils.StallMarker+": %s of provider retries with no progress (upstream persistently overloaded)",
 					retryLadderCap),
 				ladderExhausted: true,
 			}
@@ -281,13 +290,11 @@ func (c *Client) readUntilPauseOrComplete(ctx context.Context, callback provider
 				stderr = strings.TrimSpace(c.activeSession.drainStderr())
 			}
 			if stderr != "" {
-				return result, toolUseCount, &transientCLIError{msg: fmt.Sprintf(
-					"claude CLI stream stalled: no output for %s (connection may have dropped, e.g. across system sleep): %s",
-					streamIdleTimeout, stderr)}
+				return result, toolUseCount, &transientCLIError{
+					msg: fmt.Sprintf(stallNoOutputMsg+": %s", idleTimeout, stderr)}
 			}
-			return result, toolUseCount, &transientCLIError{msg: fmt.Sprintf(
-				"claude CLI stream stalled: no output for %s (connection may have dropped, e.g. across system sleep)",
-				streamIdleTimeout)}
+			return result, toolUseCount, &transientCLIError{
+				msg: fmt.Sprintf(stallNoOutputMsg, idleTimeout)}
 
 		case line, ok := <-content:
 			resetIdle()

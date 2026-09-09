@@ -12,7 +12,55 @@ import (
 	"time"
 
 	"juggler/cmd/juggler/providers/provider"
+	"juggler/cmd/juggler/providers/utils"
 )
+
+// TestStreamIdleTimeoutHonoursUserSetting pins the promise the Defaults tab
+// makes: the stream idle timeout is a global setting, applying to every
+// streaming provider. The claude CLI is one of them — a user who shrinks the
+// window (or raises it for a slow upstream) must get the window they asked for
+// here too, not a figure this package chose for itself.
+//
+// The package default is left at its production value, so only the configured
+// window can end this turn; the test's own ceiling exists to fail a regression
+// rather than hang it.
+func TestStreamIdleTimeoutHonoursUserSetting(t *testing.T) {
+	installFakeClaude(t, fakeModeNoResult, "uuid-idle-setting")
+	fastRetryBackoff(t)
+	c := mkClient(t, "claude-sonnet-4-6")
+	convID := "conv-idle-setting"
+
+	utils.SetStreamIdleTimeoutResolver(func() time.Duration { return 200 * time.Millisecond })
+	t.Cleanup(func() { utils.SetStreamIdleTimeoutResolver(nil) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err := c.streamMessage(ctx, provider.MessageRequest{
+		ConversationID: convID,
+		SystemPrompt:   "sys",
+		Messages:       []provider.Message{userMsg("hello")},
+	}, nopCallback())
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected a stall error from a silent CLI, got nil")
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the configured 200ms idle window never applied: the turn read for %v until the test's own ceiling ended it", elapsed)
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "stall") {
+		t.Errorf("expected a stall error, got: %v", err)
+	}
+	// Configured window (200ms) + teardownGracePeriod (500ms) per attempt,
+	// across 1+cliMaxRetries attempts, plus slack.
+	if elapsed > 10*time.Second {
+		t.Fatalf("stall detection took %v — the configured idle window was not the one armed", elapsed)
+	}
+
+	c.dropSession(convID)
+}
 
 // TestStreamStallsOnSilentCLI models a subprocess whose upstream connection
 // was dropped (e.g. across a system sleep): the CLI emits its init line and
@@ -26,9 +74,9 @@ func TestStreamStallsOnSilentCLI(t *testing.T) {
 	convID := "conv-stall"
 
 	// Shrink the idle window so the test runs fast; restore after.
-	prev := streamIdleTimeout
-	streamIdleTimeout = 200 * time.Millisecond
-	defer func() { streamIdleTimeout = prev }()
+	prev := utils.StreamIdleTimeout
+	utils.StreamIdleTimeout = 200 * time.Millisecond
+	defer func() { utils.StreamIdleTimeout = prev }()
 
 	start := time.Now()
 	_, err := c.streamMessage(context.Background(), provider.MessageRequest{
@@ -69,12 +117,12 @@ func TestStreamFailsOnEndlessRetryNotices(t *testing.T) {
 
 	// A silence window far longer than the notice interval, so this test can
 	// only pass via the retry-ladder cap — never by the CLI falling silent.
-	prevIdle, prevLadder, prevBackoff := streamIdleTimeout, retryLadderCap, cliRetryBackoff
-	streamIdleTimeout = 30 * time.Second
+	prevIdle, prevLadder, prevBackoff := utils.StreamIdleTimeout, retryLadderCap, cliRetryBackoff
+	utils.StreamIdleTimeout = 30 * time.Second
 	retryLadderCap = 300 * time.Millisecond
 	cliRetryBackoff = 10 * time.Millisecond
 	defer func() {
-		streamIdleTimeout, retryLadderCap, cliRetryBackoff = prevIdle, prevLadder, prevBackoff
+		utils.StreamIdleTimeout, retryLadderCap, cliRetryBackoff = prevIdle, prevLadder, prevBackoff
 	}()
 
 	// A hard ceiling so a regression fails the test instead of hanging it.
