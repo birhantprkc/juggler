@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -194,24 +195,37 @@ func resolvedPath(p string) string {
 // cleanRepoRelative normalises a client-supplied relative path and rejects one
 // that is absolute or climbs above where it is anchored. "" is allowed and means
 // the anchor itself, which is how the root repository names itself.
+//
+// These paths are slash-separated whatever the client is, and they are judged
+// here without the host's path rules: `filepath` answers for the machine the
+// server happens to run on, which would make what escapes a property of the
+// server rather than of the path. A backslash is refused outright for the same
+// reason — folding it to a separator, which is what ToSlash does on Windows,
+// turns `web\js\app.js` and `C:\Windows` into ordinary-looking relative paths
+// that every check below then waves through.
 func cleanRepoRelative(raw string) (string, bool) {
-	slashed := filepath.ToSlash(strings.TrimSpace(raw))
-	if slashed == "" {
+	rel := strings.TrimSpace(raw)
+	if rel == "" {
 		return "", true
 	}
-	if strings.HasPrefix(slashed, "/") || strings.Contains(slashed, "\x00") {
+	if strings.ContainsAny(rel, "\\\x00") || strings.HasPrefix(rel, "/") || hasDriveLetter(rel) {
 		return "", false
 	}
-	// A Windows drive letter or UNC prefix is absolute there and would otherwise
-	// survive as an innocent-looking relative path.
-	if filepath.IsAbs(filepath.FromSlash(slashed)) || strings.Contains(slashed, `\`) {
-		return "", false
-	}
-	cleaned := filepath.ToSlash(filepath.Clean(slashed))
+	cleaned := path.Clean(rel)
 	if cleaned == ".." || strings.HasPrefix(cleaned, "../") || cleaned == "." {
 		return "", false
 	}
 	return cleaned, true
+}
+
+// hasDriveLetter reports whether a path opens with a Windows drive specifier
+// such as "C:". It is absolute on Windows and names nothing anywhere else, so
+// it is refused wherever the server is running.
+func hasDriveLetter(p string) bool {
+	if len(p) < 2 || p[1] != ':' {
+		return false
+	}
+	return (p[0] >= 'a' && p[0] <= 'z') || (p[0] >= 'A' && p[0] <= 'Z')
 }
 
 // gitFilePatch runs the diff for one path and returns its raw patch text, empty

@@ -260,6 +260,10 @@ func TestCleanRepoRelativeAcceptsPathsInside(t *testing.T) {
 // Where this endpoint may be pointed is the whole of its security: it reads
 // whatever it is given, so anything that leaves the anchor is refused outright
 // rather than clamped back inside it.
+//
+// Every one of these is refused on every platform. What a path escapes to is a
+// property of the client that sent it, not of the machine the server happens to
+// run on, so a Windows path is refused by a Linux server and vice versa.
 func TestCleanRepoRelativeRefusesPathsOutside(t *testing.T) {
 	for _, in := range []string{
 		"/etc/passwd",
@@ -268,8 +272,10 @@ func TestCleanRepoRelativeRefusesPathsOutside(t *testing.T) {
 		"web/../../secrets",
 		".",
 		`C:\Windows\system.ini`,
+		"C:/Windows/system.ini",
 		`web\js\app.js`,
 		`\\server\share`,
+		"//server/share",
 		"web/\x00/app.js",
 	} {
 		if got, ok := cleanRepoRelative(in); ok {
