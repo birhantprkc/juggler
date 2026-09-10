@@ -758,6 +758,18 @@ deliberate exception rather than a precedent: it acts on a process, at the user'
 request, on a surface the conversation already offers a Stop button for. It
 rejects if the task could not be asked to stop — show what came back.
 
+**The board and your pin share a keyboard, and position decides who gets a key.**
+While focus is on the board itself — the region a reader lands on when the board
+opens — the arrows step along the tabs, the Page/Home/End keys scroll your pin,
+and Return goes into it. Once focus is inside your pin, the keys are yours: the
+board keeps only ←/→, so a reader who has tabbed to the last button in your pin
+is not stranded there, and Escape, which takes them back out to the region.
+Handle a key you want and call `preventDefault()` — the board listens above you,
+sees it was handled and stands down — and the same is true of a text field, whose
+arrows are never taken. There is nothing to register and no flag to set. The
+chord (⌥⌘←/→, Ctrl+Page Up/Down) belongs to the board wherever focus is, which is
+why your pin may safely claim every plain key it wants.
+
 Full reference: **`web/sdk/pinboard-item-type.js`**. Templates:
 `pins/file-pin.js` (multiple instances, a picker in `configure()`, a live file
 watched through `services.files`, and four toolbar actions) and `pins/plan-pin.js`

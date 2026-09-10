@@ -73,6 +73,28 @@ const TASK_POLL_MS = 2000;
 const NOTIFY_FALLBACK_MS = 100;
 
 /**
+ * How far the arrow keys scroll a pin, in pixels. Roughly three lines: the
+ * browser's own step for a scroll box, arrived at the same way — by what reads
+ * as a nudge rather than a jump.
+ */
+const LINE_STEP_PX = 48;
+
+/**
+ * How much of the screen a paged scroll keeps, in pixels. Also the floor on a
+ * page, so paging a body barely taller than the overlap still moves.
+ */
+const PAGE_KEEP_PX = 48;
+
+/**
+ * What counts as the way into a pin that named no entry point of its own: the
+ * first thing in it a reader could have Tabbed to anyway. Deliberately the
+ * ordinary tab-stop set — a pin with something better in mind implements
+ * `PinController.focus` and is asked that instead.
+ */
+const ENTRY_SELECTOR = 'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), '
+  + 'textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
+
+/**
  * The conversation tab on screen, which owns column selection and is therefore
  * the only thing that can reveal a thread.
  * @returns {any} The active `<conversation-tab>`, or null.
@@ -434,6 +456,19 @@ class PinboardContent extends JugglerElement {
     } catch (err) {
       console.error('[Pinboard] Item type failed to take focus:', err);
     }
+    this.focusRegion();
+  }
+
+  /**
+   * Put focus on the region itself, deliberately short of the pin.
+   *
+   * This is where the arrow keys leave focus as they step along the tabs, and
+   * why they are not {@link focusBody}: a pin that names an entry point means it
+   * for a reader who has arrived, and a pin whose entry point is a text field
+   * would swallow the next press of the very key that brought them here.
+   * @returns {void}
+   */
+  focusRegion() {
     // The board is an overlay over a scroll box, so taking focus must never be
     // what scrolls the workspace behind it. Without `preventScroll` this is
     // where opening the board throws the workspace about: focus arrives in the
@@ -443,6 +478,63 @@ class PinboardContent extends JugglerElement {
     // left, the sliding panel overshoots with them, and it all springs back when
     // the transform settles.
     this.focus({ preventScroll: true });
+  }
+
+  /**
+   * Move focus into the pin, for a reader who asked to be in it: the type's own
+   * entry point if it named one, else the first control it drew.
+   * @returns {boolean} True when focus went somewhere inside the pin.
+   */
+  enterPin() {
+    try {
+      if (this._controller?.focus) {
+        this._controller.focus();
+        return true;
+      }
+    } catch (err) {
+      console.error('[Pinboard] Item type failed to take focus:', err);
+    }
+    const first = /** @type {HTMLElement|null} */ (this._body?.querySelector(ENTRY_SELECTOR) ?? null);
+    if (!first) return false;
+    first.focus({ preventScroll: true });
+    return true;
+  }
+
+  /**
+   * Whether a node is part of the pin rather than the region around it. What the
+   * board may act on without taking something out of a reader's hands is decided
+   * by this: inside the pin, the pin's keys are its own.
+   * @param {EventTarget|null} node - Usually a keystroke's target.
+   * @returns {boolean} True when the node sits inside the mounted pin.
+   */
+  isInsidePin(node) {
+    return !!this._body && node instanceof Node && this._body.contains(node) && node !== this._body;
+  }
+
+  /**
+   * Scroll the pin from the keyboard.
+   *
+   * Done by hand because focus is on the region and the scroll box is inside it:
+   * the browser scrolls the nearest scrollable ANCESTOR of what is focused, which
+   * from here is the page, not the pin.
+   * @param {'line'|'page'|'edge'} step - How far.
+   * @param {number} direction - -1 for up, 1 for down.
+   * @returns {boolean} True when there was a pin to scroll.
+   */
+  scrollPin(step, direction) {
+    const body = this._body;
+    if (!body) return false;
+    if (step === 'edge') {
+      body.scrollTo({ top: direction < 0 ? 0 : body.scrollHeight });
+      return true;
+    }
+    // A page keeps a couple of lines of what was on screen, so a paged read has
+    // an overlap to pick the thread up from rather than a seam.
+    const amount = step === 'page'
+      ? Math.max(body.clientHeight - PAGE_KEEP_PX, PAGE_KEEP_PX)
+      : LINE_STEP_PX;
+    body.scrollBy({ top: amount * direction });
+    return true;
   }
 
   /**

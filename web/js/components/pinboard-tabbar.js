@@ -222,8 +222,15 @@ class PinboardTabbar extends JugglerElement {
   }
 
   /**
-   * ARIA tabs keyboard behaviour, with manual activation: the arrows move focus,
-   * Enter/Space selects. Alt+arrow moves the tab itself.
+   * ARIA tabs keyboard behaviour, activating as it goes: the arrows move focus
+   * and show the tab they land on, Enter/Space says so again for anyone who
+   * expected to have to. Alt+arrow moves the tab itself.
+   *
+   * Showing the tab straight away is what the same arrows do everywhere else on
+   * the board, and a strip whose arrows only pointed at tabs would be the one
+   * place they mean something weaker. The cost is a pin mounted in passing on
+   * the way to the far end of a wide board, which is a pin doing the work it was
+   * pinned to do.
    * @param {KeyboardEvent} e - The keydown.
    * @private
    */
@@ -234,11 +241,15 @@ class PinboardTabbar extends JugglerElement {
     const index = this._tabs.findIndex((t) => t.id === pinId);
     if (index < 0) return;
 
-    /** @param {number} to - Index to focus. */
-    const focusAt = (to) => {
+    /** @param {number} to - Index to focus and show. */
+    const goTo = (to) => {
       const buttons = Array.from(this.querySelectorAll('.pinboard-tab__button'));
-      const target = buttons[Math.max(0, Math.min(buttons.length - 1, to))];
-      /** @type {HTMLElement|undefined} */ (target)?.focus();
+      const at = Math.max(0, Math.min(buttons.length - 1, to));
+      /** @type {HTMLElement|undefined} */ (buttons[at])?.focus();
+      // Focus first: selecting redraws the strip, and the tab being moved to
+      // should be the one holding its tab stop by the time it does.
+      const tab = this._tabs[at];
+      if (tab) this._emit('pinboard-select', { pinId: tab.id });
     };
 
     switch (e.key) {
@@ -246,14 +257,14 @@ class PinboardTabbar extends JugglerElement {
       case 'ArrowRight': {
         const delta = e.key === 'ArrowLeft' ? -1 : 1;
         if (e.altKey) this._emit('pinboard-move', { pinId, index: index + delta });
-        else focusAt(index + delta);
+        else goTo(index + delta);
         break;
       }
       case 'Home':
-        focusAt(0);
+        goTo(0);
         break;
       case 'End':
-        focusAt(this._tabs.length - 1);
+        goTo(this._tabs.length - 1);
         break;
       case 'Enter':
       case ' ':

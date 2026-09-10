@@ -29,6 +29,7 @@ import pinboardView from '../services/pinboard-view.js';
 import pinboardItemRegistry from '../registries/pinboard-item-registry.js';
 import { REGISTRIES_RELOADED } from '../registries/reload-registries.js';
 import { THREAD_FOCUS_CHANGED } from './conversation-tab.js';
+import { isEditableTarget } from '../services/key-shortcut-manager.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { openAddPicker } from './pinboard-add-picker.js';
 import { describePin, revealInConversation } from './pinboard-content.js';
@@ -300,6 +301,89 @@ class PinboardPanel extends JugglerElement {
   }
 
   /**
+   * The keys the board answers to while it has focus, and the rules about whose
+   * they are.
+   *
+   * Three places a keystroke can come from, and the board owns less of the
+   * keyboard the further in it is:
+   *
+   * - the region (the tab panel itself, which is where focus lands on opening):
+   *   ←/→ step along the tabs, ↑/↓ and the Page/Home/End keys scroll the pin,
+   *   Return goes into it. Nothing is being read or edited here, so the board
+   *   may have the lot.
+   * - inside the pin: the pin's, apart from ←/→ — a stepped-through pin that
+   *   drew a list of buttons should not strand the reader on the last of them —
+   *   and Escape, which is the way back out to the region. A pin that wants
+   *   either says so by handling the key itself: this stands down for anything
+   *   already handled, and for anything typed into a text field.
+   * - the tab strip: its own, in full. It runs the ARIA tablist behaviour, and
+   *   what reaches here from it is a key it did not want.
+   *
+   * Everything chorded belongs to the shell, which hears it wherever focus is.
+   * @param {KeyboardEvent} e - The keydown.
+   * @private
+   */
+  _onKeyDown(e) {
+    if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const content = this._content;
+    if (!content) return;
+    const target = e.target;
+    const inPin = content.isInsidePin(target);
+
+    if (e.key === 'Escape') {
+      // From the region, Escape is the board's own dismissal and is left to it.
+      if (!inPin) return;
+      content.focusRegion();
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
+    if (isEditableTarget(target)) return;
+    if (this._tabbar?.contains(/** @type {Node} */ (target))) return;
+    const onRegion = target === content;
+    if (!onRegion && !inPin) return;
+
+    switch (e.key) {
+      case 'ArrowLeft':
+      case 'ArrowRight': {
+        const before = pinboardView.getActivePinId();
+        const now = pinboardView.selectRelative(e.key === 'ArrowLeft' ? -1 : 1);
+        // Showing another pin unmounts the one the keystroke came from, so focus
+        // would fall to the document and the press after this would reach
+        // nothing at all. It goes to the region and stops there: taking the new
+        // pin's entry point would hand the next arrow to whatever that is.
+        if (now !== before) content.focusRegion();
+        break;
+      }
+      case 'ArrowUp':
+      case 'ArrowDown':
+        // Only from the region. Deeper in, the pin's own scroll box is an
+        // ancestor of what is focused and the browser is already doing this.
+        if (!onRegion || !content.scrollPin('line', e.key === 'ArrowUp' ? -1 : 1)) return;
+        break;
+      case 'PageUp':
+      case 'PageDown':
+        if (!onRegion || !content.scrollPin('page', e.key === 'PageUp' ? -1 : 1)) return;
+        break;
+      case 'Home':
+      case 'End':
+        // The ends of the pin, not the ends of the board: this is a scroll box
+        // with focus in it, and the strip's own Home/End still name tabs.
+        if (!onRegion || !content.scrollPin('edge', e.key === 'Home' ? -1 : 1)) return;
+        break;
+      case 'Enter':
+        if (!onRegion || !content.enterPin()) return;
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  /**
    * Build the three bands once.
    * @private
    */
@@ -349,6 +433,11 @@ class PinboardPanel extends JugglerElement {
       void pinboardView.move(pinId, bounded);
     });
     this.on(this, 'pinboard-add', () => this._openPicker());
+
+    // On the panel rather than the document, which is the whole of how the board
+    // and its pins share a keyboard: a pin's own handler sits deeper in the tree,
+    // so it runs first and takes what it wants before this ever sees it.
+    this.on(this, 'keydown', (e) => this._onKeyDown(/** @type {KeyboardEvent} */ (e)));
 
     // The other half of a detached board lives here: this viewer carries out the
     // reveals its boards send back. It is registered whether or not this

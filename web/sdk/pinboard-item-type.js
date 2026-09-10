@@ -464,7 +464,11 @@ import { validateManifest } from './lib/manifest.js';
  * @typedef {object} PinController
  * @property {(next: PinContext) => void} [update] - Apply a new context snapshot in place
  * @property {() => void} [teardown] - Stop timers and listeners
- * @property {() => void} [focus] - Move focus into the body, when the host reveals this pin
+ * @property {() => void} [focus] - Move focus into the body. Asked when a reader
+ *   arrives on this pin deliberately — the board opening on it, a reveal, Return
+ *   pressed on it — and never as the arrow keys step past it on the way somewhere
+ *   else, so a pin whose entry point is a text field does not swallow the next
+ *   press of the key that brought them here.
  * @property {() => void} [hide] - Only for a type with `retain` in its manifest: the
  *   user has switched to another tab and this pin is off screen, still mounted and
  *   still subscribed. Quieten down — pause an animation, stop asking for what nobody

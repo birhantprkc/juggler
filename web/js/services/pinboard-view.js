@@ -310,6 +310,31 @@ const pinboardView = {
   },
 
   /**
+   * Move the selection one tab along the board — what every "next pin" key ends
+   * up calling, wherever focus happens to be.
+   *
+   * It stops at the ends rather than wrapping, which is the rule the tab strip's
+   * own arrows already follow. A board is a short row read left to right, and a
+   * key held down to reach the far end should arrive there and stay, not set off
+   * again from the beginning.
+   * @param {number} delta - -1 for the tab to the left, 1 for the one to the right.
+   * @returns {string|null} The pin now active, or null when the board is empty.
+   */
+  selectRelative(delta) {
+    const pins = pinboardStore.get();
+    if (!pins.length) return null;
+    // The remembered index is the fallback for a board whose active pin has been
+    // removed by another viewer between the keypress and here: stepping from
+    // where that pin was is what the reader is looking at.
+    const current = pins.findIndex((p) => p.id === _activePinId);
+    const from = current >= 0 ? current : Math.min(_activeIndex, pins.length - 1);
+    const to = Math.max(0, Math.min(pins.length - 1, from + delta));
+    const pin = /** @type {Pin} */ (pins[to]);
+    this.setActivePin(pin.id);
+    return pin.id;
+  },
+
+  /**
    * Open the board on a particular pin.
    * @param {string} pinId - The pin to show.
    * @returns {void}

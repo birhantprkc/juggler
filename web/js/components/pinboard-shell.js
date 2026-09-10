@@ -20,9 +20,10 @@
  * finger has one more way out: the board can be swiped back off the edge it
  * arrived from, as the conversation drawer and a bottom sheet can.
  *
- * The chord is dispatched here rather than by the shortcut manager: an open board
- * holds a popup token, and the manager stands every command down behind an
- * overlay — which is right for every command except the one that closes this one.
+ * The board's chords are dispatched here rather than by the shortcut manager: an
+ * open board holds a popup token, and the manager stands every command down
+ * behind an overlay — which is right for every command except the ones aimed at
+ * this one.
  * @module components/pinboard-shell
  */
 
@@ -315,6 +316,7 @@ class PinboardShell extends JugglerElement {
   _onKeyDown(e) {
     if (e.isComposing || e.keyCode === 229) return;
     if (this.hidden) return;
+    if (this._cyclePins(e)) return;
     // Nothing to toggle when the board is the window: closing it would mean
     // closing the window, which is what the window's own controls are for.
     if (isPinboardView()) return;
@@ -326,6 +328,34 @@ class PinboardShell extends JugglerElement {
     e.preventDefault();
     e.stopPropagation();
     this._toggle();
+  }
+
+  /**
+   * Step along the tabs from wherever focus is.
+   *
+   * The panel's own plain arrows are the ones reached for, and they defer to
+   * whatever is inside the pin. These do not: focus in a text field, in a pin
+   * that has claimed the arrows for itself, anywhere in the window at all, and
+   * the board still moves. That is the whole job — one gesture that is never
+   * anyone else's.
+   *
+   * Only while the board is open, and it fires over the board's own popup token
+   * exactly as the toggle above does: keys aimed at an overlay are the reason
+   * both of them live here.
+   * @param {KeyboardEvent} e - The keydown.
+   * @returns {boolean} True when the keystroke was the board's.
+   * @private
+   */
+  _cyclePins(e) {
+    if (!pinboardView.isOpen()) return false;
+    for (const [id, delta] of /** @type {[string, number][]} */ ([['prev-pin', -1], ['next-pin', 1]])) {
+      if (!keyShortcutManager.getBindings(id).some((binding) => eventMatchesBinding(binding, e))) continue;
+      e.preventDefault();
+      e.stopPropagation();
+      pinboardView.selectRelative(delta);
+      return true;
+    }
+    return false;
   }
 
   /**

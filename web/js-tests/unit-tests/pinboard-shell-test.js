@@ -185,6 +185,66 @@ class WatcherPin extends PinboardItemType {
   }
 }
 
+/** What the KeysPin was asked for: its entry point, and the key it claims. */
+const keysCalls = { focuses: 0, claimed: 0 };
+
+/**
+ * A type with content of its own to defend: a control that claims ArrowLeft, an
+ * ordinary button that claims nothing, a text field, and an entry point that
+ * lands in the text field — the arrangement that would strand a reader if the
+ * board took focus into a pin every time it stepped onto one.
+ */
+class KeysPin extends PinboardItemType {
+  static MANIFEST = {
+    id: 'keys',
+    name: 'Keys',
+    version: '1.0.0',
+    description: 'A pin that has opinions about the keyboard',
+    instances: 'multiple',
+  };
+
+  describe(config) {
+    return { title: config.label || 'Keys' };
+  }
+
+  mount(container) {
+    container.innerHTML = '<div class="keys-claimer" tabindex="0"></div>'
+      + '<button type="button" class="keys-button">Do</button>'
+      + '<input class="keys-input" type="text">';
+    const claimer = /** @type {HTMLElement} */ (container.querySelector('.keys-claimer'));
+    claimer.addEventListener('keydown', (e) => {
+      if (/** @type {KeyboardEvent} */ (e).key !== 'ArrowLeft') return;
+      keysCalls.claimed++;
+      e.preventDefault();
+    });
+    return {
+      teardown: () => {},
+      focus: () => {
+        keysCalls.focuses++;
+        /** @type {HTMLElement} */ (container.querySelector('.keys-input')).focus();
+      },
+    };
+  }
+}
+
+/** A type taller than any panel, for the keys that scroll one. */
+class TallPin extends PinboardItemType {
+  static MANIFEST = {
+    id: 'tall',
+    name: 'Tall',
+    version: '1.0.0',
+    description: 'A pin with more in it than fits',
+    instances: 'multiple',
+  };
+
+  mount(container) {
+    const long = document.createElement('div');
+    long.style.height = '2000px';
+    container.appendChild(long);
+    return { teardown: () => {} };
+  }
+}
+
 /** A singleton type that refuses to mount, for the host's error shell. */
 class BrokenPin extends PinboardItemType {
   static MANIFEST = {
@@ -346,6 +406,45 @@ function chord() {
 }
 
 /**
+ * The chord that steps along the tabs, as this platform delivers it: ⌥⌘←/→ on
+ * the Mac, Ctrl+Page Up/Down everywhere else.
+ * @param {number} direction - -1 for the tab to the left, 1 for the right.
+ * @returns {KeyboardEvent} The keydown.
+ */
+function pinChord(direction) {
+  const mac = isMac();
+  const key = mac
+    ? (direction < 0 ? 'ArrowLeft' : 'ArrowRight')
+    : (direction < 0 ? 'PageUp' : 'PageDown');
+  return new KeyboardEvent('keydown', {
+    key,
+    altKey: mac,
+    metaKey: mac,
+    ctrlKey: !mac,
+    bubbles: true,
+    cancelable: true,
+  });
+}
+
+/**
+ * A plain keypress, as one arrives from whatever holds focus.
+ * @param {string} key - The `key` value.
+ * @returns {KeyboardEvent} The keydown.
+ */
+function press(key) {
+  return new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+}
+
+/**
+ * The region the board puts focus in: the tab panel itself, short of the pin.
+ * @param {any} shell - The mounted shell.
+ * @returns {any} The `<pinboard-content>` element.
+ */
+function region(shell) {
+  return shell.querySelector('pinboard-content');
+}
+
+/**
  * Drag horizontally across an element with a finger, and let go. Positive is
  * rightward, the way the board leaves.
  * @param {HTMLElement} target - Element the drag starts on.
@@ -419,6 +518,8 @@ export async function runTests(_ctx) {
   pinboardItemRegistry.registerClass(ActionsPin, { extensionId: 'test' });
   pinboardItemRegistry.registerClass(PathPin, { extensionId: 'test' });
   pinboardItemRegistry.registerClass(WatcherPin, { extensionId: 'test' });
+  pinboardItemRegistry.registerClass(KeysPin, { extensionId: 'test' });
+  pinboardItemRegistry.registerClass(TallPin, { extensionId: 'test' });
 
   try {
     await run('the header toggle opens and closes the board', async () => {
@@ -693,7 +794,7 @@ export async function runTests(_ctx) {
       }
     });
 
-    await run('arrow keys move focus and Enter selects', async () => {
+    await run('arrow keys in the strip move focus and show the tab they land on', async () => {
       const { shell, teardown } = await mountShell([
         { id: 'pin_a', type: 'probe', config: { label: 'alpha' } },
         { id: 'pin_b', type: 'probe', config: { label: 'beta' } },
@@ -702,12 +803,176 @@ export async function runTests(_ctx) {
         pinboardView.open();
         const tabs = shell.querySelectorAll('.pinboard-tab__button');
         tabs[0].focus();
-        tabs[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
-        assert(document.activeElement === tabs[1],
-          'ArrowRight moves focus along the strip without selecting');
-        assert(bodyText(shell) === 'probe:alpha', 'focus alone must not change the mounted pin');
-        tabs[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-        assert(bodyText(shell) === 'probe:beta', 'Enter activates the focused tab');
+        tabs[0].dispatchEvent(press('ArrowRight'));
+        assert(document.activeElement === tabs[1], 'ArrowRight moves focus along the strip');
+        assert(bodyText(shell) === 'probe:beta',
+          `and shows what it lands on, as the same key does in the body, got "${bodyText(shell)}"`);
+        tabs[1].dispatchEvent(press('Enter'));
+        assert(bodyText(shell) === 'probe:beta',
+          'Enter on the tab already showing says the same thing again');
+        tabs[1].dispatchEvent(press('Home'));
+        assert(document.activeElement === tabs[0] && bodyText(shell) === 'probe:alpha',
+          'Home goes to the first tab and shows it too');
+      } finally {
+        teardown();
+      }
+    });
+
+    await run('the arrow keys step along the tabs from the board itself', async () => {
+      const { shell, teardown } = await mountShell([
+        { id: 'pin_a', type: 'probe', config: { label: 'alpha' } },
+        { id: 'pin_b', type: 'probe', config: { label: 'beta' } },
+        { id: 'pin_c', type: 'probe', config: { label: 'gamma' } },
+      ]);
+      try {
+        pinboardView.open();
+        const content = region(shell);
+        assert(document.activeElement === content,
+          'opening must leave the keyboard on the region, which is what these keys are for');
+
+        content.dispatchEvent(press('ArrowRight'));
+        assert(bodyText(shell) === 'probe:beta', `→ shows the next pin, got "${bodyText(shell)}"`);
+        assert(document.activeElement === content,
+          'and leaves focus on the region, or the press after it would reach nothing');
+
+        content.dispatchEvent(press('ArrowRight'));
+        content.dispatchEvent(press('ArrowRight'));
+        assert(pinboardView.getActivePinId() === 'pin_c',
+          'the far end is the far end: a held key stops there rather than wrapping round');
+
+        content.dispatchEvent(press('ArrowLeft'));
+        content.dispatchEvent(press('ArrowLeft'));
+        assert(bodyText(shell) === 'probe:alpha', `← walks back, got "${bodyText(shell)}"`);
+      } finally {
+        teardown();
+      }
+    });
+
+    await run('a pin that wants a key keeps it, and the chord works anyway', async () => {
+      const { shell, teardown } = await mountShell([
+        { id: 'pin_a', type: 'probe', config: { label: 'alpha' } },
+        { id: 'pin_b', type: 'keys', config: { label: 'keys' } },
+      ]);
+      try {
+        keysCalls.claimed = 0;
+        pinboardView.open();
+        pinboardView.setActivePin('pin_b');
+        const claimer = /** @type {HTMLElement} */ (shell.querySelector('.keys-claimer'));
+        claimer.focus();
+        claimer.dispatchEvent(press('ArrowLeft'));
+        assert(keysCalls.claimed === 1, 'the pin must be the one that saw the key');
+        assert(pinboardView.getActivePinId() === 'pin_b',
+          'a key the pin handled is not the board\'s to act on as well');
+        assert(document.activeElement === claimer, 'and focus stays where the reader put it');
+
+        // The same press, from a text field it would otherwise move a caret in.
+        const input = /** @type {HTMLElement} */ (shell.querySelector('.keys-input'));
+        input.focus();
+        input.dispatchEvent(press('ArrowLeft'));
+        assert(pinboardView.getActivePinId() === 'pin_b',
+          'an arrow in a text field is a caret moving, whatever else it might mean');
+
+        input.dispatchEvent(pinChord(-1));
+        assert(pinboardView.getActivePinId() === 'pin_a',
+          'the chord is the one that always works — that is what it is for');
+      } finally {
+        teardown();
+      }
+    });
+
+    await run('an ordinary control inside a pin still lets the arrows through', async () => {
+      const { shell, teardown } = await mountShell([
+        { id: 'pin_a', type: 'keys', config: { label: 'keys' } },
+        { id: 'pin_b', type: 'probe', config: { label: 'beta' } },
+      ]);
+      try {
+        pinboardView.open();
+        const button = /** @type {HTMLElement} */ (shell.querySelector('.keys-button'));
+        button.focus();
+        button.dispatchEvent(press('ArrowRight'));
+        assert(bodyText(shell) === 'probe:beta',
+          `a button that does nothing with → must not strand the reader on it, got "${bodyText(shell)}"`);
+        assert(document.activeElement === region(shell),
+          'focus follows the content it was in, which has just been unmounted');
+      } finally {
+        teardown();
+      }
+    });
+
+    await run('stepping onto a pin does not walk into it, Return does', async () => {
+      const { shell, teardown } = await mountShell([
+        { id: 'pin_a', type: 'probe', config: { label: 'alpha' } },
+        { id: 'pin_b', type: 'keys', config: { label: 'keys' } },
+      ]);
+      try {
+        keysCalls.focuses = 0;
+        pinboardView.open();
+        const content = region(shell);
+        content.dispatchEvent(press('ArrowRight'));
+        assert(pinboardView.getActivePinId() === 'pin_b', 'the fixture needs to have arrived');
+        assert(keysCalls.focuses === 0,
+          'a pin stepped onto must not be handed the keyboard: its entry point is a text field, '
+          + 'and the next arrow would go into that instead of on to the next tab');
+        assert(document.activeElement === content, 'focus waits on the region');
+
+        content.dispatchEvent(press('Enter'));
+        assert(keysCalls.focuses === 1, 'Return is the reader saying they have arrived');
+        assert(document.activeElement === shell.querySelector('.keys-input'),
+          'and the pin decides where that puts them');
+      } finally {
+        teardown();
+      }
+    });
+
+    await run('Escape leaves the pin before it closes the board', async () => {
+      const { shell, teardown } = await mountShell([
+        { id: 'pin_a', type: 'keys', config: { label: 'keys' } },
+      ]);
+      try {
+        pinboardView.open();
+        const input = /** @type {HTMLElement} */ (shell.querySelector('.keys-input'));
+        input.focus();
+        input.dispatchEvent(press('Escape'));
+        assert(pinboardView.isOpen(), 'the first Escape is the way out of the pin, not out of the board');
+        assert(document.activeElement === region(shell), 'which leaves the keyboard on the region');
+
+        region(shell).dispatchEvent(press('Escape'));
+        assert(!pinboardView.isOpen(), 'and the next one dismisses the board, as Escape does everywhere');
+      } finally {
+        teardown();
+      }
+    });
+
+    await run('the up/down and page keys scroll the pin without leaving it', async () => {
+      const { shell, teardown } = await mountShell([
+        { id: 'pin_a', type: 'tall', config: {} },
+        { id: 'pin_b', type: 'probe', config: { label: 'beta' } },
+      ]);
+      try {
+        pinboardView.open();
+        const content = region(shell);
+        const body = /** @type {HTMLElement} */ (shell.querySelector('.pinboard-content__body'));
+        // The panel is laid out by the window it is in, and a lane's is any
+        // height at all; the keys are being asked about, not the CSS. The flex
+        // rule is what would otherwise stretch this straight back.
+        body.style.flex = '0 0 auto';
+        body.style.height = '100px';
+
+        content.dispatchEvent(press('ArrowDown'));
+        const line = body.scrollTop;
+        assert(line > 0, `↓ must scroll the pin, got scrollTop ${line}`);
+
+        content.dispatchEvent(press('PageDown'));
+        assert(body.scrollTop > line, `⇟ must move further than ↓ did, got ${body.scrollTop} after ${line}`);
+
+        content.dispatchEvent(press('End'));
+        assert(body.scrollTop >= body.scrollHeight - body.clientHeight - 1,
+          `End must reach the bottom of the pin, got ${body.scrollTop} of ${body.scrollHeight}`);
+
+        content.dispatchEvent(press('Home'));
+        assert(body.scrollTop === 0, `Home must come back to the top, got ${body.scrollTop}`);
+        assert(pinboardView.getActivePinId() === 'pin_a',
+          'and none of it changes which pin is being read — the strip has its own Home');
       } finally {
         teardown();
       }
@@ -1278,6 +1543,8 @@ export async function runTests(_ctx) {
         pinboardItemRegistry.registerClass(BrokenPin, { extensionId: 'test' });
         pinboardItemRegistry.registerClass(ActionsPin, { extensionId: 'test' });
         pinboardItemRegistry.registerClass(WatcherPin, { extensionId: 'test' });
+        pinboardItemRegistry.registerClass(KeysPin, { extensionId: 'test' });
+        pinboardItemRegistry.registerClass(TallPin, { extensionId: 'test' });
       }
     });
 

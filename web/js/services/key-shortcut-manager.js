@@ -424,6 +424,38 @@ const SHORTCUT_DEFS = [
     external: true,
   },
   {
+    id: 'prev-pin',
+    label: 'Previous pin',
+    description: 'Show the pinboard tab to the left. Plain \u2190 does the same when the '
+      + 'board has focus and nothing inside the pin wants the key; this chord works '
+      + 'wherever focus is.',
+    category: 'View',
+    // The pinboard's ⌥⌘←/→ answers the conversation list's ⌥⌘↑/↓, and ships where
+    // that one does and for the same reason: Ctrl+Alt+arrow is Intel's screen
+    // rotation on Windows and workspace switching on Linux.
+    defaultBinding: { mod: true, alt: true, key: 'ArrowLeft', platform: 'mac' },
+    // Ctrl/⌘ + Page Up is the tab-switching chord everywhere else. The command
+    // modifier keeps it clear of the bare Page keys that switch conversations —
+    // a modifier-less binding matches only with both command modifiers idle.
+    aliasBindings: [{ mod: true, key: 'PageUp' }],
+    allowInInput: true,
+    // Dispatched by the pinboard shell, like the toggle above and for the same
+    // reason: an open board is an overlay, and these keys are for use over it.
+    external: true,
+  },
+  {
+    id: 'next-pin',
+    label: 'Next pin',
+    description: 'Show the pinboard tab to the right. Plain \u2192 does the same when the '
+      + 'board has focus and nothing inside the pin wants the key; this chord works '
+      + 'wherever focus is.',
+    category: 'View',
+    defaultBinding: { mod: true, alt: true, key: 'ArrowRight', platform: 'mac' },
+    aliasBindings: [{ mod: true, key: 'PageDown' }],
+    allowInInput: true,
+    external: true,
+  },
+  {
     id: 'show-shortcuts',
     label: 'Show keyboard shortcuts',
     description: 'Open Settings to this Keyboard shortcuts tab.',
@@ -500,10 +532,15 @@ const SHORTCUT_DEFS = [
 export const EDIT_GESTURE_WINDOW_MS = 2000;
 
 /**
+ * Whether the keyboard currently belongs to something being typed into.
+ *
+ * Exported so that surfaces which run their own keys — the pinboard's arrows —
+ * ask the same question this table's dispatcher asks, rather than each keeping
+ * its own idea of what a text field is.
  * @param {EventTarget|null} target
  * @returns {boolean} True when the target is a text field / editable element.
  */
-function isEditableTarget(target) {
+export function isEditableTarget(target) {
   const el = /** @type {HTMLElement|null} */ (target);
   if (!el || typeof el.tagName !== 'string') return false;
   const tag = el.tagName;

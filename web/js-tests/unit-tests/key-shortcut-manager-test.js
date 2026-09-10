@@ -141,6 +141,33 @@ export async function runTests(_ctx) {
     assert(formatBindingForPlatform(winNext[0], false) === 'Page Down', `PageDown label wrong: ${formatBindingForPlatform(winNext[0], false)}`);
   });
 
+  // The pinboard's pair answers the conversation list's, one axis over, and is
+  // dispatched by the board itself — a command listed here that the loop must
+  // never fire, because it is aimed at an overlay this table stands down behind.
+  await run('prev/next-pin mirror the tab pair and are dispatched by the board', () => {
+    const prev = keyShortcutManager.all().find((d) => d.id === 'prev-pin');
+    const next = keyShortcutManager.all().find((d) => d.id === 'next-pin');
+    assert(!!prev && !!next, 'the pinboard commands are listed, so they are customisable and documented');
+    assert(prev.external && next.external, 'both are dispatched by the pinboard shell, not by the loop');
+    const macPrev = keyShortcutManager.getBindings('prev-pin', true);
+    const macNext = keyShortcutManager.getBindings('next-pin', true);
+    assert(macPrev[0].mod && macPrev[0].alt && macPrev[0].key === 'ArrowLeft',
+      'mac prev-pin leads with Mod+Alt+ArrowLeft, the tab chord one axis over');
+    assert(formatBindingForPlatform(macNext[0], true) === '⌥⌘→',
+      `next-pin mac label wrong: ${formatBindingForPlatform(macNext[0], true)}`);
+    // Off macOS the ⌥⌘ chord is not shipped, for the reason the tab pair is not:
+    // Ctrl+Alt+arrow is screen rotation and workspace switching.
+    const winPrev = keyShortcutManager.getBindings('prev-pin', false);
+    assert(winPrev.length === 1 && winPrev[0].mod && winPrev[0].key === 'PageUp',
+      'off macOS prev-pin is Ctrl+Page Up alone');
+    // The command modifier is what keeps it clear of the bare Page key that
+    // switches conversation — which the case below pins from the other side.
+    assert(eventMatchesBinding(winPrev[0], evt({ ...modProp, key: 'PageUp' })),
+      'Mod+PageUp is the pinboard\'s');
+    assert(!eventMatchesBinding(winPrev[0], evt({ key: 'PageUp' })),
+      'and a bare PageUp is not');
+  });
+
   // The Page keys are bare, so every modifier has to disqualify them: Shift+Page
   // selects a page of text in the composer, and the command modifier is free for
   // anything else to claim.

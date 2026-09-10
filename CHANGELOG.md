@@ -22,6 +22,8 @@ of changes; this project follows semantic versioning.
 - Ollama and llama.cpp re-use the model you're running, since a local one costs nothing
 - The cheap model can be turned off outright, and the setting no longer claims one when there is none
 - A background task with no cheap model to run on now says so, once, instead of silently not running
+- The Pinboard can be read from the keyboard: arrows step along the tabs and scroll the pin
+- ⌥⌘←/→ switches pin from anywhere, and Escape steps out of a pin before closing the board
 
 ## [0.6.1] - 2026-09-09
 
