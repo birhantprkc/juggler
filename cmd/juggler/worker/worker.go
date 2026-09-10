@@ -228,6 +228,19 @@ type toolDrive struct {
 	// tools on startup.
 	lastReconciledStrategyIDs map[string]string
 	strategyBaselineSet       bool
+	// sweptDenials holds the toolUseId of every tool-action observed cancelled as
+	// of the last reconcile tick. A denial refuses the whole batch, so a cancelled
+	// call that was not in this set is a fresh denial whose unstarted siblings
+	// still need refusing (see cascadeBatchDenials). Rebuilt each tick, so it is
+	// bounded by the cancelled tools in the doc and a tool reset back out of
+	// cancelled (retry-approval) is forgotten and can trigger again. Touched only
+	// on the run() goroutine, like the strategy baseline above.
+	// denialBaselineSet guards the first observation, which only records: a
+	// conversation loaded with a denial already in it is a batch whose cascade
+	// happened when it was denied, not one to re-run against a doc whose parked
+	// calls may since have been retried.
+	sweptDenials      map[string]bool
+	denialBaselineSet bool
 }
 
 type ConversationWorker struct {
@@ -507,6 +520,7 @@ func NewConversationWorker(conversationID, authorID string) *ConversationWorker 
 			redriveInterval:           defaultRedriveInterval,
 			deliveryPumps:             make(map[string]*taskDeliveryPump),
 			lastReconciledStrategyIDs: make(map[string]string),
+			sweptDenials:              make(map[string]bool),
 		},
 		persistence: persistence{
 			saveChan:    make(chan struct{}, 1),

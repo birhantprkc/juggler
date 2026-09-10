@@ -47,6 +47,18 @@ import { openSettings } from '../services/settings-launcher.js';
 const TOKEN_UPDATE_DEBOUNCE_MS = 2000;
 
 /**
+ * How long to wait before asking again for a transaction blob that was not on
+ * disk yet, and how many times. The worker stamps `transactionId` on the
+ * streaming assistant item before it saves the blob at end-of-turn, so the
+ * first ask for the newest anchor can arrive in the gap between the two — a
+ * gap measured in milliseconds, which is why the wait is short and the cap is
+ * low. Past the cap the round-trip simply never saved one (a turn that errored
+ * or was cancelled), and the meter walks back to an older anchor instead.
+ */
+const BLOB_RETRY_DELAY_MS = 250;
+const MAX_BLOB_RETRIES = 6;
+
+/**
  * How many round-trips back the meter will look for one that measured its
  * prompt. Each step past the newest costs a blob read, and a measurement much
  * older than that describes a context the conversation has since moved on from —
@@ -90,6 +102,23 @@ class ConversationFooter extends HTMLElement {
    * @private
    */
   _pendingTxnId = '';
+
+  /**
+   * How many times each transaction has been asked for and come back with no
+   * blob on disk yet, so the retry below can give up rather than ask forever
+   * about a round-trip that never saved one.
+   * @type {Map<string, number>}
+   * @private
+   */
+  _blobRetries = new Map();
+
+  /**
+   * Pending blob re-ask timer, or undefined. One at a time: the meter only ever
+   * waits on its newest anchor.
+   * @type {number|undefined}
+   * @private
+   */
+  _blobRetryTimer = undefined;
 
   /**
    * The most recent live usage reading of the turn in flight, or null when no
@@ -198,6 +227,7 @@ class ConversationFooter extends HTMLElement {
       // before the new fetch lands.
       this._blobTokenCache.clear();
       this._pendingTxnId = '';
+      this._blobRetries.clear();
       this._lastLiveUsage = null;
     }
     this._cancelDeferredTokenDisplayUpdate();
@@ -417,6 +447,10 @@ class ConversationFooter extends HTMLElement {
       window.clearTimeout(this._tokenUpdateTimer);
       this._tokenUpdateTimer = undefined;
     }
+    if (this._blobRetryTimer !== undefined) {
+      window.clearTimeout(this._blobRetryTimer);
+      this._blobRetryTimer = undefined;
+    }
   }
 
   /**
@@ -467,10 +501,43 @@ class ConversationFooter extends HTMLElement {
       // Network/RPC failure — don't cache. Next render retries.
     } finally {
       if (this._pendingTxnId === txnId) this._pendingTxnId = '';
-      if (resolved && this.isConnected && this._messageThread === thread) {
-        this._updateTokenDisplay();
+      // Still alive, and still showing the thread this answer is about. Asked by
+      // container rather than by wrapper identity, for the reason `_isOwnThread`
+      // gives: a column rebuild mints a fresh MessageThread around the same
+      // Y.Array, so identity would throw the answer away because the view
+      // repainted while it was in flight.
+      if (this.isConnected && this._isOwnThread(thread)) {
+        if (resolved) {
+          this._updateTokenDisplay();
+        } else {
+          this._retryBlobLoad(txnId, thread);
+        }
       }
     }
+  }
+
+  /**
+   * Ask again, shortly, for a blob that was not on disk yet.
+   *
+   * Nothing else will. The meter is driven entirely by events, and by the time
+   * a turn has finished there may be no further `conversation:changed` to ride:
+   * the render that would ask again is the one waiting on this answer, and the
+   * debounced refresh that used to be the fallback is cancelled by the column
+   * rebuild that follows every turn. Without this the number simply never
+   * appears, and the only trace is a footer that stayed blank.
+   * @private
+   * @param {string} txnId
+   * @param {import('../model/message-thread.js').default} thread
+   */
+  _retryBlobLoad(txnId, thread) {
+    const attempts = (this._blobRetries.get(txnId) ?? 0) + 1;
+    if (attempts > MAX_BLOB_RETRIES) return;
+    this._blobRetries.set(txnId, attempts);
+    if (this._blobRetryTimer !== undefined) window.clearTimeout(this._blobRetryTimer);
+    this._blobRetryTimer = window.setTimeout(() => {
+      this._blobRetryTimer = undefined;
+      if (this.isConnected && this._isOwnThread(thread)) this._ensureBlobLoaded(txnId);
+    }, BLOB_RETRY_DELAY_MS);
   }
 
   /** @private */

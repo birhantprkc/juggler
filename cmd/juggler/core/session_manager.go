@@ -123,10 +123,20 @@ func startManager(store *FileSessionStore, projectPath, scratchDir string) *Sess
 		projectPath:  projectPath,
 		binSizeKick:  make(chan struct{}, 1),
 	}
+	// Read the orphan list HERE, on the constructing goroutine, rather than on
+	// the sweeper. An orphan is by definition a staging directory left behind by
+	// a PREVIOUS process, and the two are told apart only by time: the glob
+	// matches every `trash.emptying-*` there is, including the one an EmptyBin
+	// this manager is about to serve will create. Taken before the manager can
+	// accept a single request, the list cannot contain one of our own; taken on
+	// the goroutine it was, a scheduler that ran the sweeper late enough handed
+	// it a live staging directory to send to the OS trash, underneath the empty
+	// that was still writing into it.
+	orphans := store.orphanedEmptyingDirs()
 	m.goroutines.Add(3)
 	go func() { defer m.goroutines.Done(); m.run() }()
 	go func() { defer m.goroutines.Done(); m.runBinSizeMonitor(store) }()
-	go func() { defer m.goroutines.Done(); m.sweepOrphanedEmptyingDirs(store) }()
+	go func() { defer m.goroutines.Done(); m.sweepOrphanedEmptyingDirs(orphans) }()
 	return m
 }
 
@@ -152,13 +162,20 @@ func (m *SessionManager) goBackground(fn func()) {
 	}()
 }
 
-// sweepOrphanedEmptyingDirs trashes any .juggler/trash.emptying-* directories
+// sweepOrphanedEmptyingDirs trashes the .juggler/trash.emptying-* directories
 // left behind by an EmptyBin whose background trash step was interrupted (e.g.
 // the process exited before it finished). Runs once at startup, off the actor,
 // so it never delays session load. Best-effort: failures are logged, not fatal.
-func (m *SessionManager) sweepOrphanedEmptyingDirs(store *FileSessionStore) {
-	for _, dir := range store.orphanedEmptyingDirs() {
-		if err := trashOrRemove(dir); err != nil {
+//
+// Takes the list rather than globbing for it, so that what counts as an orphan
+// is decided before this manager has served anything (see startManager).
+// Trashes through backgroundTrash, the same seam EmptyBin's own step uses: this
+// is the second writer of the same directories, and a test that holds one open
+// while leaving the other pointed at the real OS trash is not testing the thing
+// it thinks it is.
+func (m *SessionManager) sweepOrphanedEmptyingDirs(orphans []string) {
+	for _, dir := range orphans {
+		if err := backgroundTrash(dir); err != nil {
 			jlog.Error("[session] failed to sweep orphaned empty-bin dir %q: %v", dir, err)
 		}
 	}

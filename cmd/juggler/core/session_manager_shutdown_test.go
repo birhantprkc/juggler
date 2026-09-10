@@ -7,9 +7,26 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
+
+// stillRunning returns every goroutine's stack.
+//
+// Shutdown waits on one WaitGroup covering the actor, the bin-size monitor, the
+// orphan sweep and any deferred background step, and reports nothing about
+// which of them is outstanding. Both deadlines below therefore used to fail
+// with the same sentence whatever had happened — and because a run that misses
+// the deadline spends all of it, three sightings came in at 10.26s to the
+// millisecond, which reads like a fixed wait somewhere and is not: it is this
+// test's own bound, plus the 250ms it spends proving Shutdown blocks. That
+// coincidence cost three sessions. The stacks are what distinguishes a straggler
+// from a deadlock.
+func stillRunning() string {
+	buf := make([]byte, 1<<20)
+	return string(buf[:runtime.Stack(buf, true)])
+}
 
 // Shutdown is documented as a barrier: once it returns, no goroutine of this
 // manager writes into the project directory again. The project switch releases
@@ -68,12 +85,47 @@ func TestShutdownWaitsForTheBinsBackgroundTrashStep(t *testing.T) {
 	select {
 	case <-returned:
 	case <-time.After(10 * time.Second):
-		t.Fatal("Shutdown never returned after the trash step finished")
+		t.Fatalf("Shutdown never returned after the trash step finished; still running:\n%s", stillRunning())
 	}
 
 	leftovers, _ := filepath.Glob(filepath.Join(dir, ".juggler", "trash.emptying-*"))
 	if len(leftovers) != 0 {
 		t.Fatalf("staging dirs still under .juggler after Shutdown: %v", leftovers)
+	}
+}
+
+// The startup sweep is the second writer of the same staging directories as
+// EmptyBin's own deferred step, so it goes through the same seam. A test that
+// holds one open while the other still reaches the real OS trash proves nothing
+// about the barrier and quietly sends a directory to the machine's Trash while
+// doing it — which, under a four-way concurrent test run, is a real thing to
+// have done.
+func TestTheStartupSweepTrashesThroughTheSameSeamAsEmptyBin(t *testing.T) {
+	_, dir := newStoreForTest(t)
+	orphan := filepath.Join(dir, ".juggler", "trash.emptying-leftover")
+	if err := os.MkdirAll(orphan, 0o755); err != nil {
+		t.Fatalf("seed orphan: %v", err)
+	}
+
+	// Unsynchronised on purpose: the sweep is the only writer and it is counted
+	// in the WaitGroup Shutdown waits on, so Shutdown returning is the
+	// happens-before edge between its last write and this read.
+	var swept []string
+	previous := backgroundTrash
+	backgroundTrash = func(path string) error {
+		swept = append(swept, path)
+		return os.RemoveAll(path)
+	}
+	t.Cleanup(func() { backgroundTrash = previous })
+
+	mgr, err := NewSessionManagerForPath(dir)
+	if err != nil {
+		t.Fatalf("NewSessionManagerForPath: %v", err)
+	}
+	mgr.Shutdown()
+
+	if len(swept) != 1 || swept[0] != orphan {
+		t.Fatalf("the startup sweep must trash the orphan through backgroundTrash; it reported %v", swept)
 	}
 }
 
@@ -118,6 +170,6 @@ func TestShutdownWaitsForAnAgedOutEmptysTrashStep(t *testing.T) {
 	select {
 	case <-returned:
 	case <-time.After(10 * time.Second):
-		t.Fatal("Shutdown never returned after the trash step finished")
+		t.Fatalf("Shutdown never returned after the aged-out empty's trash step finished; still running:\n%s", stillRunning())
 	}
 }

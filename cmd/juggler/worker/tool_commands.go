@@ -101,6 +101,11 @@ func (w *ConversationWorker) driveToolActionsExcept(liveThreads map[string]bool)
 	// while the engine is momentarily detached must not be lost.
 	w.reevaluatePendingToolsOnStrategyChangeExcept(liveThreads)
 
+	// Refuse the unstarted calls a denial left behind, for the same reason and in
+	// the same place: another pure doc write, and the case it exists for is
+	// precisely an engine too busy to have evaluated them yet.
+	w.cascadeBatchDenialsExcept(liveThreads)
+
 	if !w.callbacks.engineAttached() {
 		return
 	}
@@ -302,6 +307,155 @@ func (w *ConversationWorker) reevaluatePendingToolsOnStrategyChangeExcept(liveTh
 			"threads": len(changed), "count": len(ids),
 		})
 	}
+}
+
+// cascadeBatchDenialsExcept refuses the calls a denial left behind: the members
+// of a batch that are still parked or still unevaluated when one of their
+// siblings comes back cancelled.
+//
+// "Denying any call denies the batch" is a UI policy, and the browser applies it
+// the moment a person clicks. It can only apply it to the calls it can see,
+// though, and a batch is evaluated one call at a time: while the first prompt is
+// on screen its siblings may still be at StateUnevaluated, carrying no approval
+// form and showing nothing to click. A viewer that denies at that moment settles
+// one call; the engine parks the rest a moment later; and the turn rests there
+// forever, because the thread reducer rests while any tool-action is
+// non-terminal. That leaves a person who refused three commands looking at two
+// fresh prompts for the commands they just refused.
+//
+// So the worker keeps the policy whole. It is the sole writer of cancellation
+// results already, it is the only party that sees the batch regardless of which
+// viewer clicked (or whether that viewer is still connected), and it writes the
+// same result the browser writes so the two halves are indistinguishable in the
+// doc.
+//
+// Edge-triggered, not level-triggered: only a cancellation this worker has not
+// already answered starts a cascade. A standing "cancelled sibling ⇒ refuse the
+// rest" rule would re-cancel a call that handleRetryToolApproval had just reset
+// to StateUnevaluated for a fresh ask, which is a live flow for AskUserQuestion.
+//
+// Executing calls (approved/running) are left alone, exactly as the browser
+// cascade leaves them: they have a process behind them, and stopping those is
+// CancelInFlightToolActions' job, which aborts the execution as well as writing
+// the state.
+func (w *ConversationWorker) cascadeBatchDenialsExcept(liveThreads map[string]bool) {
+	ycrdtMu.Lock()
+	defer ycrdtMu.Unlock()
+
+	// Every array that can hold a batch: the root, plus each sub-thread's items.
+	type threadArray struct {
+		id  string
+		arr *ycrdt.YArray
+	}
+	arrays := []threadArray{{id: "", arr: w.doc.getItems()}}
+	walkThreads(w.doc.getItems(), func(m *ycrdt.YMap, nested *ycrdt.YArray, _ string) bool {
+		if nested != nil {
+			id, _ := m.Get("itemId").(string)
+			arrays = append(arrays, threadArray{id: id, arr: nested})
+		}
+		return false
+	})
+
+	// Rebuilt every tick rather than accumulated, so the set stays the size of
+	// the doc's cancelled tools and a call reset back out of cancelled is
+	// forgotten — a later denial of the same call cascades again.
+	current := make(map[string]bool)
+	var cascades []threadArray
+	for _, ta := range arrays {
+		cancelled, refusable := scanTrailingBatch(ta.arr)
+		fresh := false
+		for _, id := range cancelled {
+			current[id] = true
+			if !w.sweptDenials[id] {
+				fresh = true
+			}
+		}
+		if fresh && len(refusable) > 0 && !liveThreads[ta.id] {
+			cascades = append(cascades, ta)
+		}
+	}
+
+	baselined := w.denialBaselineSet
+	w.sweptDenials = current
+	w.denialBaselineSet = true
+	if !baselined {
+		// First observation records only. A conversation loaded with a denial
+		// already in it had its cascade when the denial happened; re-running it
+		// against a doc whose calls may since have been retried would cancel work
+		// nobody refused.
+		return
+	}
+
+	// Written with the same content the browser's resolveApproval writes, so a
+	// cascade reads identically whichever half got there first.
+	cancelledResult := convertToYcrdt(map[string]any{
+		"content":    "Action was cancelled.",
+		"isError":    false,
+		"cancelled":  true,
+		"fullResult": map[string]any{"state": StateCancelled},
+	})
+	for _, ta := range cascades {
+		_, refusable := scanTrailingBatch(ta.arr)
+		var ids []string
+		for _, m := range refusable {
+			id, _ := m.Get("toolUseId").(string)
+			ids = append(ids, id)
+			w.doc.transactTracked(func(_ *ycrdt.Transaction) {
+				m.Set("state", StateCancelled)
+				m.Set("result", cancelledResult)
+			})
+		}
+		w.tape.Record("deny-cascade", map[string]any{"thread": ta.id, "refused": ids})
+		w.log.Info("Refusing %d call(s) left unstarted by a denial in thread %q", len(ids), ta.id)
+	}
+}
+
+// scanTrailingBatch reads the batch a turn is currently resting on — the
+// contiguous run of dispatched work at the end of an items array — and reports
+// the toolUseIds cancelled within it and the Y.Maps of the calls a denial would
+// still have to refuse (parked, or not yet evaluated).
+//
+// Trailing, because a batch further back has already been answered and resumed
+// past; retroactively cancelling anything in one would rewrite settled history.
+// Must be called with ycrdtMu held.
+func scanTrailingBatch(arr *ycrdt.YArray) (cancelled []string, refusable []*ycrdt.YMap) {
+	if arr == nil {
+		return nil, nil
+	}
+	length := int(arr.GetLength())
+	start := length
+	for start > 0 {
+		m, ok := arr.Get(ycrdt.Number(start - 1)).(*ycrdt.YMap)
+		if !ok {
+			break
+		}
+		t, _ := m.Get("type").(string)
+		if t != ItemTypeToolAction && t != ItemTypeThread && t != ItemTypeMetaToolResult {
+			break
+		}
+		start--
+	}
+	for i := start; i < length; i++ {
+		m, ok := arr.Get(ycrdt.Number(i)).(*ycrdt.YMap)
+		if !ok {
+			continue
+		}
+		if t, _ := m.Get("type").(string); t != ItemTypeToolAction {
+			continue
+		}
+		id, _ := m.Get("toolUseId").(string)
+		switch state, _ := m.Get("state").(string); state {
+		case StateCancelled:
+			if id != "" {
+				cancelled = append(cancelled, id)
+			}
+		case StatePending, StateUnevaluated:
+			if id != "" {
+				refusable = append(refusable, m)
+			}
+		}
+	}
+	return cancelled, refusable
 }
 
 // dispatchToolCommand marshals and sends one ToolCommand to the engine only. The

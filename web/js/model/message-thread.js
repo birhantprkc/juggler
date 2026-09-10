@@ -959,11 +959,45 @@ export default class MessageThread {
   }
 
   /**
-   * Cancel all pending approvals.
+   * Get the tool-actions a refusal answers for: the ones parked awaiting
+   * approval, and the ones the engine has not evaluated yet.
+   *
+   * The unevaluated half is what separates this from
+   * {@link getPendingApprovalMessages}, which answers the different question of
+   * what is on screen asking. A batch is appended all at once and evaluated one
+   * call at a time, so while the first prompt is up its siblings are still at
+   * state "" — they carry no approval form and nothing is showing for them, but
+   * they are every bit as unstarted, and moments later the engine parks them
+   * too.
+   * @returns {ToolActionMessage[]} Parked and unstarted tool-actions
+   */
+  getRefusableApprovalMessages() {
+    return /** @type {ToolActionMessage[]} */ (
+      this.items.filter(m => {
+        if (!isToolActionMessage(/** @type {Message} */ (m))) return false;
+        const state = m.get('state') ?? '';
+        return state === TOOL_STATES.PENDING || state === '';
+      })
+    );
+  }
+
+  /**
+   * Refuse every call in this thread that has not started: the parked ones and
+   * the ones still awaiting evaluation.
+   *
+   * This is the cascade behind "denying any call denies the batch". It has to
+   * reach the unevaluated calls or it does not implement that policy at all:
+   * cancelling only what is parked leaves the siblings to be parked a moment
+   * later, so the person who refused the batch is asked again about the rest,
+   * and the turn rests on those prompts because the worker rests while any
+   * tool-action is non-terminal.
+   *
+   * Calls that are executing (approved/running) are deliberately left alone.
+   * They have a process behind them, and stopping those is the cancel path's
+   * job — it aborts the execution as well as writing the state.
    */
   cancelPendingApprovals() {
-    const pendingMessages = this.getPendingApprovalMessages();
-    for (const toolUse of pendingMessages) {
+    for (const toolUse of this.getRefusableApprovalMessages()) {
       this.resolveApproval(toolUse.get('toolUseId'), 'cancel');
     }
   }
@@ -986,19 +1020,30 @@ export default class MessageThread {
    *   `rule` (a saved permission rule). Stamped on the tool-action only for an
    *   approval, never a cancel.
    * @returns {boolean} True when the resolution was written. False when the
-   *   tool-action is missing or has already left PENDING — another path (a rule
+   *   tool-action is missing or has already settled — another path (a rule
    *   sync, a strategy reviewer, a peer) resolved it first, so NOTHING is
    *   written here: no `approvalResponse`, and hence no permission grant. A
    *   caller that offered the user a "don't ask again" button must treat false
    *   as "the grant did not persist" rather than assume success.
+   *
+   *   Which states count as resolvable differs by direction, and the asymmetry
+   *   is the point. An APPROVAL requires a call parked at PENDING: it answers
+   *   the options the engine derived when it parked the call, and there is
+   *   nothing to say yes to before that. A REFUSAL also settles a call the
+   *   engine has not evaluated yet (state ""), because refusing needs to know
+   *   nothing about the call — and because nothing else ever will: the batch
+   *   cascade is the only thing that looks at those siblings, and leaving one
+   *   behind parks the turn on a prompt its user already refused.
    */
   resolveApproval(toolUseId, response, extra = {}) {
     const message = this.getToolAction(toolUseId);
-    if (!message || message.get('state') !== TOOL_STATES.PENDING) return false;
-
-    recordTape('approval', this.conversationId, { toolUseId, response });
+    if (!message) return false;
 
     const isCancel = response === 'no' || response === 'cancel';
+    const state = message.get('state') ?? '';
+    if (state !== TOOL_STATES.PENDING && !(isCancel && state === '')) return false;
+
+    recordTape('approval', this.conversationId, { toolUseId, response });
     // Write APPROVED (not RUNNING): the frontend reducer atomically claims
     // APPROVED → RUNNING and then launches execution. Writing RUNNING directly
     // would skip the claim and re-fire on every displayData tick.
