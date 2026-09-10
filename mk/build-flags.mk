@@ -49,7 +49,18 @@ endif
 
 # Version stamps. LDFLAGS_BASE is platform-neutral (reused by the Windows/Linux
 # cross-builds); LDFLAGS adds the macOS host-specific linker args.
-LDFLAGS_BASE := -X juggler/cmd/juggler/core.Version=$(VERSION)
+#
+# OFFICIAL marks a build that will be published as a release. Everything else —
+# a build from a clone, a CI smoke build, a packaged test server — reports its
+# version with a -dev suffix, so a binary somebody built from this source is
+# never counted as one they downloaded. Only the stamp gets the suffix: VERSION
+# itself names the DMG and feeds the Windows installer, both of which want it
+# numeric. Accepts 1/true/yes so a CI job can forward a boolean output directly,
+# where a bare $(if ...) would read the string "false" as set.
+OFFICIAL ?=
+VERSION_STAMP := $(strip $(if $(filter 1 true yes,$(OFFICIAL)),$(VERSION),\
+  $(if $(filter dev,$(VERSION)),dev,$(VERSION)-dev)))
+LDFLAGS_BASE := -X juggler/cmd/juggler/core.stampedVersion=$(VERSION_STAMP)
 LDFLAGS_BASE += -X juggler/cmd/juggler/core.Commit=$(COMMIT)
 LDFLAGS_BASE += -X juggler/cmd/juggler/core.BuildDate=$(BUILD_DATE)
 LDFLAGS := $(LDFLAGS_BASE)

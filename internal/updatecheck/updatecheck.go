@@ -110,20 +110,35 @@ func (m *Manifest) validate() error {
 
 // ComputeStatus decides what (if anything) to show for currentVersion given a
 // manifest. A notice is surfaced only when currentVersion parses as semver and
-// is strictly older than the manifest's latest — so development builds ("dev",
-// or anything unparseable) are never nagged. The notice presentation itself is
-// passed straight through from the manifest.
+// is strictly older than the manifest's latest — so anything unparseable is
+// never nagged. The notice presentation itself is passed straight through from
+// the manifest.
 func ComputeStatus(m *Manifest, currentVersion string) Status {
 	st := Status{CurrentVersion: currentVersion}
 	if m == nil {
 		return st
 	}
 	st.LatestVersion = m.Latest
+	// A build from source is left alone even though it parses and is behind:
+	// what it runs is the tree it was built from, and a download cannot be an
+	// upgrade of that. A prerelease is not a build from source — it is
+	// published, and it is offered upgrades like any other release.
+	if isDevBuild(currentVersion) {
+		return st
+	}
 	if cmp, ok := compareSemver(currentVersion, m.Latest); ok && cmp < 0 {
 		st.UpdateAvailable = true
 		st.Notice = m.Notice
 	}
 	return st
+}
+
+// isDevBuild reports whether v names a build made from source rather than one
+// that was published: the bare word older builds report, or the "-dev" suffix
+// every build outside release CI carries.
+func isDevBuild(v string) bool {
+	v = strings.TrimSpace(v)
+	return v == "dev" || strings.HasSuffix(v, "-dev")
 }
 
 // compareSemver returns -1/0/1 comparing a to b on MAJOR.MINOR.PATCH, ignoring

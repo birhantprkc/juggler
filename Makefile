@@ -183,13 +183,13 @@ else
 	@$(GOBUILD) -ldflags "$(LDFLAGS) $(APP_LDFLAGS)" -o $(BUILD_DIR)/juggler-app$(BIN_EXT) ./cmd/juggler-app
 endif
 	@$(GOBUILD) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/juggler-test$(BIN_EXT) ./cmd/juggler-test
-	@echo "✓ built juggler, juggler-app, juggler-test ($(VERSION))"
+	@echo "✓ built juggler, juggler-app, juggler-test ($(VERSION_STAMP))"
 
 ## release-build: Build juggler with -tags production. Excludes test handlers
 ## (cmd/juggler/testing/, worker_test_support.go) so they can't be reached in
 ## shipped binaries. juggler-test is intentionally not built here.
 release-build: app-icon-embed wails-runtime-embed
-	@echo "Building $(BINARY_NAME) $(VERSION) [release]..."
+	@echo "Building $(BINARY_NAME) $(VERSION_STAMP) [release]..."
 	@mkdir -p $(BUILD_DIR)
 ifeq ($(UNAME_S),Darwin)
 	@mkdir -p $(MAC_APP_DIR)/Contents/MacOS $(MAC_APP_RES)
@@ -197,7 +197,7 @@ ifeq ($(UNAME_S),Darwin)
 	@mkdir -p $(MAC_STAGE)
 	@rm -f $(MAC_STAGE)/$(BINARY_NAME) $(MAC_STAGE)/juggler-app
 	$(GOBUILD_RELEASE) -ldflags "$(LDFLAGS)" -o $(MAC_STAGE)/$(BINARY_NAME) ./cmd/juggler
-	@echo "Building juggler-app $(VERSION) [release]..."
+	@echo "Building juggler-app $(VERSION_STAMP) [release]..."
 	$(GOBUILD_RELEASE) -ldflags "$(LDFLAGS)" -o $(MAC_STAGE)/juggler-app ./cmd/juggler-app
 	@mv -f $(MAC_STAGE)/$(BINARY_NAME) $(MAC_APP_BIN)
 	@mv -f $(MAC_STAGE)/juggler-app $(MAC_APP_APP_BIN)
@@ -207,7 +207,7 @@ ifeq ($(UNAME_S),Darwin)
 	@ln -sfn Juggler.app/Contents/MacOS/juggler-app $(BUILD_DIR)/juggler-app
 else
 	$(GOBUILD_RELEASE) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)$(BIN_EXT) ./cmd/juggler
-	@echo "Building juggler-app $(VERSION) [release]..."
+	@echo "Building juggler-app $(VERSION_STAMP) [release]..."
 	$(GOBUILD_RELEASE) -ldflags "$(LDFLAGS) $(APP_LDFLAGS)" -o $(BUILD_DIR)/juggler-app$(BIN_EXT) ./cmd/juggler-app
 endif
 
@@ -236,7 +236,7 @@ build-windows: app-icon-embed wails-runtime-embed
 	else \
 		CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) -ldflags "$(LDFLAGS_BASE)" -o $(WIN_BUILD_DIR)/$(BINARY_NAME).exe ./cmd/juggler; \
 	fi && \
-	echo "Building juggler-app.exe (windowsgui) $(VERSION)..." && \
+	echo "Building juggler-app.exe (windowsgui) $(VERSION_STAMP)..." && \
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) -ldflags "$(LDFLAGS_BASE) -H windowsgui" -o $(WIN_BUILD_DIR)/juggler-app.exe ./cmd/juggler-app
 	@echo "→ $(WIN_BUILD_DIR)/$(BINARY_NAME).exe (console), $(WIN_BUILD_DIR)/juggler-app.exe (GUI)"
 
@@ -262,7 +262,7 @@ release-build-mac: app-icon-embed wails-runtime-embed
 ifneq ($(UNAME_S),Darwin)
 	@echo "release-build-mac is only supported on macOS."; exit 1
 endif
-	@echo "Building Juggler.app $(VERSION) [release, $(GOARCH_HOST)]..."
+	@echo "Building Juggler.app $(VERSION_STAMP) [release, $(GOARCH_HOST)]..."
 	@mkdir -p $(MAC_APP_DIR)/Contents/MacOS $(MAC_APP_RES)
 	@# See go-build for why each binary is built into $(MAC_STAGE) and moved in.
 	@mkdir -p $(MAC_STAGE)

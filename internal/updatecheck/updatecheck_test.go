@@ -67,6 +67,24 @@ func TestComputeStatus(t *testing.T) {
 			t.Fatalf("dev should not update, got %+v", st)
 		}
 	})
+	// A build from source parses as semver and really is behind — but the
+	// download it would be pointed at is not the thing it is running.
+	t.Run("older dev build never nags", func(t *testing.T) {
+		st := ComputeStatus(m, "v0.0.8-dev")
+		if st.UpdateAvailable || st.Notice != nil {
+			t.Fatalf("a -dev build should not update, got %+v", st)
+		}
+		if st.LatestVersion != "v0.1.0" {
+			t.Errorf("latest = %q, want it reported regardless", st.LatestVersion)
+		}
+	})
+	// A prerelease is published, so it is offered upgrades like any release.
+	t.Run("older prerelease still nags", func(t *testing.T) {
+		st := ComputeStatus(m, "v0.0.8-beta.1")
+		if !st.UpdateAvailable || st.Notice == nil {
+			t.Fatalf("expected update+notice for a prerelease, got %+v", st)
+		}
+	})
 	t.Run("nil manifest", func(t *testing.T) {
 		st := ComputeStatus(nil, "v0.0.8")
 		if st.UpdateAvailable || st.Notice != nil || st.CurrentVersion != "v0.0.8" {
