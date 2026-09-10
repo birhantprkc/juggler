@@ -82,7 +82,7 @@ func TaskState(taskID string) TaskSnapshot {
 // group, so a caller on the shutdown path pays a bounded, known cost.
 func StopBackgroundTasks(projectRoot, reason string, grace time.Duration) int {
 	resp := make(chan registryResp, 1)
-	registryCh <- registryOp{kind: "killMatching", projectRoot: projectRoot, errMsg: reason, resp: resp}
+	registryCh <- registryOp{kind: regKillMatching, projectRoot: projectRoot, errMsg: reason, resp: resp}
 	result := <-resp
 	stopping := result.stopping
 	if len(stopping) == 0 {

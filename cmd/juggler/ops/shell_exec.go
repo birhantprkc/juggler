@@ -1,0 +1,495 @@
+//     ▄▄ ▄▄ ▄▄  ▄▄▄▄  ▄▄▄▄ ▄▄    ▄▄▄▄▄ ▄▄▄▄
+//     ██ ██ ██ ██ ▄▄ ██ ▄▄ ██    ██▄▄  ██▄█▄   Copyright (c) 2026 Julian Storer
+//   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
+
+package ops
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// Timeout bounds shared by the shell/python execution paths, in milliseconds.
+const (
+	defaultExecTimeoutMs = 30000   // default per-command timeout; mirrors DEFAULT_EXEC_TIMEOUT_MS in web/js/services/ops-api.js
+	maxExecTimeoutMs     = 1200000 // hard cap on any requested timeout
+)
+
+// noDeadlineTimeoutMs is the "timeout" a caller passes to ask for a background
+// task with no deadline at all. Zero cannot mean this: it is a legitimate
+// duration that context.WithTimeout treats as already expired, so a caller who
+// meant "forever" and typed 0 would get a task that died immediately. Negative
+// is not a duration anybody means literally, which is what makes it safe to
+// spend as a sentinel.
+const noDeadlineTimeoutMs = -1
+
+// timeoutFromParams reads an optional "timeout" (milliseconds) from params,
+// falling back to defaultMs when absent, and caps the result at maxExecTimeoutMs.
+func timeoutFromParams(params map[string]any, defaultMs int) time.Duration {
+	timeoutMs := defaultMs
+	if t, ok := params["timeout"].(float64); ok {
+		timeoutMs = int(t)
+	}
+	return capTimeout(timeoutMs)
+}
+
+// wantsNoDeadline reports whether params asked for a task that runs until it is
+// stopped. Only startBackground can honour it; the foreground paths refuse it
+// with errNoDeadlineForeground.
+func wantsNoDeadline(params map[string]any) bool {
+	t, ok := params["timeout"].(float64)
+	return ok && int(t) == noDeadlineTimeoutMs
+}
+
+// errNoDeadlineForeground is what a foreground command asking for no deadline
+// gets. A command whose caller waits for its output must have something that
+// ends it, and the sentinel read as an ordinary duration is a negative one,
+// which context.WithTimeout treats as already expired — so the alternative to
+// saying this is a command that returns instantly for reasons nobody can see.
+var errNoDeadlineForeground = fmt.Errorf(
+	"timeout %d asks for no deadline, which only a background task can have", noDeadlineTimeoutMs)
+
+// capTimeout caps a millisecond timeout at maxExecTimeoutMs and converts it to
+// a Duration.
+func capTimeout(timeoutMs int) time.Duration {
+	if timeoutMs > maxExecTimeoutMs {
+		timeoutMs = maxExecTimeoutMs
+	}
+	return time.Duration(timeoutMs) * time.Millisecond
+}
+
+// spillDirFor returns the per-conversation directory that holds a command's
+// full-output spill file. convID=="" falls back to the _unassigned bucket, which
+// the store sweeps by age. The directory lives under the project's .juggler/ so
+// the model can read the spill back without an approval prompt, and it stays out
+// of git status.
+func spillDirFor(root, convID string) string {
+	if convID == "" {
+		convID = "_unassigned"
+	}
+	return filepath.Join(root, ".juggler", "bash-output", convID)
+}
+
+// exitCodeOf reports the process exit code for a command error. The bool is
+// true only when err is an *exec.ExitError (a real process exit); callers use
+// it to distinguish a non-zero exit from a non-exit failure (spawn error,
+// context cancellation) that they handle differently.
+func exitCodeOf(err error) (int, bool) {
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		return exitErr.ExitCode(), true
+	}
+	return 0, false
+}
+
+// startBackground starts a command in the background and returns immediately
+func (ops *ShellOperations) startBackground(params map[string]any) (any, error) {
+	command, ok := params["command"].(string)
+	if !ok || command == "" {
+		return nil, fmt.Errorf("missing command parameter")
+	}
+
+	// Normalize newlines to && — LLMs sometimes use \n to separate commands
+	command = normalizeCommandNewlines(command)
+
+	if err := bestEffortShellSanityCheck(command); err != nil {
+		return nil, fmt.Errorf("invalid command: %w", err)
+	}
+
+	// Get timeout from params (default: the 20-minute cap for background tasks).
+	// Read even for a task that will not have one, because it is what names the
+	// deadline in the failure message — which only a task that has one can reach.
+	noDeadline := wantsNoDeadline(params)
+	timeout := timeoutFromParams(params, maxExecTimeoutMs)
+
+	// Extract conversation/tool-use tracking params (optional)
+	convID, _ := params["conv_id"].(string)
+	toolUseID, _ := params["tool_use_id"].(string)
+
+	// Generate unique shell ID
+	shellID := fmt.Sprintf("bg-%d", time.Now().UnixNano())
+
+	// Create context with timeout and cancellation. A task asked for with no
+	// deadline gets cancellation alone: something meant to run until it is
+	// stopped — a dev server, a patch host an extension is embedding — has no
+	// business dying twenty minutes in, and the caller that started it is the
+	// thing that knows when it is done. `cancel` is the only way either kind
+	// ends, and `kill` is what calls it, so the two are the same task downstream.
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if noDeadline {
+		ctx, cancel = context.WithCancel(context.Background())
+	} else {
+		ctx, cancel = context.WithTimeout(context.Background(), timeout)
+	}
+
+	// Create background shell entry (mutable state initialized here,
+	// owned by registry goroutine once registered)
+	reaped := make(chan struct{})
+	shell := &BackgroundShell{
+		ID:          shellID,
+		ConvID:      convID,
+		ToolUseID:   toolUseID,
+		Command:     command,
+		StartTime:   time.Now(),
+		ProjectRoot: ops.scope.Root(),
+		cancel:      cancel,
+		reaped:      reaped,
+		status:      "running",
+	}
+
+	// Register the shell (registry goroutine now owns mutable state)
+	registerBackgroundShell(shell)
+	go publishBackgroundTaskSnapshots(shellID)
+
+	// Start command execution in goroutine
+	go func() {
+		defer cancel()
+
+		// Build command
+		cmd := newShellCmd(ctx, command)
+		setProcGroup(cmd)
+		cmd.Dir = ops.scope.Root()
+
+		// Merge stdout/stderr through a pipe and publish output to the registry
+		// incrementally as it arrives, so readers (ops.TaskState) see a running
+		// command's output before it exits. The reader keeps draining at full
+		// speed so the child never blocks on a full pipe.
+		//
+		// Memory safety with no delivery pump watching (plain run_in_background):
+		// we append live only up to outputHeadLimit bytes, then stop appending
+		// and retain the last outputTailLimit bytes in a ring. The dropped middle
+		// is flushed once at completion as a truncation marker + tail, so the
+		// final registry output matches the capped result the old cappedBuffer
+		// produced.
+		pipeReader, pipeWriter := io.Pipe()
+		cmd.Stdout = pipeWriter
+		cmd.Stderr = pipeWriter
+
+		if startErr := cmd.Start(); startErr != nil {
+			pipeWriter.Close()
+			pipeReader.Close()
+			updateShellStatus(shellID, "failed", "", -1, fmt.Sprintf("command start failed: %v", startErr), "", 0, false)
+			time.AfterFunc(1*time.Hour, func() { removeBackgroundShell(shellID) })
+			return
+		}
+
+		// Hand the command to the registry only now that it is started. Start
+		// writes cmd.Process, and the registry reads it (signalShellStop) from its
+		// own goroutine — publishing beforehand puts the handle in reach of a
+		// reader with nothing ordering it after that write. A kill arriving in the
+		// gap still stops the task: it cancels the context, and a command built
+		// with CommandContext dies at Start rather than escaping.
+		updateShellCmd(shellID, cmd)
+
+		cmdDone := make(chan error, 1)
+		go func() {
+			waitErr := cmd.Wait()
+			close(reaped) // from here the pid may name something else
+			cmdDone <- waitErr
+			pipeWriter.Close()
+		}()
+
+		// Head/tail-capped, UTF-8-safe forwarder: publishes output to the
+		// registry live up to outputHeadLimit bytes, then retains only the last
+		// outputTailLimit bytes; the dropped middle is flushed once at stream end
+		// (see suffix() below) so the final registry output matches the capped
+		// head+tail the non-streaming cappedBuffer produces.
+		fwd := newCappedForwarder(outputHeadLimit, outputTailLimit, func(s string) {
+			appendShellOutput(shellID, s)
+		}).withSpill(ops.scope.Root(), newSpillFile(spillDirFor(ops.scope.Root(), convID), shellID))
+
+		readerDone := make(chan struct{})
+		go func() {
+			defer close(readerDone)
+			fwd.drain(pipeReader, nil)
+		}()
+
+		// Wait for the process to exit, then for the reader to drain fully before
+		// reading the cap accounting (happens-before its final writes).
+		var err error
+		select {
+		case err = <-cmdDone:
+		case <-ctx.Done():
+			// The deadline has to end the task, not just the process fronting it.
+			// exec.CommandContext kills the leader alone, so anything that leader
+			// started — a shell that forked rather than exec'd, something
+			// backgrounded — lives on in the process group setProcGroup gave it,
+			// holding the output pipe's write end open. cmd.Wait() waits on every
+			// holder of that pipe, so the task would sit at "running" long past the
+			// deadline, waiting on the processes the deadline was meant to take.
+			//
+			// Only a deadline kills here. A stop asked for by hand has had its
+			// polite SIGTERM from the kill op, which takes the group itself if the
+			// task ignores it; this branch just bounds the wait for that to land.
+			if ctx.Err() == context.DeadlineExceeded {
+				stoppingTask{cmd: cmd, reaped: reaped}.forceKillGroup()
+			}
+			select {
+			case err = <-cmdDone:
+			case <-time.After(ops.reapGraceOrDefault()):
+				// A grandchild that escaped the process group (setsid, double fork)
+				// survives the kill and holds the pipe open. Force it closed so the
+				// reader returns and the task reaches a terminal status; cmd.Wait()
+				// keeps its own goroutine and cmdDone is buffered, so nothing leaks.
+				pipeReader.Close()
+			}
+		}
+		<-readerDone
+		pipeReader.Close()
+
+		// Close the spill before suffix() composes the marker, so the announced
+		// path always points at a complete, flushed file.
+		fwd.closeSpill()
+
+		// Flush the retained tail (and the dropped-middle marker) so the final
+		// registry output is the capped head+tail.
+		if suffix := fwd.suffix(); suffix != "" {
+			appendShellOutput(shellID, suffix)
+		}
+
+		// Determine final status
+		var status, errMsg string
+		var exitCode int
+
+		if ctx.Err() == context.DeadlineExceeded {
+			status = "failed"
+			errMsg = fmt.Sprintf("command timeout (exceeded %v)", timeout)
+			exitCode = -1
+		} else if ctx.Err() == context.Canceled {
+			status = "failed"
+			errMsg = "command cancelled"
+			exitCode = -1
+		} else if err != nil {
+			status = "failed"
+			if code, ok := exitCodeOf(err); ok {
+				exitCode = code
+				errMsg = fmt.Sprintf("exit code %d", exitCode)
+			} else {
+				errMsg = err.Error()
+				exitCode = -1
+			}
+		} else {
+			status = "completed"
+			exitCode = 0
+		}
+
+		// Output was already published incrementally above; pass empty output so
+		// the final update sets only status/exitCode/errMsg (no double-write). The
+		// spill accounting is recorded here, on the registry goroutine, so a
+		// concurrent getOutput never races the write.
+		updateShellStatus(shellID, status, "", exitCode, errMsg,
+			fwd.spillPath(), fwd.spillBytes(), fwd.spilled())
+
+		// Schedule cleanup after 1 hour without parking a goroutine for the
+		// whole window. time.AfterFunc dispatches via the runtime's timer
+		// wheel — at idle there's no per-shell goroutine sitting on a Sleep.
+		time.AfterFunc(1*time.Hour, func() {
+			removeBackgroundShell(shellID)
+		})
+	}()
+
+	return map[string]any{
+		"task_id": shellID,
+		"command": command,
+		"status":  "running",
+	}, nil
+}
+
+// execute runs a shell command or Python code
+//
+// Two execution modes:
+//
+//  1. Shell command: params["command"] = "ls -la"
+//     Runs via: sh -c "command"
+//
+//  2. Python code: params["code"] = "print('hello')"
+//     Runs via: python3 - (code passed to stdin)
+//     This avoids shell escaping issues entirely.
+//
+// WARNING: Both modes execute arbitrary code and are security risks.
+func (ops *ShellOperations) execute(ctx context.Context, params map[string]any) (any, error) {
+	if wantsNoDeadline(params) {
+		return nil, errNoDeadlineForeground
+	}
+
+	// Check if this is Python code execution (code param) or shell command
+	if code, ok := params["code"].(string); ok {
+		// Python code execution - pass via stdin to python3
+		return ops.executePythonCode(ctx, code, params)
+	}
+
+	command, ok := params["command"].(string)
+	if !ok {
+		return nil, fmt.Errorf("missing 'command' or 'code' parameter")
+	}
+
+	// Normalize newlines to && — LLMs sometimes use \n to separate commands
+	// in JSON, which works with sh -c but displays poorly and loses fail-fast semantics.
+	command = normalizeCommandNewlines(command)
+
+	if err := bestEffortShellSanityCheck(command); err != nil {
+		return nil, fmt.Errorf("invalid command: %w", err)
+	}
+
+	// Get timeout from params (defaults to defaultExecTimeoutMs, capped at maxExecTimeoutMs)
+	timeout := timeoutFromParams(params, defaultExecTimeoutMs)
+
+	// Get working directory from params (default: session's project path)
+	workingDir := ops.scope.Root()
+	if cwd, ok := params["cwd"].(string); ok && cwd != "" {
+		resolved, err := validateCwd(ops.scope.Root(), cwd)
+		if err != nil {
+			return nil, err
+		}
+		workingDir = resolved
+	}
+
+	// Bound the command by both the caller's context and the timeout. Deriving
+	// from ctx (not context.Background) means a cancelled request actually kills
+	// the foreground command instead of leaving it running detached.
+	execCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Execute command in a POSIX shell (sh on Unix, WSL sh on Windows).
+	cmd := newShellCmd(execCtx, command)
+	// Set process group so we can kill all child processes on timeout (Unix only)
+	setProcGroup(cmd)
+	cmd.Dir = workingDir
+
+	convID, _ := params["conv_id"].(string)
+	spillID := fmt.Sprintf("exec-%d", time.Now().UnixNano())
+	output := newCappedBuffer(outputHeadLimit, outputTailLimit).
+		withSpill(ops.scope.Root(), newSpillFile(spillDirFor(ops.scope.Root(), convID), spillID))
+	cmd.Stdout = output
+	cmd.Stderr = output // Merge stderr into stdout - interleaved naturally
+
+	// Start the command
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("command start failed: %w", err)
+	}
+
+	// Wait for command with timeout / caller cancellation
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case <-execCtx.Done():
+		// Timeout or caller cancellation - kill the process group (all children).
+		killGroup(cmd)
+		<-done // Wait for the goroutine to finish
+		output.closeSpill()
+		if execCtx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("command execution timeout (exceeded %v)", timeout)
+		}
+		return nil, execCtx.Err()
+	case err := <-done:
+		output.closeSpill()
+		exitCode := 0
+		if err != nil {
+			code, ok := exitCodeOf(err)
+			if !ok {
+				return nil, fmt.Errorf("command execution failed: %w", err)
+			}
+			exitCode = code
+		}
+		result := map[string]any{
+			"command":  command,
+			"stdout":   output.String(), // Combined stdout+stderr
+			"stderr":   "",              // Empty - merged into stdout
+			"exitCode": exitCode,
+			"success":  exitCode == 0,
+		}
+		if output.spilled() {
+			result["outputFile"] = output.spillPath()
+			result["outputBytes"] = output.spillBytes()
+			result["truncated"] = true
+		}
+		return result, nil
+	}
+}
+
+// executePythonCode executes Python code via stdin.
+//
+// Why stdin instead of the -c flag: the code is passed as pure string data,
+// never parsed by a shell, so it sidesteps all shell escaping issues (quotes,
+// backslashes, newlines) and shell argument-length limits.
+func (ops *ShellOperations) executePythonCode(ctx context.Context, code string, params map[string]any) (any, error) {
+	// Get timeout from params (defaults to defaultExecTimeoutMs, capped at maxExecTimeoutMs)
+	timeout := timeoutFromParams(params, defaultExecTimeoutMs)
+
+	// Create context with timeout, derived from the caller's context so a
+	// cancelled request stops the python process too.
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Execute python with code passed via stdin
+	// Using "-" tells python to read from stdin. On Unix this is python3; on
+	// Windows it is routed through WSL (see newPythonCmd).
+	cmd := newPythonCmd(ctx)
+	cmd.Dir = ops.scope.Root()
+	cmd.Stdin = strings.NewReader(code)
+
+	convID, _ := params["conv_id"].(string)
+	spillID := fmt.Sprintf("pyexec-%d", time.Now().UnixNano())
+	output := newCappedBuffer(outputHeadLimit, outputTailLimit).
+		withSpill(ops.scope.Root(), newSpillFile(spillDirFor(ops.scope.Root(), convID), spillID))
+	cmd.Stdout = output
+	cmd.Stderr = output // Merge stderr into stdout - interleaved naturally
+
+	err := cmd.Run()
+	output.closeSpill()
+	exitCode := 0
+
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("python execution timeout (exceeded %v)", timeout)
+		}
+		code, ok := exitCodeOf(err)
+		if !ok {
+			return nil, fmt.Errorf("python execution failed: %w", err)
+		}
+		exitCode = code
+	}
+
+	result := map[string]any{
+		"stdout":   output.String(), // Combined stdout+stderr
+		"stderr":   "",              // Empty - merged into stdout
+		"exitCode": exitCode,
+		"success":  exitCode == 0,
+	}
+	if output.spilled() {
+		result["outputFile"] = output.spillPath()
+		result["outputBytes"] = output.spillBytes()
+		result["truncated"] = true
+	}
+	return result, nil
+}
+
+// validateCwd resolves a user-supplied shell cwd and rejects anything outside
+// the project workingDir. Empty cwd means "use workingDir". The prefix check
+// appends a separator so siblings like "<workingDir>-evil" cannot pass.
+func validateCwd(workingDir, cwd string) (string, error) {
+	if cwd == "" {
+		return workingDir, nil
+	}
+	absPath, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", fmt.Errorf("invalid cwd path: %w", err)
+	}
+	projectDir, err := filepath.Abs(workingDir)
+	if err != nil {
+		return "", fmt.Errorf("invalid working directory: %w", err)
+	}
+	projectWithSep := projectDir + string(filepath.Separator)
+	if absPath != projectDir && !strings.HasPrefix(absPath+string(filepath.Separator), projectWithSep) {
+		return "", fmt.Errorf("cwd must be within project directory")
+	}
+	return absPath, nil
+}
