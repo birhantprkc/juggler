@@ -460,6 +460,7 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/completions/files", s.completionsAPI.HandleFileCompletions).Methods("GET")
 	api.HandleFunc("/completions/path", s.completionsAPI.HandlePathCompletions).Methods("GET")
 	api.HandleFunc("/completions/exists", s.completionsAPI.HandlePathExists).Methods("GET")
+	api.HandleFunc("/git/diff", s.gitStatusAPI.HandleGitDiff).Methods("GET")
 	api.HandleFunc("/git/status", s.gitStatusAPI.HandleGitStatus).Methods("GET")
 	api.HandleFunc("/providers", s.handleProviders).Methods("GET")
 	api.HandleFunc("/providers/refresh", s.handleRefreshProviders).Methods("POST")
