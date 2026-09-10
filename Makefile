@@ -709,6 +709,10 @@ lint-go: app-icon-embed wails-runtime-embed
 ## are filtered because they satisfy interfaces via dynamic dispatch that
 ## deadcode's conservative analysis cannot prove reachable.
 ##
+## -test makes every test function a root, so a function reached only from a
+## _test.go file counts as reachable. What this reports is code nothing at all
+## calls, not code only the tests call.
+##
 ## Package patterns are scoped explicitly to our own dirs — using ./... would
 ## sweep into tooling/node_modules/, which on a fresh `npm install` ships Go
 ## files (e.g. flatted/golang/pkg/flatted/) that are unrelated to this

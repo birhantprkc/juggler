@@ -83,6 +83,31 @@ If you find yourself wanting to skip a test:
 
 **Never commit a broken or skipped test.** The test suite must be 100% green.
 
+## Measuring rendered things
+
+The pool window is never shown, so a lane's page lays out but never paints a
+frame. Three consequences catch every test that reads a size or a colour:
+
+- **Turn the transition off before a geometry read.** `el.style.transition =
+  'none'` first, then measure. A transition in flight with no frames to drive it
+  resolves per engine: WebKit's first read after the class change returns the end
+  value and every read after that is pinned at the from-value for good, while
+  WebView2 runs it to completion. The same assertion then passes on one platform
+  and fails on another, describing a layout bug that isn't there. Measure before
+  the interaction that starts the animation, not after awaiting it.
+- **Poll for a windowed code block's height.** A block past the eager limit
+  (`sdk/lib/code-lines.js`) draws its first window with `rowHeight` 0, so both
+  spacers are 0px and the block is exactly 120 rows tall until the first measure
+  tick. Assert in the turn the content lands and you are measuring that state,
+  not the file.
+- **A highlight pseudo-element's `color` is not assertable.**
+  `getComputedStyle(el, '::selection').color` reports the covered element's own
+  colour in WebKit and the root's in Chromium — both engines paint identically,
+  since a highlight naming no `color` leaves the text the colour it had. To
+  assert that nothing sets one, walk `document.styleSheets` for rules whose
+  `selectorText` contains `::selection` (recursing into `@media` groups) and
+  check the property is empty. `background-color` on the pseudo *is* portable.
+
 ## Running Tests
 
 ```bash

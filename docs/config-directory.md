@@ -33,3 +33,21 @@ machine, you can safely skip `cache/`.
 Logs do **not** live in `~/.juggler` — they go to your platform's standard
 log directory so the config folder stays small and copyable. See
 [Logs & reporting issues](./logging.md).
+
+## Project state lives in the project
+
+A project's own state — `config.json`, `session.json`, the lockfile, the
+per-conversation folders, MCP and skills config, bash output — is written to
+`<project>/.juggler/`, next to the code it belongs to. That location is fixed:
+it is built from the project path wherever it is needed, and there is no flag,
+setting, or environment variable that moves it. A checkout that must not be
+written to has to exclude the folder instead (`.git/info/exclude`).
+
+Two environment variables move the *other* two directories:
+
+| Variable | Moves |
+|---|---|
+| `JUGGLER_CONFIG_DIR` | `~/.juggler` — credentials, default model, extensions |
+| `JUGGLER_LOG_DIR` | the log directory |
+
+Neither touches project state.
