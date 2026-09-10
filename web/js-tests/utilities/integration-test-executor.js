@@ -156,6 +156,7 @@ import { runTests as runExternalLinkTests } from '../unit-tests/external-link-te
 import { runTests as runLinkGuardTests } from '../unit-tests/link-guard-test.js';
 import { runTests as runAnsiTests } from '../unit-tests/ansi-test.js';
 import { runTests as runUIPrefScopeTests } from '../unit-tests/ui-pref-scope-test.js';
+import { runTests as runThemeToggleTests } from '../unit-tests/theme-toggle-test.js';
 import { runTests as runToolNameResolutionTests } from '../unit-tests/tool-name-resolution-test.js';
 import { runTests as runNewTabUxTests } from '../unit-tests/new-tab-ux-test.js';
 import { runTests as runBinUndoToastTests } from '../unit-tests/bin-undo-toast-test.js';
@@ -499,6 +500,9 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:link-guard', run: runLinkGuardTests },
   { name: 'unit:ansi', run: runAnsiTests },
   { name: 'unit:ui-pref-scope', run: runUIPrefScopeTests },
+  // Exclusive: it repaints data-theme and stubs matchMedia for the length of a
+  // case, both of which are document-wide.
+  { name: 'unit:theme-toggle', run: runThemeToggleTests, needsExclusiveRun: true },
   { name: 'unit:tool-name-resolution', run: runToolNameResolutionTests },
   { name: 'unit:new-tab-ux', run: runNewTabUxTests },
   { name: 'unit:bin-undo-toast', run: runBinUndoToastTests },

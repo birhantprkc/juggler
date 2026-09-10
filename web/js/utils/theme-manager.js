@@ -5,10 +5,17 @@
 /**
  * Theme Manager - Handles the light/dark/system theme setting.
  *
- * The user picks one of three *modes*:
+ * There are three *modes*:
  *   - 'system' (default): follow the OS light/dark setting, live.
  *   - 'light' / 'dark':   an explicit override that ignores the OS.
  * A mode resolves to a concrete *theme* ('light' or 'dark') for painting.
+ *
+ * The three modes are what gets stored, but only Settings offers all three by
+ * name. The header button is a plain two-state light switch over them: it flips
+ * the theme on screen, and a theme is pinned only while it differs from the OS
+ * setting — choosing the OS's own theme stores 'system' instead. So the button
+ * can never strand anyone in a fixed theme, and 'system' stays reachable
+ * without ever being an option someone has to understand. See toggleTheme().
  *
  * Who owns the mode depends on which client is reading it — see ui-pref-scope.js
  * for the rule this shares with the zoom. The sources, best first:
@@ -58,6 +65,15 @@ function themeKey() {
  */
 const WINDOW_MODE_KEY = 'juggler-theme-window';
 
+/**
+ * This device's record of the OS light/dark setting, in localStorage. Not
+ * project-scoped, unlike THEME_KEY_BASE: the OS setting belongs to the device,
+ * and every project on it sees the same one. Written whenever the document is
+ * painted in 'system' mode, where the painted theme is the OS theme reconciled
+ * with the native host. Read by knownSystemTheme().
+ */
+const SYSTEM_THEME_KEY = 'juggler-system-theme';
+
 /** Concrete themes the document can be painted as. */
 const THEMES = {
   DARK: 'dark',
@@ -71,10 +87,12 @@ export const MODES = {
   DARK: 'dark'
 };
 
-/** Click-cycle order for the header button: System → Light → Dark → System. */
-const MODE_CYCLE = [MODES.SYSTEM, MODES.LIGHT, MODES.DARK];
-
-/** Fired on document whenever the mode changes. detail: {mode, theme}. */
+/**
+ * Fired on document whenever the painted theme or the mode changes, from
+ * whatever cause — a click, Settings, the OS, or the host's reconciliation.
+ * Anything displaying the current theme should follow this rather than read the
+ * mode once. detail: {mode, theme}.
+ */
 export const THEME_MODE_EVENT = 'theme-mode-changed';
 
 /**
@@ -86,6 +104,16 @@ function systemTheme() {
   return window.matchMedia?.('(prefers-color-scheme: light)').matches
     ? THEMES.LIGHT
     : THEMES.DARK;
+}
+
+/**
+ * The other concrete theme.
+ * @param {string} theme - 'dark' or 'light'.
+ * @returns {string} 'light' for 'dark', and 'dark' for anything else.
+ * @private
+ */
+function otherTheme(theme) {
+  return theme === THEMES.DARK ? THEMES.LIGHT : THEMES.DARK;
 }
 
 /**
@@ -219,6 +247,47 @@ function rememberWindowMode(mode) {
 }
 
 /**
+ * Record the OS light/dark setting for this device (best-effort).
+ * @param {string} theme - The OS theme, 'dark' or 'light'.
+ * @private
+ */
+function rememberSystemTheme(theme) {
+  try {
+    localStorage.setItem(SYSTEM_THEME_KEY, theme);
+  } catch (_e) {
+    /* best-effort — a lost record just falls back to the invariant below */
+  }
+}
+
+/**
+ * The OS light/dark setting, as well as this window can know it.
+ *
+ * matchMedia can't be asked: a native macOS window's forced appearance pins the
+ * WKWebView's prefers-color-scheme, and WebKitGTK derives it from the toolkit
+ * theme rather than the desktop preference, so in a pinned mode it tends to
+ * report the pin back. Instead this uses what the app has already been told:
+ *
+ *   - in 'system' mode the painted theme IS the OS theme — applyTheme has
+ *     reconciled it with the native host, the only reliable reader there is;
+ *   - otherwise the value last observed that way, recorded per device;
+ *   - failing that, the invariant that a theme is pinned only because it
+ *     differs from the OS, so the OS is showing the other one.
+ *
+ * The record goes stale if the OS setting changes while every window is pinned,
+ * which macOS reports to nobody. The cost is one toggle that appears to do
+ * nothing, after which the mode is 'system' and the setting is known again.
+ * @returns {string} 'dark' or 'light'.
+ * @private
+ */
+function knownSystemTheme() {
+  if (getMode() === MODES.SYSTEM) return getPaintedTheme();
+  const seen = localStorage.getItem(SYSTEM_THEME_KEY);
+  return seen === THEMES.LIGHT || seen === THEMES.DARK
+    ? seen
+    : otherTheme(getPaintedTheme());
+}
+
+/**
  * Persist this window's theme mode into the project's session (best-effort). The
  * server no-ops for a no-project window; per-project storage is what lets a
  * reopened project restore its own theme instead of whichever theme another
@@ -253,20 +322,26 @@ export function setMode(mode) {
   if (isDesktopWindow()) {
     persistThemeToSession(mode);
   }
-  const theme = mode === MODES.SYSTEM ? systemTheme() : mode;
-  applyTheme(theme, mode);
-  document.dispatchEvent(new CustomEvent(THEME_MODE_EVENT, { detail: { mode, theme } }));
+  applyTheme(mode === MODES.SYSTEM ? systemTheme() : mode, mode);
 }
 
 /**
- * Advance to the next mode in the System → Light → Dark → System cycle.
- * @returns {string} The newly-selected mode.
+ * Flip the theme on screen — the header button's whole behaviour.
+ *
+ * Two states are offered over the three stored underneath: the theme is pinned
+ * only when it differs from the OS setting, and landing on the theme the OS is
+ * already showing stores 'system' instead of pinning a matching colour. That
+ * keeps the OS followed by default, means a second click always undoes the
+ * first, and makes it impossible to get stuck in a fixed theme without ever
+ * putting the word 'system' in front of anyone. Settings names all three modes
+ * for those who do want to say it outright.
+ * @returns {string} The newly-selected mode (one of MODES).
  */
-export function cycleTheme() {
-  const idx = (MODE_CYCLE.indexOf(getMode()) + 1) % MODE_CYCLE.length;
-  const next = MODE_CYCLE[idx] ?? MODES.SYSTEM;
-  setMode(next);
-  return next;
+export function toggleTheme() {
+  const target = otherTheme(getPaintedTheme());
+  const mode = target === knownSystemTheme() ? MODES.SYSTEM : target;
+  setMode(mode);
+  return mode;
 }
 
 /**
@@ -310,6 +385,7 @@ function paintDocument(theme) {
  */
 function applyTheme(theme, mode) {
   paintDocument(theme);
+  settled(theme, mode);
 
   const url = windowControlURL('theme',
     '?theme=' + encodeURIComponent(theme) + '&mode=' + encodeURIComponent(mode));
@@ -324,8 +400,26 @@ function applyTheme(theme, mode) {
       if ((osTheme === THEMES.DARK || osTheme === THEMES.LIGHT)
           && osTheme !== document.documentElement.getAttribute('data-theme')) {
         paintDocument(osTheme);
+        settled(osTheme, mode);
       }
     });
+}
+
+/**
+ * Record what a paint settled on and announce it.
+ *
+ * A paint in 'system' mode is also the app's one sighting of the OS setting, so
+ * it is remembered here for the pinned periods when nothing can read it (see
+ * knownSystemTheme). The event is dispatched from this single point so every
+ * cause of a repaint — a click, Settings, an OS change, the host's echo —
+ * reaches the button and the settings control the same way.
+ * @param {string} theme - The theme now painted ('dark' or 'light').
+ * @param {string} mode - The active mode (one of MODES).
+ * @private
+ */
+function settled(theme, mode) {
+  if (mode === MODES.SYSTEM) rememberSystemTheme(theme);
+  document.dispatchEvent(new CustomEvent(THEME_MODE_EVENT, { detail: { mode, theme } }));
 }
 
 /**
@@ -360,7 +454,7 @@ function initTheme() {
     fallback: MODES.SYSTEM
   });
 
-  // Cache the resolved mode so getMode()/cycleTheme() start from it this window,
+  // Cache the resolved mode so getMode()/toggleTheme() start from it this window,
   // and record it per-window so the next same-window load (e.g. a project switch)
   // resolves from the window's real mode rather than the stale ?theme= seed.
   localStorage.setItem(themeKey(), mode);

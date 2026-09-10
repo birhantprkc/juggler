@@ -17,6 +17,7 @@ import providersCache from '../services/providers-cache.js';
 import { ProvidersTab } from './settings/providers-tab.js';
 import { DefaultsTab } from './settings/defaults-tab.js';
 import { ConnectivityTab } from './settings/connectivity-tab.js';
+import { AppearanceTab } from './settings/appearance-tab.js';
 import { NotificationsTab } from './settings/notifications-tab.js';
 import { ShortcutsTab } from './settings/shortcuts-tab.js';
 import { LogsTab } from './settings/logs-tab.js';
@@ -90,6 +91,7 @@ class SettingsPanel extends HTMLElement {
       mcp: new McpTab(this),
       acp: new AcpTab(this),
       skills: new SkillsTab(this),
+      appearance: new AppearanceTab(this),
       notifications: new NotificationsTab(this),
       shortcuts: new ShortcutsTab(this),
       logs: new LogsTab(this),
@@ -140,6 +142,7 @@ class SettingsPanel extends HTMLElement {
                         <button class="settings-tab" data-tab="skills">Skills</button>
                         <button class="settings-tab" data-tab="mcp">MCP servers</button>
                         <button class="settings-tab" data-tab="acp">ACP agents</button>
+                        <button class="settings-tab" data-tab="appearance">Appearance</button>
                         <button class="settings-tab" data-tab="notifications">Notifications</button>
                         <button class="settings-tab" data-tab="shortcuts">Keyboard shortcuts</button>
                         <button class="settings-tab" data-tab="logs">Logs</button>
@@ -228,6 +231,10 @@ class SettingsPanel extends HTMLElement {
                         <div class="settings-form" id="proxy-form"></div>
                     </section>
 
+                    <section class="settings-tab-content" id="tab-appearance">
+                        <div class="settings-form" id="appearance-form"></div>
+                    </section>
+
                     <section class="settings-tab-content" id="tab-notifications">
                         <div class="settings-form" id="notifications-form"></div>
                         <div class="settings-section-heading">Tabs</div>
@@ -271,7 +278,7 @@ class SettingsPanel extends HTMLElement {
             </modal-panel>
         `;
     // Let each tab build its static DOM / wire its persistent listeners. The
-    // eager tabs (Notifications, Shortcuts, Info cards) render their forms here
+    // eager tabs (Appearance, Notifications, Shortcuts, Info cards) render here
     // with no server fetch (per-window prefs / the shortcut manager); the Logs
     // tab wires its persistent picker listener. Data-driven tabs render later
     // from loadConfig() / show().
