@@ -16,13 +16,18 @@ import (
 // OpenAI-compatible provider, so a user can configure both side by side.
 func Register() {
 	openaibase.Register(openaibase.Descriptor{
-		Name:              "mistral",
-		DisplayName:       "Mistral AI",
-		Description:       "Mistral AI models via the official OpenAI-compatible API. Models are discovered from Mistral's /v1/models endpoint.",
-		ConfigKeyName:     "mistral_api_key",
-		EnvVarName:        "MISTRAL_API_KEY",
-		APIKeyURL:         "https://console.mistral.ai/settings/keys",
-		DisplayProvider:   "Mistral AI",
+		Name:            "mistral",
+		DisplayName:     "Mistral AI",
+		Description:     "Mistral AI models via the official OpenAI-compatible API. Models are discovered from Mistral's /v1/models endpoint.",
+		ConfigKeyName:   "mistral_api_key",
+		EnvVarName:      "MISTRAL_API_KEY",
+		APIKeyURL:       "https://console.mistral.ai/settings/keys",
+		DisplayProvider: "Mistral AI",
+		// The Ministral line is Mistral's small/fast tier. 8B rather than 3B:
+		// this model has to write a coherent tab title, not merely a short one.
+		// Deliberately unversioned, so it matches both the dated id and the
+		// -latest alias, whichever the endpoint publishes.
+		CheapModel:        "ministral-8b",
 		ContextWindowCaps: contextWindowCaps,
 		MaxOutputCaps:     maxOutputCaps,
 		InputModalitiesFn: inputModalities,

@@ -59,7 +59,7 @@ func TestDeleteForgetsEverythingKeyedToTheDeletedProvider(t *testing.T) {
 	if err := defaults.Save(core.ModelRef{Provider: "custom-acme", Model: "m1"}); err != nil {
 		t.Fatalf("save default model: %v", err)
 	}
-	if err := cheap.Save(core.ModelRef{Provider: "custom-keep", Model: "m2"}); err != nil {
+	if err := cheap.Save(core.CheapModelSetting{ModelRef: core.ModelRef{Provider: "custom-keep", Model: "m2"}}); err != nil {
 		t.Fatalf("save cheap model: %v", err)
 	}
 
@@ -131,7 +131,7 @@ func TestDeleteClearsACheapModelThatNamedIt(t *testing.T) {
 	if err := defaults.Save(core.ModelRef{Provider: "custom-keep", Model: "m2"}); err != nil {
 		t.Fatalf("save default model: %v", err)
 	}
-	if err := cheap.Save(core.ModelRef{Provider: "custom-acme", Model: "m1"}); err != nil {
+	if err := cheap.Save(core.CheapModelSetting{ModelRef: core.ModelRef{Provider: "custom-acme", Model: "m1"}}); err != nil {
 		t.Fatalf("save cheap model: %v", err)
 	}
 

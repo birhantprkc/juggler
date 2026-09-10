@@ -39,7 +39,7 @@ const PROVIDERS_READY_TIMEOUT_MS = 5000;
  * @property {object} config - The /api/config result.
  * @property {any[]} providers - The sorted /api/providers list.
  * @property {{provider: string, model: string, explicit?: boolean}} defaultModel - The /api/default-model result.
- * @property {{provider?: string, model?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}} [cheapModel] - The /api/cheap-model result.
+ * @property {{provider?: string, model?: string, explicit?: boolean, disabled?: boolean, autoResolved?: {provider: string, model: string}}} [cheapModel] - The /api/cheap-model result.
  * @property {object} connectivity - The /api/connectivity result.
  */
 

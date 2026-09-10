@@ -247,6 +247,12 @@ type Server struct {
 	// queued. Created in the server constructor.
 	quickCompleteSem chan struct{}
 
+	// cheapModelNoticeOnce holds the one nudge a run gets about there being no
+	// cheap model to run micro-tasks on (see cheapModelForTask). Per-run rather
+	// than persisted: the message is about configuration, so a restart is a fair
+	// moment to mention it again, and nothing has to be written down.
+	cheapModelNoticeOnce sync.Once
+
 	publicMode atomic.Bool                  // true = accept connections from non-localhost IPs
 	tunnel     atomic.Pointer[activeTunnel] // non-nil when a tunnel is active
 

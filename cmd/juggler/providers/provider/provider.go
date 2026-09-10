@@ -790,6 +790,18 @@ type ProviderInfo struct {
 	// step, or no-op). Presentation/selection only — never sent on the wire as-is
 	// without validation against the live model list.
 	CheapModel string
+	// FreeToRun marks a provider that bills nothing per token — a local runtime
+	// serving models off the user's own hardware. It is the property the cheap
+	// model's last resolution step depends on: with nothing billed, re-running
+	// the conversation's own model for a micro-task costs only time, so such a
+	// provider needs no cheap tier of its own and never has to be nudged about
+	// one. Deliberately not "is local", which is a deployment detail: a local
+	// gateway proxying a paid API is local and not free, and it is the price
+	// that decides whether re-running the main model is acceptable.
+	//
+	// A hosted provider must never set this, free tier or not — a free tier is a
+	// quota to be spent carefully, which is the opposite of the reasoning here.
+	FreeToRun bool
 	// ForcedToolChoiceUnsupported marks a provider that cannot reliably honor a
 	// forced single-tool choice — local daemons and OpenAI-compatible gateways
 	// whose models either reject the tools array, answer a forced tool call as

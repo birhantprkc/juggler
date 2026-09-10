@@ -183,9 +183,13 @@ func (s *Server) resolveLLMCompleteModel(ctx context.Context, raw json.RawMessag
 
 // resolveCheapAlias resolves the "cheap" alias: the cheap model derived from the
 // current default as primary. Unresolvable ⇒ a user-facing error message.
+//
+// Goes through cheapModelForTask because a request has arrived that wanted to
+// run: the 400 reaches whichever caller asked, but the reason it failed is a
+// setting, and the person who has to change it may be nowhere near that caller.
 func (s *Server) resolveCheapAlias(ctx context.Context) (core.ModelRef, string) {
 	primary, _ := s.resolveDefaultModel(ctx)
-	ref, ok := s.resolveCheapModel(ctx, primary)
+	ref, ok := s.cheapModelForTask(ctx, primary)
 	if !ok {
 		return core.ModelRef{}, "no cheap model available"
 	}

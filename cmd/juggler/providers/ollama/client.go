@@ -83,6 +83,10 @@ func Register() {
 		// daemon does not serve.
 		BaseURLFunc:   daemon.BaseURLFunc(),
 		APIKeyDefault: "ollama", // placeholder so the OpenAI SDK accepts the request
+		// Models run on the user's own hardware, so a micro-task can re-use the
+		// conversation's model instead of needing a cheap tier named here — which
+		// could not be named anyway, the catalog being whatever has been pulled.
+		FreeToRun: true,
 	})
 }
 

@@ -69,6 +69,11 @@ func Register() {
 		ListModelsOverride: listModels,
 		BaseURLFunc:        server.BaseURLFunc(),
 		APIKeyDefault:      "llamacpp", // placeholder so the OpenAI SDK accepts the request
+		// Served off the user's own hardware at no per-token cost, so a
+		// micro-task re-uses the conversation's model rather than needing a cheap
+		// tier — llama-server serves whichever model was loaded, so there is no
+		// catalog to name one from.
+		FreeToRun: true,
 	})
 }
 

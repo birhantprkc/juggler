@@ -21,6 +21,7 @@
 
 import { assert } from '../utilities/test-helpers.js';
 import { DefaultsTab } from '../../js/components/settings/defaults-tab.js';
+import { MODEL_PICKER_OFF } from '../../js/components/model-picker/model-picker.js';
 
 /**
  * @typedef {object} TestResult
@@ -236,6 +237,111 @@ export async function runTests(_ctx) {
     } finally {
       h.restore();
       document.querySelectorAll('.model-picker').forEach(node => node.remove());
+    }
+  });
+
+  await run('Off is a third choice, distinct from Automatic, and it persists', async () => {
+    const h = makeTab();
+    try {
+      await h.tab._saveCheapModel(MODEL_PICKER_OFF);
+      const call = lastCall(h.calls, '/api/cheap-model');
+      assert(!!call && call.method === 'PUT', 'turning it off is persisted immediately');
+      assert(call.body.disabled === true,
+        `Off has to be recorded as itself — an empty pair would read back as Automatic. Got ${JSON.stringify(call.body)}`);
+      assert(h.tab.cheapModel.disabled === true, 'the row holds the off state it just saved');
+      const reread = h.calls.filter(c => c.url === '/api/cheap-model' && c.method === 'GET');
+      assert(reread.length === 0,
+        'there is nothing for the server to derive when the answer is "none", so no re-read');
+    } finally {
+      h.restore();
+    }
+  });
+
+  await run('the cheap row says which of its three states it is in', () => {
+    const h = makeTab();
+    try {
+      const off = h.tab._cheapModelStatusText({ explicit: false, disabled: true });
+      assert(off === 'Off — background tasks won\'t run.', `off says so, got "${off}"`);
+      const derived = h.tab._cheapModelStatusText({
+        explicit: false,
+        autoResolved: { provider: 'p', model: 'm' },
+      });
+      assert(derived === 'Auto — currently Model.', `a derived model is named, got "${derived}"`);
+      // The one that was wrong: with nothing derivable the row used to claim a
+      // model had been derived from the one in use, which is how a provider with
+      // no cheap tier stayed invisible.
+      const none = h.tab._cheapModelStatusText({ explicit: false });
+      assert(none === 'Auto — nothing available for this provider.',
+        `with nothing resolved the row must say so, got "${none}"`);
+    } finally {
+      h.restore();
+    }
+  });
+
+  await run('the default row offers no Off — a conversation must run on something', async () => {
+    document.querySelectorAll('.model-picker').forEach(node => node.remove());
+    const h = makeTab({ connect: true });
+    try {
+      h.tab.defaultModel = { provider: 'p', model: 'm', explicit: true };
+      h.tab.renderDefaultModelField();
+      const chip = /** @type {any} */ (h.host.querySelector('#default-model-field-container model-chip'));
+      chip.button.click();
+
+      const picker = /** @type {any} */ (document.querySelector('.model-picker'));
+      assert(!!picker, 'pressing the chip opens the shared picker');
+      assert(!picker.querySelector('[data-off]'),
+        'the Off row is opt-in, and the default row must not opt in — there is no "no default model"');
+      // Close through the picker rather than by removing the node, so the popup
+      // manager forgets it; a lingering registration makes the NEXT open a
+      // dismiss, and the test after this one gets no picker at all.
+      picker.querySelector('[data-none]').click();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    } finally {
+      h.restore();
+      document.querySelectorAll('.model-picker').forEach(node => node.remove());
+    }
+  });
+
+  await run('picking Off on the cheap row reaches the server as Off', async () => {
+    document.querySelectorAll('.model-picker').forEach(node => node.remove());
+    const h = makeTab({ connect: true });
+    try {
+      h.tab.cheapModel = { explicit: false };
+      h.tab.renderCheapModelField();
+      const chip = /** @type {any} */ (h.host.querySelector('#cheap-model-field-container model-chip'));
+      chip.button.click();
+
+      const picker = /** @type {any} */ (document.querySelector('.model-picker'));
+      assert(!!picker, 'pressing the chip opens the shared picker');
+      const off = picker.querySelector('[data-off]');
+      assert(!!off, 'the cheap row offers Off');
+      assert(off.textContent.includes('Off'), `the row is labelled, got "${off.textContent.trim()}"`);
+      assert(!!picker.querySelector('[data-none]'),
+        'Off is an ADDITION — Automatic must still be reachable, or the choice is one-way');
+
+      off.click();
+      await new Promise(resolve => setTimeout(resolve, 0));
+
+      const call = lastCall(h.calls, '/api/cheap-model');
+      assert(!!call && call.body.disabled === true,
+        `the Off row must not collapse into Automatic on the way out, got ${JSON.stringify(call?.body)}`);
+      assert(!document.querySelector('.model-picker'), 'choosing dismisses the picker');
+    } finally {
+      h.restore();
+      document.querySelectorAll('.model-picker').forEach(node => node.remove());
+    }
+  });
+
+  await run('the chip reads Off, so the state is visible without opening anything', () => {
+    const h = makeTab();
+    try {
+      h.tab.cheapModel = { explicit: false, disabled: true };
+      h.tab.renderCheapModelField();
+      const label = h.host.querySelector('#cheap-model-field-container .model-name');
+      assert((label?.textContent || '') === 'Off',
+        `an off row must not look identical to an automatic one, got "${label?.textContent}"`);
+    } finally {
+      h.restore();
     }
   });
 

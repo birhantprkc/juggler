@@ -13,15 +13,35 @@ import (
 	"juggler/internal/userpaths"
 )
 
+// CheapModelSetting is the persisted cheap-model choice: a model pin, or the
+// explicit decision not to have one at all.
+//
+// ModelRef is embedded rather than nested so the JSON stays a flat object,
+// which is what lets a file written with only {provider, model} keep loading
+// as the pin it names.
+//
+// Disabled is the field that makes this type necessary, and it exists because
+// an absent file cannot mean two things at once. "Never set" and "turned off"
+// both name no model, so without a flag to tell them apart the server has no
+// way to honour a user who wants no cheap model — it would keep deriving one,
+// and keep nudging about it.
+type CheapModelSetting struct {
+	ModelRef
+	Disabled bool `json:"disabled,omitempty"`
+}
+
 // CheapModelStore persists the user's chosen "cheap" model — a small/fast model
 // used for out-of-band micro-tasks (auto-naming a tab, plugin generateText
 // calls) rather than for the conversation itself. It lives in
 // ~/.juggler/cheap-model.json (0600, owner-only). An absent file means "Auto":
 // the server derives a cheap model from the primary model's provider instead.
 //
-// Deliberately a near-verbatim sibling of DefaultModelStore — same ModelRef,
-// same absent-file-means-automatic contract — so the two settings behave
-// identically from the UI's point of view.
+// A close sibling of DefaultModelStore — same file discipline, same
+// absent-file-means-automatic contract — but deliberately not the same type.
+// A default model has no meaningful "off" (a conversation must run on
+// something), whereas a cheap model does: nothing breaks if the micro-tasks
+// simply don't run, so the user is allowed to say so, and CheapModelSetting is
+// where that answer is kept.
 type CheapModelStore struct {
 	filePath string
 }
@@ -33,31 +53,38 @@ func NewCheapModelStore() (*CheapModelStore, error) {
 	}, nil
 }
 
-// Load reads the stored cheap model. Returns an empty ModelRef (Provider and
-// Model both "") when the file does not exist or is empty — i.e. Auto.
-func (s *CheapModelStore) Load() (ModelRef, error) {
+// Load reads the stored cheap-model setting. Returns the zero setting — no
+// model, not disabled — when the file does not exist or is empty, i.e. Auto.
+func (s *CheapModelStore) Load() (CheapModelSetting, error) {
 	data, err := os.ReadFile(s.filePath)
 	if os.IsNotExist(err) {
-		return ModelRef{}, nil
+		return CheapModelSetting{}, nil
 	}
 	if err != nil {
-		return ModelRef{}, fmt.Errorf("failed to read cheap model file: %w", err)
+		return CheapModelSetting{}, fmt.Errorf("failed to read cheap model file: %w", err)
 	}
 	if len(data) == 0 {
-		return ModelRef{}, nil
+		return CheapModelSetting{}, nil
 	}
 
-	var ref ModelRef
-	if err := json.Unmarshal(data, &ref); err != nil {
-		return ModelRef{}, fmt.Errorf("failed to parse cheap model file: %w", err)
+	var setting CheapModelSetting
+	if err := json.Unmarshal(data, &setting); err != nil {
+		return CheapModelSetting{}, fmt.Errorf("failed to parse cheap model file: %w", err)
 	}
-	return ref, nil
+	return setting, nil
 }
 
-// Save persists the cheap model. An empty ref (either field blank) clears the
-// stored value, reverting to Auto by deleting the file.
-func (s *CheapModelStore) Save(ref ModelRef) error {
-	if ref.Provider == "" || ref.Model == "" {
+// Save persists the cheap-model setting. Three outcomes, in this order:
+//
+//   - Disabled ⇒ the file is written with the flag, model pin or not. This case
+//     comes first because an off setting names no model, so the clearing rule
+//     below would otherwise delete the record of the very choice being made and
+//     read it back as Auto.
+//   - An empty ref ⇒ the file is deleted, reverting to Auto. Absence is how Auto
+//     is spelled, so there is nothing to write.
+//   - Otherwise the pin is written.
+func (s *CheapModelStore) Save(setting CheapModelSetting) error {
+	if !setting.Disabled && (setting.Provider == "" || setting.Model == "") {
 		if err := os.Remove(s.filePath); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("failed to clear cheap model file: %w", err)
 		}
@@ -69,7 +96,7 @@ func (s *CheapModelStore) Save(ref ModelRef) error {
 		return fmt.Errorf("failed to create cheap model directory: %w", err)
 	}
 
-	data, err := json.MarshalIndent(ref, "", "  ")
+	data, err := json.MarshalIndent(setting, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal cheap model: %w", err)
 	}

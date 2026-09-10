@@ -31,14 +31,18 @@ const (
 // uses the local Codex app/CLI's ChatGPT OAuth token, not a Platform API key.
 func Register() {
 	openaibase.Register(openaibase.Descriptor{
-		Name:               "openaicodex",
-		DisplayName:        "OpenAI Codex (ChatGPT plan)",
-		Description:        "Uses your local Codex app/CLI ChatGPT login, so Plus/Pro/Business/Edu/Enterprise Codex plans can be selected without an OpenAI Platform API key.",
-		AuthType:           provider.AuthTypeOAuthBearer,
-		AuthSource:         "codex_cli",
-		BaseURL:            baseURL,
-		ContextWindows:     ModelContextWindows,
-		DisplayProvider:    "OpenAI Codex",
+		Name:            "openaicodex",
+		DisplayName:     "OpenAI Codex (ChatGPT plan)",
+		Description:     "Uses your local Codex app/CLI ChatGPT login, so Plus/Pro/Business/Edu/Enterprise Codex plans can be selected without an OpenAI Platform API key.",
+		AuthType:        provider.AuthTypeOAuthBearer,
+		AuthSource:      "codex_cli",
+		BaseURL:         baseURL,
+		ContextWindows:  ModelContextWindows,
+		DisplayProvider: "OpenAI Codex",
+		// The only mini in the plan catalog, and the reason to name one at all:
+		// this provider is second in defaultProviderPreference, so a fresh
+		// install that signs in to Codex and nothing else lands here.
+		CheapModel:         "gpt-5.4-mini",
 		ListModelsOverride: listModels,
 		UsageStatsOverride: usageStats,
 		ThinkingSpecFn:     codexThinkingSpec,

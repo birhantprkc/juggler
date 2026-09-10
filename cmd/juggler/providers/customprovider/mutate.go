@@ -88,7 +88,17 @@ func forgetProvider(name string) {
 	if store, err := core.NewCheapModelStore(); err != nil {
 		jlog.Error("[CustomProvider] Could not open the cheap-model store: %v", err)
 	} else {
-		clearModelRefNaming(name, "cheap model", store.Load, store.Save)
+		// Adapted to the shared helper's ModelRef shape. Only the pin is at
+		// stake here: a setting that names no provider cannot name this one, so
+		// an explicit "no cheap model" is never reached, let alone undone.
+		load := func() (core.ModelRef, error) {
+			setting, err := store.Load()
+			return setting.ModelRef, err
+		}
+		save := func(ref core.ModelRef) error {
+			return store.Save(core.CheapModelSetting{ModelRef: ref})
+		}
+		clearModelRefNaming(name, "cheap model", load, save)
 	}
 }
 

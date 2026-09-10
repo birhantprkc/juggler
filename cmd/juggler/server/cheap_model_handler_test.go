@@ -71,8 +71,8 @@ func TestCheapModelHandlerServiceTierRoundTrip(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	want := core.ModelRef{Provider: "openaicodex", Model: "gpt-5-mini", Thinking: "low", ServiceTier: "priority"}
-	if stored != want {
-		t.Fatalf("stored ref = %+v, want %+v", stored, want)
+	if stored.ModelRef != want {
+		t.Fatalf("stored ref = %+v, want %+v", stored.ModelRef, want)
 	}
 
 	body := getCheapModel(t, s)
@@ -133,7 +133,7 @@ func TestResolveCheapModelKeepsServiceTier(t *testing.T) {
 		{Name: "cheaptest", Available: true, ModelsWithContext: []ModelWithContext{{ID: "cheap-mini"}}},
 	})
 	pinned := core.ModelRef{Provider: "cheaptest", Model: "cheap-mini", ServiceTier: "priority"}
-	if err := s.cheapModelStore.Save(pinned); err != nil {
+	if err := s.cheapModelStore.Save(core.CheapModelSetting{ModelRef: pinned}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 

@@ -537,12 +537,31 @@ func (s *Server) liveModelMatch(providerName, wantID string) (string, bool) {
 // out-of-band micro-tasks (auto-naming a tab, plugin generateText), plus whether
 // one was resolved at all. Resolution order:
 //
-//  1. Explicit — the user pinned a cheap model (cheapModelStore) and its
+//  1. Off — the user recorded that they want no cheap model: ok=false, ahead of
+//     everything else. It outranks even a valid pin, because the flag answers
+//     "should there be one at all" and a pin left over from before they decided
+//     must not overrule the decision.
+//  2. Explicit — the user pinned a cheap model (cheapModelStore) and its
 //     provider is currently available: used as-is.
-//  2. Auto-derive — the caller's primary model's provider advertises a
+//  3. Auto-derive — the primary model's provider advertises a
 //     ProviderInfo.CheapModel that appears in its live list: used with the
 //     matched concrete id.
-//  3. Neither → ok=false. Callers that need a model do not run (no heuristic).
+//  4. Borrowed — the DEFAULT model's provider advertises one, when that is a
+//     different, available provider. A conversation on a plan or an aggregator
+//     with no cheap tier then still gets its tabs named, using a provider the
+//     user already chose to run their work on. The restriction is the point:
+//     the cheap tier of a provider merely sitting configured is never spent, or
+//     a tab title would quietly bill an account nobody pointed at this
+//     conversation.
+//  5. Free to run — the primary model's provider bills nothing per token, so
+//     the conversation's own model is re-used for the micro-task, minus its
+//     thinking level and serving tier. Local runtimes serve whatever the user
+//     loaded, so no cheap id could be named for them in advance; what makes
+//     this safe is the price, not the locality.
+//  6. None of the above → ok=false. Callers that need a model do not run, and
+//     the user is told once (see cheapModelForTask). There is no heuristic
+//     guess at a cheap id: an unrecognised model is one nobody can vouch is
+//     cheap, and the failure would be a surprise bill, not a bad tab name.
 //
 // The primary ref lets the namer derive a cheap sibling of the conversation's
 // own model; the HTTP endpoint passes the resolved default as primary.
@@ -553,9 +572,12 @@ func (s *Server) resolveCheapModel(ctx context.Context, primary core.ModelRef) (
 	s.awaitProvidersReady(ctx)
 
 	if s.cheapModelStore != nil {
-		if stored, err := s.cheapModelStore.Load(); err == nil && stored.Provider != "" && stored.Model != "" {
-			if s.providerAvailable(stored.Provider) {
-				return stored, true
+		if stored, err := s.cheapModelStore.Load(); err == nil {
+			if stored.Disabled {
+				return core.ModelRef{}, false
+			}
+			if stored.Provider != "" && stored.Model != "" && s.providerAvailable(stored.Provider) {
+				return stored.ModelRef, true
 			}
 			// Pinned but unavailable: fall through to auto-derive rather than
 			// returning a model that cannot run.
@@ -565,14 +587,41 @@ func (s *Server) resolveCheapModel(ctx context.Context, primary core.ModelRef) (
 	if primary.Provider == "" {
 		return core.ModelRef{}, false
 	}
-	info, ok := provider.GetProviderInfo(primary.Provider)
-	if !ok || info.CheapModel == "" {
+
+	if ref, ok := s.providerCheapTier(primary.Provider); ok {
+		return ref, true
+	}
+
+	// The primary's provider has no cheap tier. Borrow the default model's, if
+	// the user's default sits somewhere else.
+	if fallback, _ := s.resolveDefaultModel(ctx); fallback.Provider != "" && fallback.Provider != primary.Provider {
+		if ref, ok := s.providerCheapTier(fallback.Provider); ok {
+			return ref, true
+		}
+	}
+
+	if info, found := provider.GetProviderInfo(primary.Provider); found && info.FreeToRun {
+		// Provider and model only: the micro-task inherits the model, never the
+		// conversation's reasoning budget or paid serving speed.
+		return core.ModelRef{Provider: primary.Provider, Model: primary.Model}, true
+	}
+
+	return core.ModelRef{}, false
+}
+
+// providerCheapTier resolves a provider's advertised cheap-model hint against
+// its live list. ok=false when the provider names no cheap tier, is
+// unavailable, or publishes nothing matching the hint.
+func (s *Server) providerCheapTier(providerName string) (core.ModelRef, bool) {
+	info, found := provider.GetProviderInfo(providerName)
+	if !found || info.CheapModel == "" {
 		return core.ModelRef{}, false
 	}
-	if concrete, ok := s.liveModelMatch(primary.Provider, info.CheapModel); ok {
-		return core.ModelRef{Provider: primary.Provider, Model: concrete}, true
+	concrete, ok := s.liveModelMatch(providerName, info.CheapModel)
+	if !ok {
+		return core.ModelRef{}, false
 	}
-	return core.ModelRef{}, false
+	return core.ModelRef{Provider: providerName, Model: concrete}, true
 }
 
 // handleCheapModel returns the cheap model used for out-of-band micro-tasks.
@@ -580,15 +629,29 @@ func (s *Server) resolveCheapModel(ctx context.Context, primary core.ModelRef) (
 // the server reports the auto-derived cheap sibling of the current default model
 // (explicit:false) under `autoResolved`, or omits it when none is available so
 // the UI can show a plain "Auto".
+//
+// `disabled` is reported separately from both, because it is neither: the user
+// wants no cheap model, which the empty pair alone cannot say.
+//
+// Deliberately calls resolveCheapModel rather than cheapModelForTask: this is
+// somebody reading the setting, not a task that failed for want of one, and
+// nudging them towards the row they are already looking at would also spend the
+// single notice a run gets on the one person who does not need it.
 func (s *Server) handleCheapModel(w http.ResponseWriter, r *http.Request) {
-	var stored core.ModelRef
+	var stored core.CheapModelSetting
 	if s.cheapModelStore != nil {
 		stored, _ = s.cheapModelStore.Load()
 	}
 	explicit := stored.Provider != "" && stored.Model != ""
 
 	body := map[string]any{"explicit": explicit}
-	if explicit {
+	if stored.Disabled {
+		body["disabled"] = true
+	}
+	switch {
+	case stored.Disabled:
+		// Nothing to describe: no pin is in effect, and nothing is derived.
+	case explicit:
 		body["provider"] = stored.Provider
 		body["model"] = stored.Model
 		if stored.Thinking != "" {
@@ -597,7 +660,7 @@ func (s *Server) handleCheapModel(w http.ResponseWriter, r *http.Request) {
 		if stored.ServiceTier != "" {
 			body["serviceTier"] = stored.ServiceTier
 		}
-	} else {
+	default:
 		primary, _ := s.resolveDefaultModel(r.Context())
 		if ref, ok := s.resolveCheapModel(r.Context(), primary); ok {
 			body["autoResolved"] = map[string]any{"provider": ref.Provider, "model": ref.Model}
@@ -607,16 +670,18 @@ func (s *Server) handleCheapModel(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSetCheapModel persists the cheap model used for out-of-band micro-tasks.
-// Body: {"provider": "...", "model": "...", "thinking": "...", "serviceTier": "..."}
-// — thinking and serviceTier are optional; absent/empty means the model's default
-// level and standard serving respectively. An empty provider/model clears the
-// stored value, reverting to Auto.
+// Body: {"provider": "...", "model": "...", "thinking": "...", "serviceTier": "...",
+// "disabled": bool} — thinking and serviceTier are optional; absent/empty means
+// the model's default level and standard serving respectively. An empty
+// provider/model clears the stored value, reverting to Auto; "disabled": true
+// records that the user wants no cheap model at all, which is a different
+// answer and is stored as one.
 func (s *Server) handleSetCheapModel(w http.ResponseWriter, r *http.Request) {
 	if s.cheapModelStore == nil {
 		handlers.WriteError(w, r, http.StatusServiceUnavailable, "Cheap model is not available")
 		return
 	}
-	req, ok := handlers.DecodeJSON[core.ModelRef](w, r)
+	req, ok := handlers.DecodeJSON[core.CheapModelSetting](w, r)
 	if !ok {
 		return
 	}

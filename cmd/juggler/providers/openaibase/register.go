@@ -40,6 +40,10 @@ type Descriptor struct {
 	// Surfaced on ProviderInfo.CheapModel; validated against the live list
 	// before use.
 	CheapModel string
+	// FreeToRun marks a local runtime that bills nothing per token, so a
+	// micro-task may re-run the conversation's own model rather than needing a
+	// CheapModel of its own. Surfaced on ProviderInfo.FreeToRun.
+	FreeToRun bool
 
 	// Static context-window map exposed via ProviderInfo.ModelContextWindows.
 	// May be nil for providers whose model list is discovered at runtime. When
@@ -151,6 +155,7 @@ func Register(d Descriptor) {
 		APIKeyOptional:      d.APIKeyOptional,
 		ModelContextWindows: d.ContextWindows,
 		CheapModel:          d.CheapModel,
+		FreeToRun:           d.FreeToRun,
 		// A provider that does not opt into forced tool choice cannot reliably
 		// honor a named tool_choice, so the worker runs those turns unforced
 		// rather than send a choice the upstream rejects.

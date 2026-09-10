@@ -94,6 +94,17 @@ function dialAttribute(item, name) {
   return item.hasAttribute(name) ? (item.getAttribute(name) || '') : undefined;
 }
 
+/**
+ * The value a `change` carries when the optional Off row is chosen.
+ *
+ * A sentinel rather than null because null is already taken: the none row means
+ * "you decide", and Off means "don't". A host that collapsed the two would
+ * store one as the other, and since both name no model, nothing downstream
+ * could tell them apart again. Hosts test it with `detail === MODEL_PICKER_OFF`
+ * or `detail?.off`; a host that never sets `offLabel` never sees it.
+ */
+export const MODEL_PICKER_OFF = Object.freeze({ off: true });
+
 class ModelPicker extends JugglerElement {
   constructor() {
     super();
@@ -103,6 +114,14 @@ class ModelPicker extends JugglerElement {
     this._value = null;
     /** @type {string} @private - Label for the bottom row that selects nothing. */
     this._noneLabel = 'No model';
+    /**
+     * @type {string} @private - Label for the optional Off row. Empty (the
+     * default) leaves the row out entirely, so only a host with a genuine
+     * "none at all" state grows a third choice.
+     */
+    this._offLabel = '';
+    /** @type {boolean} @private - True when Off is the state in effect. */
+    this._off = false;
     /** @type {PickerAction[]} @private - Host-supplied footer actions. */
     this._footerActions = [];
     /** @type {boolean} @private - True while the provider list is still being fetched. */
@@ -207,6 +226,40 @@ class ModelPicker extends JugglerElement {
     return this._noneLabel;
   }
 
+  /**
+   * @param {string} label - Label for the Off row; empty omits the row. Set it
+   *   only where "no model at all" is a state the host can actually store,
+   *   since offering it otherwise promises a choice that cannot be kept.
+   */
+  set offLabel(label) {
+    const next = label || '';
+    if (next === this._offLabel) return;
+    this._offLabel = next;
+    if (this._rendered) this.refresh();
+  }
+
+  /** @returns {string} Label for the Off row, or '' when there is none. */
+  get offLabel() {
+    return this._offLabel;
+  }
+
+  /**
+   * @param {boolean} isOff - Whether Off is the state in effect. Kept apart
+   *   from `value` because both Off and Automatic have no model, so the value
+   *   alone cannot say which row wears the tick.
+   */
+  set off(isOff) {
+    const next = !!isOff;
+    if (next === this._off) return;
+    this._off = next;
+    if (this._rendered) this.refresh();
+  }
+
+  /** @returns {boolean} Whether Off is the state in effect. */
+  get off() {
+    return this._off;
+  }
+
   /** @param {PickerAction[]} actions - Footer actions; empty collapses the footer. */
   set footerActions(actions) {
     this._footerActions = actions || [];
@@ -297,8 +350,8 @@ class ModelPicker extends JugglerElement {
   }
 
   /**
-   * Announce a config (or the none row's null).
-   * @param {ModelConfigShape} config
+   * Announce a config, the none row's null, or the Off row's sentinel.
+   * @param {ModelConfigShape|typeof MODEL_PICKER_OFF} config
    * @private
    */
   _emit(config) {
@@ -664,12 +717,24 @@ class ModelPicker extends JugglerElement {
     // above; active (✓) when nothing is currently selected. Never filtered out —
     // it is an action, not a model.
     content += '<li class="menu-divider"></li>';
-    content += `<menu class="menu-group">${this._selectionItem({
+    let escapeRows = this._selectionItem({
       label: escapeHtml(this._noneLabel),
-      active: !this._value?.model,
+      active: !this._value?.model && !this._off,
       classes: 'no-model',
       dataAttrs: 'data-none="true"',
-    })}</menu>`;
+    });
+    // The optional third choice, for a host where having no model at all is a
+    // real answer rather than the absence of one. Sits below the none row
+    // because it is the more final of the two.
+    if (this._offLabel) {
+      escapeRows += this._selectionItem({
+        label: escapeHtml(this._offLabel),
+        active: this._off,
+        classes: 'no-model off-model',
+        dataAttrs: 'data-off="true"',
+      });
+    }
+    content += `<menu class="menu-group">${escapeRows}</menu>`;
 
     return content;
   }
@@ -929,12 +994,17 @@ class ModelPicker extends JugglerElement {
   }
 
   /**
-   * Act on a row: the none row clears the selection, a model row picks it, and a
-   * row for an unconfigured provider does nothing (its note already says why).
+   * Act on a row: the none row clears the selection, the Off row asks for no
+   * model at all, a model row picks it, and a row for an unconfigured provider
+   * does nothing (its note already says why).
    * @param {Element} item
    * @private
    */
   _activate(item) {
+    if (item.hasAttribute('data-off')) {
+      this._emit(MODEL_PICKER_OFF);
+      return;
+    }
     if (item.hasAttribute('data-none')) {
       this._emit(null);
       return;

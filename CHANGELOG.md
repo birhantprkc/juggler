@@ -17,6 +17,11 @@ of changes; this project follows semantic versioning.
 - Typing while a thread runs no longer waits on the whole transcript to relayout
 - Deleting a draft word by word can no longer overrun into binning the conversation
 - Exa search returns the passages that match, not whole pages, and can no longer flood the context
+- Codex, DeepSeek, Mistral and Z.AI now offer a cheap model, so tab naming works out of the box
+- A provider with no cheap tier borrows one from your default model's provider instead
+- Ollama and llama.cpp re-use the model you're running, since a local one costs nothing
+- The cheap model can be turned off outright, and the setting no longer claims one when there is none
+- A background task with no cheap model to run on now says so, once, instead of silently not running
 
 ## [0.6.1] - 2026-09-09
 

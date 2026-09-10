@@ -16,7 +16,7 @@ import { closePopupById } from '../../utils/popup-manager.js';
 import { extractErrorMessage } from '../../../sdk/lib/error-utils.js';
 import { buildToggleRow } from './notifications-tab.js';
 import '../model-picker/model-chip.js';
-import '../model-picker/model-picker.js';
+import { MODEL_PICKER_OFF } from '../model-picker/model-picker.js';
 import { isDefaultFileEditingOn, setDefaultFileEditingOn } from '../../services/file-editing-permission.js';
 import { setAutoNameEnabledCached } from '../../services/auto-name-setting.js';
 import strategyRegistry from '../../registries/strategy-registry.js';
@@ -49,14 +49,14 @@ export class DefaultsTab {
     this.providers = [];
     /** @type {{provider: string, model: string, thinking?: string, serviceTier?: string, explicit?: boolean}} @private - Model new conversations are seeded with; explicit=false means automatic. thinking empty ⇒ the model's default level, serviceTier empty ⇒ standard serving. */
     this.defaultModel = { provider: '', model: '', explicit: false };
-    /** @type {{provider?: string, model?: string, thinking?: string, serviceTier?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}} @private - Cheap model for out-of-band micro-tasks; explicit=false means Auto. */
+    /** @type {{provider?: string, model?: string, thinking?: string, serviceTier?: string, explicit?: boolean, disabled?: boolean, autoResolved?: {provider: string, model: string}}} @private - Cheap model for out-of-band micro-tasks. explicit=false means Auto; disabled=true means the user wants none, which Auto cannot express. */
     this.cheapModel = { explicit: false };
   }
 
   /**
    * Receive the shared loadConfig() payload: store config/providers/defaultModel
    * and (on a full render) build the fields.
-   * @param {{config: object, providers: any[], defaultModel: {provider: string, model: string, thinking?: string, serviceTier?: string, explicit?: boolean}, cheapModel?: {provider?: string, model?: string, thinking?: string, serviceTier?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}}} data
+   * @param {{config: object, providers: any[], defaultModel: {provider: string, model: string, thinking?: string, serviceTier?: string, explicit?: boolean}, cheapModel?: {provider?: string, model?: string, thinking?: string, serviceTier?: string, explicit?: boolean, disabled?: boolean, autoResolved?: {provider: string, model: string}}}} data
    * @param {boolean} renderFields
    */
   onConfigLoaded(data, renderFields) {
@@ -477,6 +477,10 @@ export class DefaultsTab {
         'A small, fast model used out-of-band for micro-tasks like auto-naming a ' +
         'conversation. "Automatic" derives one from the model in use.',
       current: this.cheapModel || { explicit: false },
+      // The one row with a third state. Turning it off is a real answer — the
+      // tasks it runs are optional — and recording it is what stops the server
+      // deriving a model anyway, and stops it mentioning that it can't.
+      offLabel: 'Off — no cheap model',
       statusText: (ref) => this._cheapModelStatusText(ref),
       onSave: (config) => this._saveCheapModel(config),
     });
@@ -494,12 +498,13 @@ export class DefaultsTab {
    * @param {string} opts.containerId - CSS selector for the field container.
    * @param {string} opts.nameLabel - Field label text.
    * @param {string} [opts.description] - Optional description under the label.
-   * @param {{provider?: string, model?: string, thinking?: string, serviceTier?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}} opts.current
+   * @param {{provider?: string, model?: string, thinking?: string, serviceTier?: string, explicit?: boolean, disabled?: boolean, autoResolved?: {provider: string, model: string}}} opts.current
+   * @param {string} [opts.offLabel] - Label for the picker's Off row; omitted leaves the row out.
    * @param {(ref: any) => string} opts.statusText - Builds the status line.
    * @param {(config: import('../../model/model-config.js').ModelConfigShape) => void} opts.onSave - Persists the chosen config, or null for Automatic.
    * @private
    */
-  _renderModelRow({ containerId, nameLabel, description, current, statusText, onSave }) {
+  _renderModelRow({ containerId, nameLabel, description, current, offLabel, statusText, onSave }) {
     const container = this.host.querySelector(containerId);
     if (!container) return;
     container.innerHTML = '';
@@ -531,15 +536,18 @@ export class DefaultsTab {
     const config = ref.explicit && ref.provider && ref.model
       ? buildModelConfig(ref.provider, ref.model, ref.thinking, ref.serviceTier)
       : null;
+    const isOff = !!ref.disabled;
 
     const chip = /** @type {any} */ (document.createElement('model-chip'));
     chip.update({
       providers: this.providers,
-      placeholder: 'Automatic',
+      // Off has no config either, so without its own word on the chip it would
+      // be indistinguishable from Automatic without opening the picker.
+      placeholder: isOff ? 'Off' : 'Automatic',
       buttonTitle: nameLabel,
       config,
     });
-    chip.addEventListener('chip-toggle', () => this._openModelPicker(chip, config, onSave));
+    chip.addEventListener('chip-toggle', () => this._openModelPicker(chip, config, onSave, { offLabel, isOff }));
     // The pill promises its mini popover, so an open picker gets out of the way
     // first. Closing leaves the chip's DOM alone, so the pill is still the
     // anchor the popover then attaches to.
@@ -572,9 +580,10 @@ export class DefaultsTab {
    * @param {any} chip - The `<model-chip>` the picker anchors to.
    * @param {import('../../model/model-config.js').ModelConfigShape} value - The config in effect.
    * @param {(config: import('../../model/model-config.js').ModelConfigShape) => void} onSave
+   * @param {{offLabel?: string, isOff?: boolean}} [opts] - The Off row, for a row that has one.
    * @private
    */
-  _openModelPicker(chip, value, onSave) {
+  _openModelPicker(chip, value, onSave, { offLabel, isOff } = {}) {
     // Second press on the same chip dismisses rather than re-opening.
     if (closePopupById(MODEL_PICKER_POPUP_ID)) return;
 
@@ -582,6 +591,8 @@ export class DefaultsTab {
     picker.providers = this.providers;
     picker.value = value;
     picker.noneLabel = 'Automatic';
+    if (offLabel) picker.offLabel = offLabel;
+    picker.off = !!isOff;
 
     /** @type {(() => void)|null} */
     let release = null;
@@ -625,7 +636,12 @@ export class DefaultsTab {
   }
 
   /**
-   * Persist the chosen cheap model. A null config clears it (Automatic).
+   * Persist the chosen cheap model: a config pins it, null is Automatic, and
+   * the picker's Off sentinel records that the user wants none at all.
+   *
+   * Off is sent as its own flag rather than as the empty pair, because the
+   * empty pair is Automatic — stored that way, "no cheap model" would be read
+   * back as "pick me one", which is the opposite instruction.
    *
    * Applied optimistically — the row repaints before the request lands, and is
    * put back as it was if the save fails, so the chip never shows a choice the
@@ -635,20 +651,23 @@ export class DefaultsTab {
    */
   async _saveCheapModel(config) {
     const previous = this.cheapModel;
-    const body = this._modelRowBody(config);
+    const off = /** @type {any} */ (config) === MODEL_PICKER_OFF || !!(/** @type {any} */ (config)?.off);
+    const body = off ? { provider: '', model: '', disabled: true } : this._modelRowBody(config);
     this.cheapModel = {
       provider: body.provider,
       model: body.model,
-      thinking: body.thinking || '',
-      serviceTier: body.serviceTier || '',
+      thinking: /** @type {any} */ (body).thinking || '',
+      serviceTier: /** @type {any} */ (body).serviceTier || '',
       explicit: !!(body.provider && body.model),
+      disabled: off,
     };
     this.renderCheapModelField();
     try {
       await fetchJson('/api/cheap-model', { method: 'PUT', body });
       // Cleared to Automatic: re-fetch so the auto-derived name in the status
-      // line is the one the server actually resolved.
-      if (!body.provider || !body.model) {
+      // line is the one the server actually resolved. Off needs no such trip —
+      // there is nothing for the server to have derived.
+      if (!off && (!body.provider || !body.model)) {
         this.cheapModel = await fetchJson('/api/cheap-model', { fallback: null }) || { explicit: false };
         this.renderCheapModelField();
       }
@@ -676,17 +695,23 @@ export class DefaultsTab {
   }
 
   /**
-   * @param {{provider?: string, model?: string, explicit?: boolean, autoResolved?: {provider: string, model: string}}} ref
+   * The cheap row's status line, which has three states to tell apart and used
+   * to have two. "Auto" with nothing resolved is the one that matters: it is a
+   * provider offering no cheap tier, and while the row described that as a
+   * model having been derived, the tasks were silently not running with nothing
+   * on screen to suggest it.
+   * @param {{provider?: string, model?: string, explicit?: boolean, disabled?: boolean, autoResolved?: {provider: string, model: string}}} ref
    * @returns {string} short status describing the current cheap-model state
    * @private
    */
   _cheapModelStatusText(ref) {
+    if (ref && ref.disabled) return 'Off — background tasks won\'t run.';
     if (!ref || !ref.explicit) {
       const auto = ref && ref.autoResolved;
       if (auto && auto.provider && auto.model) {
         return `Auto — currently ${modelLabelFromList(this.providers, auto.provider, auto.model)}.`;
       }
-      return 'Auto — derived from the model in use.';
+      return 'Auto — nothing available for this provider.';
     }
     return this._explicitModelStatusText(ref);
   }

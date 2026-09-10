@@ -284,8 +284,11 @@ func (s *Server) isProvisionalName(convID string) bool {
 //   - Recoverable — a transient provider failure or a rejected candidate that
 //     still has budget left: logged at info as the attempt trail.
 //   - Configuration — no resolvable cheap model: logged at error (nothing will
-//     ever name a tab until it is fixed) but never announced, as it would fire
-//     on every new conversation.
+//     ever name a tab until it is fixed) and announced once per server run, not
+//     once per conversation. The cause holds for every micro-task equally, so a
+//     per-conversation toast would fire on every new tab; cheapModelForTask
+//     owns that budget, and says nothing at all if the user turned the cheap
+//     model off.
 //   - Benign — a guard skip (the name is no longer machine-derived, or a rename
 //     race): silent, because nothing went wrong.
 //
@@ -307,7 +310,7 @@ func (s *Server) autoNameConversation(convID, firstMessage, customSystem string,
 	ctx, cancel := context.WithTimeout(context.Background(), autoNameTimeout)
 	defer cancel()
 
-	cheap, ok := s.resolveCheapModel(ctx, primary)
+	cheap, ok := s.cheapModelForTask(ctx, primary)
 	if !ok {
 		jlog.Error("auto-name %s: no cheap model resolvable; leaving default name", convID)
 		return

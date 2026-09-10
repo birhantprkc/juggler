@@ -6,6 +6,7 @@ package audit
 
 import (
 	"sort"
+	"strings"
 	"testing"
 
 	"juggler/cmd/juggler/providers/anthropic"
@@ -106,4 +107,57 @@ func TestCatalogInvariants(t *testing.T) {
 		t.Fatal("no catalogued models were checked — the provider registration list is not doing anything")
 	}
 	t.Logf("checked %d catalogued models", checked)
+}
+
+// TestCheapModelHintsNameACataloguedModel checks each provider's cheap-model
+// hint against that provider's own catalog.
+//
+// The hint is a compiled-in model id, and a vendor rolling its small model to a
+// new name is enough to make it name nothing. Nothing complains when that
+// happens: resolution simply finds no match and reports no cheap model, so the
+// symptom is tabs quietly staying "Untitled 4" — a fault with no error, on a
+// feature nobody is watching. This test is what turns it into a build failure
+// at the moment the catalog is edited.
+//
+// Matching mirrors liveModelMatch: exact id first, then prefix, so a family
+// hint ("ministral-8b") legitimately names the dated id a vendor publishes
+// ("ministral-8b-2512"). Providers with no static catalog are skipped — their
+// model list is discovered at runtime, so there is nothing here to check the
+// hint against.
+func TestCheapModelHintsNameACataloguedModel(t *testing.T) {
+	registerCatalogProviders()
+
+	checked := 0
+	for _, info := range provider.ListProviderInfos() {
+		if info.CheapModel == "" || len(info.ModelContextWindows) == 0 {
+			continue
+		}
+		checked++
+
+		ids := make([]string, 0, len(info.ModelContextWindows))
+		for id := range info.ModelContextWindows {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+
+		matched := ""
+		for _, id := range ids {
+			if id == info.CheapModel {
+				matched = id
+				break
+			}
+			if matched == "" && strings.HasPrefix(id, info.CheapModel) {
+				matched = id
+			}
+		}
+		if matched == "" {
+			t.Errorf("%s: cheap-model hint %q matches nothing in its own catalog (%v) — tab naming will silently stop on this provider",
+				info.Name, info.CheapModel, ids)
+		}
+	}
+
+	if checked == 0 {
+		t.Fatal("no cheap-model hints were checked — either every provider lost its hint, or registration is not doing anything")
+	}
+	t.Logf("checked %d cheap-model hints", checked)
 }
