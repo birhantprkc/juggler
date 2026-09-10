@@ -190,6 +190,9 @@ select {
 
     /* Message bubble colors (subtle grey, semi-transparent for selection to show through) */
     --bubble-user-bg: rgb(71 83 100 / 70%);
+
+    /* The same material undimmed, for a bubble-shaped thing under the pointer. */
+    --bubble-user-bg-hover: rgb(71 83 100);
     --bubble-user-text: #e6edf3;
     --bubble-assistant-bg: transparent;
     --bubble-assistant-text: #e6edf3;
@@ -533,6 +536,7 @@ select {
 
     /* Message bubble colors (subtle grey, semi-transparent for selection to show through) */
     --bubble-user-bg: rgb(232 236 240 / 70%);
+    --bubble-user-bg-hover: rgb(232 236 240);
     --bubble-user-text: #1f2328;
     --bubble-assistant-bg: transparent;
     --bubble-assistant-text: #1f2328;
@@ -1350,8 +1354,10 @@ column-container conversation-area:not(.active-column) .conversation-item.select
 }
 
 /* A group column is a lens on the column to its left, not a place to type, so
-   it has no composer. That is the only reason a column hides one. */
-conversation-area[data-hide-input] composer-box {
+   it has no composer — nor the suggested replies that write into one. That is
+   the only reason a column hides either. */
+conversation-area[data-hide-input] composer-box,
+conversation-area[data-hide-input] reply-suggestions {
     display: none;
 }
 
@@ -1642,7 +1648,10 @@ conversation-empty-hint.no-room {
     display: none;
 }
 
-conversation-area composer-box {
+/* The composer and the suggestion row above it are fixed furniture at the foot
+   of the column; only the transcript above them gives way. */
+conversation-area composer-box,
+conversation-area reply-suggestions {
     flex-shrink: 0;
 }
 

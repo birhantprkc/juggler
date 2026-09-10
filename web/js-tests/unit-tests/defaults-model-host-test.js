@@ -22,6 +22,10 @@
 import { assert } from '../utilities/test-helpers.js';
 import { DefaultsTab } from '../../js/components/settings/defaults-tab.js';
 import { MODEL_PICKER_OFF } from '../../js/components/model-picker/model-picker.js';
+import {
+  areReplySuggestionsEnabled,
+  resetReplySuggestionsSettingForTests,
+} from '../../js/services/reply-suggestions-setting.js';
 
 /**
  * @typedef {object} TestResult
@@ -66,7 +70,9 @@ function providers() {
  */
 function makeTab({ connect } = {}) {
   const host = document.createElement('div');
-  host.innerHTML = '<div id="default-model-field-container"></div><div id="cheap-model-field-container"></div>';
+  host.innerHTML = '<div id="default-model-field-container"></div>'
+    + '<div id="cheap-model-field-container"></div>'
+    + '<div id="reply-suggestions-field-container"></div>';
   if (connect) document.body.appendChild(host);
 
   /** @type {Call[]} */
@@ -371,6 +377,42 @@ export async function runTests(_ctx) {
       h.restore();
       document.querySelectorAll('.thinking-mini').forEach(node => node.remove());
     }
+  });
+
+  await run('the reply-suggestions toggle persists the disabled bool and updates the cache', async () => {
+    const h = makeTab();
+    resetReplySuggestionsSettingForTests();
+    try {
+      h.tab.config = {};
+      h.tab.renderReplySuggestionsSettings();
+      const input = /** @type {HTMLInputElement} */ (
+        h.host.querySelector('#reply-suggestions-field-container .provider-toggle'));
+      assert(!!input, 'the section carries a switch for the suggestions');
+      assert(input.checked, 'an absent key means the feature ships on');
+
+      input.checked = false;
+      input.dispatchEvent(new Event('change'));
+      await new Promise(resolve => setTimeout(resolve, 0));
+
+      const call = lastCall(h.calls, '/api/config');
+      assert(!!call && call.method === 'PUT', 'switching it persists immediately');
+      // The stored key is the DISABLED state, so that an untouched install
+      // writes nothing and still gets the feature.
+      assert(call.body.reply_suggestions_disabled === true,
+        `turning it off stores disabled=true, got ${JSON.stringify(call.body)}`);
+      assert(!areReplySuggestionsEnabled(),
+        'the cache is what gates the generator, so it must follow the switch without a re-fetch');
+    } finally {
+      resetReplySuggestionsSettingForTests();
+      h.restore();
+    }
+  });
+
+  await run('an unseeded setting reads as off, so nothing runs before we have looked', () => {
+    resetReplySuggestionsSettingForTests();
+    assert(!areReplySuggestionsEnabled(),
+      'the feature is on by default, but not before /api/config has answered — otherwise '
+      + 'a user who turned it off gets one round of it on every startup');
   });
 
   return { passed, failed, errors };

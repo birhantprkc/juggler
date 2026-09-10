@@ -10,6 +10,7 @@ import {
   isConversationalItemType,
 } from '../../sdk/lib/message.js';
 import './conversation-footer.js';
+import './reply-suggestions-row.js';
 import './tool-action-message.js';
 import './user-message.js';
 import './assistant-message.js';
@@ -51,6 +52,7 @@ import { StatusMessageBuilder } from '../services/status-message-builder.js';
 import { guarded } from '../utils/fault-report.js';
 import { formatBindingForPlatform, isMac } from '../services/key-shortcut-manager.js';
 import { isFileDrag, installFileDropGuard, markFileDropAccepted } from '../utils/file-drop.js';
+import { ReplySuggestionsController } from '../services/reply-suggestions-controller.js';
 
 /**
  * Duration of the insert/relayout FLIP glide — the eased motion that replaces
@@ -222,6 +224,10 @@ class ConversationArea extends HTMLElement {
     this._emptyHintObserver = null;
     /** @type {ResizeObserver|null} @private - Recomputes scroll-control visibility on viewport/content resize */
     this._scrollControlsResizeObserver = null;
+    /** @type {string[]} @private - Suggested replies currently on offer above this column's composer */
+    this._replySuggestions = [];
+    /** @type {import('../services/reply-suggestions-controller.js').ReplySuggestionsController|null} @private - Decides when to ask the cheap model for those */
+    this._replySuggestionsCtl = null;
     /** @type {ResizeObserver|null} @private - Holds the reader's place when content resizes while they are scrolled away (see _setupReaderAnchor) */
     this._readerAnchorObserver = null;
     /** @type {{el: HTMLElement, top: number, contentHeight: number}|null} @private - The row the reader's place is measured from, where it sat when last recorded, and the content height it was recorded against */
@@ -257,6 +263,7 @@ class ConversationArea extends HTMLElement {
       this._observedContainer = null;
     }
     selection.teardownSelectionVisibilityWatcher(this);
+    if (this._replySuggestionsCtl) this._replySuggestionsCtl.detach();
     this._conversation = conversation;
 
     // Set up new observer for nextSteps metadata
@@ -273,6 +280,8 @@ class ConversationArea extends HTMLElement {
       };
       conversation.observeMetadata(this._metadataObserver);
 
+      this._getReplySuggestionsController().attach(conversation);
+
       // Check initial state
       this._refreshNextStepsIndicator();
 
@@ -282,6 +291,36 @@ class ConversationArea extends HTMLElement {
         this._setupStreamingScrollObserver(conversation);
       }
     }
+  }
+
+  /**
+   * The reply-suggestions controller for this column, built on first use.
+   *
+   * Every question it asks is answered from here rather than from inside it,
+   * so the rules stay testable without a rendered column. `isLive` is the one
+   * worth reading twice: an inactive tab is `display: none`, which is exactly
+   * what makes `offsetParent` null, and the window checks stop a background
+   * window's columns all asking at once when a batch of turns lands.
+   * @returns {import('../services/reply-suggestions-controller.js').ReplySuggestionsController} The controller.
+   * @private
+   */
+  _getReplySuggestionsController() {
+    if (!this._replySuggestionsCtl) {
+      this._replySuggestionsCtl = new ReplySuggestionsController({
+        getItems: () => this._messageThread?.items || [],
+        getDraft: () => /** @type {any} */ (this.composer)?.getText?.() || '',
+        isLive: () => !document.hidden && document.hasFocus() && this.offsetParent !== null,
+        // A group column is a lens on a folded run of tool rows, sharing the
+        // thread of the column to its left and carrying no composer of its own.
+        // There is nowhere for a suggestion to go, so there is nothing to buy.
+        isOffered: () => !this._isGroupColumn,
+        onChange: (/** @type {string[]} */ suggestions) => {
+          this._replySuggestions = suggestions;
+          this.updateFooter();
+        },
+      });
+    }
+    return this._replySuggestionsCtl;
   }
 
   /**
@@ -686,6 +725,17 @@ class ConversationArea extends HTMLElement {
     return this.querySelector('composer-box');
   }
 
+  /**
+   * The suggested-replies row, which sits between the transcript and the
+   * composer it writes into.
+   * @returns {import('./reply-suggestions-row.js').default|null} The row, or null before render().
+   */
+  get suggestionsRow() {
+    return /** @type {import('./reply-suggestions-row.js').default|null} */ (
+      this.querySelector('reply-suggestions')
+    );
+  }
+
   render() {
     // Any observer from a previous DOM is now watching detached nodes; the
     // next _positionEmptyHint re-attaches to the elements this render builds.
@@ -721,12 +771,29 @@ class ConversationArea extends HTMLElement {
           <button type="button" class="scroll-control-btn hidden" data-scroll="bottom" title="Scroll to bottom" aria-label="Scroll to bottom">${SCROLL_BOTTOM_SVG}</button>
         </div>
       </conversation-message-list-wrapper>
+      <reply-suggestions></reply-suggestions>
       <composer-box id="composer-box"></composer-box>
       <col-resize-handle></col-resize-handle>
     `;
 
     // Give new users (no persisted width) a sensible fixed 50rem.
     setupColumnResize(this, 'juggler-column-width', undefined, 50);
+
+    // A suggestion is DRAFTED, never sent: the words go into the composer with
+    // the caret after them, so nothing is ever sent that the user did not read,
+    // and the first click teaches the whole feature without an explainer.
+    this.addEventListener('reply-suggestion-chosen', (/** @type {any} */ e) => {
+      e.stopPropagation();
+      /** @type {any} */ (this.composer)?.setDraft?.(e.detail?.text || '');
+      this._replySuggestionsCtl?.notifyTyping();
+    });
+
+    // Their own words beat ours the moment there are any.
+    this.addEventListener('input', (/** @type {Event} */ e) => {
+      if (/** @type {HTMLElement} */ (e.target)?.tagName === 'TEXTAREA') {
+        this._replySuggestionsCtl?.notifyTyping();
+      }
+    });
   }
 
   /**
@@ -1984,6 +2051,16 @@ class ConversationArea extends HTMLElement {
     // the parent from inside the lens, and the meter would count the parent's
     // context. Everything but the status line — which the group-scoped signals
     // above have already narrowed to this run — is left out.
+    // Which columns offer suggested replies, and when. Nothing mid-turn, and
+    // nothing in a group column — a lens on the thread to its left, with no
+    // composer of its own for a suggestion to go into. A sub-thread column has
+    // one, and what to say next to a sub-agent is as much a question as what to
+    // say next to the root. Decided above the group-column branch below, so a
+    // lens clears its row rather than keeping whatever was on offer when it
+    // opened.
+    const canSuggest = !isProcessing && !this._isGroupColumn;
+    this.suggestionsRow?.update(canSuggest ? this._replySuggestions : []);
+
     if (this._isGroupColumn) {
       footer.setStatusOnly(true);
       footer.update({ isProcessing, canContinue: false, statusMessage, showSpinner, runningTools, throughput, toolWaitMs });

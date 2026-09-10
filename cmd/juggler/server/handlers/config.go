@@ -37,6 +37,12 @@ const (
 	// tab auto-namer, replacing the built-in autoNameTitleInstruction. Empty ⇒ the
 	// built-in one applies. The fixed data guard is appended server-side either way.
 	autoNameInstructionKey = "auto_name_instruction"
+	// replySuggestionsDisabledKey stores the disabled state of reply suggestions,
+	// so an absent/empty value means enabled (the default). "1" means disabled.
+	// Read only on the client, by services/reply-suggestions-setting.js — the
+	// suggestions are generated in the browser through /api/llm/complete, so the
+	// server never consults this key itself and only persists it.
+	replySuggestionsDisabledKey = "reply_suggestions_disabled"
 )
 
 // ConfigAPI handles configuration-related HTTP requests. It reads the
@@ -93,6 +99,36 @@ func (c *ConfigAPI) firePluginsChanged() {
 // projectPath returns the current project path, or "" if none.
 func (c *ConfigAPI) projectPath() string { return c.pathProvider() }
 
+// storeDisabledFlag persists one of the "off switch" raw credentials from a
+// config PUT body, if the request carried it. Each is stored as the DISABLED
+// state, so an absent or empty key means enabled — which is what makes every
+// one of these settings ship on without writing anything to disk.
+//
+// The wire value is a bool or the string "1"/""; anything else reads as false,
+// so a malformed body turns a feature on rather than off. label names the
+// setting in the failure log. A write failure is logged, never fatal: the rest
+// of the config PUT is unrelated and still worth applying.
+func (c *ConfigAPI) storeDisabledFlag(req map[string]any, key, label string) {
+	v, ok := req[key]
+	if !ok {
+		return
+	}
+	disabled := false
+	switch t := v.(type) {
+	case bool:
+		disabled = t
+	case string:
+		disabled = strings.TrimSpace(t) == "1"
+	}
+	stored := ""
+	if disabled {
+		stored = "1"
+	}
+	if err := c.credStore.SetRawKey(key, stored); err != nil {
+		jlog.Error("Failed to save %s setting: %v", label, err)
+	}
+}
+
 // HandleGetConfig returns the current configuration (without sensitive data)
 func (c *ConfigAPI) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 	// Load current config
@@ -121,14 +157,15 @@ func (c *ConfigAPI) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 			"host": cfg.Server.Host,
 			"port": cfg.Server.Port,
 		},
-		"ollamaHost":            c.credStore.GetRawKey(ollamaHostKey),
-		"llamacppHost":          c.credStore.GetRawKey(llamacppHostKey),
-		"claudecodeBinaryPath":  c.credStore.GetRawKey(claudecodeBinaryPathKey),
-		"streamIdleTimeout":     c.credStore.GetRawKey(streamIdleTimeoutKey),
-		"autoCompactDisabled":   c.credStore.GetRawKey(autoCompactDisabledKey) == "1",
-		"autoNameDisabled":      c.credStore.GetRawKey(autoNameDisabledKey) == "1",
-		"autoNameInstruction":   c.credStore.GetRawKey(autoNameInstructionKey),
-		"autoNameDefaultPrompt": c.AutoNameDefaultPrompt,
+		"ollamaHost":               c.credStore.GetRawKey(ollamaHostKey),
+		"llamacppHost":             c.credStore.GetRawKey(llamacppHostKey),
+		"claudecodeBinaryPath":     c.credStore.GetRawKey(claudecodeBinaryPathKey),
+		"streamIdleTimeout":        c.credStore.GetRawKey(streamIdleTimeoutKey),
+		"autoCompactDisabled":      c.credStore.GetRawKey(autoCompactDisabledKey) == "1",
+		"autoNameDisabled":         c.credStore.GetRawKey(autoNameDisabledKey) == "1",
+		"autoNameInstruction":      c.credStore.GetRawKey(autoNameInstructionKey),
+		"autoNameDefaultPrompt":    c.AutoNameDefaultPrompt,
+		"replySuggestionsDisabled": c.credStore.GetRawKey(replySuggestionsDisabledKey) == "1",
 	}
 
 	WriteJSON(w, r, 0, response)
@@ -222,48 +259,20 @@ func (c *ConfigAPI) HandleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Handle the global auto-compaction off switch (raw credential). Stored as
-	// the disabled state so an absent/empty key means enabled (default). Accepts
-	// a bool or the string "1"/"" ; empty clears the key (back to default-on).
-	// The gate resolver reads it live (GetRawKey re-reads disk), so a toggle
-	// takes effect on the next turn without a restart.
-	if v, ok := req[autoCompactDisabledKey]; ok {
-		disabled := false
-		switch t := v.(type) {
-		case bool:
-			disabled = t
-		case string:
-			disabled = strings.TrimSpace(t) == "1"
-		}
-		stored := ""
-		if disabled {
-			stored = "1"
-		}
-		if err := c.credStore.SetRawKey(autoCompactDisabledKey, stored); err != nil {
-			jlog.Error("Failed to save auto-compaction setting: %v", err)
-		}
-	}
+	// The global auto-compaction off switch. The gate resolver reads it live
+	// (GetRawKey re-reads disk), so a toggle takes effect on the next turn
+	// without a restart.
+	c.storeDisabledFlag(req, autoCompactDisabledKey, "auto-compaction")
 
-	// Handle the global tab auto-naming off switch (raw credential), same shape
-	// as the auto-compaction switch: stored as the disabled state so an
-	// absent/empty key means enabled (default). autoNamer reads it live, so a
-	// toggle takes effect on the next auto-name attempt without a restart.
-	if v, ok := req[autoNameDisabledKey]; ok {
-		disabled := false
-		switch t := v.(type) {
-		case bool:
-			disabled = t
-		case string:
-			disabled = strings.TrimSpace(t) == "1"
-		}
-		stored := ""
-		if disabled {
-			stored = "1"
-		}
-		if err := c.credStore.SetRawKey(autoNameDisabledKey, stored); err != nil {
-			jlog.Error("Failed to save auto-naming setting: %v", err)
-		}
-	}
+	// The global tab auto-naming off switch, same shape as the auto-compaction
+	// one. autoNamer reads it live, so a toggle takes effect on the next
+	// auto-name attempt without a restart.
+	c.storeDisabledFlag(req, autoNameDisabledKey, "auto-naming")
+
+	// The global reply-suggestions off switch, same shape again. Nothing
+	// server-side reads it back: the suggestions are generated in the browser,
+	// which mirrors this key in its own cache.
+	c.storeDisabledFlag(req, replySuggestionsDisabledKey, "reply suggestions")
 
 	// Handle the optional custom auto-name instruction (raw credential). Read
 	// live by autoNamer as the first-attempt system prompt; blank clears it back

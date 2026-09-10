@@ -136,6 +136,65 @@ func TestAutoNameInstructionRoundTrip(t *testing.T) {
 	}
 }
 
+// getReplySuggestionsDisabled drives HandleGetConfig and returns the
+// replySuggestionsDisabled field from the payload.
+func getReplySuggestionsDisabled(t *testing.T, api *ConfigAPI) bool {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	api.HandleGetConfig(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/config = %d, want 200", rec.Code)
+	}
+	var payload struct {
+		ReplySuggestionsDisabled bool `json:"replySuggestionsDisabled"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode GET payload: %v", err)
+	}
+	return payload.ReplySuggestionsDisabled
+}
+
+// TestReplySuggestionsDisabledRoundTrip pins the config round-trip for the
+// reply-suggestions switch. The default matters more here than for its
+// siblings: nothing server-side reads this key, so the shipped-on behaviour
+// rests entirely on the absent key reading as "not disabled".
+func TestReplySuggestionsDisabledRoundTrip(t *testing.T) {
+	api := newTestConfigAPI(t)
+
+	if getReplySuggestionsDisabled(t, api) {
+		t.Fatal("default replySuggestionsDisabled = true, want false (enabled by default)")
+	}
+
+	putConfig(t, api, map[string]any{"reply_suggestions_disabled": true})
+	if !getReplySuggestionsDisabled(t, api) {
+		t.Fatal("after PUT true, replySuggestionsDisabled = false, want true")
+	}
+
+	putConfig(t, api, map[string]any{"reply_suggestions_disabled": false})
+	if getReplySuggestionsDisabled(t, api) {
+		t.Fatal("after PUT false, replySuggestionsDisabled = true, want false (cleared)")
+	}
+}
+
+// TestDisabledFlagsAreIndependent pins that the three off switches sharing
+// storeDisabledFlag keep their own keys. They are now one code path, so a
+// mistyped key would silently make one switch operate another.
+func TestDisabledFlagsAreIndependent(t *testing.T) {
+	api := newTestConfigAPI(t)
+
+	putConfig(t, api, map[string]any{"reply_suggestions_disabled": true})
+
+	if !getReplySuggestionsDisabled(t, api) {
+		t.Fatal("replySuggestionsDisabled = false, want true")
+	}
+	if getAutoCompactDisabled(t, api) {
+		t.Fatal("disabling reply suggestions also disabled auto-compaction")
+	}
+	if disabled, _ := getAutoNameConfig(t, api); disabled {
+		t.Fatal("disabling reply suggestions also disabled auto-naming")
+	}
+}
+
 // TestAutoNameDefaultPromptEchoed pins that whatever built-in naming prompt the
 // server sets on the API is echoed verbatim in the config GET, so the settings
 // UI can show it as the custom-instruction placeholder. Uses a sentinel, not a

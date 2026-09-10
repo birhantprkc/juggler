@@ -173,12 +173,17 @@ class SettingsPanel extends HTMLElement {
                         </div>
 
                         <div class="settings-section-heading">Cheap model</div>
+                        <p class="settings-description">
+                            A small, fast model for the background jobs below. Extensions can
+                            use it too. Never used for your conversations.
+                        </p>
                         <div class="settings-form" id="cheap-model-form">
-                            <div id="cheap-model-field-container"></div>
+                            <div class="settings-card">
+                                <div id="cheap-model-field-container"></div>
+                                <div id="auto-name-form"></div>
+                                <div id="reply-suggestions-field-container"></div>
+                            </div>
                         </div>
-
-                        <div class="settings-section-heading">Conversation auto-naming</div>
-                        <div class="settings-form" id="auto-name-form"></div>
 
                         <div class="settings-form" id="global-settings"></div>
                     </section>

@@ -4358,14 +4358,21 @@ composer-box {
     background: var(--bg-secondary);
 }
 
+/* The composer's material. The input bubble and the suggested-reply chips
+   above it are the same surface, so the declarations that make it are written
+   once and shared: a chip cannot drift away from the box it writes into. */
+composer-box composer-box-wrapper,
+reply-suggestions .reply-suggestion {
+    background: var(--bubble-user-bg);
+    border-radius: 1.25rem;
+    transition: background 150ms ease, box-shadow 150ms ease;
+}
+
 /* Composer wrapper - the visual bubble containing textarea and button */
 composer-box composer-box-wrapper {
     display: flex;
     flex-direction: column;
-    background: var(--bubble-user-bg);
-    border-radius: 1.25rem;
     padding: 0.875rem 1rem 1rem;
-    transition: background 150ms ease, box-shadow 150ms ease;
 
     /* Positioning context for the paste-placeholder mirror, which is absolutely
        positioned to overlay the textarea exactly. */
@@ -4392,6 +4399,52 @@ composer-box textarea {
 composer-box composer-box-wrapper.drag-over,
 conversation-area.file-drag-over composer-box composer-box-wrapper {
     box-shadow: 0 0 0 0.125rem var(--accent-color, #4a9eff);
+}
+
+/* Suggested replies: sitting on the composer's own background strip, directly
+   above the box they write into — where a phone keyboard puts its word
+   suggestions. Hidden outright when there is nothing to offer, so an empty row
+   costs the transcript no space. */
+reply-suggestions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+
+    /* The bottom padding is structural, not spacing: the composer below paints
+       an opaque background from a positioned box, so it covers anything this
+       row spills past its own edge. Without a gap here a chip's last
+       (fractional) pixel and its whole focus outline go under the composer, and
+       the button reads as clipped. */
+    padding: 0.5rem 1rem 0.25rem;
+    background: var(--bg-secondary);
+}
+
+reply-suggestions[hidden] {
+    display: none;
+}
+
+/* Text to match the textarea's, on the shared surface above. */
+reply-suggestions .reply-suggestion {
+    border: none;
+    color: var(--bubble-user-text);
+    font: inherit;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    padding: 0.3rem 0.875rem;
+    text-align: left;
+    cursor: pointer;
+}
+
+/* A chip has no border to light up, so the surface itself answers the pointer:
+   the same colour, undimmed. Keyboard focus still needs an outline — a shift
+   this quiet is not something to hunt for with a tab key. */
+reply-suggestions .reply-suggestion:hover {
+    background: var(--bubble-user-bg-hover);
+}
+
+reply-suggestions .reply-suggestion:focus-visible {
+    outline: 0.125rem solid var(--accent-blue);
+    outline-offset: 0.0625rem;
 }
 
 /* Staged image-attachment chip row. Hidden until it holds chips so it adds no
@@ -6783,6 +6836,14 @@ settings-panel .settings-card .provider-field:last-child {
     border-bottom: none;
 }
 
+/* Rows reach a card through per-section wrapper divs (each renderer owns its own
+   container), so a row can be last in its wrapper while other wrappers still
+   follow. Only the last row in the card is the last row, so put the hairline
+   back on the ones the rule above stripped it from. */
+settings-panel .settings-card > div:not(:last-child) > .provider-field:last-child {
+    border-bottom: 0.0625rem solid var(--border-color);
+}
+
 /* Logs tab: file picker + live-tailing viewer. The tab and its form are flex
    columns so the viewer fills the panel's full width and remaining height, with
    its own internal scroll (the tab itself does not scroll). */
@@ -6874,6 +6935,13 @@ settings-panel .settings-section-heading {
 
 settings-panel .settings-section-heading:first-child {
     margin-top: 0;
+}
+
+/* A heading that introduces its section in a sentence: the heading supplies the
+   gap above, so the line under it only needs the shorter gap down to the card
+   it is describing. */
+settings-panel .settings-section-heading + .settings-description {
+    margin-bottom: 0.75rem;
 }
 
 /* The global settings section's heading is the first child of its own container

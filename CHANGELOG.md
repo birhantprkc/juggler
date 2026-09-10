@@ -5,17 +5,19 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
-- The Git pin shows line counts, upstreams, renames, conflicts, stashes and file actions
-- Project memory entries can be deleted directly from the Memory pin
+- A conversation sitting idle offers things you might say next; clicking one drafts it, never sends it
+- Settings gathers the cheap model and the background jobs that spend it into one section
 - Syntax highlighting for C, C++, Rust, Java, C#, Ruby, PHP, Swift, Kotlin, YAML, TOML, SQL and Sass
 - Build files are highlighted too: Makefile, CMakeLists.txt, Dockerfile, .ini, .env, Gradle
+- The Git pin shows line counts, upstreams, renames, conflicts, stashes and file actions
+- Project memory entries can be deleted directly from the Memory pin
 - Code blocks in replies are syntax-highlighted, as are diffs, in the language of the file
 - A block comment or multi-line string keeps its colour across every line it covers
 - A file in the Changed files pin opens onto everything this conversation did to it, as one diff
 - A window that starts up off-screen is now brought back, instead of running where you can't see it
-- Window edges are easier to grab, and show a resize cursor over buttons and the composer
+- Linux Window edges are easier to grab, and show a resize cursor over buttons and the composer
 - Typing while a thread runs no longer waits on the whole transcript to relayout
-- Deleting a draft word by word can no longer overrun into binning the conversation
+- Prevented accidentally binning the conversation by hitting ctrl+backspace too many times when editing
 - Exa search returns the passages that match, not whole pages, and can no longer flood the context
 - Codex, DeepSeek, Mistral and Z.AI now offer a cheap model, so tab naming works out of the box
 - A provider with no cheap tier borrows one from your default model's provider instead
@@ -23,7 +25,6 @@ of changes; this project follows semantic versioning.
 - The cheap model can be turned off outright, and the setting no longer claims one when there is none
 - A background task with no cheap model to run on now says so, once, instead of silently not running
 - The Pinboard can be read from the keyboard: arrows step along the tabs and scroll the pin
-- ⌥⌘←/→ switches pin from anywhere, and Escape steps out of a pin before closing the board
 
 ## [0.6.1] - 2026-09-09
 

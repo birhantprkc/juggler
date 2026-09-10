@@ -19,6 +19,7 @@ import '../model-picker/model-chip.js';
 import { MODEL_PICKER_OFF } from '../model-picker/model-picker.js';
 import { isDefaultFileEditingOn, setDefaultFileEditingOn } from '../../services/file-editing-permission.js';
 import { setAutoNameEnabledCached } from '../../services/auto-name-setting.js';
+import { setReplySuggestionsEnabledCached } from '../../services/reply-suggestions-setting.js';
 import strategyRegistry from '../../registries/strategy-registry.js';
 import { getDefaultStrategyId, setDefaultStrategyId, BUILTIN_DEFAULT_STRATEGY_ID } from '../../services/default-strategy.js';
 import { fetchJson } from '../../services/http.js';
@@ -31,10 +32,12 @@ import { showAlert } from '../modal-dialog.js';
 const MODEL_PICKER_POPUP_ID = 'settings-model-picker';
 
 /**
- * "Defaults" tab (id `defaults`): the default-model and cheap-model pickers, the
- * global stream-idle-timeout field, and the new-conversation defaults. Seeded from the
- * shared loadConfig() fetch; the picker persists immediately via PUT
- * /api/default-model and the timeout via PUT /api/config.
+ * "Defaults" tab (id `defaults`): the default-model picker and new-conversation
+ * defaults, the cheap-model section (the picker plus a row per background job
+ * that spends it — naming conversations, suggesting replies), and the global
+ * stream-idle-timeout field. Seeded from the shared loadConfig() fetch; the
+ * pickers persist immediately via PUT /api/default-model and PUT
+ * /api/cheap-model, the rest via PUT /api/config.
  */
 export class DefaultsTab {
   /**
@@ -68,11 +71,16 @@ export class DefaultsTab {
     // config load, so the conversation bar's new-tab decision stays current even
     // when the settings panel isn't rendering fields.
     setAutoNameEnabledCached(!(/** @type {any} */ (this.config).autoNameDisabled));
+    // The same for reply suggestions, which the server never reads back — this
+    // load is how the browser learns the setting at all, and until it lands the
+    // feature holds its tongue.
+    setReplySuggestionsEnabledCached(!(/** @type {any} */ (this.config).replySuggestionsDisabled));
     if (renderFields) {
       this.renderGlobalSettings();
       this.renderDefaultModelField();
       this.renderCheapModelField();
       this.renderAutoNameSettings();
+      this.renderReplySuggestionsSettings();
       this.renderNewConversationDefaults();
     }
   }
@@ -117,7 +125,7 @@ export class DefaultsTab {
   }
 
   /**
-   * Render the "Conversation auto-naming" section as a single card: the global on/off
+   * Render the auto-naming row inside the cheap-model card: the global on/off
    * switch with an optional custom instruction stacked beneath it, shown only
    * while auto-naming is on. Both persist to credentials.json via PUT
    * /api/config; the server reads them live for the next naming attempt. When
@@ -142,9 +150,9 @@ export class DefaultsTab {
     // On/off switch. Checked = enabled; we persist the *disabled* bool so the
     // stored key is absent by default (default-on).
     const { row, input: toggleInput } = buildToggleRow(
-      'Auto-name new conversations',
-      'Uses the cheap model to name each new conversation, based on your first message. ' +
-      'Turn this off to name new conversations yourself.',
+      'Name new conversations',
+      'Derives a tab title from your first message. Turn this off to name new ' +
+      'conversations yourself.',
       !(/** @type {any} */ (this.config).autoNameDisabled),
       async (on) => {
         const previous = toggleInput.checked;
@@ -165,6 +173,43 @@ export class DefaultsTab {
     // Stack the instruction beneath the switch in the toggle's own control
     // column, so both controls live in a single card.
     row.querySelector('.provider-control')?.appendChild(instruction);
+    container.appendChild(row);
+  }
+
+  /**
+   * Render the reply-suggestions row inside the cheap-model card: the global
+   * on/off switch for the few things you might say next, offered under a
+   * finished turn. Persists to credentials.json via PUT /api/config like the
+   * auto-naming switch, but only the browser reads it back — the suggestions
+   * are generated client-side through /api/llm/complete, so the cached mirror
+   * is what actually gates them.
+   * @private
+   */
+  renderReplySuggestionsSettings() {
+    const container = this.host.querySelector('#reply-suggestions-field-container');
+    if (!container) return;
+    container.innerHTML = '';
+
+    // Checked = enabled; the stored key is the *disabled* bool, so it is absent
+    // by default and the feature ships on.
+    const { row, input: toggleInput } = buildToggleRow(
+      'Suggest replies',
+      'Offers a few things you might say next when a turn finishes. Clicking one ' +
+      'puts it in the message box to edit — it is never sent for you.',
+      !(/** @type {any} */ (this.config).replySuggestionsDisabled),
+      async (on) => {
+        const previous = toggleInput.checked;
+        try {
+          await fetchJson('/api/config', { method: 'PUT', body: { reply_suggestions_disabled: !on } });
+          /** @type {any} */ (this.config).replySuggestionsDisabled = !on;
+          setReplySuggestionsEnabledCached(on);
+        } catch (e) {
+          console.error('[SettingsPanel] Failed to save reply-suggestions setting:', e);
+          toggleInput.checked = !previous;
+        }
+      },
+    );
+
     container.appendChild(row);
   }
 
@@ -463,19 +508,21 @@ export class DefaultsTab {
   }
 
   /**
-   * Render the "Cheap model" row: the small/fast model used for out-of-band
-   * micro-tasks (auto-naming a conversation, plugin generateText). "Automatic"
-   * clears the stored value and derives one from the model in use. Persists via
-   * PUT /api/cheap-model.
+   * Render the "Cheap model" row: the picker at the head of the section's card,
+   * above the rows for the jobs that spend it. "Automatic" clears the stored
+   * value and derives one from the model in use. Persists via PUT
+   * /api/cheap-model.
+   *
+   * The label is bare because the section heading and its description already
+   * say what a cheap model is and what uses it; only the "Automatic" half needs
+   * explaining on the row itself.
    * @private
    */
   renderCheapModelField() {
     this._renderModelRow({
       containerId: '#cheap-model-field-container',
-      nameLabel: 'Cheap model for background tasks',
-      description:
-        'A small, fast model used out-of-band for micro-tasks like auto-naming a ' +
-        'conversation. "Automatic" derives one from the model in use.',
+      nameLabel: 'Cheap model',
+      description: '"Automatic" derives one from the model in use.',
       current: this.cheapModel || { explicit: false },
       // The one row with a third state. Turning it off is a real answer — the
       // tasks it runs are optional — and recording it is what stops the server
