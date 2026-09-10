@@ -3019,6 +3019,14 @@ properties-panel-tx-metadata .meta-item {
 .conversation-item.selected {
     background: var(--item-selected-bg);
     border-radius: 0.4rem 0.5rem;
+
+    /* The hand below is a click affordance, and the gesture most likely to
+       start over the item that is already selected is a drag across its text.
+       So a selected item hands the cursor back to the browser: `auto` draws
+       the I-beam only where a selection can actually begin and the arrow
+       everywhere else, which is a truer answer than a hand over padding. Any
+       control inside the item sets its own cursor, so buttons keep the hand. */
+    cursor: auto;
 }
 
 
