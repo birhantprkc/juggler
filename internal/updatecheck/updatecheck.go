@@ -119,11 +119,11 @@ func ComputeStatus(m *Manifest, currentVersion string) Status {
 		return st
 	}
 	st.LatestVersion = m.Latest
-	// A build from source is left alone even though it parses and is behind:
+	// An unpublished build is left alone even though it parses and is behind:
 	// what it runs is the tree it was built from, and a download cannot be an
-	// upgrade of that. A prerelease is not a build from source — it is
+	// upgrade of that. A prerelease is not an unpublished build — it is
 	// published, and it is offered upgrades like any other release.
-	if isDevBuild(currentVersion) {
+	if isUnpublishedBuild(currentVersion) {
 		return st
 	}
 	if cmp, ok := compareSemver(currentVersion, m.Latest); ok && cmp < 0 {
@@ -133,12 +133,14 @@ func ComputeStatus(m *Manifest, currentVersion string) Status {
 	return st
 }
 
-// isDevBuild reports whether v names a build made from source rather than one
-// that was published: the bare word older builds report, or the "-dev" suffix
-// every build outside release CI carries.
-func isDevBuild(v string) bool {
+// isUnpublishedBuild reports whether v names a build nobody could have
+// downloaded: the bare word older builds report, the "-dev" suffix every build
+// outside release CI carries, or the "-test" suffix on a server built to be
+// driven by the suites. The same set core.IsPublishedVersion answers for, kept
+// separate because this package sits below core rather than importing it.
+func isUnpublishedBuild(v string) bool {
 	v = strings.TrimSpace(v)
-	return v == "dev" || strings.HasSuffix(v, "-dev")
+	return v == "dev" || strings.HasSuffix(v, "-dev") || strings.HasSuffix(v, "-test")
 }
 
 // compareSemver returns -1/0/1 comparing a to b on MAJOR.MINOR.PATCH, ignoring

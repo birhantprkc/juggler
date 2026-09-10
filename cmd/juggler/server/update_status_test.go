@@ -17,6 +17,48 @@ func mark(at time.Time) int {
 	return m
 }
 
+// TestMarkFirstCheckLeavesOutTheSuite pins what may spend a countme mark. The
+// mark is what the update endpoint counts installs by, and the record that stops
+// it being spent twice lives in the settings document — so a suite run, whose
+// servers each get a throwaway config dir, starts every one of them with a blank
+// record and reports one brand new install per server.
+//
+// A build from source is counted on purpose: it is a real install, and how many
+// people build Juggler and run it is signal worth having. That is why the test
+// stamp exists at all — before it, a suite server and a dev build said the same
+// thing, and no rule could keep one and drop the other.
+func TestMarkFirstCheckLeavesOutTheSuite(t *testing.T) {
+	at := time.Date(2026, 9, 6, 1, 0, 0, 0, time.UTC)
+
+	counted := []string{"v0.6.1", "v0.7.0-beta.1", "dev", "v0.6.1-dev"}
+	for _, version := range counted {
+		t.Run(version, func(t *testing.T) {
+			userpathstest.Isolate(t)
+			got, _ := markFirstCheck(version, at)
+			if got != firstOfDay|firstOfMonth {
+				t.Fatalf("markFirstCheck(%q) = %d, want %d", version, got, firstOfDay|firstOfMonth)
+			}
+		})
+	}
+
+	for _, version := range []string{"v0.6.1-test", "dev-test"} {
+		t.Run(version, func(t *testing.T) {
+			userpathstest.Isolate(t)
+			got, release := markFirstCheck(version, at)
+			if got != 0 {
+				t.Fatalf("markFirstCheck(%q) = %d, want 0", version, got)
+			}
+			release()
+			// The day must also be left unspent: claiming it silently would let
+			// a suite run suppress the count of a real install started later on
+			// the same machine.
+			if got := mark(at); got != firstOfDay|firstOfMonth {
+				t.Fatalf("after %q, the day claimed = %d, want %d", version, got, firstOfDay|firstOfMonth)
+			}
+		})
+	}
+}
+
 func TestClaimFirstCheck(t *testing.T) {
 	t.Run("once per day and month", func(t *testing.T) {
 		userpathstest.Isolate(t)

@@ -78,6 +78,15 @@ func TestComputeStatus(t *testing.T) {
 			t.Errorf("latest = %q, want it reported regardless", st.LatestVersion)
 		}
 	})
+	// The suites drive a server built from the same source as any other, so it
+	// is behind the manifest as often as a dev build is. It is not a download
+	// either.
+	t.Run("test build never nags", func(t *testing.T) {
+		st := ComputeStatus(m, "v0.0.8-test")
+		if st.UpdateAvailable || st.Notice != nil {
+			t.Fatalf("a -test build should not update, got %+v", st)
+		}
+	})
 	// A prerelease is published, so it is offered upgrades like any release.
 	t.Run("older prerelease still nags", func(t *testing.T) {
 		st := ComputeStatus(m, "v0.0.8-beta.1")

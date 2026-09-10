@@ -23,6 +23,12 @@ const devSuffix = "-dev"
 // the world still send it, so it stays a version this code recognises.
 const bareDevVersion = "dev"
 
+// testSuffix marks a server built to be driven by the test suites. A suite run
+// spawns servers that are indistinguishable from an install in every other
+// respect, so the version is what tells them apart afterwards. Like devSuffix it
+// names a build that was never published.
+const testSuffix = "-test"
+
 // Build-time variables set via -ldflags "-X ..."
 var (
 	// stampedVersion is what the linker wrote in, and is empty in a build it did
@@ -67,4 +73,18 @@ func resolveVersion(stamped, embedded string) string {
 func IsDevVersion(v string) bool {
 	v = strings.TrimSpace(v)
 	return v == bareDevVersion || strings.HasSuffix(v, devSuffix)
+}
+
+// IsTestVersion reports whether v names a server built to be driven by the test
+// suites rather than run by anybody.
+//
+// This is the question the install figures ask, and it is deliberately narrower
+// than IsDevVersion: a build somebody made from source is a real install and is
+// counted on purpose, because how many people build Juggler and run it is worth
+// knowing. What must never be counted is a suite spawning servers, and since
+// such a server behaves like an install in every other respect — it checks for
+// updates on the same schedule — the suffix is the only thing that tells them
+// apart.
+func IsTestVersion(v string) bool {
+	return strings.HasSuffix(strings.TrimSpace(v), testSuffix)
 }

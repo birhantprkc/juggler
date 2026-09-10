@@ -44,7 +44,7 @@ func (s *Server) newUpdateChecker() *updatecheck.Checker {
 		// automatic checking (the ticker keeps running but no-ops), while
 		// "automatic"/"notify" both poll. The manual endpoint bypasses this.
 		Enabled: func() bool { return s.updateMode() != core.UpdateModeOff },
-		Mark:    func() (int, func()) { return claimFirstCheck(time.Now()) },
+		Mark:    func() (int, func()) { return markFirstCheck(core.Version, time.Now()) },
 	})
 }
 
@@ -68,6 +68,25 @@ const (
 	firstOfDay   = 1
 	firstOfMonth = 2
 )
+
+// markFirstCheck supplies the countme mark for a scheduled check, which is what
+// the update endpoint counts running installs by. A server built for the test
+// suites never spends one: it still checks for updates, but a suite spawning
+// servers is not somebody running Juggler. A build from source does spend one —
+// it is a real install, and how many people build Juggler and run it is worth
+// counting.
+//
+// The version has to carry that decision because the record that stops a mark
+// being spent twice lives in the settings document, and a blank one claims the
+// day and the month together — so a suite run, whose servers each get a
+// throwaway config dir, would otherwise report one brand new install per server,
+// every run.
+func markFirstCheck(version string, now time.Time) (int, func()) {
+	if core.IsTestVersion(version) {
+		return 0, func() {}
+	}
+	return claimFirstCheck(now)
+}
 
 // claimFirstCheck reports what this scheduled check is the first of, and records
 // it so the later checks that day report nothing. The record lives in the

@@ -84,3 +84,23 @@ func TestIsDevVersion(t *testing.T) {
 		}
 	}
 }
+
+// TestIsTestVersion pins what the install figures leave out, and — just as
+// deliberately — what they keep. A build from source is a real install; a server
+// the suites spawn is not, and behaves identically apart from what it calls
+// itself.
+func TestIsTestVersion(t *testing.T) {
+	suite := []string{"v0.6.1-test", "0.6.1-test", "v1.0.0-test"}
+	counted := []string{"v0.6.1", "0.6.1", "v0.7.0-beta.1", "dev", "v0.6.1-dev", ""}
+
+	for _, v := range suite {
+		if !IsTestVersion(v) {
+			t.Errorf("IsTestVersion(%q) = false, want true", v)
+		}
+	}
+	for _, v := range counted {
+		if IsTestVersion(v) {
+			t.Errorf("IsTestVersion(%q) = true, want false", v)
+		}
+	}
+}

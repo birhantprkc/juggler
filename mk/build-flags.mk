@@ -60,13 +60,29 @@ endif
 OFFICIAL ?=
 VERSION_STAMP := $(strip $(if $(filter 1 true yes,$(OFFICIAL)),$(VERSION),\
   $(if $(filter dev,$(VERSION)),dev,$(VERSION)-dev)))
-LDFLAGS_BASE := -X juggler/cmd/juggler/core.stampedVersion=$(VERSION_STAMP)
-LDFLAGS_BASE += -X juggler/cmd/juggler/core.Commit=$(COMMIT)
-LDFLAGS_BASE += -X juggler/cmd/juggler/core.BuildDate=$(BUILD_DATE)
-LDFLAGS := $(LDFLAGS_BASE)
+
+# The stamp for a server built to be driven by the test suites. A suite run
+# spawns servers that behave like any other install, so the only thing telling
+# the two apart afterwards is what they call themselves: -test where a build
+# from source says -dev. Both are unpublished and neither is counted as an
+# install, but keeping them distinct means a day's figures can say whether the
+# traffic was somebody working or a test run.
+TEST_VERSION_STAMP := $(strip $(if $(filter dev,$(VERSION)),dev,$(VERSION)-test))
+
+# ldflags-stamp STAMP — the version-stamp flags for a build reporting STAMP.
+# Both stamps go through it so the release and test builds cannot drift on
+# anything but the version they report.
+ldflags-stamp = -X juggler/cmd/juggler/core.stampedVersion=$(1) \
+  -X juggler/cmd/juggler/core.Commit=$(COMMIT) \
+  -X juggler/cmd/juggler/core.BuildDate=$(BUILD_DATE)
+
+LDFLAGS_BASE := $(call ldflags-stamp,$(VERSION_STAMP))
+TEST_LDFLAGS_BASE := $(call ldflags-stamp,$(TEST_VERSION_STAMP))
 # Match the macOS deployment target between Go's external linker and the Wails
 # v3 cgo .o files. -no_warn_duplicate_libraries: clang's runtime + Wails's
 # frameworks both pull in -lobjc; macOS 26's ld warns instead of dedup'ing.
 ifeq ($(UNAME_S),Darwin)
-LDFLAGS += '-extldflags=-mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET) -Wl,-no_warn_duplicate_libraries'
+HOST_LDFLAGS := '-extldflags=-mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET) -Wl,-no_warn_duplicate_libraries'
 endif
+LDFLAGS := $(LDFLAGS_BASE) $(HOST_LDFLAGS)
+TEST_LDFLAGS := $(TEST_LDFLAGS_BASE) $(HOST_LDFLAGS)
