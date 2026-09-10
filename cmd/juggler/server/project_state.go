@@ -282,6 +282,17 @@ func (s *Server) convDir(convID string) (string, bool) {
 	return sm.ConvDir(convID)
 }
 
+// convName resolves a conversation's human-readable name via the current
+// session manager, returning ("", false) when no project is loaded. It is the
+// name provider workers use for their log filenames and the auto-naming gate.
+func (s *Server) convName(convID string) (string, bool) {
+	sm := s.SessionManager()
+	if sm == nil {
+		return "", false
+	}
+	return sm.ConvName(convID)
+}
+
 // host returns the configured listen host for instance-lock writes. addr is
 // "host:port"; an empty or unparseable host defaults to "localhost".
 func (s *Server) host() string {

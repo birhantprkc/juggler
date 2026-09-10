@@ -136,6 +136,7 @@ func (s *Server) wireWorkerManager() {
 	// Path resolution and binary persistence routed through the actor to keep
 	// rename ↔ save serialisation correct across project switches.
 	s.workerManager.SetPathProvider(s.convDir)
+	s.workerManager.SetNameProvider(s.convName)
 	s.workerManager.SetSaveBinary(func(convID string, data []byte) error {
 		sm := s.SessionManager()
 		if sm == nil {

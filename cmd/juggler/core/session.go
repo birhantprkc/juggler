@@ -365,11 +365,11 @@ var (
 // ============================================================================
 
 // FileSessionStore implements session persistence using the filesystem.
-// Session state is stored in {projectPath}/.juggler/:
-//   - session.json: manifest (version, conversationOrder, activeConversationId, messageHistory, metadata)
-//   - <name>--<id>/doc.yjs: binary Yjs conversation data
-//   - <name>--<id>/txns/<txnID>.json: per-conversation transaction blobs
-//   - <name>--<id>/undo.json: per-conversation undo state (optional)
+// Session state is stored in {projectPath}/.juggler/: session.json holds the
+// manifest (version, conversationOrder, activeConversationId, messageHistory,
+// metadata), and one folder per conversation holds the rest. Those folders are
+// convdir.go's subject — their name, their contents, and the accessors for
+// both — so the layout is described there rather than restated here.
 //
 // The folder name carries the human-readable conversation name; renames
 // rename the folder (atomic os.Rename). The id stays as the stable handle
@@ -426,6 +426,18 @@ func (fs *FileSessionStore) ConvDir(convID string) (string, bool) {
 	return dir, ok
 }
 
+// ConvName returns the human-readable name of one conversation, or ok=false
+// if the conversation is unknown. The name lives in the folder name, so this
+// is the answer for anyone who needs the name but has no business knowing how
+// a folder is spelled.
+func (fs *FileSessionStore) ConvName(convID string) (string, bool) {
+	if fs.index == nil {
+		return "", false
+	}
+	name, ok := fs.index.Names[convID]
+	return name, ok
+}
+
 // ConvNames returns a snapshot of id → human name for every conversation
 // folder currently on disk. Safe to expose over the wire.
 func (fs *FileSessionStore) ConvNames() map[string]string {
@@ -434,11 +446,6 @@ func (fs *FileSessionStore) ConvNames() map[string]string {
 		out[id] = name
 	}
 	return out
-}
-
-// docPath returns the doc.yjs path inside a conv folder.
-func docPath(convDir string) string {
-	return filepath.Join(convDir, "doc.yjs")
 }
 
 // CreateConversationFolder creates a conversation folder for requestedID, or
@@ -483,7 +490,7 @@ func (fs *FileSessionStore) CreateConversationFolder(name, requestedID string) (
 	// as a fresh doc, and the worker's first save overwrites it with the real
 	// Yjs state. Without this, a viewer racing the create gets "conversation
 	// state file not found" and the new tab fails to load.
-	if err := os.WriteFile(docPath(dir), nil, 0o644); err != nil {
+	if err := os.WriteFile(ConvDocPath(dir), nil, 0o644); err != nil {
 		return "", "", "", fmt.Errorf("touch doc.yjs: %w", err)
 	}
 	fs.index.ByID[id] = dir
@@ -704,7 +711,7 @@ func (fs *FileSessionStore) SaveConversationBinary(convID string, yjsData []byte
 	if err != nil {
 		return err
 	}
-	dst := docPath(dir)
+	dst := ConvDocPath(dir)
 	tmp := dst + ".tmp"
 	if err := os.WriteFile(tmp, yjsData, 0o644); err != nil {
 		return fmt.Errorf("failed to write conversation binary: %w", err)
@@ -723,7 +730,7 @@ func (fs *FileSessionStore) LoadConversationBinary(convID string) ([]byte, error
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrConversationNotFound, convID)
 	}
-	data, err := os.ReadFile(docPath(dir))
+	data, err := os.ReadFile(ConvDocPath(dir))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("%w: %s", ErrConversationNotFound, convID)
@@ -1080,8 +1087,7 @@ func (fs *FileSessionStore) BinSizeBytes() int64 {
 // conv that was binned before any LLM turn still gets a sensible
 // timestamp.
 func lastActivityTime(convDir string) (time.Time, error) {
-	txnsDir := filepath.Join(convDir, "txns")
-	entries, err := os.ReadDir(txnsDir)
+	entries, err := os.ReadDir(ConvTxnsDir(convDir))
 	if err == nil {
 		var newest time.Time
 		for _, e := range entries {
@@ -1100,7 +1106,7 @@ func lastActivityTime(convDir string) (time.Time, error) {
 			return newest, nil
 		}
 	}
-	if st, err := os.Stat(docPath(convDir)); err == nil {
+	if st, err := os.Stat(ConvDocPath(convDir)); err == nil {
 		return st.ModTime(), nil
 	}
 	st, err := os.Stat(convDir)

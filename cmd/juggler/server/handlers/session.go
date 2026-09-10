@@ -655,13 +655,13 @@ func (api *SessionAPI) duplicateConversationFiles(srcID, dstID string) error {
 		return fmt.Errorf("write clone doc.yjs: %w", err)
 	}
 	// txns/ holds per-round-trip blobs referenced by items by id.
-	if err := copyDirContents(filepath.Join(srcDir, "txns"), filepath.Join(dstDir, "txns")); err != nil {
+	if err := copyDirContents(core.ConvTxnsDir(srcDir), core.ConvTxnsDir(dstDir)); err != nil {
 		return fmt.Errorf("copy txns: %w", err)
 	}
 	// assets/ holds content-addressed image blobs referenced by items by sha.
 	// Cloning the doc carries the attachment refs, so the bytes must come too
 	// or the clone's images resolve to nothing.
-	if err := copyDirContents(filepath.Join(srcDir, "assets"), filepath.Join(dstDir, "assets")); err != nil {
+	if err := copyDirContents(core.ConvAssetsDir(srcDir), core.ConvAssetsDir(dstDir)); err != nil {
 		return fmt.Errorf("copy assets: %w", err)
 	}
 	return nil
@@ -677,13 +677,13 @@ func (api *SessionAPI) duplicateConversationFiles(srcID, dstID string) error {
 func (api *SessionAPI) writeCloneDoc(srcID, srcDir, dstDir string) error {
 	if api.workerManager != nil {
 		if snap, ok := api.workerManager.SnapshotParkedState(srcID); ok {
-			return os.WriteFile(filepath.Join(dstDir, "doc.yjs"), snap, 0o644)
+			return os.WriteFile(core.ConvDocPath(dstDir), snap, 0o644)
 		}
 		if err := api.workerManager.FlushConversation(srcID); err != nil {
 			return fmt.Errorf("flush source worker: %w", err)
 		}
 	}
-	return copyFileIfExists(filepath.Join(srcDir, "doc.yjs"), filepath.Join(dstDir, "doc.yjs"))
+	return copyFileIfExists(core.ConvDocPath(srcDir), core.ConvDocPath(dstDir))
 }
 
 // copyFileIfExists copies src→dst. A missing src is not an error (it means the
@@ -780,7 +780,7 @@ func (api *SessionAPI) HandleGetAsset(w http.ResponseWriter, r *http.Request) {
 	// sha is validated hex, so the glob can only match this conversation's
 	// own assets/<sha>.<ext> — no traversal possible.
 	var assetPath string
-	matches, _ := filepath.Glob(filepath.Join(convDir, "assets", sha+".*"))
+	matches, _ := filepath.Glob(filepath.Join(core.ConvAssetsDir(convDir), sha+".*"))
 	for _, m := range matches {
 		if strings.HasSuffix(m, ".tmp") {
 			continue

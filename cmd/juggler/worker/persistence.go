@@ -7,9 +7,9 @@ package worker
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
+	"juggler/cmd/juggler/core"
 	"juggler/internal/logpaths"
 )
 
@@ -58,7 +58,7 @@ func (w *ConversationWorker) docPathFor(convID string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("conversation folder not found: %s", convID)
 	}
-	return filepath.Join(dir, "doc.yjs"), nil
+	return core.ConvDocPath(dir), nil
 }
 
 // repairDuplicateItemIds scans items for duplicate itemIds and assigns new unique IDs.

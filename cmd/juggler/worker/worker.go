@@ -258,6 +258,12 @@ type ConversationWorker struct {
 	// mid-life is naturally seen on the next I/O.
 	pathProvider PathProviderFunc
 
+	// nameProvider resolves convID → the conversation's human-readable name.
+	// Set at construction by the Manager; called on every use so a rename
+	// mid-life is seen immediately. nil until then, and the worker treats an
+	// unresolved name as "not known" rather than guessing at one.
+	nameProvider NameProviderFunc
+
 	// saveBinary persists the Yjs doc. The implementation creates the
 	// conversation folder if it doesn't exist (e.g. brand-new convs and
 	// duplicates) and writes atomically. Set at construction by the Manager.
@@ -557,6 +563,13 @@ func (w *ConversationWorker) SetPathProvider(fn PathProviderFunc) {
 	if w.assetStore != nil {
 		w.assetStore.SetPathProvider(fn)
 	}
+}
+
+// SetNameProvider injects the per-conversation name resolver. Idempotent.
+// Called by the Manager when the worker is created and again if the provider
+// is replaced (e.g. on project switch).
+func (w *ConversationWorker) SetNameProvider(fn NameProviderFunc) {
+	w.nameProvider = fn
 }
 
 // SetSaveBinary injects the doc-persistence callback. Idempotent.

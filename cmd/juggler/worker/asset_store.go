@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"juggler/cmd/juggler/core"
 	"juggler/internal/atomicio"
 )
 
@@ -82,7 +83,7 @@ func (s *AssetStore) dir(convID string) string {
 	if !ok {
 		return ""
 	}
-	return filepath.Join(convDir, "assets")
+	return core.ConvAssetsDir(convDir)
 }
 
 // find locates the on-disk file for a sha, returning its full path and the

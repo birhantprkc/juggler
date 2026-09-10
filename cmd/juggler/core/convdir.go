@@ -44,17 +44,51 @@ func GenerateConvID() string {
 // On disk every conversation lives in a single folder
 //   .juggler/<sanitized-name>--<id>/
 //     doc.yjs
-//     undo.json
 //     txns/
 //       <txnID>.json
+//     assets/
+//       <sha256>.<ext>
 //
 // The folder name is the source of truth for the human-readable name; the
 // id is the stable internal handle (conv_<base36>) used everywhere in code,
 // Yjs metadata and tests. The "--" separator is reserved by SanitizeName so
 // the trailing "--<id>" is unambiguously the suffix.
+//
+// Every name in that tree is spelled in this file and nowhere else: the
+// folder name by BuildDirName/ParseDirName, its contents by the three
+// accessors below. A package that stores something for a conversation is
+// handed the folder path and asks here what lives inside it, so how a
+// conversation is laid out on disk stays a question only this package
+// answers.
 
 // convDirSeparator separates the sanitized name from the id in folder names.
 const convDirSeparator = "--"
+
+const (
+	// docFileName holds the Yjs document: items AND metadata.
+	docFileName = "doc.yjs"
+	// txnsDirName holds one write-once JSON blob per LLM round-trip.
+	txnsDirName = "txns"
+	// assetsDirName holds content-addressed attachment blobs.
+	assetsDirName = "assets"
+)
+
+// ConvDocPath returns the Yjs document path inside a conversation folder.
+func ConvDocPath(convDir string) string {
+	return filepath.Join(convDir, docFileName)
+}
+
+// ConvTxnsDir returns the transaction-blob directory inside a conversation
+// folder. Created lazily by whoever writes the first blob.
+func ConvTxnsDir(convDir string) string {
+	return filepath.Join(convDir, txnsDirName)
+}
+
+// ConvAssetsDir returns the attachment directory inside a conversation folder.
+// Created lazily by whoever saves the first attachment.
+func ConvAssetsDir(convDir string) string {
+	return filepath.Join(convDir, assetsDirName)
+}
 
 // SanitizedNameMaxRunes caps the sanitized name length to leave headroom
 // under the 255-byte filename limits on most filesystems even when

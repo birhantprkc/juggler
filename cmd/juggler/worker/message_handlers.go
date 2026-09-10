@@ -7,11 +7,9 @@ package worker
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"juggler/cmd/juggler/core"
 	"juggler/cmd/juggler/providers/provider"
 	"juggler/internal/jlog"
 	"juggler/internal/logpaths"
@@ -1061,27 +1059,22 @@ func (w *ConversationWorker) handleEngineTrace(payload json.RawMessage) {
 	w.log.Trace("[engine-trace] conv=%s %s", w.conversationID, string(payload))
 }
 
-// conversationName returns the current human-readable tab name, derived from the
-// conversation's on-disk folder (the source of truth for the name). Empty when
-// unknown — before projectPath is set, with no path provider, or for an
-// unparseable folder — in which case the log file falls back to a bare conv-id
-// filename.
+// conversationName returns the current human-readable tab name as the session
+// store reports it. Empty when unknown — with no name provider, or for a
+// conversation the store doesn't have — in which case the log file falls back
+// to a bare conv-id filename.
 func (w *ConversationWorker) conversationName() string {
-	if w.pathProvider == nil {
+	if w.nameProvider == nil {
 		return ""
 	}
-	dir, ok := w.pathProvider(w.conversationID)
-	if !ok || dir == "" {
-		return ""
-	}
-	name, _, ok := core.ParseDirName(filepath.Base(dir))
+	name, ok := w.nameProvider(w.conversationID)
 	if !ok {
 		return ""
 	}
 	return name
 }
 
-// handleRenameLog re-derives the tab name from the (already-renamed) folder and
+// handleRenameLog re-asks the store for the (already-renamed) tab name and
 // moves the per-conversation log file to match, so its filename tracks the tab
 // title. Triggered by the rename API via the manager. Runs on the worker's run
 // goroutine; jlog.Logger.Rename itself serializes against concurrent writes.

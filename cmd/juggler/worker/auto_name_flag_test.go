@@ -6,22 +6,17 @@ package worker
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// namedWorker builds an auto-name worker whose on-disk folder gives it the
-// supplied conversation name, so conversationName() (and therefore the seed and
-// the absent-marker fallback) resolve exactly as they do in production.
+// namedWorker builds an auto-name worker the session store reports the supplied
+// name for, so conversationName() (and therefore the seed and the absent-marker
+// fallback) resolve exactly as they do in production.
 func namedWorker(t *testing.T, id, name string, calls *[]autoNameCall) *ConversationWorker {
 	t.Helper()
 	w := newAutoNameWorker(t, id, calls)
-	dir := filepath.Join(t.TempDir(), name+"--"+id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir conv dir: %v", err)
-	}
-	w.SetPathProvider(func(convID string) (string, bool) { return dir, convID == id })
+	w.SetNameProvider(func(convID string) (string, bool) { return name, convID == id })
 	return w
 }
 
@@ -84,12 +79,12 @@ func TestSeedNameIsProvisionalWritesOnceFromName(t *testing.T) {
 	}
 }
 
-// TestSeedNameIsProvisionalSkipsUnresolvableName verifies an unreadable folder is left
-// unseeded rather than guessed at — persisting false there would silently switch
-// auto-naming off for the conversation forever.
+// TestSeedNameIsProvisionalSkipsUnresolvableName verifies a name the store can't
+// report is left unseeded rather than guessed at — persisting false there would
+// silently switch auto-naming off for the conversation forever.
 func TestSeedNameIsProvisionalSkipsUnresolvableName(t *testing.T) {
 	var calls []autoNameCall
-	w := newAutoNameWorker(t, "conv_nopath", &calls) // no path provider
+	w := newAutoNameWorker(t, "conv_noname", &calls) // no name provider
 
 	w.seedNameIsProvisional()
 

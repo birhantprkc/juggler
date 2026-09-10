@@ -34,6 +34,7 @@ const (
 	mgrShutdown
 	mgrCount
 	mgrSetPathProvider
+	mgrSetNameProvider
 	mgrSetSaveBinary
 	mgrSetCancelLLMSession
 	mgrSetEngineReady
@@ -66,6 +67,15 @@ type CancelLLMSessionFunc func(conversationID, threadItemID string)
 // Returns ok=false if the conversation is unknown to the session store.
 type PathProviderFunc func(convID string) (string, bool)
 
+// NameProviderFunc resolves a conversation id to its human-readable tab name.
+// Returns ok=false if the conversation is unknown to the session store.
+//
+// The name is the session store's to know — it is carried by the folder name,
+// which the store owns and renames — so a worker that needs the name for a log
+// filename or the auto-naming gate asks for it rather than decoding the path
+// it was handed.
+type NameProviderFunc func(convID string) (string, bool)
+
 // SaveBinaryFunc persists the Yjs binary for a conversation. The
 // implementation is expected to create the conversation's folder if it
 // doesn't exist (e.g. for a newly-duplicated conversation) and to write
@@ -92,6 +102,7 @@ type managerOp struct {
 	autoNameFunc    AutoNameFunc
 	engineCallback  func(convID string, msg []byte)
 	pathProvider    PathProviderFunc
+	nameProvider    NameProviderFunc
 	saveBinaryFn    SaveBinaryFunc
 	cancelLLMFn     CancelLLMSessionFunc
 	engineReadyFn   func() bool
@@ -153,6 +164,7 @@ func (m *Manager) run() {
 	var engineClientID string
 	var engineCallback func(convID string, msg []byte)
 	var pathProvider PathProviderFunc
+	var nameProvider NameProviderFunc
 	var saveBinaryFn SaveBinaryFunc
 	var cancelLLMFn CancelLLMSessionFunc
 	var engineReadyFn func() bool
@@ -182,6 +194,9 @@ func (m *Manager) run() {
 		}
 		if pathProvider != nil {
 			w.SetPathProvider(pathProvider)
+		}
+		if nameProvider != nil {
+			w.SetNameProvider(nameProvider)
 		}
 		if saveBinaryFn != nil {
 			w.SetSaveBinary(saveBinaryFn)
@@ -264,6 +279,12 @@ func (m *Manager) run() {
 			pathProvider = op.pathProvider
 			for _, w := range workers {
 				w.SetPathProvider(pathProvider)
+			}
+
+		case mgrSetNameProvider:
+			nameProvider = op.nameProvider
+			for _, w := range workers {
+				w.SetNameProvider(nameProvider)
 			}
 
 		case mgrSetSaveBinary:
@@ -530,6 +551,13 @@ func (m *Manager) SetCancelLLMSession(fn CancelLLMSessionFunc) {
 // startup and again on project switch.
 func (m *Manager) SetPathProvider(fn PathProviderFunc) {
 	m.ops <- managerOp{kind: mgrSetPathProvider, pathProvider: fn}
+}
+
+// SetNameProvider sets the per-conversation name resolver applied to every
+// existing worker and any worker created later. Called alongside
+// SetPathProvider at server startup and again on project switch.
+func (m *Manager) SetNameProvider(fn NameProviderFunc) {
+	m.ops <- managerOp{kind: mgrSetNameProvider, nameProvider: fn}
 }
 
 // SetSaveBinary registers the persistence callback used by every worker

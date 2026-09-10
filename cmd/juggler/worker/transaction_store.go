@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"juggler/cmd/juggler/core"
 	"juggler/cmd/juggler/providers/provider"
 	"juggler/internal/atomicio"
 )
@@ -134,7 +135,7 @@ func (s *TransactionStore) dir(convID string) string {
 	if !ok {
 		return ""
 	}
-	return filepath.Join(convDir, "txns")
+	return core.ConvTxnsDir(convDir)
 }
 
 // path returns the on-disk path for a single transaction blob.

@@ -531,6 +531,20 @@ func (m *SessionManager) ConvDir(convID string) (string, bool) {
 	return r.dir, r.ok
 }
 
+// ConvName returns the human-readable name of one conversation, or "", false
+// if the conversation isn't known.
+func (m *SessionManager) ConvName(convID string) (string, bool) {
+	type result struct {
+		name string
+		ok   bool
+	}
+	r, _ := runRead(m, func(s *sessionState) (result, error) {
+		name, ok := s.store.ConvName(convID)
+		return result{name, ok}, nil
+	})
+	return r.name, r.ok
+}
+
 // ConvNames returns a snapshot of id → human name for every conversation
 // folder currently on disk.
 func (m *SessionManager) ConvNames() map[string]string {
