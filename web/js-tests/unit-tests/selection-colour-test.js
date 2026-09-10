@@ -42,6 +42,38 @@ function canonicalColour(value) {
 }
 
 /**
+ * Every `::selection` rule the page carries, from every stylesheet it loaded.
+ *
+ * Read off the cascade rather than out of `getComputedStyle(el, '::selection')`
+ * because the two engines answer that differently: WebKit resolves a highlight
+ * pseudo against the element it covers, Chromium against the highlight
+ * inheritance chain, so the computed `color` there says which engine is running
+ * and not what the app authored.
+ * @returns {CSSStyleRule[]} The rules, in the order the sheets declare them.
+ */
+function selectionRules() {
+  /** @type {CSSStyleRule[]} */
+  const found = [];
+  /** @param {CSSRuleList} rules */
+  const walk = (rules) => {
+    for (const rule of rules) {
+      const grouped = /** @type {CSSGroupingRule} */ (rule).cssRules;
+      if (grouped) walk(grouped);
+      const selector = /** @type {CSSStyleRule} */ (rule).selectorText;
+      if (selector?.includes('::selection')) found.push(/** @type {CSSStyleRule} */ (rule));
+    }
+  };
+  for (const sheet of document.styleSheets) {
+    try {
+      walk(sheet.cssRules);
+    } catch {
+      // A sheet from another origin refuses to be read; the app's own are same-origin.
+    }
+  }
+  return found;
+}
+
+/**
  * @returns {string} The current theme's `--selection-bg`, resolved
  */
 function selectionVar() {
@@ -117,17 +149,16 @@ export async function runTests(_ctx) {
 
     run('::selection leaves the text colour alone', () => {
       // Setting `color` would flatten syntax highlighting inside a selection,
-      // and authoring only a background is also what stops the platform
-      // substituting its own selected-text colour.
-      const el = document.createElement('div');
-      el.style.color = 'rgb(1, 2, 3)';
-      el.textContent = 'selection';
-      document.body.appendChild(el);
-      try {
-        const painted = getComputedStyle(el, '::selection').color;
-        assert(painted === 'rgb(1, 2, 3)', `selected text should keep its own colour, got ${painted}`);
-      } finally {
-        el.remove();
+      // and leaving it unset is also what stops the platform substituting its
+      // own selected-text colour: a rule that matches at all is enough.
+      const rules = selectionRules();
+      assert(rules.length > 0, 'the app should author ::selection somewhere');
+      for (const rule of rules) {
+        for (const property of ['color', '-webkit-text-fill-color']) {
+          const declared = rule.style.getPropertyValue(property);
+          assert(declared === '',
+            `${rule.selectorText} should leave the text colour alone, it sets ${property}: ${declared}`);
+        }
       }
     });
   } finally {

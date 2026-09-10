@@ -1452,16 +1452,30 @@ export async function runTests() {
       /** @type {any} */
       let sent = null;
       try {
-        await openBoard();
         const panel = shell.querySelector('pinboard-panel');
+        // The panel slides in and out, and a rect taken while it slides is a
+        // sample of an animation rather than a place: the pool's window is
+        // never shown, so a transition in flight advances at the whim of the
+        // engine — WebKit leaves it at its first frame forever, Chromium runs
+        // it to the end. Turning the slide off makes the panel's place a plain
+        // layout fact, which is the only thing this case is about.
+        panel.style.transition = 'none';
+        await openBoard();
+        await settle();
         ownerLink.detach = async (/** @type {any[]} */ ...args) => { sent = args[3]; return ''; };
+        // Measured before the click: the handler measures the panel and then
+        // awaits a detach that ends by putting the panel away, so a rect read
+        // afterwards is of a panel already gone — where it went, not where it
+        // was opened over.
+        const rect = panel.getBoundingClientRect();
+        assert(rect.width > 0 && rect.right <= window.innerWidth + 1,
+          `the panel is open and in the page before it is measured, got ${JSON.stringify(rect.toJSON())} in ${window.innerWidth}x${window.innerHeight}`);
         shell.querySelector('.pinboard-toolbar__popout').click();
         await settle();
-        const rect = panel.getBoundingClientRect();
         assert(sent && sent.width === Math.round(rect.width) && sent.height === Math.round(rect.height),
           `the rect sent is the panel's, got ${JSON.stringify(sent)} for ${rect.width}x${rect.height}`);
         assert(sent.x === Math.round(rect.left) && sent.y === Math.round(rect.top),
-          `and where the panel is, so the window can open over it, got ${sent.x},${sent.y}`);
+          `and where the panel is, so the window can open over it, got ${sent.x},${sent.y} for ${rect.left},${rect.top}`);
       } finally {
         ownerLink.detach = detach;
         teardown();

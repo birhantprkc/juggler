@@ -798,9 +798,11 @@ app-container {
    translucent blue in both themes, so the highlight tints message bubbles, code
    blocks, diffs and images rather than filling over them.
 
-   Only the background is set, deliberately: the pseudo-element inherits `color`
-   from the text it covers, so selected text keeps its own colour and syntax
-   highlighting survives being selected. Authoring the rule at all is also what
+   Only the background is set, deliberately: a highlight naming no `color` is
+   painted over the text in the colour that text already had, so selected text
+   keeps its own and syntax highlighting survives being selected. (What
+   `getComputedStyle(el, '::selection').color` reports is engine-specific and
+   says nothing about what is painted.) Authoring the rule at all is also what
    stops a platform substituting its selected-text colour (macOS recolours
    selected text to white in dark appearance; GTK does its own thing).
 
