@@ -350,9 +350,11 @@ const SHORTCUT_DEFS = [
     external: true,
   },
   {
+    // The id is the persistence key for a rebinding, so it stays as it is even
+    // though Find long ago stopped being about conversations alone.
     id: 'find-in-conversation',
-    label: 'Find in conversation',
-    description: 'Open the find bar to search for text in the current conversation.',
+    label: 'Find',
+    description: 'Open the find bar to search for text in the panel you are in.',
     category: 'Search',
     // Works while typing in the composer — the find bar is a search overlay, so
     // it must be reachable without first leaving the text field.

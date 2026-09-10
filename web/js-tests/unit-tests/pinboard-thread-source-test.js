@@ -9,9 +9,10 @@
  * Two halves, because the answer is assembled from two places. The tab decides
  * which thread is being read — and selecting an item inside a sub-thread opens a
  * properties panel to its right and makes that panel the active column, which is
- * why the scan runs LEFTWARDS. `getActiveConversationColumn` falls back to the
- * FIRST conversation-area, which is the root; both are asserted side by side here
- * so the difference between the two questions is written down rather than implied.
+ * why the scan runs LEFTWARDS. `getFindColumn`, asked in the same state, answers
+ * with that panel — a column to search, not a thread; both are asserted side by
+ * side here so the difference between the two questions is written down rather
+ * than implied.
  *
  * The pinboard decides what that thread can see. A plan made inside a sub-thread
  * belongs to that sub-thread, so a child with no plan of its own inherits the one
@@ -256,12 +257,10 @@ export async function runTests() {
         `the panel's item belongs to ${subA}; got ${tab.getFocusedThreadItemId()}`);
 
       // The other question, asked of the same state, so the difference is stated
-      // rather than assumed: Find wants a column to search and gets the root.
-      const findColumn = tab.getActiveConversationColumn();
-      assert(findColumn === tab._columns[0],
-        'getActiveConversationColumn falls back to the first conversation-area');
-      assert((findColumn.getMessageThread()?.threadItemId ?? null) === null,
-        'that fallback is the root thread — the answer the thread scan must not give');
+      // rather than assumed: Find wants a column to search and is happy with the
+      // panel itself, which is no answer at all to "which thread is this?".
+      assert(tab.getFindColumn() === panel,
+        'getFindColumn answers with the active column when it has something to search');
     });
 
     await run('the focus event fires on a move and stays quiet without one', () => {

@@ -797,6 +797,32 @@ class ConversationArea extends HTMLElement {
   }
 
   /**
+   * Where ⌘F searches in a conversation column: the message list, with the bar
+   * floating in the positioned wrapper above it so it does not become a
+   * scrolling child of the list, and focus returning to the composer on close —
+   * a find is nearly always a detour on the way to typing.
+   * @returns {import('./find-bar.js').FindTarget|null} The find descriptor, or null before render.
+   */
+  getFindTarget() {
+    const root = this.querySelector('#message-list');
+    if (!root) return null;
+    return {
+      root,
+      mount: /** @type {HTMLElement} */ (
+        this.querySelector('conversation-message-list-wrapper') || this
+      ),
+      label: 'Find in conversation',
+      restoreFocus: () => {
+        const textarea = /** @type {HTMLElement|null} */ (
+          this.querySelector('composer-box textarea')
+        );
+        if (textarea) textarea.focus();
+        else if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      },
+    };
+  }
+
+  /**
    * Show thread column header with goal, status badge, and action buttons
    * @param {string} goal - The thread's goal text
    * @param {*} threadYMap - The thread Y.Map for return operations

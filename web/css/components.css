@@ -10051,14 +10051,18 @@ update-button .update-btn--attention {
     color: #1a1a1a;
 }
 
-/* ── Find in conversation (⌘F) bar ─────────────────────────────────────────
+/* ── Find (⌘F) bar ─────────────────────────────────────────────────────────
    The presentational bar driven by find-bar.js. Mounted as an absolutely-
-   positioned overlay inside conversation-message-list-wrapper (position:
-   relative), pinned top-right above the reversed #message-list scroller and
-   clear of the composer. Sits at --z-controls: above messages and the
+   positioned overlay inside whichever panel is being searched — the `mount` of
+   that panel's getFindTarget(), always a positioned box — and pinned top-right
+   above that panel's scroller. Sits at --z-controls: above the content and the
    scroll-controls (z-index 2) it overlaps, but below dropdowns and modals.
    Visual language mirrors .scroll-control-btn — same surface, border, radius
-   tokens — so it reads as part of the same control family in both themes. */
+   tokens — so it reads as part of the same control family in both themes.
+
+   The max-width matters on the narrow panels: properties and the pinboard are
+   resized to whatever the user can spare, and a bar wider than its panel would
+   hang off the edge rather than shrink. The input gives up the width. */
 .find-bar {
     position: absolute;
     top: 0.5rem;
@@ -10067,6 +10071,7 @@ update-button .update-btn--attention {
     display: flex;
     align-items: center;
     gap: 0.25rem;
+    max-width: calc(100% - 2rem);
     padding: 0.25rem;
     border: 0.0625rem solid var(--border-color);
     border-radius: var(--radius-xl, 0.5rem);
@@ -10076,7 +10081,8 @@ update-button .update-btn--attention {
 }
 
 .find-bar__input {
-    width: 11rem;
+    flex: 0 1 11rem;
+    min-width: 3rem;
     padding: 0.25rem 0.5rem;
     border: 0.0625rem solid var(--border-color);
     border-radius: var(--radius-lg, 0.375rem);
@@ -10107,6 +10113,7 @@ update-button .update-btn--attention {
 
 .find-bar__btn {
     display: flex;
+    flex: 0 0 auto;
     align-items: center;
     justify-content: center;
     width: 1.5rem;
@@ -11140,6 +11147,10 @@ pinboard-content {
     flex-direction: column;
     min-height: 0;
     font-family: var(--font-ui);
+
+    /* The find bar floats in here rather than in the body it searches, so it
+       does not scroll with the pin. That needs a positioned box to hang from. */
+    position: relative;
 }
 
 pinboard-content[hidden] {

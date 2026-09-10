@@ -5,12 +5,12 @@
 import { expandCollapsibleContaining } from '../utils/collapsible.js';
 
 /**
- * Framework-free engine behind the "Find in conversation" (⌘F) bar. Given a
- * root element (a column's reversed `#message-list`), it walks the text nodes,
- * builds an ordered list of matches as DOM `Range`s, and paints them with the
- * CSS Custom Highlight API — never by wrapping matches in `<span>`s, because the
- * conversation renderer diffs and animates message elements and would clobber
- * injected wrapper nodes mid-stream. DOM mutation is confined to the highlight
+ * Framework-free engine behind the Find (⌘F) bar. Given a root element — any
+ * panel's scroller, a column's reversed `#message-list` among them — it walks
+ * the text nodes, builds an ordered list of matches as DOM `Range`s, and paints
+ * them with the CSS Custom Highlight API — never by wrapping matches in
+ * `<span>`s, because the conversation renderer diffs and animates message
+ * elements and would clobber injected wrapper nodes mid-stream. DOM mutation is confined to the highlight
  * registry, un-clipping whatever hides the active match (a collapsed
  * collapsible) and the scroll offsets that reveal it, so the controller is
  * safe to drive from a tiny presentational

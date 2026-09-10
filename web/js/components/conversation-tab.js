@@ -429,19 +429,29 @@ class ConversationTab extends JugglerElement {
   }
 
   /**
-   * The conversation-area column that Find (⌘F) should search: the focused
-   * column when it is a conversation-area, else the first conversation-area
-   * column. Unlike {@link _inputColumn}, a column whose composer is hidden
-   * still qualifies — Find searches a column's messages, it doesn't type into
-   * its composer.
-   * @returns {HTMLElement|null} The conversation-area element, or null.
+   * The column Find (⌘F) should search: the focused column when it has
+   * something to search, else the leftmost column that has.
+   *
+   * Column TYPE is not the test — offering a find target is. A properties panel
+   * opened from a message is the active column and its detail is worth
+   * searching, while an empty one has nothing and steps aside for the
+   * conversation beside it. Unlike {@link _inputColumn}, a column whose composer
+   * is hidden still qualifies: Find searches a column's content, it doesn't type
+   * into its composer.
+   * @returns {HTMLElement|null} The column to search, or null when no column can be.
    */
-  getActiveConversationColumn() {
+  getFindColumn() {
+    /**
+     * @param {Element} col - A column.
+     * @returns {boolean} Whether it currently offers somewhere to search.
+     */
+    const searchable = (col) => {
+      const get = /** @type {any} */ (col)?.getFindTarget;
+      return typeof get === 'function' && !!get.call(col);
+    };
     const active = /** @type {HTMLElement} */ (this._columns[this._selection.activeColumnIndex]);
-    if (active && active.tagName === 'CONVERSATION-AREA') return active;
-    return /** @type {HTMLElement|null} */ (
-      this._columns.find((c) => /** @type {HTMLElement} */ (c).tagName === 'CONVERSATION-AREA') || null
-    );
+    if (active && searchable(active)) return active;
+    return /** @type {HTMLElement|null} */ (this._columns.find(searchable) || null);
   }
 
   /**
@@ -449,13 +459,13 @@ class ConversationTab extends JugglerElement {
    * to the left of the active one. A root column has no thread item of its own,
    * which is what null means here.
    *
-   * Scanning leftwards is what distinguishes this from {@link
-   * getActiveConversationColumn}, whose fallback is the FIRST conversation-area
-   * in the row. That fallback answers Find's question — which column's messages
-   * to search — but not this one: selecting an item inside a sub-thread opens a
-   * properties panel to its right and makes that panel active, and the first
-   * conversation-area is the root. The column immediately left of the panel is
-   * the thread the item actually belongs to.
+   * Scanning leftwards is what distinguishes this from {@link getFindColumn},
+   * which answers with the active column itself whenever it has something to
+   * search. That answers Find's question — which column's content to search —
+   * but not this one: selecting an item inside a sub-thread opens a properties
+   * panel to its right and makes that panel active, and Find is content to
+   * search the panel. The column immediately left of it is the thread the item
+   * actually belongs to.
    * @returns {string|null} The focused thread item's id, or null for the root.
    */
   getFocusedThreadItemId() {

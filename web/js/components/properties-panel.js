@@ -401,6 +401,26 @@ class PropertiesPanel extends HTMLElement {
   }
 
   /**
+   * Where ⌘F searches in the properties panel: the section, which is the
+   * panel's one scroller, with the bar floating in the panel itself (already a
+   * positioned box).
+   *
+   * The section is rebuilt from scratch every time the panel renders — a new
+   * selection, a transaction view, a live update that the patcher can't absorb —
+   * so this resolves it afresh on every call and names the enclosing content
+   * area, which survives all of that, as the thing to watch for mutations. Null
+   * while the panel is empty, so ⌘F falls through to the browser's own find
+   * rather than opening a bar over "Select an item to view details".
+   * @returns {import('./find-bar.js').FindTarget|null} The find descriptor, or null when there is nothing to search.
+   */
+  getFindTarget() {
+    const root = this.querySelector('properties-panel-section');
+    const watch = this.querySelector('properties-panel-content');
+    if (!root || !watch) return null;
+    return { root, watch, mount: this, label: 'Find in properties' };
+  }
+
+  /**
    * Render the transaction-mode panel (LLM round-trip detail view).
    * Fetched lazily from disk via worker; small blobs and rare access mean
    * no caching — we just re-fetch on every entry.

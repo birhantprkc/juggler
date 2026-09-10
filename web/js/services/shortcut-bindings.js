@@ -21,7 +21,7 @@ import {
 } from './conversation-commands.js';
 import { markSeen } from './tips-manager.js';
 import { getModelSelector } from './model-cycler.js';
-import findBar from '../components/find-bar.js';
+import findBar, { findPanelFor } from '../components/find-bar.js';
 
 /**
  * Register the conversation command handlers and install the global dispatcher.
@@ -66,17 +66,23 @@ export function registerConversationShortcuts(session) {
     if (acted) markSeen('toggle-file-editing');
     return acted;
   });
-  // Find-in-conversation opens/refocuses the find bar against the active
-  // conversation-area column (the focused column of the visible tab). ⌘F never
-  // closes — it opens if closed and focuses+selects-all if already open, so
-  // repeated presses behave like the platform find field (Esc / ✕ close). Falls
-  // through (returns false) when there's no conversation column to search, so
-  // the browser's native find still works on empty/project-picker views.
+  // Find opens/refocuses the find bar against the panel the user is in: the
+  // nearest find-capable ancestor of whatever holds focus (so a composer means
+  // its own column, and a clicked-into properties panel means that panel), else
+  // the visible tab's find column. ⌘F never closes — it opens if closed and
+  // focuses+selects-all if already open, so repeated presses behave like the
+  // platform find field (Esc / ✕ close). Falls through (returns false) when
+  // nothing on screen can be searched, so the browser's native find still works
+  // on empty/project-picker views.
+  //
+  // The pinboard is NOT reached from here. An open board holds a popup token and
+  // the manager stands every command down behind an overlay, so the board
+  // dispatches ⌘F itself, as it does its other chords.
   keyShortcutManager.register('find-in-conversation', () => {
     const tab = /** @type {any} */ (document.querySelector('conversation-tab.active'));
-    const column = tab?.getActiveConversationColumn?.();
-    if (!column) return false;
-    findBar.open(column);
+    const panel = findPanelFor(document.activeElement) || tab?.getFindColumn?.();
+    if (!panel) return false;
+    findBar.open(panel);
     markSeen('find-in-conversation');
     return true;
   });

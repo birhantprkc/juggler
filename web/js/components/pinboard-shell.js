@@ -38,6 +38,7 @@ import { markPopupOpen, isAnyPopupOpen } from '../utils/popup-manager.js';
 import { attachSwipeDismiss } from '../utils/swipe-dismiss.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { isPinboardView } from '../utils/view-mode.js';
+import findBar from './find-bar.js';
 import './pinboard-panel.js';
 
 /** localStorage key holding the panel's width, in rem. */
@@ -253,6 +254,9 @@ class PinboardShell extends JugglerElement {
 
     this._releasePopup?.();
     this._releasePopup = null;
+    // Before focus is handed back, so the bar's own restore doesn't take it
+    // again on the way out.
+    findBar.closeFor(this);
     const back = this._focusReturn?.isConnected ? this._focusReturn : this._toggleButton;
     this._focusReturn = null;
     // Scrolling is the workspace's business, not focus's: the element focus goes
@@ -317,6 +321,7 @@ class PinboardShell extends JugglerElement {
     if (e.isComposing || e.keyCode === 229) return;
     if (this.hidden) return;
     if (this._cyclePins(e)) return;
+    if (this._openFind(e)) return;
     // Nothing to toggle when the board is the window: closing it would mean
     // closing the window, which is what the window's own controls are for.
     if (isPinboardView()) return;
@@ -356,6 +361,30 @@ class PinboardShell extends JugglerElement {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Open the find bar on the pin being read.
+   *
+   * Dispatched here for the same reason the toggle above is: an open board holds
+   * a popup token, so ⌘F never reaches the shortcut manager's handler from in
+   * here. It shares that handler's binding, since it is the same command aimed
+   * at whatever is in front — and falls through untouched when the board has no
+   * pin to search, leaving the browser's own find to it.
+   * @param {KeyboardEvent} e - The keydown.
+   * @returns {boolean} True when the keystroke was the board's.
+   * @private
+   */
+  _openFind(e) {
+    if (!pinboardView.isOpen()) return false;
+    const bindings = keyShortcutManager.getBindings('find-in-conversation');
+    if (!bindings.some((binding) => eventMatchesBinding(binding, e))) return false;
+    const content = /** @type {any} */ (this.querySelector('pinboard-content'));
+    if (!content?.getFindTarget?.()) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    findBar.open(content);
+    return true;
   }
 
   /**

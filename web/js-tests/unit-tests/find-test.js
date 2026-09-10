@@ -3,18 +3,25 @@
 //   ▄▄█▀ ▀███▀ ▀███▀ ▀███▀ ██▄▄▄ ██▄▄▄ ██ ██   AGPL-3.0-or-later - see LICENSE
 
 /**
- * "Find in conversation" (⌘F) unit tests.
+ * Find (⌘F) unit tests.
  *
- * Covers four layers: the framework-free {@link FindController} match engine
+ * Covers five layers: the framework-free {@link FindController} match engine
  * (case-sensitivity, whole-word, next/prev wrap-around, empty queries, what
  * counts as searchable text, and post-mutation refresh), the
  * `find-in-conversation` shortcut definition in the shared
  * {@link keyShortcutManager} table, the singleton {@link findBar}'s DOM
  * interaction (open/focus, debounced typing → counter, Enter/Shift+Enter
- * navigation, whole-word toggle, Escape-to-close focus restoration, and the
- * streaming live-recount), and revealing the active match — the
+ * navigation, whole-word toggle, Escape-to-close focus restoration, keys that
+ * must not escape to the document, and the streaming live-recount), the panels
+ * other than the conversation that offer somewhere to search and how
+ * {@link findPanelFor} picks between them, and revealing the active match — the
  * {@link expandCollapsibleContaining} auto-open helper and the geometry that
  * puts the match itself on screen.
+ *
+ * The bar knows no panel by name: each says where to search through its own
+ * `getFindTarget()`. So the panel fixtures here are skeletons wearing the REAL
+ * method of the element they stand for, which is what keeps them from drifting
+ * into a contract nothing ships.
  *
  * The count and the reveal are two halves of one guarantee: every match the
  * counter claims is one the user can be shown. So the engine tests pin down both
@@ -31,9 +38,12 @@
 
 import { assert } from '../utilities/test-helpers.js';
 import FindController from '../../js/services/find-controller.js';
-import findBar from '../../js/components/find-bar.js';
+import findBar, { findPanelFor } from '../../js/components/find-bar.js';
 import keyShortcutManager from '../../js/services/key-shortcut-manager.js';
 import { expandCollapsibleContaining } from '../../js/utils/collapsible.js';
+// Defines <pinboard-content>, whose getFindTarget() the pinboard fixtures wear.
+// The conversation column and properties panel are already loaded by the page.
+import '../../js/components/pinboard-content.js';
 
 /**
  * @typedef {object} TestResult
@@ -67,10 +77,15 @@ function attach(html) {
 }
 
 /**
- * Build the column skeleton `findBar.open()` expects — a positioned
- * `conversation-message-list-wrapper` around a `#message-list`, plus the
- * `composer-box textarea` composer focus is restored to on close — attach it, and
+ * Build the column skeleton `<conversation-area>.getFindTarget()` describes — a
+ * positioned `conversation-message-list-wrapper` around a `#message-list`, plus
+ * the `composer-box textarea` focus is restored to on close — attach it, and
  * return the column element.
+ *
+ * The fixture is a plain element wearing the column's REAL `getFindTarget`,
+ * bound to itself. That exercises the shipped descriptor — the selectors, the
+ * mount, the focus restore — without booting a whole `<conversation-area>` and
+ * the session it expects, and it fails the moment the two drift apart.
  * @param {string} messagesHtml - Inner HTML for the `#message-list`.
  * @returns {HTMLElement} The attached column element.
  */
@@ -81,8 +96,74 @@ function attachColumn(messagesHtml) {
       <section id="message-list">${messagesHtml}</section>
     </conversation-message-list-wrapper>
     <composer-box><textarea></textarea></composer-box>`;
+  wearFindTarget(col, 'conversation-area');
   document.body.appendChild(col);
   return col;
+}
+
+/**
+ * Build the properties-panel skeleton its `getFindTarget()` describes — the
+ * stable `properties-panel-content` wrapping the per-render
+ * `properties-panel-section` that does the scrolling — wearing the panel's real
+ * implementation. Pass null for the panel's empty state, which has no section
+ * at all.
+ * @param {string|null} sectionHtml - Inner HTML for the section, or null for an empty panel.
+ * @returns {HTMLElement} The attached panel element.
+ */
+function attachPropertiesPanel(sectionHtml) {
+  const panel = document.createElement('div');
+  panel.style.position = 'relative';
+  panel.innerHTML = sectionHtml === null
+    ? '<properties-panel-content><properties-panel-empty>Select an item</properties-panel-empty></properties-panel-content>'
+    : `<properties-panel-content><properties-panel-section>${sectionHtml}</properties-panel-section></properties-panel-content>`;
+  wearFindTarget(panel, 'properties-panel');
+  document.body.appendChild(panel);
+  return panel;
+}
+
+/**
+ * Build the pinboard skeleton `<pinboard-content>.getFindTarget()` describes —
+ * the toolbar, the `.pinboard-content__body` scroller under it, and the slot one
+ * mounted pin fills — wearing the element's real implementation, inside an outer
+ * shell standing in for `<pinboard-shell>`. Pass null for a board with nothing
+ * mounted.
+ *
+ * `focusBody` is stubbed because the descriptor's focus restore calls it and the
+ * real one drives an item type's controller, which a fixture has no business
+ * having.
+ * @param {string|null} pinHtml - Inner HTML for the mounted slot, or null for no pin.
+ * @returns {{shell: HTMLElement, content: HTMLElement}} The attached shell and its content element.
+ */
+function attachPinboard(pinHtml) {
+  const shell = document.createElement('div');
+  const content = document.createElement('div');
+  content.style.position = 'relative';
+  content.tabIndex = -1;
+  const slot = pinHtml === null ? '' : `<div class="pinboard-content__slot">${pinHtml}</div>`;
+  content.innerHTML = `
+    <div class="pinboard-item-toolbar"></div>
+    <div class="pinboard-content__body">${slot}</div>`;
+  /** @type {any} */ (content).focusBody = () => content.focus();
+  wearFindTarget(content, 'pinboard-content');
+  shell.appendChild(content);
+  document.body.appendChild(shell);
+  return { shell, content };
+}
+
+/**
+ * Give a fixture the `getFindTarget` of a real panel element, bound to the
+ * fixture. The bar only ever duck-types the protocol, so a fixture carrying the
+ * shipped method IS the panel as far as the bar is concerned.
+ * @param {HTMLElement} el - The fixture to dress.
+ * @param {string} tagName - The custom element whose implementation to borrow.
+ * @returns {void}
+ */
+function wearFindTarget(el, tagName) {
+  const ctor = customElements.get(tagName);
+  if (!ctor) throw new Error(`<${tagName}> is not defined — the harness never loaded it`);
+  const impl = /** @type {any} */ (ctor.prototype).getFindTarget;
+  if (typeof impl !== 'function') throw new Error(`<${tagName}> has no getFindTarget()`);
+  /** @type {any} */ (el).getFindTarget = impl.bind(el);
 }
 
 /** Three messages: "needle" appears standalone twice and once inside "needles". */
@@ -394,6 +475,36 @@ export async function runTests(_ctx) {
     }
   });
 
+  await run('find-bar: a handled key never reaches the document', () => {
+    resetBarState();
+    const col = attachColumn(NEEDLE_MESSAGES);
+    /** @type {string[]} */
+    const seen = [];
+    /**
+     * @param {Event} e - A keydown that reached the document.
+     * @returns {void}
+     */
+    const spy = (e) => {
+      seen.push(/** @type {KeyboardEvent} */ (e).key);
+    };
+    document.addEventListener('keydown', spy);
+    try {
+      findBar.open(col);
+      const input = /** @type {HTMLInputElement} */ (col.querySelector('.find-bar__input'));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      // The bar can float inside an overlay holding a popup token (the pinboard
+      // does), and popup-manager's document handler dismisses every popup on
+      // Escape — so a key the bar has answered must not bubble that far.
+      assert(seen.length === 0, `document saw keys the bar handled: ${seen.join(', ')}`);
+      assert(findBar.isOpen() === false, 'Escape still closed the bar');
+    } finally {
+      document.removeEventListener('keydown', spy);
+      findBar.close();
+      col.remove();
+    }
+  });
+
   await run('find-bar: live recount picks up a streamed-in message', async () => {
     resetBarState();
     const col = attachColumn(NEEDLE_MESSAGES);
@@ -419,7 +530,162 @@ export async function runTests(_ctx) {
     }
   });
 
-  // ── D. Revealing the active match ────────────────────────────────────
+  // ── D. Panels other than the conversation ───────────────────────────
+
+  await run('properties: the bar opens on the panel and says which panel it is in', async () => {
+    resetBarState();
+    const panel = attachPropertiesPanel(NEEDLE_MESSAGES);
+    try {
+      findBar.open(panel);
+      const input = /** @type {HTMLInputElement} */ (panel.querySelector('.find-bar__input'));
+      assert(!!input, 'the bar mounts inside the properties panel');
+      assert(input.getAttribute('aria-label') === 'Find in properties',
+        `expected the panel's own label, got "${input.getAttribute('aria-label')}"`);
+      input.value = 'needle';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      await sleep(INPUT_WAIT_MS);
+      assert(counterTotal(panel) === 3, `expected 3 matches, got "${counterText(panel)}"`);
+    } finally {
+      findBar.close();
+      panel.remove();
+    }
+  });
+
+  await run('properties: an empty panel has nothing to find', () => {
+    resetBarState();
+    const panel = attachPropertiesPanel(null);
+    try {
+      findBar.open(panel);
+      // No section means no scroller and no content: the bar declines, and the
+      // shortcut falls through to the browser's own find.
+      assert(findBar.isOpen() === false, 'the bar stays closed');
+      assert(panel.querySelector('.find-bar') === null, 'nothing was mounted');
+    } finally {
+      findBar.close();
+      panel.remove();
+    }
+  });
+
+  await run('properties: a re-rendered section is re-rooted, not left counting dead nodes', async () => {
+    resetBarState();
+    const panel = attachPropertiesPanel(NEEDLE_MESSAGES);
+    try {
+      findBar.open(panel);
+      const input = /** @type {HTMLInputElement} */ (panel.querySelector('.find-bar__input'));
+      input.value = 'needle';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      await sleep(INPUT_WAIT_MS);
+      assert(counterTotal(panel) === 3, `expected 3 before the re-render, got "${counterText(panel)}"`);
+
+      // What the panel does on every render: throw the whole section away and
+      // build a new one. The bar is mounted on the panel, not in the section,
+      // so it survives — but its root has just been detached under it.
+      const content = /** @type {HTMLElement} */ (panel.querySelector('properties-panel-content'));
+      content.innerHTML =
+        '<properties-panel-section><div>one needle</div><div>needle two</div></properties-panel-section>';
+      await sleep(OBSERVER_WAIT_MS);
+
+      assert(findBar.isOpen() === true, 'the bar survives the re-render');
+      assert(counterTotal(panel) === 2, `expected 2 after the re-render, got "${counterText(panel)}"`);
+    } finally {
+      findBar.close();
+      panel.remove();
+    }
+  });
+
+  await run('pinboard: the bar opens on the mounted pin and says which panel it is in', async () => {
+    resetBarState();
+    const { shell, content } = attachPinboard(NEEDLE_MESSAGES);
+    try {
+      findBar.open(content);
+      const input = /** @type {HTMLInputElement} */ (content.querySelector('.find-bar__input'));
+      assert(!!input, 'the bar mounts inside pinboard-content, above the body it searches');
+      assert(input.getAttribute('aria-label') === 'Find in pinboard',
+        `expected the board's own label, got "${input.getAttribute('aria-label')}"`);
+      input.value = 'needle';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      await sleep(INPUT_WAIT_MS);
+      assert(counterTotal(content) === 3, `expected 3 matches, got "${counterText(content)}"`);
+    } finally {
+      findBar.close();
+      shell.remove();
+    }
+  });
+
+  await run('pinboard: a board with nothing mounted has nothing to find', () => {
+    resetBarState();
+    const { shell, content } = attachPinboard(null);
+    try {
+      findBar.open(content);
+      assert(findBar.isOpen() === false, 'the bar stays closed');
+    } finally {
+      findBar.close();
+      shell.remove();
+    }
+  });
+
+  await run('pinboard: closing the board closes the bar', () => {
+    resetBarState();
+    const { shell, content } = attachPinboard(NEEDLE_MESSAGES);
+    try {
+      findBar.open(content);
+      assert(findBar.isOpen() === true, 'open to begin with');
+      // What the shell does as the board slides away. Matches nobody can see
+      // must not stay counted, and the bar must not go with the board's DOM.
+      findBar.closeFor(shell);
+      assert(findBar.isOpen() === false, 'the bar closed with the board');
+      assert(content.querySelector('.find-bar') === null, 'and took its element with it');
+    } finally {
+      findBar.close();
+      shell.remove();
+    }
+  });
+
+  await run('pinboard: closing another panel leaves this bar alone', () => {
+    resetBarState();
+    const { shell, content } = attachPinboard(NEEDLE_MESSAGES);
+    const elsewhere = attachPropertiesPanel(NEEDLE_MESSAGES);
+    try {
+      findBar.open(content);
+      findBar.closeFor(elsewhere);
+      assert(findBar.isOpen() === true, 'an unrelated panel closing is not this bar’s business');
+    } finally {
+      findBar.close();
+      elsewhere.remove();
+      shell.remove();
+    }
+  });
+
+  await run('targeting: the panel is found from whatever holds focus', () => {
+    const col = attachColumn(NEEDLE_MESSAGES);
+    try {
+      const textarea = /** @type {HTMLElement} */ (col.querySelector('composer-box textarea'));
+      assert(findPanelFor(textarea) === col,
+        'typing in the composer means ⌘F searches that composer’s own column');
+      const msg = /** @type {HTMLElement} */ (col.querySelector('.msg'));
+      assert(findPanelFor(msg) === col, 'so does clicking a message in it');
+    } finally {
+      col.remove();
+    }
+  });
+
+  await run('targeting: a panel with nothing to search is stepped over', () => {
+    const panel = attachPropertiesPanel(null);
+    const loose = attach('<p class="loose">not in any panel</p>');
+    try {
+      const content = /** @type {HTMLElement} */ (panel.querySelector('properties-panel-content'));
+      // It implements the protocol but answers null, which is the whole point of
+      // being allowed to: ⌘F falls through to the browser's own find.
+      assert(findPanelFor(content) === null, 'an empty properties panel is not a find target');
+      assert(findPanelFor(loose.querySelector('.loose')) === null, 'nor is anything outside a panel');
+      assert(findPanelFor(null) === null, 'nor is nothing at all');
+    } finally {
+      loose.remove();
+      panel.remove();
+    }
+  });
+
+  // ── E. Revealing the active match ────────────────────────────────────
 
   await run('reveal: navigating scrolls the match itself into view, not its block', () => {
     // A long paste is ONE text node in ONE box. Revealing the box (what
@@ -457,7 +723,7 @@ export async function runTests(_ctx) {
     }
   });
 
-  // ── E. Auto-expand a collapsed block around a match ──────────────────
+  // ── F. Auto-expand a collapsed block around a match ──────────────────
 
   await run('auto-expand: expands the collapsed collapsible around a node', () => {
     const root = attach(

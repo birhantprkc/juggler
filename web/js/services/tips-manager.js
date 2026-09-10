@@ -55,7 +55,7 @@ const SHORTCUT_TIPS = [
   { id: 'next-tab', body: 'Step down your conversation list without leaving the keyboard (wraps around at the end).' },
   { id: 'prev-tab', body: 'Step up your conversation list without leaving the keyboard (wraps around at the top).' },
   { id: 'strategy-switch', body: 'Flip the active strategy from the composer; hold to open the full strategy menu.' },
-  { id: 'find-in-conversation', body: 'Open the find bar to search the text of the conversation you\u2019re reading.' },
+  { id: 'find-in-conversation', body: 'Search the text of whatever you\u2019re reading — the conversation, a properties panel, a pin.' },
   { id: 'toggle-file-editing', body: 'Flip between letting the agent edit files freely and asking you first.' },
   { id: 'rename-conversation', body: 'Give the current conversation a memorable name, straight from the keyboard.' },
   { id: 'pause-conversation', body: 'Pause after the current step finishes — a non-destructive stop, instead of a hard cancel.' },

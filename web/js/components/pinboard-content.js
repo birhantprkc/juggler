@@ -31,6 +31,7 @@ import { openMenuAt } from '../services/context-menu-service.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { formatDisplayPath } from '../../sdk/lib/context-item-utils.js';
 import { createFileActions } from '../utils/properties-panel-helpers.js';
+import findBar from './find-bar.js';
 import { REFRESH_SVG } from '../utils/icons.js';
 import { PINBOARD_BODY_ID } from './pinboard-tabbar.js';
 import { THREAD_FOCUS_CHANGED } from './conversation-tab.js';
@@ -371,6 +372,10 @@ class PinboardContent extends JugglerElement {
       this._renderActions();
       return false;
     }
+    // A find belongs to the pin it was run against, and that pin is about to be
+    // put away. Its matches would otherwise stay counted against a body that no
+    // longer holds them.
+    findBar.closeFor(this);
     this._unmount();
     this._pin = pin;
     this._renderToolbar();
@@ -440,6 +445,30 @@ class PinboardContent extends JugglerElement {
       console.error(`[Pinboard] Retained item type "${kept.pin.type}" failed to update:`, err);
       this._dropSlot(kept.pin.id);
     }
+  }
+
+  /**
+   * Where ⌘F searches on the board: the body, which is the one thing here that
+   * scrolls, with the bar floating in this element so it sits under the pin's
+   * toolbar rather than over it, and out of the body's own scroll.
+   *
+   * Only a pin actually on screen can be searched — a slot exists per pin, and a
+   * retained one that isn't the active tab is hidden, so the visible slot is the
+   * test. No slot means the empty state or a placeholder, and ⌘F falls through to
+   * the browser's own find. A pin that draws itself into an `<iframe>` can't be
+   * searched either: matching walks this document's text nodes and stops at the
+   * frame boundary.
+   * @returns {import('./find-bar.js').FindTarget|null} The find descriptor, or null when no pin is on screen.
+   */
+  getFindTarget() {
+    const root = /** @type {HTMLElement|null} */ (this.querySelector('.pinboard-content__body'));
+    if (!root || !root.querySelector('.pinboard-content__slot:not([hidden])')) return null;
+    return {
+      root,
+      mount: this,
+      label: 'Find in pinboard',
+      restoreFocus: () => this.focusBody(),
+    };
   }
 
   /**
