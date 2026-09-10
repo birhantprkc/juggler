@@ -33,7 +33,7 @@ export async function runTests(_ctx) {
   const errors = [];
 
   const { renderMarkdown } = await import('../../sdk/lib/markdown.js');
-  const { renderPlanMarkdown, renderTodoMarkdown } = await import(
+  const { renderPlanMarkdown, renderTodoMarkdown, createPlanBlock, createTodoBlock } = await import(
     '../../extensions/juggler-core/lib/task-lists.js'
   );
 
@@ -422,6 +422,105 @@ export async function runTests(_ctx) {
       (items[9].textContent || '').includes('A second paragraph.'),
       `item ten's second paragraph escaped it: ${el.innerHTML}`
     );
+  });
+
+  // --- both blocks draw their progress --------------------------------------
+
+  /**
+   * The progress bar's segments, in the order they are drawn.
+   * @param {HTMLElement} block - A block from createPlanBlock or createTodoBlock.
+   * @returns {Array<{state: string, width: number}>} Each segment's state and its width in percent.
+   */
+  const segments = (block) => Array.from(block.querySelectorAll('.task-progress__segment')).map(
+    (el) => ({
+      state: (el.className.match(/task-progress__segment--([a-z-]+)/) || [])[1] || '',
+      width: parseFloat(/** @type {HTMLElement} */ (el).style.width),
+    })
+  );
+
+  /**
+   * A block's bar must sit between the count line it illustrates and the list.
+   * @param {string} label - Case name
+   * @param {() => HTMLElement} build - Builds the block to check.
+   * @param {string} count - The count the line above the bar must carry.
+   */
+  const expectBarUnderCount = (label, build, count) => {
+    run(label, () => {
+      const block = build();
+      const bar = block.querySelector('.task-progress');
+      assert(!!bar, `no progress bar in the block:\n${block.innerHTML}`);
+      const before = bar?.previousElementSibling;
+      assert(
+        before?.tagName === 'P' && (before.textContent || '').includes(count),
+        `the bar left its count line: ${block.innerHTML}`
+      );
+      assert(
+        bar?.nextElementSibling?.tagName === 'OL',
+        `the list stopped following the bar: ${block.innerHTML}`
+      );
+    });
+  };
+
+  expectBarUnderCount(
+    'the plan bar sits under the status line it illustrates',
+    () => createPlanBlock({ title: 'T', steps: [{ content: 'a', status: 'completed' }] }),
+    'Progress: 1/1'
+  );
+
+  expectBarUnderCount(
+    'the todo bar sits under the progress line it illustrates',
+    () => createTodoBlock([
+      { content: 'a', status: 'completed' },
+      { content: 'b', status: 'pending' },
+    ]),
+    'Progress: 1/2'
+  );
+
+  run('the bar draws a segment per resolved state, in order, to scale', () => {
+    /** @type {Array<Record<string, any>>} */
+    const steps = [
+      ...Array.from({ length: 4 }, (_, i) => ({ content: `done ${i}`, status: 'completed' })),
+      { content: 'running', status: 'in_progress' },
+      { content: 'broke', status: 'failed' },
+      { content: 'stood down', status: 'skipped' },
+      { content: 'waiting', status: 'pending' },
+    ];
+    const segs = segments(createPlanBlock({ steps }));
+    assert(
+      segs.map((s) => s.state).join(',') === 'completed,in-progress,failed',
+      `wrong segments, or out of order: ${JSON.stringify(segs)}`
+    );
+    // Half done, one step of eight running, one failed — and the skipped and
+    // pending steps leave bare track, as the "4/8 completed" line above says.
+    assert(Math.abs(segs[0].width - 50) < 0.01, `four of eight is half: ${JSON.stringify(segs)}`);
+    assert(Math.abs(segs[1].width - 12.5) < 0.01, `one of eight is an eighth: ${JSON.stringify(segs)}`);
+    assert(Math.abs(segs[2].width - 12.5) < 0.01, `one of eight is an eighth: ${JSON.stringify(segs)}`);
+  });
+
+  run('a todo list colours the three states it spells', () => {
+    const segs = segments(createTodoBlock([
+      { content: 'a', status: 'completed' },
+      { content: 'b', status: 'in_progress' },
+      { content: 'c', status: 'pending' },
+      { content: 'd', status: 'pending' },
+    ]));
+    assert(
+      segs.map((s) => s.state).join(',') === 'completed,in-progress',
+      `wrong segments, or out of order: ${JSON.stringify(segs)}`
+    );
+    assert(Math.abs(segs[0].width - 25) < 0.01, `one of four is a quarter: ${JSON.stringify(segs)}`);
+  });
+
+  run('a state nothing is in draws nothing', () => {
+    const segs = segments(createPlanBlock({ steps: [{ content: 'a', status: 'pending' }] }));
+    assert(segs.length === 0, `an untouched plan should be bare track: ${JSON.stringify(segs)}`);
+  });
+
+  run('an empty list has no bar to draw', () => {
+    const plan = createPlanBlock({ title: 'T', steps: [] });
+    assert(!plan.querySelector('.task-progress'), `an empty plan drew a bar: ${plan.innerHTML}`);
+    const todo = createTodoBlock([]);
+    assert(!todo.querySelector('.task-progress'), `an empty todo list drew a bar: ${todo.innerHTML}`);
   });
 
   return { passed, failed, errors };

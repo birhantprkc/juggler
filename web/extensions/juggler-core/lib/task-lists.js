@@ -19,12 +19,43 @@
  * the model reads cannot drift apart. The options add to the model's copy only,
  * where it needs what the viewer conveys by other means — a step's executing
  * thread, which the transcript shows, and its status in words, which the viewer
- * draws as a distinct box.
+ * draws as a distinct box. The traffic runs the other way once: the viewer's
+ * blocks carry a progress bar, which is the count in the text made visible and
+ * so tells the model nothing it is not already reading.
  * @module lib/task-lists
  */
 
-import { taskMarker, taskStatusWord } from 'juggler/ui';
+import { createElement, injectStylesOnce, taskMarker, taskStatusWord } from 'juggler/ui';
 import { createTextBlock } from 'juggler/item-utils';
+
+injectStylesOnce('task-progress-styles', `
+.task-progress {
+  display: flex;
+  height: 0.375rem;
+  margin: -0.25rem 0 0.625rem;
+  border-radius: 999rem;
+  background: var(--bg-tertiary);
+  overflow: hidden;
+}
+.task-progress__segment--completed { background: var(--task-done-box); }
+.task-progress__segment--in-progress { background: var(--task-progress-box); }
+.task-progress__segment--failed { background: var(--task-failed-box); }
+`);
+
+/**
+ * The states the bar colours, in the order it lays them out: what is done, what
+ * is being done, what broke. Each takes the colour of its own tick box, so a
+ * glance at the bar and a glance at the list say the same thing.
+ *
+ * Pending and skipped items are deliberately absent — they leave bare track,
+ * which is what the "n/m completed" line above the bar already says. A todo list
+ * spells only three of these states; it simply never draws the fourth.
+ */
+const BAR_STATES = [
+  { status: 'completed', modifier: 'completed' },
+  { status: 'in_progress', modifier: 'in-progress' },
+  { status: 'failed', modifier: 'failed' },
+];
 
 /**
  * The indent a continuation line needs to stay inside item `n` of a numbered
@@ -144,19 +175,64 @@ export function renderTodoMarkdown(todos, opts = {}) {
 }
 
 /**
- * The plan's markdown in the standard markdown block.
+ * A list's progress as a bar: one segment per state in {@link BAR_STATES}, sized
+ * to its share of the items, against a track the rest leaves bare.
+ *
+ * It is `aria-hidden`: the line it sits under gives the same count in words, and
+ * every item below it carries its state in its tick box's label, so a reader who
+ * cannot see the bar has already been told everything it draws.
+ * @param {Array<Record<string, any>>} items - Plan steps or todo items.
+ * @returns {HTMLElement|null} The bar, or null when there is nothing to measure.
+ */
+function createProgressBar(items) {
+  const list = Array.isArray(items) ? items : [];
+  if (list.length === 0) return null;
+
+  const bar = createElement('div', 'task-progress');
+  bar.setAttribute('aria-hidden', 'true');
+  for (const state of BAR_STATES) {
+    const count = list.filter((item) => item?.status === state.status).length;
+    if (count === 0) continue;
+    const segment = createElement('div', `task-progress__segment task-progress__segment--${state.modifier}`);
+    segment.style.width = `${(count / list.length) * 100}%`;
+    bar.appendChild(segment);
+  }
+  return bar;
+}
+
+/**
+ * A rendered list in the standard markdown block, with the progress bar under
+ * the count line it illustrates.
+ *
+ * That line is the first paragraph of the rendered markdown — the title above it
+ * is a heading and the items below it are a list — so there is one place for the
+ * bar to go, and none at all when an empty list renders as nothing.
+ * @param {string} markdown - The list as markdown, from one of the renderers above.
+ * @param {Array<Record<string, any>>} items - The items that markdown was rendered from.
+ * @returns {HTMLElement} Rendered markdown element.
+ */
+function createTaskListBlock(markdown, items) {
+  const block = createTextBlock(markdown);
+  const bar = createProgressBar(items);
+  const countLine = bar && block.querySelector('.markdown > p');
+  if (bar && countLine) countLine.after(bar);
+  return block;
+}
+
+/**
+ * The plan's markdown in the standard markdown block, under its progress bar.
  * @param {{title?: string, status?: string, steps?: Array<Record<string, any>>}} planData - Plan data to render.
  * @returns {HTMLElement} Rendered markdown element.
  */
 export function createPlanBlock(planData) {
-  return createTextBlock(renderPlanMarkdown(planData));
+  return createTaskListBlock(renderPlanMarkdown(planData), planData?.steps || []);
 }
 
 /**
- * The todo list's markdown in the standard markdown block.
+ * The todo list's markdown in the standard markdown block, under its progress bar.
  * @param {Array<Record<string, any>>} todos - The list to render.
  * @returns {HTMLElement} Rendered markdown element.
  */
 export function createTodoBlock(todos) {
-  return createTextBlock(renderTodoMarkdown(todos));
+  return createTaskListBlock(renderTodoMarkdown(todos), todos || []);
 }
