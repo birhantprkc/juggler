@@ -6,6 +6,7 @@ package worker
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -708,4 +709,170 @@ func TestDelegatedChildErrorReachesParent(t *testing.T) {
 	if !strings.Contains(toolResultContent, "invalid request") {
 		t.Errorf("parent must receive the error text as the delegating call's tool_result; got %q", toolResultContent)
 	}
+}
+
+// delegationCapWorker returns a worker whose engine answers every
+// build-subthread-spec round-trip with spec(), and whose current turn treats
+// WebFetch as a delegating tool — the two things tryDelegateTool reads.
+//
+// Built without the strategy loop on purpose: the states this pins are
+// document states (at the breadth cap, holding a settled session), and driving
+// the loop to produce them would mean racing the cap against the children that
+// fill it.
+func delegationCapWorker(t *testing.T, spec func() *SubthreadSpec) *ConversationWorker {
+	t.Helper()
+	w := NewConversationWorker("conv-cap", "user:test")
+	t.Cleanup(func() { w.doc.Destroy() })
+
+	initPayload, _ := json.Marshal(InitMessage{
+		Type:         "init",
+		Conversation: SerializedConversation{ID: "conv-cap"},
+		Config:       WorkerConfig{ProjectPath: t.TempDir()},
+	})
+	w.currentRun().handleInit(initPayload)
+	w.currentRun().storeState(StateProcessing)
+
+	w.SetCallback("engine", func(b []byte) {
+		var head struct {
+			Type      string `json:"type"`
+			RequestID string `json:"requestId"`
+		}
+		if json.Unmarshal(b, &head) != nil || head.Type != "build-subthread-spec" {
+			return
+		}
+		resp, _ := json.Marshal(BuildSubthreadSpecResponse{
+			Type:      "build-subthread-spec-response",
+			RequestID: head.RequestID,
+			Spec:      spec(),
+		})
+		w.subthreadSpecReply.inject(w.done, resp)
+	})
+	w.SetEngineClientID("engine")
+	w.turn.delegatingTools = map[string]delegatingTool{"WebFetch": {}}
+	return w
+}
+
+// fillLiveThreads inserts n in-flight llmCreated threads at root — the shape
+// liveThreadCount counts, and the only input the breadth cap has.
+func fillLiveThreads(t *testing.T, w *ConversationWorker, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		insertThreadWithOpts(w, threadOpts{goal: fmt.Sprintf("T%d", i), llmCreated: true})
+	}
+	if got := w.doc.liveThreadCount(); got != n {
+		t.Fatalf("liveThreadCount = %d, want %d", got, n)
+	}
+}
+
+// metaToolResultFor returns the refusal bound to toolUseID at root, or nil.
+func metaToolResultFor(w *ConversationWorker, toolUseID string) *ConversationItem {
+	items := w.doc.GetItems()
+	for i := range items {
+		if items[i].Type == ItemTypeMetaToolResult && items[i].ToolUseID == toolUseID {
+			return &items[i]
+		}
+	}
+	return nil
+}
+
+// TestDelegationBreadthCap pins that ONE gate governs every thread an LLM can
+// open. maxLiveThreads was checked only where create_thread was called, so the
+// tools that actually fan out — Explore, Research, WebFetch — spawned children
+// without any width limit at all, while still counting toward the budget they
+// were exempt from. Nine at once was legal, and cost a conversation its usage
+// cap.
+//
+// The two halves have to be asserted together. Refusing at the cap is worth
+// nothing if it also refuses a RESUME, which creates no thread and so widens
+// nothing: that would take a caller's follow-up question and answer it with a
+// refusal, turning a budget into a wall. The order of the two checks inside
+// tryDelegateTool is the whole behaviour, and only a test that asks for both
+// can hold it.
+func TestDelegationBreadthCap(t *testing.T) {
+	t.Run("refuses a new child at the cap", func(t *testing.T) {
+		w := delegationCapWorker(t, func() *SubthreadSpec {
+			return &SubthreadSpec{Goal: "Read the page", Prompt: "Fetch https://example.com and summarise it."}
+		})
+		fillLiveThreads(t, w, maxLiveThreads)
+		before := countThreads(w)
+
+		if !w.currentRun().tryDelegateTool("tu-cap", "WebFetch",
+			json.RawMessage(`{"url":"https://example.com","prompt":"summarise"}`)) {
+			t.Fatal("a refusal must still ANSWER the call: falling through would run the tool inline, " +
+				"which is the context cost the cap exists to avoid")
+		}
+		if got := countThreads(w); got != before {
+			t.Errorf("thread count = %d, want %d — the breadth cap must create nothing", got, before)
+		}
+
+		refusal := metaToolResultFor(w, "tu-cap")
+		if refusal == nil {
+			t.Fatalf("expected a meta-tool-result refusal bound to tu-cap; items=%+v", w.doc.GetItems())
+		}
+		if !refusal.IsError {
+			t.Error("refusal meta-tool-result should be isError=true")
+		}
+
+		// And it reaches the model as a well-formed pair, never a dangling
+		// tool_use, carrying a refusal the model can act on.
+		var sawToolUse bool
+		for _, m := range w.currentRun().buildMessages(nil) {
+			if m["type"] == "tool-use" && m["toolUseId"] == "tu-cap" {
+				sawToolUse = true
+			}
+		}
+		result, ok := toolResultContents(w.currentRun().buildMessages(nil))["tu-cap"]
+		if !sawToolUse || !ok {
+			t.Fatalf("refusal must emit a paired tool_use+tool_result for tu-cap; sawToolUse=%v sawResult=%v",
+				sawToolUse, ok)
+		}
+		if !strings.Contains(result, "WebFetch") || !strings.Contains(result, fmt.Sprintf("%d", maxLiveThreads)) {
+			t.Errorf("a bare refusal tells the model nothing it can act on: it must name the tool and the count "+
+				"that stopped it. got %q", result)
+		}
+	})
+
+	t.Run("still resumes a session at the cap", func(t *testing.T) {
+		prompts := []string{"What colour is it?", "And how big is it?"}
+		call := 0
+		w := delegationCapWorker(t, func() *SubthreadSpec {
+			s := &SubthreadSpec{Goal: "Read the page", Prompt: prompts[min(call, len(prompts)-1)], SessionName: "page"}
+			call++
+			return s
+		})
+
+		// A first call, below the cap, starts the session; settling it is what
+		// makes it resumable rather than busy.
+		if !w.currentRun().tryDelegateTool("tu-first", "WebFetch",
+			json.RawMessage(`{"url":"https://example.com","prompt":"colour?","session":"page"}`)) {
+			t.Fatal("the first delegating call should have spawned a session child")
+		}
+		child := onlyThread(t, w)
+		w.turn.thread.itemID = child.ItemID
+		w.turn.thread.itemsArray = w.doc.GetThreadItemsArray(child.ItemID)
+		w.currentRun().appendTargetMessage(ConversationItem{
+			Type: ItemTypeAssistant, ItemID: generateItemID(), Content: "It is blue.",
+		})
+		w.settleThreadRun(child.ItemID, false)
+		w.currentRun().resetThreadContext()
+
+		fillLiveThreads(t, w, maxLiveThreads)
+		before := len(threadItems(w, child.ItemID))
+
+		if !w.currentRun().tryDelegateTool("tu-second", "WebFetch",
+			json.RawMessage(`{"url":"https://example.com","prompt":"size?","session":"page"}`)) {
+			t.Fatal("resuming a session must still be handled by the delegation path")
+		}
+		if refusal := metaToolResultFor(w, "tu-second"); refusal != nil {
+			t.Fatalf("a resume creates no thread, so the width cap has nothing to say about it; got refusal %q",
+				refusal.Content)
+		}
+		items := threadItems(w, child.ItemID)
+		if len(items) <= before {
+			t.Fatalf("resume must append this call's message to the session; items went %d → %d", before, len(items))
+		}
+		if indexOfItem(items, ItemTypeUser, "And how big is it?") < 0 {
+			t.Errorf("the resumed session should carry the second call's prompt; items=%+v", items)
+		}
+	})
 }

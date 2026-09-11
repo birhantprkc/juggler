@@ -368,16 +368,41 @@ func (w *ConversationWorker) promoteThreadSpawnCapable(threadItemID string) {
 // threads — they are the backstop behind that capability gate.
 const maxThreadDepth = 3
 
-// maxLiveThreads caps how many create_thread-spawned threads may be in flight
-// (llmCreated, no result yet) across the whole document at once. Where
-// maxThreadDepth bounds nesting along a single chain, this bounds fan-out across
-// the whole tree: a model that keeps decomposing one task into fresh subthreads
-// without ever deepening the chain stays within the depth cap but explodes in
-// breadth (N children per level ≈ N^depth threads). This is the backstop the
-// depth cap misses. It counts only in-flight threads, so it self-heals as
-// children settle — legitimate sequential delegation never approaches it,
-// while a runaway fan-out trips it fast. Guards only the LLM tool path.
-const maxLiveThreads = 16
+// maxLiveThreads caps how many LLM-spawned threads may be in flight (llmCreated,
+// no result yet) across the whole document at once. Where maxThreadDepth bounds
+// nesting along a single chain, this bounds fan-out across the whole tree: a
+// model that keeps decomposing one task into fresh subthreads without ever
+// deepening the chain stays within the depth cap but explodes in breadth (N
+// children per level ≈ N^depth threads). This is the backstop the depth cap
+// misses. It counts only in-flight threads, so it self-heals as children settle
+// — legitimate sequential delegation never approaches it, while a runaway
+// fan-out trips it fast. Guards only the LLM tool path.
+//
+// EVERY tool that opens a thread is charged against it — create_thread and the
+// delegating tools (Explore, Research, WebFetch) alike. They all spawn the same
+// kind of child and all count toward liveThreadCount, so a budget one of them
+// was exempt from was not a budget: the exempt tools could fill it and then keep
+// going, while starving the one tool that did check.
+//
+// Set below the point at which the children could all be running, because
+// maxConcurrentReadOnlyThreads holds the simultaneous ones to a handful: past
+// this many in flight, a model is opening work it cannot get to, and the honest
+// answer is to say so rather than to queue it out of sight.
+const maxLiveThreads = 8
+
+// threadBreadthRefusal is what a caller is told when maxLiveThreads turns its
+// call down. One wording for every tool that can trip it, because the cap is one
+// budget and a model reading two different explanations of the same limit would
+// have to work out that they are the same limit.
+//
+// It names the count, since a refusal a model cannot act on just gets retried:
+// this one says what stopped the call, what to do instead, and that waiting
+// fixes it — which is true, the count drops as children settle.
+func threadBreadthRefusal(toolName string, live int) string {
+	return fmt.Sprintf("%s refused: too many threads (%d) are already in progress. "+
+		"Do this work inline in the current thread, or wait for running threads "+
+		"to finish before calling it again.", toolName, live)
+}
 
 // executeCreateThread handles the create_thread tool: parses tool input and
 // either continues the session it names or dispatches a new thread via
@@ -442,10 +467,7 @@ func (r *run) executeCreateThread(toolUseID, toolName string, toolInput json.Raw
 	// drops as children settle, so this throttles a runaway without
 	// permanently disabling the tool.
 	if live := r.doc.liveThreadCount(); live >= maxLiveThreads {
-		msg := fmt.Sprintf("create_thread refused: too many threads (%d) are already in progress. "+
-			"Do this sub-task inline in the current thread, or wait for running threads to finish "+
-			"before spawning more.", live)
-		r.addMetaToolResult(toolUseID, toolName, toolInput, msg, true)
+		r.addMetaToolResult(toolUseID, toolName, toolInput, threadBreadthRefusal(toolName, live), true)
 		return nil
 	}
 

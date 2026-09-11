@@ -6,6 +6,7 @@ package worker
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -261,6 +262,76 @@ func TestSettleThreadRunStampsTheInvocationMessage(t *testing.T) {
 	if status != runStatusRest || result != "All done." {
 		t.Errorf("settled run was re-stamped: (%q, %q)", status, result)
 	}
+}
+
+// TestRunResultIsCapped pins the bound on what a child hands its parent.
+//
+// A sub-thread exists so its working context never costs the caller a token,
+// and that promise ends at the result: resultSpec is advice to a model, not a
+// limit, and nothing measured what came back. Four children in one turn returned
+// 36k, 35k, 53k and 55k characters and put ~41k fresh tokens into the parent in
+// one go.
+//
+// The three cases are one property seen from three sides. An ordinary report is
+// untouched (the cap is an outlier guard, not a redefinition of "report"); a
+// transcript dump is trimmed and SAYS it was trimmed, naming what it kept and
+// where the rest still is; and a cancelled run keeps its cancellation note after
+// the trim rather than having it cut off — the note is the one part of that
+// result the caller cannot do without.
+func TestRunResultIsCapped(t *testing.T) {
+	rest := func(text string) []ConversationItem {
+		return []ConversationItem{{Type: ItemTypeAssistant, ItemID: "a-1", Content: text}}
+	}
+	// Line-shaped, as a real report is, so the trim has boundaries to land on.
+	huge := strings.Repeat("a finding about the code\n", 2000) // ~50k
+	ordinary := strings.Repeat("a finding about the code\n", 600)
+
+	t.Run("an ordinary result is returned untouched", func(t *testing.T) {
+		status, result := resolveRunOutcome(rest(ordinary), false)
+		if status != runStatusRest {
+			t.Fatalf("status = %q, want %q", status, runStatusRest)
+		}
+		if result != ordinary {
+			t.Errorf("a result inside the cap must be returned byte-identical; got %d chars, want %d",
+				len(result), len(ordinary))
+		}
+	})
+
+	t.Run("a transcript dump is trimmed and says so", func(t *testing.T) {
+		status, result := resolveRunOutcome(rest(huge), false)
+		if status != runStatusRest {
+			t.Fatalf("status = %q, want %q", status, runStatusRest)
+		}
+		if len(result) > maxRunResultChars {
+			t.Errorf("capped result = %d chars, want at most %d — the note has to fit inside the budget too",
+				len(result), maxRunResultChars)
+		}
+		if !strings.HasPrefix(result, "a finding about the code\n") {
+			t.Error("the trim must keep the START of the report: a summary is written top-down")
+		}
+		if !strings.Contains(result, runResultTrimmedMarker) {
+			t.Errorf("a silently shortened result is worse than a long one — the model must be told. got tail %q",
+				result[max(0, len(result)-200):])
+		}
+		if !strings.Contains(result, fmt.Sprintf("%d", len(huge))) {
+			t.Errorf("the note must name the full size so the model can judge what it is missing; got tail %q",
+				result[max(0, len(result)-200):])
+		}
+	})
+
+	t.Run("a cancelled run keeps its note after the trim", func(t *testing.T) {
+		status, result := resolveRunOutcome(rest(huge), true)
+		if status != runStatusCancelled {
+			t.Fatalf("status = %q, want %q", status, runStatusCancelled)
+		}
+		if !strings.HasSuffix(result, runCancelledNote) {
+			t.Errorf("the cancellation note must survive the trim — without it the caller reads a partial "+
+				"answer as a whole one. got tail %q", result[max(0, len(result)-200):])
+		}
+		if !strings.Contains(result, runResultTrimmedMarker) {
+			t.Error("a cancelled run's partial output is capped like any other")
+		}
+	})
 }
 
 // TestRunWithNothingToStampStillReports covers the child that has no message to

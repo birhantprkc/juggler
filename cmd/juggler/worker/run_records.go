@@ -6,6 +6,9 @@ package worker
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
+	"unicode/utf8"
 
 	"juggler/cmd/juggler/providers/provider"
 
@@ -60,6 +63,80 @@ const (
 	// runBarrenNote is the run result for a run that settled without a reply.
 	runBarrenNote = "The run ended without producing a reply."
 )
+
+// maxRunResultChars caps what one run hands back to whoever called it.
+//
+// A sub-thread's whole economy is that its working context costs the caller
+// nothing and only its answer is charged — and the answer was the one part
+// nobody bounded. resultSpec asks a model for a shape; it does not enforce one,
+// and a child that decides to return its notes returns all of them.
+//
+// Measured against what runs actually return rather than picked round: across
+// the settled runs on this machine the median is ~15k characters and the 80th
+// percentile ~22k, so this sits just above the ordinary range. It is an outlier
+// guard, deliberately not a redefinition of what a report may be — trimming the
+// median report would push callers into asking again for what was cut, which
+// costs more than it saves.
+const maxRunResultChars = 24_000
+
+// runResultTrimmedMarker opens the note left in place of what was cut. Kept as
+// its own constant because a trimmed result has to be RECOGNISABLE as trimmed:
+// the parent model reads it, and the tests match on it.
+const runResultTrimmedMarker = "[result truncated:"
+
+// runResultTrimNote is what stands where the rest of the result was. It names
+// how much was kept of how much there was, so the model can judge whether it is
+// missing anything it needs, and says where the whole thing still is — nothing
+// is destroyed by the trim, the child's transcript keeps every word and the
+// session can be called again for more.
+func runResultTrimNote(kept, total int) string {
+	return fmt.Sprintf("\n\n… %s %d of %d characters shown. "+
+		"The full text stands in this thread's own transcript; call the session again "+
+		"if you need more of it.]", runResultTrimmedMarker, kept, total)
+}
+
+// capRunResult trims one run result to maxRunResultChars, note included.
+//
+// The note is sized before the cut and written after it, so the returned string
+// honours the cap rather than overshooting it by however long the note turned
+// out to be: the note's length depends only on the two counts it names, and the
+// count it is finally written with is never larger than the one it was sized
+// with.
+//
+// The START is what survives. A report is written top-down — answer first, then
+// the working — so a head is the useful half; it is also the half a truncated
+// tail would have thrown away in favour of text the reader had already seen.
+func capRunResult(text string) string {
+	if len(text) <= maxRunResultChars {
+		return text
+	}
+	total := len(text)
+	kept := trimToBoundary(text, maxRunResultChars-len(runResultTrimNote(maxRunResultChars, total)))
+	return kept + runResultTrimNote(len(kept), total)
+}
+
+// trimToBoundary cuts text to at most n bytes, landing on a line break when one
+// stands near the cut and on a rune boundary otherwise. A cut mid-rune would
+// hand the provider invalid UTF-8; a cut mid-line hands the model half a
+// sentence it may try to complete.
+func trimToBoundary(text string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if n >= len(text) {
+		return text
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	// Only a nearby line break is worth taking: a distant one would discard
+	// content to tidy the edge.
+	if nl := strings.LastIndexByte(text[:cut], '\n'); nl > cut-2000 {
+		cut = nl
+	}
+	return text[:cut]
+}
 
 // isInvocationMessage reports whether an item is the message that started a
 // delegated run: a user message stamped with the calling tool's coordinates.
@@ -620,19 +697,24 @@ func lastSettlingItem(items []ConversationItem) (ConversationItem, bool) {
 // something back.
 func resolveRunOutcome(items []ConversationItem, cancelled bool) (status, result string) {
 	if cancelled {
+		// Capped BEFORE the note is appended, never after: the note is the part of
+		// a cancelled result the caller cannot do without — it is what stops a
+		// partial answer being read as a whole one — and a trim applied to the
+		// finished string would take the note off the end and leave exactly that
+		// misreading behind.
 		if text := selectThreadFallbackResult(items); text != "" {
-			return runStatusCancelled, text + "\n\n" + runCancelledNote
+			return runStatusCancelled, capRunResult(text) + "\n\n" + runCancelledNote
 		}
 		return runStatusCancelled, runCancelledNote
 	}
 	if last, ok := lastSettlingItem(items); ok && last.Type == ItemTypeError {
 		if last.Content != "" {
-			return runStatusError, last.Content
+			return runStatusError, capRunResult(last.Content)
 		}
 		return runStatusError, "The run stopped on an error."
 	}
 	if text := selectThreadFallbackResult(items); text != "" {
-		return runStatusRest, text
+		return runStatusRest, capRunResult(text)
 	}
 	return runStatusBarren, runBarrenNote
 }

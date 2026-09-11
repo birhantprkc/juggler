@@ -13,6 +13,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -226,6 +227,72 @@ func TestLiveRunAdmissionAllowsOneWriterWithReadOnlySiblings(t *testing.T) {
 	}
 	if !w.canAdmitThread(readB) {
 		t.Fatal("a read-only sibling was refused")
+	}
+}
+
+// TestReadOnlyAdmissionCeiling pins the bound on how many read-only children may
+// run AT ONCE. Sharing the writer slot was all-or-nothing: every read-only
+// sibling the reducer offered was admitted, so a turn that called four sub-agents
+// ran four agent loops simultaneously, each growing its own context at full
+// speed, and nine at once was legal.
+//
+// The ceiling costs nothing and loses nothing, which is why it is silent. A
+// refused child is not turned away — it keeps its place and is dispatched the
+// moment a sibling retires, so the same work happens, in the same order, spread
+// out enough to watch and to stop. That is the whole property: refused now,
+// admitted later, and the test asserts both halves because a ceiling that
+// refused permanently would strand the child.
+func TestReadOnlyAdmissionCeiling(t *testing.T) {
+	w := NewConversationWorker("conv-readonly-ceiling", "user:test")
+	t.Cleanup(func() {
+		w.updateOSActivity("idle")
+		w.doc.Destroy()
+	})
+	r := w.currentRun()
+	initPayload, err := json.Marshal(InitMessage{
+		Type:         "init",
+		Conversation: SerializedConversation{ID: "conv-readonly-ceiling"},
+		Config:       WorkerConfig{ProjectPath: t.TempDir()},
+	})
+	if err != nil {
+		t.Fatalf("marshalling init: %v", err)
+	}
+	r.handleInit(initPayload)
+
+	// One more read-only child than may run together — the shape a single turn
+	// calling several sub-agents produces.
+	ids := make([]string, 0, maxConcurrentReadOnlyThreads+1)
+	for i := 0; i <= maxConcurrentReadOnlyThreads; i++ {
+		id, err := r.createThread(CreateThreadOptions{
+			Goal: fmt.Sprintf("read %d", i), Prompt: "read", ReadOnly: true,
+		})
+		if err != nil {
+			t.Fatalf("creating read-only thread %d: %v", i, err)
+		}
+		ids = append(ids, id)
+	}
+
+	turns := make([]*turnState, 0, maxConcurrentReadOnlyThreads)
+	for i := 0; i < maxConcurrentReadOnlyThreads; i++ {
+		if !w.canAdmitThread(ids[i]) {
+			t.Fatalf("read-only child %d of %d was refused below the ceiling", i+1, maxConcurrentReadOnlyThreads)
+		}
+		ts := newTurnState()
+		turns = append(turns, ts)
+		w.registerLiveRun(ids[i], ts)
+	}
+
+	last := ids[maxConcurrentReadOnlyThreads]
+	if w.canAdmitThread(last) {
+		t.Fatalf("a read-only child was admitted with %d already running: the ceiling is what stops a turn's "+
+			"whole fan-out from running at once", maxConcurrentReadOnlyThreads)
+	}
+
+	// Nothing is lost: the refusal is a wait, not a rejection.
+	w.retireLiveRun(turns[0])
+	if !w.canAdmitThread(last) {
+		t.Fatal("the queued child was still refused after a sibling retired — the ceiling must be a queue, " +
+			"not a wall")
 	}
 }
 

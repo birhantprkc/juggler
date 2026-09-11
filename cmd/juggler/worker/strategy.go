@@ -214,6 +214,20 @@ func (r *run) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVe
 	// price for prompt delivery of a deliberately-typed message.
 	r.promotePendingItems(r.t.thread.itemID)
 
+	// Bind the turn budget to the run this turn belongs to before anything reads
+	// it: a boundary carrying a count from a run that has since ended starts over
+	// here, which is what keeps the budget per-run without a reset call site at
+	// every way a run can end.
+	r.syncRunBudget()
+
+	// A leaf child that has used its run budget is told so before this turn's
+	// context is gathered, so the notice is IN the request whose tools have been
+	// withheld (filterToolsForThreadID) rather than arriving a turn later to
+	// explain a turn that already went wrong. Placed after the promotion above so
+	// it lands at the end of the transcript, behind anything the user just sent.
+	// A no-op for every thread the budget does not govern.
+	r.announceRunBudgetSpent()
+
 	userMsgToStamp := r.findUnstampedUserMsgID()
 
 	// Fire the strategy's onActivate hook (in the engine) if the active
@@ -553,6 +567,13 @@ func (r *run) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVe
 		r.t.thread.itemID, response.InputTokens, est, cached, hit,
 		response.OutputTokens, cacheWrite, response.StopReason,
 		duration.Round(time.Millisecond))
+
+	// One completed round-trip is one turn of this run's budget. Charged here
+	// because here is where a turn is known to have HAPPENED: the request went
+	// out, the provider answered, and the tokens above were spent. Counting at
+	// the top of a turn would charge for attempts that never reached a provider,
+	// and counting after processLLMResponse would miss the turns that end in one.
+	r.noteRunTurn()
 
 	shouldContinue, err := r.processLLMResponse(response)
 	r.t.txnID = ""

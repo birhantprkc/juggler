@@ -27,6 +27,8 @@ of changes; this project follows semantic versioning.
 - A background task with no cheap model to run on now says so, once, instead of silently not running
 - The Pinboard can be read from the keyboard: arrows step along the tabs and scroll the pin
 - A plan or todo list draws its progress as a bar: what's done, what's running, what failed
+- Sub-agents run a few at a time now, instead of every one a turn asked for at once
+- A sub-agent that has run long is asked for its report rather than left to carry on
 - Denying one call in a batch now refuses the rest, instead of asking again about each
 
 ## [0.6.1] - 2026-09-09

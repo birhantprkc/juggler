@@ -80,11 +80,38 @@ func (w *ConversationWorker) liveRunOwns(t *turnState) bool {
 	return false
 }
 
+// maxConcurrentReadOnlyThreads caps how many read-only children may run AT ONCE.
+//
+// Read-only siblings share the writer slot because none of them can tread on
+// another's work, and that is still true — but "cannot conflict" was read as "may
+// all go together", and a turn that calls four sub-agents then runs four agent
+// loops side by side, each growing a context of its own at full speed. The cost
+// of a fan-out is not the threads, it is the tokens they spend simultaneously,
+// and nothing was counting them.
+//
+// This is a pacing limit, not a budget: a child over the ceiling keeps its place
+// in the reducer's walk and is dispatched the moment a sibling retires, so the
+// same work still happens and the model is told nothing (there is nothing to tell
+// it — no call was refused). What it buys is a conversation whose spend a person
+// can see accumulating, and stop.
+//
+// Three, because that covers the fan-out a real question has — compare these
+// three implementations, check this against those two docs — while keeping one
+// slot's worth of headroom between "working in parallel" and "running away".
+const maxConcurrentReadOnlyThreads = 3
+
 // canAdmitThread reports whether threadItemID can join the current live set.
 // The durable thread stamp is the admission input: root and unstamped children
-// are write-capable, while stamped read-only children may share the writer slot.
+// are write-capable, while stamped read-only children may share the writer slot
+// — up to maxConcurrentReadOnlyThreads of them at a time.
+//
+// The ceiling counts only the read-only runs in flight. A write-capable run
+// alongside them is already limited to one by the rule above it, and charging it
+// to a pacing limit meant for fan-out would stall the main thread behind its own
+// children.
 func (w *ConversationWorker) canAdmitThread(threadItemID string) bool {
 	readOnly := w.threadIsReadOnly(threadItemID)
+	liveReadOnly := 0
 	for _, live := range w.liveRuns() {
 		if live.threadItemID == threadItemID {
 			return false
@@ -92,8 +119,11 @@ func (w *ConversationWorker) canAdmitThread(threadItemID string) bool {
 		if !readOnly && !live.readOnly {
 			return false
 		}
+		if live.readOnly {
+			liveReadOnly++
+		}
 	}
-	return true
+	return !readOnly || liveReadOnly < maxConcurrentReadOnlyThreads
 }
 
 // exclusivelyOwnsConversation reports whether this run is the only live owner.
@@ -236,6 +266,7 @@ type turnBoundary struct {
 	lastProgressWriteMs   int64
 	lastCacheMissNotice   string
 	lastProviderNotice    string
+	runBudget             runBudgetState
 }
 
 func boundaryFromTurn(t *turnState) turnBoundary {
@@ -246,6 +277,7 @@ func boundaryFromTurn(t *turnState) turnBoundary {
 		lastProgressWriteMs:   t.lastProgressWriteMs,
 		lastCacheMissNotice:   t.lastCacheMissNotice,
 		lastProviderNotice:    t.lastProviderNotice,
+		runBudget:             t.runBudget,
 	}
 }
 
@@ -263,6 +295,7 @@ func (r *run) seedThreadBoundary(threadItemID string, t *turnState) {
 	t.lastProgressWriteMs = boundary.lastProgressWriteMs
 	t.lastCacheMissNotice = boundary.lastCacheMissNotice
 	t.lastProviderNotice = boundary.lastProviderNotice
+	t.runBudget = boundary.runBudget
 }
 
 // nudgeRetryWait tells a run parked in a retry backoff on this thread that a

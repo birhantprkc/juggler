@@ -208,6 +208,29 @@ func (r *run) tryDelegateTool(toolUseID, toolName string, toolInput json.RawMess
 		return true
 	}
 
+	// Runaway fan-out guard, the same one create_thread answers to: this call is
+	// about to open a thread, and past maxLiveThreads there are already more in
+	// flight than the conversation can work through. Delegating tools are where
+	// the breadth actually comes from — one turn can call four of them — so
+	// exempting them left the cap guarding the quietest path into threads while
+	// the loud ones went uncounted.
+	//
+	// Reached only after the session branches above, because neither of those
+	// creates a thread: a resume appends to a child that already exists, and a
+	// busy session has already been answered. A width cap has nothing to say
+	// about either, and refusing a caller's follow-up question on width grounds
+	// would make the budget a wall.
+	//
+	// Refused rather than run inline. Inline is the graceful degradation
+	// everywhere else in this function — a null spec, a timeout — but not here:
+	// the whole point of delegating WebFetch is to keep the fetched page out of
+	// this transcript, so falling back inline would spend the parent's context
+	// precisely when the conversation has the least to spare.
+	if live := r.doc.liveThreadCount(); live >= maxLiveThreads {
+		r.addMetaToolResult(toolUseID, toolName, toolInput, threadBreadthRefusal(toolName, live), true)
+		return true
+	}
+
 	if _, err := r.createThread(opts); err != nil {
 		r.log.Error("[worker] delegated thread creation failed for %s: %v", toolName, err)
 		return false

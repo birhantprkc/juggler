@@ -63,6 +63,11 @@ type turnState struct {
 	// that sets it, and read by that same goroutine as it unwinds.
 	politelyStopped bool
 
+	// runBudget counts how far this run has got through its turn budget. Carried
+	// between the run's dispatches by turnBoundary, and bound to one run by the
+	// message that started it (see run_budget.go).
+	runBudget runBudgetState
+
 	// lastProgressWriteMs throttles processing-state progress writes.
 	lastProgressWriteMs int64
 	// lastCacheMissNotice deduplicates cache-miss notices within this turn.
