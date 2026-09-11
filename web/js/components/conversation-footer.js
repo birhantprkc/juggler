@@ -40,7 +40,7 @@
  * settled.
  */
 import { findAssistantTxnIds, findLastAssistantItemId } from '../utils/transaction-anchor.js';
-import { formatRelativeDateTime, formatTokens as fmtTokens } from '../utils/format.js';
+import { formatRelativeDateTime } from '../utils/format.js';
 import providersCache from '../services/providers-cache.js';
 import { openSettings } from '../services/settings-launcher.js';
 
@@ -564,48 +564,6 @@ class ConversationFooter extends HTMLElement {
     }, BLOB_RETRY_DELAY_MS);
   }
 
-  /**
-   * Render what the whole conversation has spent, beside the meter that reports
-   * what this one thread currently holds. Two different questions, deliberately
-   * adjacent: the meter is "how full is this context", and can fall as easily as
-   * rise, while this is a lifetime total across every thread — including the
-   * sub-threads a fan-out opens, which is where a runaway's tokens actually go
-   * and the one place no figure was ever shown.
-   *
-   * Both counts are the provider's own, so they are stated plainly. A `~` marks
-   * a total containing a turn the provider never billed a count for, because a
-   * figure presented as measured has to have been measured.
-   *
-   * The same number appears in every column's footer, since every column is a
-   * view of one conversation. That is the point rather than a duplication: a
-   * person watching a child thread burn is looking at the child's column.
-   * @private
-   * @param {import('../model/conversation.js').default|null|undefined} conv
-   */
-  _updateSpendDisplay(conv) {
-    const el = /** @type {HTMLElement|null} */ (this.querySelector('.footer-spend'));
-    if (!el) return;
-    const spend = conv?.spend;
-    // Nothing spent yet is not a zero worth printing: a conversation before its
-    // first turn has nothing to report, and "0 in · 0 out" is a row of noise on
-    // every new tab.
-    if (!spend?.input) {
-      el.classList.add('hidden');
-      el.textContent = '';
-      el.removeAttribute('title');
-      return;
-    }
-    const tilde = spend.approximate ? '~' : '';
-    // Input and output stay separate figures. Summing them would produce a
-    // number with no unit — they are neither the same resource nor priced the
-    // same — and input is the one that grows without anyone deciding to grow it.
-    el.textContent = `${tilde}${fmtTokens(spend.input)}\u00A0in · ${fmtTokens(spend.output)}\u00A0out`;
-    el.title = spend.approximate
-      ? 'Everything this conversation has spent, every thread included. Part of it is estimated: a provider reported no count for at least one turn.'
-      : 'Everything this conversation has spent, every thread included.';
-    el.classList.remove('hidden');
-  }
-
   /** @private */
   _updateTokenDisplay() {
     // Status-only: no meter is shown, so don't fetch blobs to fill one.
@@ -615,7 +573,6 @@ class ConversationFooter extends HTMLElement {
     if (!thread || !tokenDisplay) return;
 
     const conv = thread.conversation;
-    this._updateSpendDisplay(conv);
 
     // The window belongs to the model this thread runs. `conversation.
     // contextWindow` is resolved from the ROOT thread's model, so it is the
@@ -732,7 +689,6 @@ class ConversationFooter extends HTMLElement {
             </div>
             <div class="footer-meta">
                 <token-display></token-display>
-                <span class="footer-spend hidden"></span>
                 <div class="footer-activity hidden">
                     <span class="footer-last-activity"></span>
                     <button class="properties-panel-header-icon-btn footer-log-btn" type="button" title="Open this conversation's log" aria-label="Open conversation log">${LOG_ICON_SVG}</button>

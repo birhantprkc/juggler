@@ -368,8 +368,9 @@ export class DefaultsTab {
    * idle timeout (the window a streaming provider waits for the next event
    * before declaring the connection dead, "stream stalled: no data for 3m0s";
    * raising it helps gateways whose cold starts exceed the 180s default), and
-   * the conversation spend ceiling (how many input tokens one conversation may
-   * spend across all its threads before delegated work is asked to land). All
+   * the conversation spend ceiling (how many NEW input tokens one conversation
+   * may spend across all its threads — cache reads excluded, since a re-sent
+   * prompt is not fresh spend — before delegated work is asked to land). All
    * persist to credentials.json via PUT /api/config; the server reads them live.
    * @private
    */
@@ -432,12 +433,14 @@ export class DefaultsTab {
       heading: 'Spend ceiling',
       name: 'Million tokens per conversation',
       description:
-        'Once a conversation has spent this many input tokens across all of its ' +
-        'threads, sub-threads an agent started are asked to finish up and report ' +
-        'what they have, and no new ones are started. Your own turns are never ' +
-        'stopped. Leave blank for the default (20). 0 removes the ceiling.',
+        'Counts the input a conversation has not already paid for, across all of ' +
+        'its threads: context re-read from cache does not add to it. Past the ' +
+        'ceiling, sub-threads an agent started are asked to finish up and report ' +
+        'what they have, and no new ones are started — in your own threads too, ' +
+        'though your turns are never stopped. Leave blank for the default (10). ' +
+        '0 removes the ceiling.',
       inputId: 'spend-limit-input',
-      placeholder: '20',
+      placeholder: '10',
       current: () => {
         const tokens = parseInt(/** @type {any} */ (this.config).spendLimitTokens, 10);
         return Number.isFinite(tokens) ? String(Math.round(tokens / 1_000_000)) : '';
@@ -446,7 +449,7 @@ export class DefaultsTab {
         const tokens = value === '' ? '' : String(parseInt(value, 10) * 1_000_000);
         await fetchJson('/api/config', { method: 'PUT', body: { spend_limit_tokens: tokens } });
         /** @type {any} */ (this.config).spendLimitTokens = tokens;
-        if (value === '') return 'Saved. Using the default (20M).';
+        if (value === '') return 'Saved. Using the default (10M).';
         return value === '0' ? 'Saved. No ceiling.' : `Saved. Stopping delegated work past ${value}M.`;
       },
       failureLog: 'spend ceiling',

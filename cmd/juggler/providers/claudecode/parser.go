@@ -784,6 +784,45 @@ func (c *Client) handleStreamEvent(ev *StreamEventDetail, result *turnResult, ca
 		}
 
 	case "message_delta":
+		// Usage first, stop reason second. Anthropic puts both on this one event,
+		// and the tool_use arm below leaves the read loop the moment it sees the
+		// stop reason — so a usage read placed after it is never reached on a
+		// pausing call, and every count that call was billed for is lost. An
+		// agentic turn pauses at every tool batch and reaches end_turn once, so
+		// that is nearly all of them.
+		if ev.Usage != nil {
+			result.InputTokens = ev.Usage.InputTokens
+			result.OutputTokens = ev.Usage.OutputTokens
+			result.CacheReadTokens = ev.Usage.CacheReadInputTokens
+			result.CacheWriteTokens = ev.Usage.CacheCreationInputTokens
+			result.usageFromStream = true
+			jlog.Debug("claudecode usage[message_delta]: input=%d cacheRead=%d cacheWrite=%d output=%d total=%d",
+				ev.Usage.InputTokens, ev.Usage.CacheReadInputTokens,
+				ev.Usage.CacheCreationInputTokens, ev.Usage.OutputTokens,
+				ev.Usage.InputTokens+ev.Usage.CacheReadInputTokens+ev.Usage.CacheCreationInputTokens)
+			// Emit a transient `usage` chunk so the UI footer can flip to
+			// a real input-token anchor as soon as this API call finishes
+			// (rather than waiting for the worker's end-of-turn write).
+			// We use message_delta — NOT message_start — because the CLI
+			// reports message_start.usage cumulatively across API calls
+			// in the session (we observed 10×–40× wrong values there).
+			// message_delta.usage is per-call and authoritative; it's
+			// what produces the correct end-of-turn anchor.
+			uncachedInput := ev.Usage.InputTokens
+			cacheRead := ev.Usage.CacheReadInputTokens
+			cacheWrite := ev.Usage.CacheCreationInputTokens
+			if total := uncachedInput + cacheRead + cacheWrite; total > 0 {
+				if _, err := callback(provider.StreamChunk{
+					Type: provider.ContentBlockTypeUsage,
+					Metadata: map[string]any{
+						"inputTokens":  total,
+						"cachedTokens": cacheRead,
+					},
+				}); err != nil {
+					return false, 0, err
+				}
+			}
+		}
 		if ev.Delta != nil && ev.Delta.StopReason != "" {
 			// Map Anthropic stop_reason to our stop reasons. tool_use causes a
 			// pause; end_turn lets readUntilPauseOrComplete exit cleanly.
@@ -833,39 +872,6 @@ func (c *Client) handleStreamEvent(ev *StreamEventDetail, result *turnResult, ca
 				result.StopReason = provider.StopReasonEndTurn
 			default:
 				result.StopReason = provider.StopReason(ev.Delta.StopReason)
-			}
-		}
-		if ev.Usage != nil {
-			result.InputTokens = ev.Usage.InputTokens
-			result.OutputTokens = ev.Usage.OutputTokens
-			result.CacheReadTokens = ev.Usage.CacheReadInputTokens
-			result.CacheWriteTokens = ev.Usage.CacheCreationInputTokens
-			result.usageFromStream = true
-			jlog.Debug("claudecode usage[message_delta]: input=%d cacheRead=%d cacheWrite=%d output=%d total=%d",
-				ev.Usage.InputTokens, ev.Usage.CacheReadInputTokens,
-				ev.Usage.CacheCreationInputTokens, ev.Usage.OutputTokens,
-				ev.Usage.InputTokens+ev.Usage.CacheReadInputTokens+ev.Usage.CacheCreationInputTokens)
-			// Emit a transient `usage` chunk so the UI footer can flip to
-			// a real input-token anchor as soon as this API call finishes
-			// (rather than waiting for the worker's end-of-turn write).
-			// We use message_delta — NOT message_start — because the CLI
-			// reports message_start.usage cumulatively across API calls
-			// in the session (we observed 10×–40× wrong values there).
-			// message_delta.usage is per-call and authoritative; it's
-			// what produces the correct end-of-turn anchor.
-			uncachedInput := ev.Usage.InputTokens
-			cacheRead := ev.Usage.CacheReadInputTokens
-			cacheWrite := ev.Usage.CacheCreationInputTokens
-			if total := uncachedInput + cacheRead + cacheWrite; total > 0 {
-				if _, err := callback(provider.StreamChunk{
-					Type: provider.ContentBlockTypeUsage,
-					Metadata: map[string]any{
-						"inputTokens":  total,
-						"cachedTokens": cacheRead,
-					},
-				}); err != nil {
-					return false, 0, err
-				}
 			}
 		}
 

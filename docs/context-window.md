@@ -119,35 +119,36 @@ summary is being built abort the fold rather than clobbering newer content.
 Summary and error items carry the operation's accounting (calls, token usage,
 duration) in their item data, so you can inspect what the recovery cost.
 
-## What a conversation has spent
+## The conversation spend ceiling
 
-The window is about one request. What a conversation has cost in total is a
-different figure, and the footer states it beside the meter: `3.4M in · 22k out`
-— every turn the conversation has made, including the ones inside sub-threads
-and the hidden calls compaction makes. Both counts are what the provider billed;
-a `~` in front means at least one turn reported no count of its own and was
-estimated instead.
-
-It is a lifetime total, so it only ever rises. The meter next to it is the other
-question — how full this thread's context is right now — and that can fall, on
-any turn that compacts or rewinds.
-
-### The conversation spend ceiling
+The window is about one request. Separately from it, Juggler keeps a running
+total of the *new* input a conversation has sent — every turn, including the
+ones inside sub-threads and the hidden calls compaction makes, and excluding
+whatever the provider served from its cache. The exclusion is the whole point: a
+turn re-sends its entire prompt at every tool round-trip, and a warm prompt is
+almost all cache read, so counting prompts whole would measure how long you
+worked rather than what that work cost. The total is not shown anywhere.
 
 Past a ceiling on that total, Juggler stops delegating. Threads an agent started
 are told at their next turn that the ceiling has been reached; their tools are
-withheld, so the turn they are in becomes their report to whoever asked, and no
-new sub-thread is started while the conversation stays past the ceiling. This
+withheld, so the turn they are in becomes their report to whoever asked. This
 exists because a fan-out of sub-agents is the one thing here that can spend a
 great deal very quickly with nobody watching any single one of them.
 
 Your own turns are never stopped, and neither is a thread you created or have
-typed into: you can see a thread running and stop it yourself, so the ceiling
-stays out of the way of work you are actually watching.
+typed into — you can see a thread running and stop it yourself. What those
+threads do lose is the ability to start new unwatched work: past the ceiling
+`create_thread` is refused, and so is any tool that can only run as a sub-thread
+(`Explore`, `Research`). The refusal names the figures and where to change them,
+because a refusal you cannot explain reads as a bug. A tool that can also run
+without a sub-thread, such as `WebFetch`, simply runs without one — you asked
+for it, and only the delegation is in question.
 
-**Settings → Defaults → Spend ceiling** sets it, in millions of input tokens.
-Blank uses the default of 20 million — far above an ordinary long session — and
-`0` removes the ceiling entirely.
+**Settings → Defaults → Spend ceiling** sets it, in millions of new input
+tokens. Blank uses the default of 10 million, `0` removes the ceiling entirely.
+A long session of ordinary work lands well inside that; a fan-out reaches it
+quickly, because every fresh transcript is content the conversation is paying
+for the first time.
 
 ## Proactive compaction
 

@@ -30,42 +30,49 @@ import (
 // Both figures are what the PROVIDER billed, never the local admission estimate:
 // the estimator is deliberately conservative (see approximateTokenCount) and
 // runs up to ~2x hot on structured content, which is tolerable for deciding when
-// to compact and not tolerable in a number presented as what a conversation
-// cost. Where a provider reports no count and the provider substituted a local
-// one, the running total is marked approximate and stays marked — see
-// metaSpendApproximate.
+// to compact and not tolerable in a number a ceiling acts on.
+//
+// What is counted is NEW input — the prompt minus the part served from cache.
+// An agentic turn re-sends its whole prompt at every tool round-trip, and a warm
+// prompt is ~99% cache read, so counting whole prompts measures how long someone
+// worked rather than what they spent: forty sessions of ordinary work, measured
+// against the providers' own transcripts, came to 95.5M of prompt and 3.9M of
+// new input. A runaway fan-out still climbs fast under this rule, because a
+// fresh transcript is cache WRITE, not cache read.
 const (
-	// metaSpendInput is the conversation's cumulative billed INPUT tokens, every
+	// metaSpendNewInput is the conversation's cumulative NEW input tokens, every
 	// thread included. Durable top-level metadata rather than part of the
 	// ephemeral processingState blob, because it is a lifetime figure: it must
 	// survive the reload that follows the crash people want it for.
-	metaSpendInput = "spendInputTokens"
+	//
+	// A key of its own rather than the older spendInputTokens, whose stored
+	// values counted whole prompts: those totals are 20-30x this scale, and
+	// seeding from one (addSpendFloored takes the document as a floor) would put
+	// an existing conversation past any sane ceiling on its first turn.
+	metaSpendNewInput = "spendNewInputTokens"
 
-	// metaSpendOutput is the same for output tokens. Kept separate rather than
-	// summed into one number because they are not the same thing and are not
-	// priced as the same thing; a single total would be a figure with no unit.
+	// metaSpendOutput is the conversation's cumulative billed output tokens.
+	// Kept separate rather than summed into the input figure because they are
+	// not the same thing and are not priced as the same thing; a single total
+	// would be a figure with no unit.
 	metaSpendOutput = "spendOutputTokens"
-
-	// metaSpendApproximate records that at least one turn in the total was
-	// counted by a local fallback estimate rather than billed by the provider
-	// (LLMResponse.InputTokensApproximate). Set once, never cleared: a later
-	// measured turn does not make the estimate already in the total any more
-	// exact, and a figure shown without the qualifier is a claim we cannot make.
-	metaSpendApproximate = "spendApproximate"
 )
 
-// DefaultSpendCeilingTokens is the shipped ceiling: cumulative billed input
-// tokens for one conversation, past which delegated work stops.
+// DefaultSpendCeilingTokens is the shipped ceiling: cumulative NEW input tokens
+// for one conversation, past which delegated work stops.
 //
-// Twenty million is chosen to be incident territory rather than a budget. The
-// fan-out this exists for reached ~28M, 13.8M of it in ten minutes; ordinary
-// long sessions sit well under 5M. A ceiling that fires in normal use would be
+// Ten million is incident territory rather than a budget, measured rather than
+// guessed. Across 1,024 provider sessions of real work, new input per session
+// ran to a median of 0.28M, a p95 of 0.88M and a maximum of 5.93M; a
+// conversation is several sessions, so ten million leaves an ordinary one —
+// however long — well clear, while a fan-out cold-starting transcript after
+// transcript reaches it quickly. A ceiling that fires in normal use would be
 // read as noise and switched off, which is the one outcome that helps nobody.
 //
 // It meters INPUT only. Output is a small fraction of the count and is bounded
-// per turn by the model's own reserve; input is what a growing transcript
-// re-sends every turn, and is where a runaway's cost actually is.
-const DefaultSpendCeilingTokens int64 = 20_000_000
+// per turn by the model's own reserve; input is what a runaway's cost is made
+// of.
+const DefaultSpendCeilingTokens int64 = 10_000_000
 
 // SpendLimitFunc reports the configured ceiling in cumulative input tokens, 0
 // meaning no ceiling. Injected so this package stays free of the credentials
@@ -105,23 +112,37 @@ func (r *run) recordTurnSpend(response *LLMResponse) {
 	if response == nil {
 		return
 	}
-	in, out := int64(response.InputTokens), int64(response.OutputTokens)
+	in, out := int64(newInputTokens(response)), int64(response.OutputTokens)
 	if in <= 0 && out <= 0 {
 		return
 	}
 
 	w := r.ConversationWorker
-	if response.InputTokensApproximate {
-		w.spendApproximate.Store(true)
-	}
-	totalIn := w.addSpendFloored(&w.spendInput, metaSpendInput, in)
+	totalIn := w.addSpendFloored(&w.spendInput, metaSpendNewInput, in)
 	totalOut := w.addSpendFloored(&w.spendOutput, metaSpendOutput, out)
 
-	w.doc.SetMetadata(metaSpendInput, totalIn)
+	w.doc.SetMetadata(metaSpendNewInput, totalIn)
 	w.doc.SetMetadata(metaSpendOutput, totalOut)
-	if w.spendApproximate.Load() {
-		w.doc.SetMetadata(metaSpendApproximate, true)
+}
+
+// newInputTokens is the part of a round-trip's prompt the conversation had not
+// already paid for: everything sent, less what the provider served from cache.
+//
+// A nil CachedTokens means the provider reported no cache figure, not that it
+// cached nothing (see provider.StreamResult), so the whole prompt counts —
+// guessing the other way would quietly switch the ceiling off for every provider
+// that stays silent. Floored at zero: a provider reporting more cache read than
+// prompt is incoherent, and a round-trip that subtracted from the total would
+// make the ceiling something a long enough conversation could walk back from.
+func newInputTokens(response *LLMResponse) int {
+	in := response.InputTokens
+	if response.CachedTokens == nil {
+		return in
 	}
+	if fresh := in - *response.CachedTokens; fresh > 0 {
+		return fresh
+	}
+	return 0
 }
 
 // addSpendFloored advances one counter by delta, first taking the persisted
@@ -154,17 +175,13 @@ func (w *ConversationWorker) addSpendFloored(counter *atomic.Int64, metaKey stri
 	}
 }
 
-// conversationSpend returns the conversation's cumulative billed input and
-// output tokens, and whether any part of the input total was estimated rather
-// than billed. Reading applies the same document floor as recording, so a
+// conversationSpend returns the conversation's cumulative new input and billed
+// output tokens. Reading applies the same document floor as recording, so a
 // worker that has run no turn since a reload still answers with the history.
-func (w *ConversationWorker) conversationSpend() (int64, int64, bool) {
-	in := w.addSpendFloored(&w.spendInput, metaSpendInput, 0)
+func (w *ConversationWorker) conversationSpend() (int64, int64) {
+	in := w.addSpendFloored(&w.spendInput, metaSpendNewInput, 0)
 	out := w.addSpendFloored(&w.spendOutput, metaSpendOutput, 0)
-	if approx, _ := w.doc.GetMetadata(metaSpendApproximate).(bool); approx {
-		w.spendApproximate.Store(true)
-	}
-	return in, out, w.spendApproximate.Load()
+	return in, out
 }
 
 // spendCeiling is the configured ceiling in cumulative input tokens: 0 = off.
@@ -181,23 +198,39 @@ func (w *ConversationWorker) spendCeiling() int64 {
 // spendCeilingReached reports whether this conversation has spent its ceiling.
 // At the ceiling counts as reached: the limit is the last acceptable figure,
 // not the first unacceptable one.
+//
+// Asked of the conversation, not of a run, and so ungated — it is what the two
+// gates that refuse to OPEN a thread are built on (executeCreateThread,
+// tryDelegateTool). Those two are the ceiling's only teeth against a fan-out:
+// the threads that can open threads are the root and the ones a human steers,
+// which is exactly the set spendCeilingStopsRun below exempts, so a ceiling
+// that governed only that function's answer could quieten children already
+// running and prevent nothing.
 func (w *ConversationWorker) spendCeilingReached() bool {
 	ceiling := w.spendCeiling()
 	if ceiling <= 0 {
 		return false
 	}
-	in, _, _ := w.conversationSpend()
+	in, _ := w.conversationSpend()
 	return in >= ceiling
 }
 
-// spendCeilingStopsRun reports whether the ceiling governs the run in hand.
+// spendCeilingStopsRun reports whether the ceiling takes the TOOLS off the run
+// in hand — one of the two things the ceiling does, and the narrower.
 //
-// It governs exactly what the turn budget governs (runBudgetSpent), and for the
-// same argument: a leaf worker an LLM opened, never the root thread, never a
+// Here it governs exactly what the turn budget governs (runBudgetSpent), and for
+// the same argument: a leaf worker an LLM opened, never the root thread, never a
 // thread a person created or has since taken over. A human watching their own
-// thread can see it running and stop it; being refused by a ceiling they would
-// then have to go and find in settings is the tool overruling its user. An agent
-// nobody is watching has no such brake.
+// thread can see it running and stop it; having the work they are watching go
+// quiet on them, with no way on but a settings panel they would first have to go
+// and find, is the tool overruling its user. An agent nobody is watching has no
+// such brake.
+//
+// What the root and a human-steered thread DO lose past the ceiling is the
+// ability to start new unwatched work: spendCeilingReached refuses create_thread
+// and any delegating tool that cannot run inline. That is the ceiling's other
+// half, it is deliberate, and it is why "the ceiling never touches your own
+// thread" would be too strong a thing to say anywhere.
 func (r *run) spendCeilingStopsRun() bool {
 	threadItemID := r.t.thread.itemID
 	if threadItemID == "" {
@@ -240,7 +273,7 @@ func (r *run) announceSpendCeiling() {
 		return
 	}
 	r.t.runBudget.spendTold = true
-	spent, _, _ := r.conversationSpend()
+	spent, _ := r.conversationSpend()
 	r.appendTargetMessage(ConversationItem{
 		Type:      ItemTypeSystemReminder,
 		ItemID:    generateItemID(),

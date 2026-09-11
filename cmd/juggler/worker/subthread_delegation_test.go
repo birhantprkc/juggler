@@ -876,3 +876,71 @@ func TestDelegationBreadthCap(t *testing.T) {
 		}
 	})
 }
+
+// TestDelegationSpendCeiling pins what the conversation's spend ceiling does to
+// a delegating call, which divides on one question: can this tool run any other
+// way?
+//
+// It is the same division delegationBlocked already makes for the recursion
+// guards, and for the same reason. A tool with an inline path loses only the
+// subthread, so refusing it outright would overrule the person who asked for it
+// — and this refusal lands on the root thread and on threads a human steers,
+// the very threads spendCeilingStopsRun exempts, because those are the only ones
+// ever offered a delegating tool in the first place. A tool flagged
+// RequiresDelegation has no inline path, so running it inline is not a
+// degradation but a failure: it is answered instead, with the figures named.
+func TestDelegationSpendCeiling(t *testing.T) {
+	t.Run("a tool that can run inline runs inline", func(t *testing.T) {
+		w := delegationCapWorker(t, func() *SubthreadSpec {
+			return &SubthreadSpec{Goal: "Read the page", Prompt: "Fetch https://example.com and summarise it."}
+		})
+		w.SetSpendLimit(func() int64 { return 1000 })
+		w.currentRun().recordTurnSpend(&LLMResponse{InputTokens: 2000, OutputTokens: 10})
+		before := countThreads(w)
+
+		if w.currentRun().tryDelegateTool("tu-inline", "WebFetch",
+			json.RawMessage(`{"url":"https://example.com","prompt":"summarise"}`)) {
+			t.Fatal("past the ceiling a tool with an inline path must fall through to run inline, not answer the call")
+		}
+		if got := countThreads(w); got != before {
+			t.Errorf("thread count = %d, want %d — nothing may be spawned past the ceiling", got, before)
+		}
+		if refusal := metaToolResultFor(w, "tu-inline"); refusal != nil {
+			t.Errorf("falling through inline must leave the call for addToolAction to run; got refusal %q", refusal.Content)
+		}
+	})
+
+	t.Run("a tool that cannot is refused, with the figures", func(t *testing.T) {
+		w := delegationCapWorker(t, func() *SubthreadSpec {
+			return &SubthreadSpec{Goal: "Look into it", Prompt: "Trace the auth flow."}
+		})
+		w.turn.delegatingTools = map[string]delegatingTool{"Explore": {requiresDelegation: true}}
+		w.SetSpendLimit(func() int64 { return 1000 })
+		w.currentRun().recordTurnSpend(&LLMResponse{InputTokens: 2000, OutputTokens: 10})
+		before := countThreads(w)
+
+		if !w.currentRun().tryDelegateTool("tu-refused", "Explore",
+			json.RawMessage(`{"task":"trace the auth flow"}`)) {
+			t.Fatal("a tool with no inline path must be ANSWERED past the ceiling: falling through would " +
+				"hand the browser a tool it cannot run")
+		}
+		if got := countThreads(w); got != before {
+			t.Errorf("thread count = %d, want %d — the ceiling must create nothing", got, before)
+		}
+
+		refusal := metaToolResultFor(w, "tu-refused")
+		if refusal == nil {
+			t.Fatalf("expected a meta-tool-result refusal bound to tu-refused; items=%+v", w.doc.GetItems())
+		}
+		if !refusal.IsError {
+			t.Error("refusal meta-tool-result should be isError=true")
+		}
+		result, ok := toolResultContents(w.currentRun().buildMessages(nil))["tu-refused"]
+		if !ok {
+			t.Fatal("refusal must emit a paired tool_use+tool_result, never a dangling tool_use")
+		}
+		if !strings.Contains(result, "Explore") || !strings.Contains(result, spendCeilingNoticeMarker) {
+			t.Errorf("a refusal the model cannot explain reads as a bug: it must name the tool and the ceiling. got %q", result)
+		}
+	})
+}

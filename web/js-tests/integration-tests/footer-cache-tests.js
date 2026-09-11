@@ -804,82 +804,6 @@ export const footerMetersThreadOwnModelTest = {
   }
 };
 
-// ============================================================================
-// TEST 11: The footer states what the whole conversation has spent.
-// ============================================================================
-
-/**
- * The meter beside it answers "how full is this thread's context now", a figure
- * that falls as readily as it rises. This one is the other question entirely:
- * what has this conversation cost, in total, across every thread — the figure
- * that existed nowhere but the log, and only as lines somebody had to add up
- * afterwards.
- *
- * Two turns of 1000 and 2000 input make the distinction testable: the meter
- * states the second turn's 2k, and the spend line states the 3k they came to
- * together. A build that wired the spend line to the same source as the meter
- * would show 2k in both, and pass every other test in this file.
- * @type {import('../utilities/integration-test-runner.js').IntegrationTestDefinition}
- */
-export const footerShowsConversationSpendTest = {
-  name: 'footer-shows-conversation-spend',
-  description: 'The footer states the conversation\'s cumulative billed tokens, separately from the thread\'s context meter.',
-  fixture: 'unit-test-fixture',
-
-  llmResponses: [
-    textResponse('one.', { inputTokens: 1000, outputTokens: 10, cachedTokens: 0 }),
-    textResponse('two.', { inputTokens: 2000, outputTokens: 20, cachedTokens: 0 })
-  ],
-
-  operations: [
-    { type: 'send-message', message: 'first' },
-    { type: 'send-message', message: 'second' }
-  ],
-
-  async customAssertions(conversation) {
-    const footer = /** @type {any} */ (findFooter(conversation));
-    if (!footer) return; // headless
-    const spendEl = /** @type {HTMLElement|null} */ (footer.querySelector('.footer-spend'));
-    if (!spendEl) throw new Error('The footer has no .footer-spend element');
-
-    forceContextWindow(conversation, 200000);
-    await waitFor(() => !spendEl.classList.contains('hidden'), 3000,
-      'the spend line appears once the conversation has spent something');
-
-    const text = spendEl.textContent || '';
-    if (!/\b3k\b/.test(text)) {
-      throw new Error(`Spend must total both turns' input (3k); got ${JSON.stringify(text)}`);
-    }
-    if (!/\b30\b/.test(text)) {
-      throw new Error(`Spend must total both turns' output (30); got ${JSON.stringify(text)}`);
-    }
-
-    // The meter is still the meter: it reports the latest turn, not the total.
-    const td = findTokenDisplay(conversation);
-    const meterText = td?.textContent || '';
-    if (/\b3k\b/.test(meterText)) {
-      throw new Error(`The context meter must report this turn (2k), not the lifetime total; got ${JSON.stringify(meterText)}`);
-    }
-
-    // A total holding one unbilled turn says so, because a figure presented as
-    // measured has to have been measured.
-    const metadata = /** @type {any} */ (conversation)._doc.metadata;
-    metadata.set('spendApproximate', true);
-    footer._updateTokenDisplay();
-    if (!(spendEl.textContent || '').startsWith('~')) {
-      throw new Error(`An approximate total must be marked; got ${JSON.stringify(spendEl.textContent)}`);
-    }
-
-    // Nothing spent, nothing said: a fresh conversation's footer carries no row
-    // of zeroes.
-    metadata.set('spendInputTokens', 0);
-    footer._updateTokenDisplay();
-    if (!spendEl.classList.contains('hidden')) {
-      throw new Error(`With nothing spent the line must hide; got ${JSON.stringify(spendEl.textContent)}`);
-    }
-  }
-};
-
 export const tests = [
   footerShowsBlobTokensTest,
   footerHidesAfterRewindTest,
@@ -890,6 +814,5 @@ export const tests = [
   footerHoldsLiveCountThroughGapTest,
   footerHoldsLiveCountAcrossRebindTest,
   footerStatesOverrunTest,
-  footerMetersThreadOwnModelTest,
-  footerShowsConversationSpendTest
+  footerMetersThreadOwnModelTest
 ];

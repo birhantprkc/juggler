@@ -479,7 +479,7 @@ func (r *run) executeCreateThread(toolUseID, toolName string, toolInput json.Raw
 	// turn — while the runs already going are landed at their next boundary
 	// (announceSpendCeiling) rather than cut off mid-sentence.
 	if r.spendCeilingReached() {
-		spent, _, _ := r.conversationSpend()
+		spent, _ := r.conversationSpend()
 		r.addMetaToolResult(toolUseID, toolName, toolInput, spendCeilingRefusal(toolName, spent, r.spendCeiling()), true)
 		return nil
 	}
@@ -488,9 +488,26 @@ func (r *run) executeCreateThread(toolUseID, toolName string, toolInput json.Raw
 	return err
 }
 
-// handleCreateThread handles strategy-driven thread creation requests from the
-// browser. Non-blocking: creates the thread item + user message, signals the
-// reducer to dispatch, and returns the threadItemId via WS response.
+// handleCreateThread handles a create-thread request from the browser.
+// Non-blocking: creates the thread item + user message, signals the reducer to
+// dispatch, and returns the threadItemId via WS response.
+//
+// None of the three runaway guards above applies here — no depth cap, no breadth
+// cap, no spend ceiling — and that is the difference between a request and a
+// decision. Those guards bound a MODEL decomposing work inside its own turn
+// loop, where each refusal has a tool_use to answer and the next turn to act on
+// it. A request that arrives over the wire has already been decided somewhere
+// else, and it cannot join a runaway in any case: ExternalDispatch requires the
+// whole conversation to be idle (see createThread), and a fan-out is by
+// definition runs in flight.
+//
+// The same is true of dispatchCreateThread, the pending-request route below.
+// Between them they are every way a thread is opened without a model asking.
+//
+// The only sender of this message is WorkerManager#createThread
+// (web/js/services/worker-manager.js), which nothing in the tree calls: strategy
+// plugins open threads through the SDK's createThread primitive, which takes the
+// pending-request route instead.
 func (r *run) handleCreateThread(payload json.RawMessage) {
 	var msg CreateThreadMessage
 	if err := json.Unmarshal(payload, &msg); err != nil {
@@ -527,9 +544,11 @@ func (r *run) handleCreateThread(payload json.RawMessage) {
 	})
 }
 
-// dispatchCreateThread is the orchestrator entry point used by
-// pendingRequests. Same semantics as handleCreateThread but returns the
-// new thread's itemId directly (no WS response).
+// dispatchCreateThread is the orchestrator entry point used by pendingRequests,
+// and so the route behind the SDK's strategy createThread primitive. Same
+// semantics as handleCreateThread — including its lack of the runaway guards,
+// for the reasons given there — but returns the new thread's itemId directly
+// (no WS response).
 func (r *run) dispatchCreateThread(goal, prompt, parentThreadItemID string, isContinuation bool, strategyID, modelConfigJSON string) (string, error) {
 	return r.createThread(CreateThreadOptions{
 		Goal:               goal,

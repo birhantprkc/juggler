@@ -24,7 +24,8 @@ const (
 	claudecodeBinaryPathKey = "claudecode_binary_path"
 	streamIdleTimeoutKey    = "stream_idle_timeout" // mirrors streamidle.CredKey
 	// spendLimitTokensKey stores the conversation spend ceiling in cumulative
-	// input tokens, as a string. Absent/unparseable ⇒ the shipped default
+	// NEW input tokens — cache reads excluded, as the counter meters them
+	// (worker/spend.go) — as a string. Absent/unparseable ⇒ the shipped default
 	// (worker.DefaultSpendCeilingTokens); "0" ⇒ no ceiling. Read live by the
 	// resolver in server/llm_caller.go, which this key mirrors.
 	spendLimitTokensKey = "spend_limit_tokens"

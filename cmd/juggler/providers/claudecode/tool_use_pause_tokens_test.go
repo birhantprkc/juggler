@@ -13,7 +13,8 @@ import (
 // TestFinalizeTurn_ToolUsePauseReportsWholePrompt pins the provider boundary at
 // a mid-turn pause: a tool_use round-trip reports the SAME thing every other
 // round-trip does — the whole prompt it sent (fresh + cache read + cache write),
-// with the cache read and cache write as their subsets.
+// with the cache read and cache write as their subsets, and the output it
+// produced.
 //
 // Every consumer of these numbers describes one round-trip: the transaction blob
 // the footer reads, the admission anchor, the [turn tokens] line. None sums
@@ -33,7 +34,7 @@ func TestFinalizeTurn_ToolUsePauseReportsWholePrompt(t *testing.T) {
 		InputTokens:      1234,   // fresh
 		CacheReadTokens:  200000, // warm re-read
 		CacheWriteTokens: 45000,  // cold ingest
-		OutputTokens:     10,     // partial — counted at end_turn, not here
+		OutputTokens:     880,    // what this call produced before parking
 		Blocks: []provider.ContentBlock{{
 			Type:      provider.ContentBlockTypeToolUse,
 			ToolUseID: "t1",
@@ -62,8 +63,8 @@ func TestFinalizeTurn_ToolUsePauseReportsWholePrompt(t *testing.T) {
 	if provider.TokenCount(res.CacheWriteTokens) != 45000 {
 		t.Fatalf("CacheWriteTokens = %d, want 45000 — the cold ingest must stay visible", provider.TokenCount(res.CacheWriteTokens))
 	}
-	if res.OutputTokens != 0 {
-		t.Fatalf("pause must NOT report partial output: OutputTokens=%d, want 0", res.OutputTokens)
+	if res.OutputTokens != 880 {
+		t.Fatalf("OutputTokens = %d, want 880 — a paused call produced output and was billed for it", res.OutputTokens)
 	}
 }
 

@@ -743,10 +743,13 @@ type CorruptionRepairedMessage struct {
 }
 
 // =============================================================================
-// Strategy-Driven Thread Creation Messages
+// Browser-Requested Thread Creation Messages
 // =============================================================================
 
-// CreateThreadMessage requests thread creation from a strategy plugin
+// CreateThreadMessage requests thread creation from the browser, over
+// WorkerManager#createThread. A strategy plugin's own createThread primitive
+// does NOT come this way — it goes through pendingRequests (see
+// handleCreateThread, which answers this one).
 type CreateThreadMessage struct {
 	Type           string `json:"type"` // "create-thread"
 	RequestID      string `json:"requestId"`
@@ -756,7 +759,7 @@ type CreateThreadMessage struct {
 	IsContinuation bool   `json:"isContinuation,omitempty"` // continue thread without inserting a user prompt
 }
 
-// CreateThreadResponse contains the result of strategy-driven thread creation
+// CreateThreadResponse answers a CreateThreadMessage.
 type CreateThreadResponse struct {
 	Type         string `json:"type"` // "create-thread-response"
 	RequestID    string `json:"requestId"`

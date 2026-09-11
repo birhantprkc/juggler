@@ -26,50 +26,65 @@ func TestSpendAccumulatesAcrossThreads(t *testing.T) {
 		r.recordTurnSpend(&LLMResponse{InputTokens: 1000, OutputTokens: 100})
 	}
 
-	in, out, approx := w.conversationSpend()
+	in, out := w.conversationSpend()
 	if in != 3000 || out != 300 {
 		t.Errorf("conversationSpend() = (%d in, %d out), want (3000, 300)", in, out)
-	}
-	if approx {
-		t.Errorf("conversationSpend() reported approximate after three measured turns")
 	}
 
 	// Durable, because the figure has to survive the reload that follows every
 	// crash people want it for.
-	if got := w.doc.GetMetadata(metaSpendInput); toInt64(got) != 3000 {
-		t.Errorf("metadata %s = %v, want 3000", metaSpendInput, got)
+	if got := w.doc.GetMetadata(metaSpendNewInput); toInt64(got) != 3000 {
+		t.Errorf("metadata %s = %v, want 3000", metaSpendNewInput, got)
 	}
 	if got := w.doc.GetMetadata(metaSpendOutput); toInt64(got) != 300 {
 		t.Errorf("metadata %s = %v, want 300", metaSpendOutput, got)
 	}
 }
 
-// TestSpendMarksApproximateTotals pins the honesty rule: one turn whose input
-// count was a local fallback estimate makes the whole running total an
-// estimate, and it stays one. A number the UI presents as billed must have been
-// billed.
-func TestSpendMarksApproximateTotals(t *testing.T) {
+// TestSpendCountsOnlyNewInput is what the counter is for. A prompt is re-sent in
+// full on every round-trip of an agentic turn, and a cached one is ~99% cache
+// read (measured against the provider's own transcripts), so a total that counts
+// whole prompts measures how many round-trips a conversation took, not what it
+// spent: forty sessions of ordinary work came to 95.5M of prompt and 3.9M of new
+// input. Only the new part — fresh tokens and the ones written to cache — is
+// content the conversation had not already paid for.
+func TestSpendCountsOnlyNewInput(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
 	r := w.currentRun()
 
-	r.recordTurnSpend(&LLMResponse{InputTokens: 500, OutputTokens: 10})
-	if _, _, approx := w.conversationSpend(); approx {
-		t.Fatalf("a measured turn must not mark the total approximate")
+	// A typical warm round-trip: a 120k prompt that is almost all cache read.
+	cached := 118_000
+	r.recordTurnSpend(&LLMResponse{InputTokens: 120_000, CachedTokens: &cached, OutputTokens: 400})
+
+	in, _ := w.conversationSpend()
+	if in != 2000 {
+		t.Errorf("conversationSpend() input = %d, want 2000 — the 118k re-read from cache is not new spend", in)
 	}
 
-	r.recordTurnSpend(&LLMResponse{InputTokens: 500, OutputTokens: 10, InputTokensApproximate: true})
-	if _, _, approx := w.conversationSpend(); !approx {
-		t.Errorf("an estimated turn must mark the running total approximate")
+	// A provider that reports no cache figure has not told us any of it was
+	// cached, so the whole prompt counts. Unknown is not zero in the other
+	// direction either: under-counting here would switch the ceiling off.
+	r.recordTurnSpend(&LLMResponse{InputTokens: 5000, OutputTokens: 100})
+	if in, _ := w.conversationSpend(); in != 7000 {
+		t.Errorf("conversationSpend() input = %d, want 7000 — an unreported cache figure counts the whole prompt", in)
 	}
+}
 
-	// A later measured turn does not launder the estimate already in the total.
-	r.recordTurnSpend(&LLMResponse{InputTokens: 500, OutputTokens: 10})
-	if _, _, approx := w.conversationSpend(); !approx {
-		t.Errorf("approximate must stay set once an estimated turn is in the total")
-	}
-	if got := w.doc.GetMetadata(metaSpendApproximate); got != true {
-		t.Errorf("metadata %s = %v, want true", metaSpendApproximate, got)
+// TestSpendNeverGoesNegative: a provider reporting more cache read than total
+// input is incoherent, but it must not subtract from the running total — a
+// ceiling that can be pushed back down is not a ceiling.
+func TestSpendNeverGoesNegative(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+	r := w.currentRun()
+
+	r.recordTurnSpend(&LLMResponse{InputTokens: 1000, OutputTokens: 10})
+	overreported := 9999
+	r.recordTurnSpend(&LLMResponse{InputTokens: 100, CachedTokens: &overreported, OutputTokens: 10})
+
+	if in, _ := w.conversationSpend(); in != 1000 {
+		t.Errorf("conversationSpend() input = %d, want 1000 — an incoherent cache count must add nothing, not subtract", in)
 	}
 }
 
@@ -82,12 +97,12 @@ func TestSpendSeedsFromDocumentOnReload(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()
 
-	w.doc.SetMetadata(metaSpendInput, int64(5_000_000))
+	w.doc.SetMetadata(metaSpendNewInput, int64(5_000_000))
 	w.doc.SetMetadata(metaSpendOutput, int64(20_000))
 
 	w.currentRun().recordTurnSpend(&LLMResponse{InputTokens: 1000, OutputTokens: 100})
 
-	in, out, _ := w.conversationSpend()
+	in, out := w.conversationSpend()
 	if in != 5_001_000 || out != 20_100 {
 		t.Errorf("conversationSpend() after reload = (%d, %d), want (5001000, 20100)", in, out)
 	}
@@ -114,7 +129,7 @@ func TestSpendIsConcurrencySafe(t *testing.T) {
 	}
 	wg.Wait()
 
-	in, out, _ := w.conversationSpend()
+	in, out := w.conversationSpend()
 	if in != 2000 || out != 200 {
 		t.Errorf("conversationSpend() = (%d, %d), want (2000, 200) — a concurrent record was lost", in, out)
 	}
@@ -127,11 +142,11 @@ func TestSpendIgnoresUnmeasuredTurns(t *testing.T) {
 	defer w.doc.Destroy()
 
 	w.currentRun().recordTurnSpend(nil)
-	if in, out, _ := w.conversationSpend(); in != 0 || out != 0 {
+	if in, out := w.conversationSpend(); in != 0 || out != 0 {
 		t.Errorf("conversationSpend() = (%d, %d) after a nil response, want (0, 0)", in, out)
 	}
-	if got := w.doc.GetMetadata(metaSpendInput); got != nil {
-		t.Errorf("a nil response wrote metadata %s = %v", metaSpendInput, got)
+	if got := w.doc.GetMetadata(metaSpendNewInput); got != nil {
+		t.Errorf("a nil response wrote metadata %s = %v", metaSpendNewInput, got)
 	}
 }
 

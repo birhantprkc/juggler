@@ -213,7 +213,7 @@ export class WorkerManager {
     this._autoLoadFailures = new Map();
 
     /**
-     * Pending strategy-driven thread creation requests
+     * Pending thread creation requests
      * (requestId -> {conversationId, resolve, reject}). The conversationId is
      * what lets {@link WorkerManager#terminate} unwind the requests belonging to
      * a conversation that is going away; see createThread for why there is no

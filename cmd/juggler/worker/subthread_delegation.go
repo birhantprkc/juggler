@@ -41,6 +41,12 @@ type delegatingTool struct {
 	// tryDelegateTool can stamp it onto the child at creation. The definition it
 	// came from belongs to the turn; the child outlives the turn.
 	readOnlySubthread bool
+
+	// requiresDelegation mirrors ToolDefinition.RequiresDelegation: this tool has
+	// no inline path, so a gate that turns delegation down has to answer the call
+	// rather than fall through. Carried here because the gates run long after the
+	// definition that declared it has gone.
+	requiresDelegation bool
 }
 
 // collectDelegatingTools returns the tools in tools whose definition carries
@@ -53,7 +59,10 @@ func collectDelegatingTools(tools []ToolDefinition) map[string]delegatingTool {
 			if set == nil {
 				set = make(map[string]delegatingTool)
 			}
-			set[t.Name] = delegatingTool{readOnlySubthread: t.ReadOnlySubthread}
+			set[t.Name] = delegatingTool{
+				readOnlySubthread:  t.ReadOnlySubthread,
+				requiresDelegation: t.RequiresDelegation,
+			}
 		}
 	}
 	return set
@@ -231,13 +240,24 @@ func (r *run) tryDelegateTool(toolUseID, toolName string, toolInput json.RawMess
 		return true
 	}
 
-	// The conversation's spend ceiling, refused here for the same reasons and at
-	// the same point as the width cap above: this call is about to open a thread,
-	// and past the ceiling a new transcript is the most expensive thing left to
-	// start. Refused rather than run inline, again because inline would spend the
-	// parent's context exactly when there is least to spare.
+	// The conversation's spend ceiling. This call is about to open a thread, and
+	// past the ceiling a new transcript is the most expensive thing left to start.
+	//
+	// It divides the way delegationBlocked above divides, on the same question: a
+	// tool that also works inline loses only the subthread and runs, while one
+	// flagged RequiresDelegation has no inline path and is answered instead.
+	// Refusing both would overrule the person who asked — this gate is reachable
+	// only from the root thread and from threads a human steers (they are the only
+	// ones ever offered a delegating tool; spendCeilingStopsRun withholds tools
+	// from the rest), so it lands squarely on work somebody is watching. A ceiling
+	// may stop that work growing a transcript nobody is watching; it may not take
+	// a fetch away from the person who typed the question.
 	if r.spendCeilingReached() {
-		spent, _, _ := r.conversationSpend()
+		if !tool.requiresDelegation {
+			r.log.Info("[worker] %s may delegate but the conversation is at its spend ceiling — running inline", toolName)
+			return false
+		}
+		spent, _ := r.conversationSpend()
 		r.addMetaToolResult(toolUseID, toolName, toolInput, spendCeilingRefusal(toolName, spent, r.spendCeiling()), true)
 		return true
 	}

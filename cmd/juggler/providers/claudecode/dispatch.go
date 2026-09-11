@@ -511,8 +511,8 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 	if turn.StopReason == provider.StopReasonToolUse {
 		// Mid-LLM-turn pause. It reports its usage exactly as the end_turn arm
 		// below does, because it is a round-trip like any other: the prompt it
-		// sent is fresh + cache read + cache write, and cache read / cache write
-		// are the subsets of that.
+		// sent is fresh + cache read + cache write, cache read / cache write are
+		// the subsets of that, and the output is what it generated.
 		//
 		// Every consumer of these numbers describes ONE round-trip — the
 		// transaction blob behind the footer pill, the admission anchor, the
@@ -563,6 +563,7 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 			return &provider.StreamResult{
 				StopReason:       provider.StopReasonError,
 				InputTokens:      turn.InputTokens + turn.CacheReadTokens + turn.CacheWriteTokens,
+				OutputTokens:     turn.OutputTokens,
 				CachedTokens:     provider.Reported(turn.CacheReadTokens),
 				CacheWriteTokens: provider.Reported(turn.CacheWriteTokens),
 			}, &transientCLIError{msg: "claude CLI stopped for tool_use but emitted no usable tool call"}
@@ -589,14 +590,18 @@ func (c *Client) finalizeTurn(req provider.MessageRequest, turn *turnResult, err
 		// parked ceiling, which reclaims the subprocess of a park nobody ever
 		// answers (see reapIdleCLI). Per-conv state lives on
 		// c.activeSession (set in-place above) — no broadcast needed.
-		jlog.Debug("Session paused: %d pending tool IDs (uuid=%s, partial in=%d out=%d cacheWrite=%d)",
+		jlog.Debug("Session paused: %d pending tool IDs (uuid=%s, in=%d out=%d cacheWrite=%d)",
 			len(pending), c.activeSession.sessionUUID, turn.InputTokens, turn.OutputTokens, turn.CacheWriteTokens)
-		// The whole prompt this call sent, with its cache subsets (see the note
-		// above). Output stays unreported: the pause interrupts an API call whose
-		// output tokens are still growing, and end_turn carries the final count.
+		// The whole prompt this call sent, with its cache subsets, and the output
+		// it produced (see the note above). The output count is as final as the
+		// input one: a pause is a completed API call whose message_delta carried
+		// both, not a stream caught mid-flight. Withholding it would leave the
+		// conversation's output total reading near zero, since an agentic turn
+		// pauses at every tool batch and reaches end_turn once.
 		return &provider.StreamResult{
 			StopReason:       turn.StopReason,
 			InputTokens:      turn.InputTokens + turn.CacheReadTokens + turn.CacheWriteTokens,
+			OutputTokens:     turn.OutputTokens,
 			CachedTokens:     provider.Reported(turn.CacheReadTokens),
 			CacheWriteTokens: provider.Reported(turn.CacheWriteTokens),
 		}, nil

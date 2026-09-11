@@ -202,7 +202,12 @@ func (r *run) buildLLMRequestWithIntent(ctxResult *ContextResult, tools []ToolDe
 // same breath (announceRunBudgetSpent, announceSpendCeiling), because tools
 // vanishing without explanation is a puzzle rather than an instruction. The two
 // limits bound different things — how far one run goes, and what the whole
-// conversation has spent — and govern exactly the same threads.
+// conversation has spent — and withhold from exactly the same threads.
+//
+// The spend ceiling also refuses calls that would OPEN a thread, on threads this
+// rule exempts (spendCeilingReached, used by executeCreateThread and
+// tryDelegateTool). The turn budget has no such second half. Nothing here needs
+// to know that, but "the two behave alike" is only true of this filter.
 //
 // That rule lives HERE rather than in filterToolsForThreadID below, because a
 // budget belongs to a run and only this entry point is asking about the run in
