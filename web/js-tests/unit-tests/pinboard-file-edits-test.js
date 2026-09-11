@@ -419,8 +419,25 @@ export async function runTests() {
 
       const before = fired;
       addAction(root, { tool: 'write', path: 'after-stop.js' });
-      await new Promise((resolve) => { setTimeout(resolve, 50); });
+      await frames();
       assert(fired === before, `unsubscribing must stop the notifications; ${before} → ${fired}`);
+    });
+
+    // News is held for a frame before it is delivered, so there is a window in
+    // which a pin has been told nothing yet and has already unsubscribed. What
+    // is held belongs to that subscription: delivering it afterwards calls a
+    // listener whose owner has finished with it, which is exactly what the
+    // unsubscribe was asked to prevent. A transcript change is the only signal
+    // that is coalesced, so it is the only one that can arrive this late.
+    await run('news held when a pin unsubscribes is dropped, not delivered late', async () => {
+      await quiesce(session, conversation.id);
+      let fired = 0;
+      const stop = service().onChange(() => { fired++; });
+      session.notifyConversationChange('conversation:changed', { conversationId: conversation.id });
+      stop();
+
+      await frames();
+      assert(fired === 0, `news held at the moment of unsubscribing must be dropped; fired ${fired} times`);
     });
 
     // --- what the pin is not told ---------------------------------------------

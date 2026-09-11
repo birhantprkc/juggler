@@ -897,6 +897,28 @@ class PinboardContent extends JugglerElement {
   }
 
   /**
+   * Drop the news held for one listener, because that subscription has ended.
+   *
+   * News is held for a frame before it is delivered, so a listener can be told
+   * to stop while something is still waiting for it. Delivering that afterwards
+   * calls back into a pin that has finished with the subscription — the one
+   * thing an unsubscribe is asked to prevent — and a pin need not be going away
+   * to unsubscribe: one that swaps what it watches keeps its mount, and its
+   * signal, throughout.
+   *
+   * News is held per listener, so a listener subscribed to two services shares
+   * one entry and is told once however many of them changed. Ending either
+   * subscription drops that entry; the one still running is told again by the
+   * next change, which the pin re-reads for in full.
+   * @param {(...args: any[]) => void} listener - The listener that has stopped.
+   * @private
+   */
+  _dropPendingNotify(listener) {
+    if (!this._pendingNotify.delete(listener)) return;
+    if (!this._pendingNotify.size) this._clearFlush();
+  }
+
+  /**
    * Stand both booked flushes down — the one that ran, and the one that lost.
    * @private
    */
@@ -1391,6 +1413,9 @@ class PinboardContent extends JugglerElement {
       stopped = true;
       unsubscribeSession?.();
       document.removeEventListener(THREAD_FOCUS_CHANGED, onFocus);
+      // This is the only service whose news is coalesced, so it is the only one
+      // that can have a notification still in hand at this point.
+      this._dropPendingNotify(listener);
     };
     signal?.addEventListener('abort', stop, { once: true });
     return stop;
