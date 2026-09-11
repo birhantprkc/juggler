@@ -120,6 +120,19 @@ async function clickDelete(tab) {
 }
 
 /**
+ * Press Delete the way the user does — at the document, where the tab's
+ * keyboard handler listens. Dispatching at the document leaves e.target as the
+ * Document, which the handler narrows away, so none of its "user is typing"
+ * guards trip.
+ * @returns {void}
+ */
+function pressDelete() {
+  document.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'Delete', bubbles: true, cancelable: true
+  }));
+}
+
+/**
  * @returns {Promise<{passed: number, failed: number, errors: string[]}>} Aggregated test results.
  */
 export async function runTests() {
@@ -286,6 +299,86 @@ export async function runTests() {
         `a span delete must leave its own row selected, got ${col.getSelectedItemId()}`);
       assert(root.items.some((/** @type {any} */ i) => i.get('itemId') === anchor),
         'the anchor row should have survived its own span delete');
+    });
+
+    await run('the delete key targets the highlighted row, not the last-rendered panel', async () => {
+      const { tab, conversation } = await mount();
+      const root = conversation.rootMessageThread;
+
+      conversation._doc.doc.transact(() => {
+        root.addEvent(createUserMessage('Do several things'));
+        for (const item of fixtureItems()) root.addEvent(item);
+      }, conversation._doc.authorId);
+      await settle();
+
+      const col = /** @type {any} */ (tab.querySelector('conversation-area'));
+      const ids = root.items.map((/** @type {any} */ i) => i.get('itemId'));
+      const anchor = ids[ids.length - 4];
+
+      col.selectItem(anchor);
+      await settlePanel();
+      assert(col.getSelectedItemId() === anchor, 'failed to select the anchor row');
+
+      // The properties panel's content render is debounced by 150ms
+      // (PROPS_RENDER_DEBOUNCE_MS), and the Delete button arrives with that
+      // content bound to the item it was rendered for. Moving the selection and
+      // pressing Delete inside that window is ordinary keyboard use — hold or
+      // drum ArrowDown/Delete and every press after the first lands here — and
+      // the highlight has already moved while the panel still shows the anchor.
+      // Delete must follow the highlight, not the stale button.
+      col.selectNextItem();
+      const moved = col.getSelectedItemId();
+      assert(moved && moved !== anchor,
+        'ArrowDown should have moved the selection off the anchor');
+
+      pressDelete();
+      await settle();
+
+      const remaining = root.items.map((/** @type {any} */ i) => i.get('itemId'));
+      assert(!remaining.includes(moved),
+        `Delete removed the wrong row: the highlighted item "${moved}" is still ` +
+        'there, so the keypress acted on whatever the panel last rendered');
+      assert(remaining.includes(anchor),
+        `Delete took the row BEFORE the highlighted one — "${anchor}" was the ` +
+        'previous selection and the panel had not caught up');
+    });
+
+    await run('a delete acts on the selected item after the list shifts beneath it', async () => {
+      const { tab, conversation } = await mount();
+      const root = conversation.rootMessageThread;
+
+      conversation._doc.doc.transact(() => {
+        root.addEvent(createUserMessage('Do several things'));
+        for (const item of fixtureItems()) root.addEvent(item);
+      }, conversation._doc.authorId);
+      await settle();
+
+      const col = /** @type {any} */ (tab.querySelector('conversation-area'));
+      const ids = root.items.map((/** @type {any} */ i) => i.get('itemId'));
+      const selected = ids[ids.length - 3];
+      const shiftedAway = ids[1];
+
+      col.selectItem(selected);
+      await settlePanel();
+      assert(col.getSelectedItemId() === selected, 'failed to select the row to delete');
+
+      // Remove an item ABOVE the selection. The panel does not re-render for
+      // this and is not meant to — the snapshot it re-renders on describes the
+      // selected item alone — so its own content stays correct while every
+      // index below the removal is now off by one. The worker does exactly this
+      // shift on its own initiative, moving a tool action to the end of the
+      // list when its context item changes, so the window is not hypothetical.
+      root.deleteItemById(shiftedAway);
+      await settle();
+      assert(col.getSelectedItemId() === selected,
+        'removing an unrelated row must not move the selection');
+
+      await clickDelete(tab);
+
+      const remaining = root.items.map((/** @type {any} */ i) => i.get('itemId'));
+      assert(!remaining.includes(selected),
+        `Delete must remove the selected row "${selected}", but it is still there ` +
+        '— the button acted on an index captured before the list shifted');
     });
 
     await run('a folded neighbour survives the next arrow key', async () => {

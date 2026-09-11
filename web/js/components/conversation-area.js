@@ -903,9 +903,11 @@ class ConversationArea extends HTMLElement {
     if (actionsEl && parentThread && threadItemId) {
       const idx = parentThread.findIndexByItemId(threadItemId);
       if (idx >= 0) {
-        appendDeleteControls(actionsEl, parentThread, idx, (e) => {
+        appendDeleteControls(actionsEl, parentThread, threadItemId, (e) => {
           e.stopPropagation();
-          const neighborId = findNeighborItemId(parentThread.items, idx, parentThread);
+          const clickIdx = parentThread.findIndexByItemId(threadItemId);
+          if (clickIdx < 0) return;
+          const neighborId = findNeighborItemId(parentThread.items, clickIdx, parentThread);
           if (neighborId) {
             this.dispatchEvent(new CustomEvent('request-item-selection', {
               detail: { itemId: neighborId },

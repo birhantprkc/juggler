@@ -1051,6 +1051,12 @@ class ConversationTab extends JugglerElement {
                 propsPanel = /** @type {HTMLElement} */ (nextCol);
               }
             }
+            // The panel's content — the Delete button included — is rendered on
+            // a debounce, so between moving the selection and pressing Delete
+            // the button on screen can still be the previous item's. Acting on
+            // it would delete a row the user is not pointing at. Bring the
+            // panel up to the selection before reading anything off it.
+            this._flushPropertiesRender(propsPanel);
             const deleteBtn = /** @type {HTMLElement|null} */ (propsPanel?.querySelector('.properties-panel-btn.danger'));
             if (deleteBtn) {
               e.preventDefault();
@@ -1923,6 +1929,8 @@ class ConversationTab extends JugglerElement {
     if (/** @type {any} */ (col)._renderedInputKey !== propInputKey) {
       /** @type {any} */ (col)._renderedInputKey = propInputKey;
       const renderContent = () => {
+        /** @type {any} */ (col)._juggler_pendingRender = null;
+        /** @type {any} */ (col)._juggler_renderTimer = null;
         /** @type {any} */ (col).setConversation(conversation);
         const parentMessageThread = parentEntry?.threadItemId
           ? createMessageThread(conversation, parentEntry.container, parentEntry.threadItemId)
@@ -1942,15 +1950,35 @@ class ConversationTab extends JugglerElement {
       this._propsLastChangeTime = now;
       clearTimeout(/** @type {any} */ (col)._juggler_renderTimer);
       if (wasStill) {
-        /** @type {any} */ (col)._juggler_renderTimer = null;
         renderContent();
       } else {
+        /** @type {any} */ (col)._juggler_pendingRender = renderContent;
         /** @type {any} */ (col)._juggler_renderTimer =
           setTimeout(renderContent, PROPS_RENDER_DEBOUNCE_MS);
       }
     }
 
     return col;
+  }
+
+  /**
+   * Render a properties panel's deferred content NOW, if it has some waiting.
+   *
+   * The debounce above trades panel freshness for not re-parsing markdown on
+   * every item an arrow key passes over, which is the right trade for content
+   * the user is only reading. It is the wrong trade for anything that ACTS on
+   * what the panel shows: for up to PROPS_RENDER_DEBOUNCE_MS the panel's
+   * buttons still belong to the previously selected item, so a command that
+   * reaches for one gets the wrong item — a delete that silently takes the
+   * row above the highlighted one. Such a command flushes first.
+   * @param {HTMLElement|null} col - A properties-panel column, or null.
+   * @private
+   */
+  _flushPropertiesRender(col) {
+    const pending = /** @type {any} */ (col)?._juggler_pendingRender;
+    if (!pending) return;
+    clearTimeout(/** @type {any} */ (col)._juggler_renderTimer);
+    pending();
   }
 
   /**

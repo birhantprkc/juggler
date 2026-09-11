@@ -957,8 +957,8 @@ class PropertiesPanel extends HTMLElement {
           controls.appendChild(branchBtn);
         }
 
-        appendDeleteControls(controls, this._messageThread, itemIndex,
-          () => this._deleteItem(itemIndex));
+        appendDeleteControls(controls, this._messageThread, messageItemId,
+          () => this._deleteItem(messageItemId));
       }
     }
 
@@ -992,7 +992,7 @@ class PropertiesPanel extends HTMLElement {
     if (!contextItem.preventUserDeletion()) {
       const itemIndex = this._messageThread ? this._messageThread.findIndexByItemId(contextItem.id) : -1;
       if (itemIndex >= 0 && this._messageThread) {
-        appendDeleteControls(controls, this._messageThread, itemIndex,
+        appendDeleteControls(controls, this._messageThread, contextItem.id,
           () => this._removeContextItem(contextItem));
       } else {
         const removeBtn = document.createElement('button');
@@ -1040,8 +1040,8 @@ class PropertiesPanel extends HTMLElement {
       const itemIndex = this._messageThread.findIndexByItemId(taItemId);
 
       if (itemIndex >= 0) {
-        appendDeleteControls(controls, this._messageThread, itemIndex,
-          () => this._deleteItem(itemIndex));
+        appendDeleteControls(controls, this._messageThread, taItemId,
+          () => this._deleteItem(taItemId));
       }
     }
 
@@ -1104,16 +1104,18 @@ class PropertiesPanel extends HTMLElement {
   }
 
   /**
-   * Delete an item
-   * @param {number} itemIndex
+   * Delete an item, named by id so that a list which has shifted since these
+   * controls were built still loses the item they describe.
+   * @param {string} itemId
    * @private
    */
-  _deleteItem(itemIndex) {
+  _deleteItem(itemId) {
     if (!this._messageThread) return;
-    // Select a neighbour before deleting so the rebuild picks it up.
     const items = this._messageThread.items;
-    const deletedId = items[itemIndex]?.get('itemId');
-    if (deletedId === this._selectedItemId) {
+    const itemIndex = this._messageThread.findIndexByItemId(itemId);
+    if (itemIndex < 0) return;
+    // Select a neighbour before deleting so the rebuild picks it up.
+    if (itemId === this._selectedItemId) {
       const neighborId = findNeighborItemId(items, itemIndex, this._messageThread);
       if (neighborId) {
         this.dispatchEvent(new CustomEvent('request-item-selection', {
@@ -1122,7 +1124,13 @@ class PropertiesPanel extends HTMLElement {
         }));
       }
     }
-    this._messageThread.deleteAt(itemIndex);
+    // deleteItemById re-resolves the id against the array it is about to
+    // mutate, so the index resolved above is never what the delete acts on.
+    // It also handles a thread item correctly (handing its transcript to
+    // another of the thread's views); the column chain sends thread items to a
+    // conversation-area rather than here, so that is insurance, not a case
+    // this panel serves.
+    this._messageThread.deleteItemById(itemId);
   }
 
   /**
