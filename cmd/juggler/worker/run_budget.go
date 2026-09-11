@@ -85,6 +85,12 @@ type runBudgetState struct {
 	starter string
 	turns   int
 	told    bool
+	// spendTold records that this run has been told the conversation's spend
+	// ceiling has landed on it (announceSpendCeiling). It rides here because it
+	// is the same kind of state for the same kind of reason: said once per run,
+	// reset by the same starter mismatch, and belonging to the run rather than to
+	// the document. The ceiling itself is conversation-wide and lives in spend.go.
+	spendTold bool
 }
 
 // currentRunStarterID returns the item id of the message that started the

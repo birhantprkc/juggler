@@ -616,23 +616,30 @@ func (r *run) handleProviderTurn(payload json.RawMessage) {
 	// Transaction" resolves. StartTime is now / Duration is zero: the turn ran
 	// in the CLI, so juggler has no real wall-clock for it (cosmetic fields).
 	// SaveBlob no-ops on a nil store (tests without persistence).
+	response := &LLMResponse{
+		Blocks:                 msg.Blocks,
+		InputTokens:            msg.InputTokens,
+		InputTokensApproximate: msg.InputTokensApproximate,
+		OutputTokens:           msg.OutputTokens,
+		CachedTokens:           msg.CachedTokens,
+		CacheWriteTokens:       msg.CacheWriteTokens,
+		StopReason:             msg.StopReason,
+	}
 	if err := r.txnStore.SaveBlob(TransactionBlobInput{
 		ConversationID: r.conversationID,
 		TxnID:          txnID,
-		Response: &LLMResponse{
-			Blocks:                 msg.Blocks,
-			InputTokens:            msg.InputTokens,
-			InputTokensApproximate: msg.InputTokensApproximate,
-			OutputTokens:           msg.OutputTokens,
-			CachedTokens:           msg.CachedTokens,
-			CacheWriteTokens:       msg.CacheWriteTokens,
-			StopReason:             msg.StopReason,
-		},
-		StartTime:   time.Now(),
-		ModelConfig: r.resolveModelConfig(),
+		Response:       response,
+		StartTime:      time.Now(),
+		ModelConfig:    r.resolveModelConfig(),
 	}); err != nil {
 		r.log.Error("Failed to save autonomous-turn transaction blob: %v", err)
 	}
+
+	// A turn the CLI ran on its own behalf is still this conversation's spend,
+	// and the provider billed it the same way. Counting only the turns juggler
+	// dispatched would understate a claudecode conversation by everything it did
+	// autonomously.
+	r.recordTurnSpend(response)
 
 	// Flush so the autonomous turn syncs to the browser promptly; the items
 	// observer will drive the reducer on the next tick (an assistant message at

@@ -231,6 +231,17 @@ func (r *run) tryDelegateTool(toolUseID, toolName string, toolInput json.RawMess
 		return true
 	}
 
+	// The conversation's spend ceiling, refused here for the same reasons and at
+	// the same point as the width cap above: this call is about to open a thread,
+	// and past the ceiling a new transcript is the most expensive thing left to
+	// start. Refused rather than run inline, again because inline would spend the
+	// parent's context exactly when there is least to spare.
+	if r.spendCeilingReached() {
+		spent, _, _ := r.conversationSpend()
+		r.addMetaToolResult(toolUseID, toolName, toolInput, spendCeilingRefusal(toolName, spent, r.spendCeiling()), true)
+		return true
+	}
+
 	if _, err := r.createThread(opts); err != nil {
 		r.log.Error("[worker] delegated thread creation failed for %s: %v", toolName, err)
 		return false

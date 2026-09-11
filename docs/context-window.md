@@ -119,6 +119,36 @@ summary is being built abort the fold rather than clobbering newer content.
 Summary and error items carry the operation's accounting (calls, token usage,
 duration) in their item data, so you can inspect what the recovery cost.
 
+## What a conversation has spent
+
+The window is about one request. What a conversation has cost in total is a
+different figure, and the footer states it beside the meter: `3.4M in · 22k out`
+— every turn the conversation has made, including the ones inside sub-threads
+and the hidden calls compaction makes. Both counts are what the provider billed;
+a `~` in front means at least one turn reported no count of its own and was
+estimated instead.
+
+It is a lifetime total, so it only ever rises. The meter next to it is the other
+question — how full this thread's context is right now — and that can fall, on
+any turn that compacts or rewinds.
+
+### The conversation spend ceiling
+
+Past a ceiling on that total, Juggler stops delegating. Threads an agent started
+are told at their next turn that the ceiling has been reached; their tools are
+withheld, so the turn they are in becomes their report to whoever asked, and no
+new sub-thread is started while the conversation stays past the ceiling. This
+exists because a fan-out of sub-agents is the one thing here that can spend a
+great deal very quickly with nobody watching any single one of them.
+
+Your own turns are never stopped, and neither is a thread you created or have
+typed into: you can see a thread running and stop it yourself, so the ceiling
+stays out of the way of work you are actually watching.
+
+**Settings → Defaults → Spend ceiling** sets it, in millions of input tokens.
+Blank uses the default of 20 million — far above an ordinary long session — and
+`0` removes the ceiling entirely.
+
 ## Proactive compaction
 
 `/compact` folds a conversation on demand through the same engine the

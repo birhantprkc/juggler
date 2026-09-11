@@ -228,6 +228,14 @@ func (r *run) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVe
 	// A no-op for every thread the budget does not govern.
 	r.announceRunBudgetSpent()
 
+	// The conversation's spend ceiling lands the same way, at the same boundary,
+	// on the same kind of thread: a delegated run past the ceiling is told so
+	// here and offered no tools below, so this turn is its report. Separate from
+	// the turn budget because they bound different things — one run's length
+	// versus everything this conversation has spent — and a child well inside its
+	// turn budget is exactly who a runaway fan-out is made of.
+	r.announceSpendCeiling()
+
 	userMsgToStamp := r.findUnstampedUserMsgID()
 
 	// Fire the strategy's onActivate hook (in the engine) if the active
@@ -331,6 +339,11 @@ func (r *run) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVe
 	}); blobErr != nil {
 		r.log.Error("❌ Failed to save transaction blob: %v", blobErr)
 	}
+
+	// Charge this round-trip to the conversation's running total, against the
+	// same response the blob records — so a turn the user cancelled, which the
+	// provider billed all the same, is counted rather than quietly dropped.
+	r.recordTurnSpend(blobResponse)
 
 	if err != nil {
 		if errors.Is(err, ErrCancelled) {

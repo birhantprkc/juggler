@@ -364,10 +364,12 @@ export class DefaultsTab {
 
   /**
    * Render global settings that apply across every provider, shown as a section
-   * on the Defaults tab: the automatic-compaction on/off switch and the stream
+   * on the Defaults tab: the automatic-compaction on/off switch, the stream
    * idle timeout (the window a streaming provider waits for the next event
    * before declaring the connection dead, "stream stalled: no data for 3m0s";
-   * raising it helps gateways whose cold starts exceed the 180s default). Both
+   * raising it helps gateways whose cold starts exceed the 180s default), and
+   * the conversation spend ceiling (how many input tokens one conversation may
+   * spend across all its threads before delegated work is asked to land). All
    * persist to credentials.json via PUT /api/config; the server reads them live.
    * @private
    */
@@ -404,10 +406,80 @@ export class DefaultsTab {
     );
     container.appendChild(autoCompactRow);
 
-    const timeoutHeading = document.createElement('div');
-    timeoutHeading.className = 'settings-section-heading';
-    timeoutHeading.textContent = 'Stream idle timeout';
-    container.appendChild(timeoutHeading);
+    this._appendNumberField(container, {
+      heading: 'Stream idle timeout',
+      name: 'Seconds to wait',
+      description:
+        'Seconds to wait for the next stream event before treating the connection ' +
+        'as dropped ("stream stalled"). Raise it for gateways with slow cold ' +
+        'starts. Leave blank for the default (180).',
+      inputId: 'stream-idle-timeout-input',
+      placeholder: '180',
+      current: () => /** @type {any} */ (this.config).streamIdleTimeout || '',
+      validate: (value) => (parseInt(value, 10) <= 0 ? 'Must be greater than zero.' : ''),
+      save: async (value) => {
+        await fetchJson('/api/config', { method: 'PUT', body: { stream_idle_timeout: value } });
+        /** @type {any} */ (this.config).streamIdleTimeout = value;
+        return value ? `Saved. Waiting up to ${value}s.` : 'Saved. Using default (180s).';
+      },
+      failureLog: 'stream idle timeout',
+    });
+
+    // The conversation spend ceiling. Stored in tokens and shown in millions:
+    // the figure people reason about is "twenty million", and a field asking
+    // them to count zeroes invites the slip that switches the guard off.
+    this._appendNumberField(container, {
+      heading: 'Spend ceiling',
+      name: 'Million tokens per conversation',
+      description:
+        'Once a conversation has spent this many input tokens across all of its ' +
+        'threads, sub-threads an agent started are asked to finish up and report ' +
+        'what they have, and no new ones are started. Your own turns are never ' +
+        'stopped. Leave blank for the default (20). 0 removes the ceiling.',
+      inputId: 'spend-limit-input',
+      placeholder: '20',
+      current: () => {
+        const tokens = parseInt(/** @type {any} */ (this.config).spendLimitTokens, 10);
+        return Number.isFinite(tokens) ? String(Math.round(tokens / 1_000_000)) : '';
+      },
+      save: async (value) => {
+        const tokens = value === '' ? '' : String(parseInt(value, 10) * 1_000_000);
+        await fetchJson('/api/config', { method: 'PUT', body: { spend_limit_tokens: tokens } });
+        /** @type {any} */ (this.config).spendLimitTokens = tokens;
+        if (value === '') return 'Saved. Using the default (20M).';
+        return value === '0' ? 'Saved. No ceiling.' : `Saved. Stopping delegated work past ${value}M.`;
+      },
+      failureLog: 'spend ceiling',
+    });
+  }
+
+  /**
+   * Append one labelled whole-number setting: heading, name, description, and a
+   * text input that saves on blur and on Enter. Blank always means "use the
+   * default", so every field built here can be cleared back to the shipped
+   * behaviour without a separate control saying so.
+   *
+   * `current` is read rather than captured because the saved value is written
+   * back onto `this.config`, and a re-render must show what was saved rather
+   * than what was there when the field was built.
+   * @private
+   * @param {Element} container
+   * @param {object} opts
+   * @param {string} opts.heading - Section heading above the field.
+   * @param {string} opts.name - Short label for the value itself.
+   * @param {string} opts.description - The explanatory line under the label.
+   * @param {string} opts.inputId - DOM id for the input.
+   * @param {string} opts.placeholder - Shown when the field is blank (the default).
+   * @param {() => string} opts.current - The currently saved value, as displayed.
+   * @param {(value: string) => string} [opts.validate] - Returns an error message for a non-blank value, or ''.
+   * @param {(value: string) => Promise<string>} opts.save - Persists the value; resolves with the status line to show.
+   * @param {string} opts.failureLog - What to call this setting in the console on failure.
+   */
+  _appendNumberField(container, opts) {
+    const heading = document.createElement('div');
+    heading.className = 'settings-section-heading';
+    heading.textContent = opts.heading;
+    container.appendChild(heading);
 
     const fieldGroup = document.createElement('div');
     fieldGroup.className = 'settings-group provider-field';
@@ -416,14 +488,11 @@ export class DefaultsTab {
     infoColumn.className = 'provider-info';
     const nameLabel = document.createElement('div');
     nameLabel.className = 'provider-name';
-    nameLabel.textContent = 'Seconds to wait';
+    nameLabel.textContent = opts.name;
     infoColumn.appendChild(nameLabel);
     const description = document.createElement('div');
     description.className = 'provider-description';
-    description.textContent =
-      'Seconds to wait for the next stream event before treating the connection ' +
-      'as dropped ("stream stalled"). Raise it for gateways with slow cold ' +
-      'starts. Leave blank for the default (180).';
+    description.textContent = opts.description;
     infoColumn.appendChild(description);
 
     const controlColumn = document.createElement('div');
@@ -435,16 +504,16 @@ export class DefaultsTab {
 
     const input = document.createElement('input');
     input.type = 'text';
-    input.id = 'stream-idle-timeout-input';
+    input.id = opts.inputId;
     // Non-secret persisted value: keep visible across close/reopen (see close()).
     input.className = 'settings-value-input';
     input.inputMode = 'numeric';
-    input.placeholder = '180';
+    input.placeholder = opts.placeholder;
     input.autocomplete = 'off';
     input.setAttribute('autocorrect', 'off');
     input.setAttribute('autocapitalize', 'off');
     input.spellcheck = false;
-    input.value = /** @type {any} */ (this.config).streamIdleTimeout || '';
+    input.value = opts.current();
     inputWrapper.appendChild(input);
     row.appendChild(inputWrapper);
 
@@ -454,22 +523,21 @@ export class DefaultsTab {
 
     const save = async () => {
       const value = input.value.trim();
-      if (value === (/** @type {any} */ (this.config).streamIdleTimeout || '')) return;
+      if (value === opts.current()) return;
       if (value !== '' && !/^\d+$/.test(value)) {
-        status.textContent = 'Enter a whole number of seconds.';
+        status.textContent = 'Enter a whole number.';
         return;
       }
-      if (value !== '' && parseInt(value, 10) <= 0) {
-        status.textContent = 'Must be greater than zero.';
+      const invalid = value === '' ? '' : (opts.validate?.(value) || '');
+      if (invalid) {
+        status.textContent = invalid;
         return;
       }
       status.textContent = 'Saving…';
       try {
-        await fetchJson('/api/config', { method: 'PUT', body: { stream_idle_timeout: value } });
-        /** @type {any} */ (this.config).streamIdleTimeout = value;
-        status.textContent = value ? `Saved. Waiting up to ${value}s.` : 'Saved. Using default (180s).';
+        status.textContent = await opts.save(value);
       } catch (e) {
-        console.error('[SettingsPanel] Failed to save stream idle timeout:', e);
+        console.error(`[SettingsPanel] Failed to save ${opts.failureLog}:`, e);
         status.textContent = 'Failed to save.';
       }
     };

@@ -52,6 +52,10 @@ the on-disk folder name and is mutated via the rename API (see comment in
 | `nextSteps` | string \| null | Strategy plugins | Hint text rendered in the column header until a new turn starts. |
 | `draft` | `Y.Map` \| object | Composer | Root conversation's unsent draft: `{text, attachments}`. Per-thread drafts live on the thread container instead. |
 | `isProvisionalName` | boolean | Worker (seed) / `Session.setNameIsProvisional` | Whether the name is still provisional (machine-derived) and so may be replaced by the auto-namer. Seeded on first init from the `Untitled N` shape; cleared by a rename, set by the "Auto-name" button and `/handoff`. |
+| `completedTurns` | number | Worker (`bumpTurnCounterAtIdle`) | Monotonic count of turns that have reached idle. A durable fence observers use to detect "a turn happened" when Yjs batching merged the busy→idle window away. Never resets. |
+| `spendInputTokens` | number | Worker (`recordTurnSpend`) | Cumulative provider-billed INPUT tokens for the whole conversation — root, every sub-thread, and compaction's hidden calls. Monotonic and durable; read by `Conversation#spend`. Not a context-fullness measure. |
+| `spendOutputTokens` | number | Worker (`recordTurnSpend`) | The same for output tokens. Kept separate from input rather than summed: they are not the same resource. |
+| `spendApproximate` | boolean | Worker (`recordTurnSpend`) | At least one turn in the totals was counted by a provider's local fallback rather than billed. Set once, never cleared. |
 
 #### `processingState.runs` — the per-thread run registry
 

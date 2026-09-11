@@ -389,6 +389,11 @@ func (w *ConversationWorker) resolveCompactionPromptItemID(threadID string, item
 // discarded, and maps engine-side cancellation onto the reducer's sentinel.
 func (r *run) dispatchHiddenCompaction(encoded json.RawMessage) (*LLMResponse, error) {
 	response, err := r.callLLMWithSink(encoded, nil)
+	// A hidden call is hidden from the transcript, not from the bill. The
+	// operation keeps its own accounting for its own budget (CompactionUsage);
+	// this counts the same tokens once into the conversation's lifetime total,
+	// which is the only figure that answers what the conversation has cost.
+	r.recordTurnSpend(response)
 	if err != nil && (errors.Is(err, ErrCancelled) || r.compactionCancelled() || r.t.wakeInterrupt.Load()) {
 		return nil, errBoundedCompactionCancelled
 	}

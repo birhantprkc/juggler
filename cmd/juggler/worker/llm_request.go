@@ -189,18 +189,21 @@ func (r *run) buildLLMRequestWithIntent(ctxResult *ContextResult, tools []ToolDe
 // names in a sub-agent's strategy: that strategy only filters when it actually
 // applied, so a child whose strategy went missing would otherwise be handed a
 // tool that could only fail.
-// 3. A run that has spent its turn budget is offered NOTHING: the same
-// withhold-don't-refuse rule taken to its limit, since a turn with no tool to
-// call has to answer, and answering is the report its caller is parked on. The
-// child is told why in the same breath (announceRunBudgetSpent), because tools
-// vanishing without explanation is a puzzle rather than an instruction.
+// 3. A run that has spent its turn budget, or that the conversation's spend
+// ceiling has landed on, is offered NOTHING: the same withhold-don't-refuse rule
+// taken to its limit, since a turn with no tool to call has to answer, and
+// answering is the report its caller is parked on. The child is told why in the
+// same breath (announceRunBudgetSpent, announceSpendCeiling), because tools
+// vanishing without explanation is a puzzle rather than an instruction. The two
+// limits bound different things — how far one run goes, and what the whole
+// conversation has spent — and govern exactly the same threads.
 //
 // That rule lives HERE rather than in filterToolsForThreadID below, because a
 // budget belongs to a run and only this entry point is asking about the run in
 // hand. The by-id form is also called for somebody else's thread (compaction
 // asks for the parent's tools), where this run's count would be meaningless.
 func (r *run) filterToolsForThread(tools []ToolDefinition) []ToolDefinition {
-	if r.runBudgetSpent() {
+	if r.runBudgetSpent() || r.spendCeilingStopsRun() {
 		return nil
 	}
 	return r.filterToolsForThreadID(tools, r.t.thread.itemID)

@@ -471,6 +471,19 @@ func (r *run) executeCreateThread(toolUseID, toolName string, toolInput json.Raw
 		return nil
 	}
 
+	// Runaway SPEND guard. Depth bounds the shape of the tree, breadth its width,
+	// and the turn budget how far one child runs; none of them bounds what the
+	// conversation as a whole has cost, which is the figure the person paying is
+	// actually exposed to. Past the ceiling, opening another thread is the one
+	// thing worth refusing outright — a fresh transcript to grow and re-send every
+	// turn — while the runs already going are landed at their next boundary
+	// (announceSpendCeiling) rather than cut off mid-sentence.
+	if r.spendCeilingReached() {
+		spent, _, _ := r.conversationSpend()
+		r.addMetaToolResult(toolUseID, toolName, toolInput, spendCeilingRefusal(toolName, spent, r.spendCeiling()), true)
+		return nil
+	}
+
 	_, err := r.createThread(opts)
 	return err
 }

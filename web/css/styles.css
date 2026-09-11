@@ -1803,6 +1803,16 @@ conversation-footer token-display {
     white-space: nowrap;
 }
 
+/* The conversation's lifetime spend, sitting beside the thread's context meter.
+   Typeset as the readings around it: this is information, not a status, so it
+   carries no colour of its own. */
+.footer-spend {
+    font-family: var(--font-sans);
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
 .llm-busy-text {
     color: var(--text-secondary);
     font-size: 0.875rem;

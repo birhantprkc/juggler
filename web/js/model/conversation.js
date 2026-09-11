@@ -712,6 +712,28 @@ class Conversation {
   }
 
   /**
+   * What this conversation has spent, every thread included: the provider's own
+   * billed token counts, accumulated by the worker across the root thread, every
+   * sub-thread, and the hidden calls compaction makes (cmd/juggler/worker/
+   * spend.go). It is a lifetime figure — monotonic, and durable across a reload —
+   * not a measure of how full the context is now; the footer's token pill answers
+   * that other question for one thread.
+   *
+   * `approximate` is true when any turn in the total was counted by a provider's
+   * local fallback rather than billed, and once true it stays true: a later
+   * measured turn does not make the estimate already in the total exact.
+   * @returns {{input: number, output: number, approximate: boolean}} Cumulative
+   *   billed input and output tokens, and whether any of it is estimated.
+   */
+  get spend() {
+    return {
+      input: Number(this._doc?.metadata.get('spendInputTokens')) || 0,
+      output: Number(this._doc?.metadata.get('spendOutputTokens')) || 0,
+      approximate: !!this._doc?.metadata.get('spendApproximate'),
+    };
+  }
+
+  /**
    * Character budget for a single tool result's LLM-facing output. Items read
    * it through `ContextItem#truncationBudget()` / `truncateForLLM()` rather
    * than reaching in here, so the conversation stays the one place the budget

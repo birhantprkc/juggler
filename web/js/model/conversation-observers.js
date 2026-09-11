@@ -198,7 +198,10 @@ export function setupYjsObservers(c) {
     }
 
     // Check all relevant metadata keys
-    const relevantKeys = ['defaultModelConfig', 'currentStrategyId', 'conversationPermissionRules', 'conversationAllowedPaths', 'processingState', 'completedTurns', 'undoState'];
+    // spendInputTokens alone stands for the whole spend triple: the worker
+    // publishes all three in one transaction, and the input total is the one
+    // that always moves.
+    const relevantKeys = ['defaultModelConfig', 'currentStrategyId', 'conversationPermissionRules', 'conversationAllowedPaths', 'processingState', 'completedTurns', 'undoState', 'spendInputTokens'];
     const changedRelevantKey = Array.from(event.keysChanged).some(key =>
       relevantKeys.includes(key)
     );

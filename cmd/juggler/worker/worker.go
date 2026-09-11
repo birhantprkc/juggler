@@ -409,6 +409,21 @@ type ConversationWorker struct {
 	// increment below stays a single-writer sequence.
 	turnCounter atomic.Int64
 
+	// The conversation's cumulative billed token spend, and the resolver for the
+	// ceiling that stops delegated work past it. See spend.go, which owns every
+	// rule here.
+	//
+	// Atomic for the same reason turnCounter is, only more so: sibling threads
+	// stream side by side on their own goroutines (canAdmitThread), so several
+	// runs record into these at once. Each is advanced by a compare-and-swap that
+	// also folds in the persisted figure (addSpendFloored), which is what keeps
+	// the count both lossless under that concurrency and monotonic across a
+	// reload.
+	spendInput       atomic.Int64
+	spendOutput      atomic.Int64
+	spendApproximate atomic.Bool
+	spendLimit       SpendLimitFunc
+
 	// Thread reducer dispatch state. The reducer is called from the
 	// document observer (handleItemsChange) which fires synchronously —
 	// it cannot run the LLM inline. Instead it sets needsReconcile=true;

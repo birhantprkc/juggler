@@ -23,6 +23,11 @@ const (
 	llamacppHostKey         = "llamacpp_host"
 	claudecodeBinaryPathKey = "claudecode_binary_path"
 	streamIdleTimeoutKey    = "stream_idle_timeout" // mirrors streamidle.CredKey
+	// spendLimitTokensKey stores the conversation spend ceiling in cumulative
+	// input tokens, as a string. Absent/unparseable ⇒ the shipped default
+	// (worker.DefaultSpendCeilingTokens); "0" ⇒ no ceiling. Read live by the
+	// resolver in server/llm_caller.go, which this key mirrors.
+	spendLimitTokensKey = "spend_limit_tokens"
 	// autoCompactDisabledKey stores the disabled state of automatic compaction,
 	// so an absent/empty value means enabled (the default). "1" means disabled.
 	// Mirrored by createAutoCompactGate in server/llm_caller.go.
@@ -161,6 +166,7 @@ func (c *ConfigAPI) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"llamacppHost":             c.credStore.GetRawKey(llamacppHostKey),
 		"claudecodeBinaryPath":     c.credStore.GetRawKey(claudecodeBinaryPathKey),
 		"streamIdleTimeout":        c.credStore.GetRawKey(streamIdleTimeoutKey),
+		"spendLimitTokens":         c.credStore.GetRawKey(spendLimitTokensKey),
 		"autoCompactDisabled":      c.credStore.GetRawKey(autoCompactDisabledKey) == "1",
 		"autoNameDisabled":         c.credStore.GetRawKey(autoNameDisabledKey) == "1",
 		"autoNameInstruction":      c.credStore.GetRawKey(autoNameInstructionKey),
@@ -255,6 +261,18 @@ func (c *ConfigAPI) HandleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		if s, ok := v.(string); ok {
 			if err := c.credStore.SetRawKey(streamIdleTimeoutKey, strings.TrimSpace(s)); err != nil {
 				jlog.Error("Failed to save stream idle timeout: %v", err)
+			}
+		}
+	}
+
+	// The conversation spend ceiling (raw credential, cumulative input tokens).
+	// The resolver reads it live at each turn boundary, so a new value takes
+	// effect on the next turn. Blank clears the override (the shipped default
+	// applies); "0" switches the ceiling off.
+	if v, ok := req[spendLimitTokensKey]; ok {
+		if str, ok := v.(string); ok {
+			if err := c.credStore.SetRawKey(spendLimitTokensKey, strings.TrimSpace(str)); err != nil {
+				jlog.Error("Failed to save spend ceiling: %v", err)
 			}
 		}
 	}

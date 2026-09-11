@@ -43,6 +43,7 @@ const (
 	mgrAnyActive
 	mgrActiveIDs
 	mgrSetAutoNamer
+	mgrSetSpendLimit
 	mgrConversationRestored
 	mgrRecordBackgroundTaskSnapshot
 )
@@ -99,6 +100,7 @@ type managerOp struct {
 	llmCallFunc     LLMCallFunc
 	windowResolver  WindowResolverFunc
 	autoCompactGate AutoCompactGateFunc
+	spendLimit      SpendLimitFunc
 	autoNameFunc    AutoNameFunc
 	engineCallback  func(convID string, msg []byte)
 	pathProvider    PathProviderFunc
@@ -160,6 +162,7 @@ func (m *Manager) run() {
 	var llmCallFunc LLMCallFunc
 	var windowResolver WindowResolverFunc
 	var autoCompactGate AutoCompactGateFunc
+	var spendLimit SpendLimitFunc
 	var autoNameFunc AutoNameFunc
 	var engineClientID string
 	var engineCallback func(convID string, msg []byte)
@@ -210,6 +213,9 @@ func (m *Manager) run() {
 		if autoCompactGate != nil {
 			w.SetAutoCompactGate(autoCompactGate)
 		}
+		if spendLimit != nil {
+			w.SetSpendLimit(spendLimit)
+		}
 		if autoNameFunc != nil {
 			w.SetAutoNamer(autoNameFunc)
 		}
@@ -250,6 +256,12 @@ func (m *Manager) run() {
 			autoCompactGate = op.autoCompactGate
 			for _, w := range workers {
 				w.SetAutoCompactGate(autoCompactGate)
+			}
+
+		case mgrSetSpendLimit:
+			spendLimit = op.spendLimit
+			for _, w := range workers {
+				w.SetSpendLimit(spendLimit)
 			}
 
 		case mgrSetAutoNamer:
@@ -516,6 +528,12 @@ func (m *Manager) SetWindowResolver(fn WindowResolverFunc) {
 // existing worker and any worker created later. See AutoCompactGateFunc.
 func (m *Manager) SetAutoCompactGate(fn AutoCompactGateFunc) {
 	m.ops <- managerOp{kind: mgrSetAutoCompactGate, autoCompactGate: fn}
+}
+
+// SetSpendLimit sets the conversation spend-ceiling resolver applied to every
+// existing worker and any worker created later. See SpendLimitFunc.
+func (m *Manager) SetSpendLimit(fn SpendLimitFunc) {
+	m.ops <- managerOp{kind: mgrSetSpendLimit, spendLimit: fn}
 }
 
 // SetAutoNamer sets the out-of-band tab auto-naming callback applied to every

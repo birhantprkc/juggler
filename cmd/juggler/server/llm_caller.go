@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"juggler/cmd/juggler/core"
 	"juggler/cmd/juggler/osactivity"
@@ -98,6 +100,38 @@ func (s *Server) createAutoCompactGate() worker.AutoCompactGateFunc {
 	}
 	return func() bool {
 		return store.GetRawKey(autoCompactDisabledKey) != "1"
+	}
+}
+
+// createSpendLimitResolver returns the ceiling resolver injected into every
+// worker (worker.SpendLimitFunc): how many cumulative input tokens one
+// conversation may spend before delegated work is asked to land. It reads the
+// raw credentials-store key live — GetRawKey re-reads the file each call — so a
+// settings change takes effect on the next turn boundary with no restart.
+//
+// An absent or unparseable value means the shipped default, and an explicit 0
+// means no ceiling. If the credentials store can't be constructed the default
+// applies: a ceiling nobody configured is still the behaviour we ship, and
+// failing open to unlimited would quietly remove the guard on the machines least
+// able to report that it had gone.
+func (s *Server) createSpendLimitResolver() worker.SpendLimitFunc {
+	// Raw credential key mirrors handlers/config.go spendLimitTokensKey.
+	const spendLimitTokensKey = "spend_limit_tokens"
+	store, err := core.NewCredentialsStore()
+	if err != nil {
+		jlog.Error("spend ceiling: credentials store unavailable, using the default: %v", err)
+		return func() int64 { return worker.DefaultSpendCeilingTokens }
+	}
+	return func() int64 {
+		raw := strings.TrimSpace(store.GetRawKey(spendLimitTokensKey))
+		if raw == "" {
+			return worker.DefaultSpendCeilingTokens
+		}
+		limit, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil || limit < 0 {
+			return worker.DefaultSpendCeilingTokens
+		}
+		return limit
 	}
 }
 
