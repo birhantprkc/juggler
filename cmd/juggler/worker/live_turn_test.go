@@ -140,6 +140,35 @@ func awaitLiveRun(t *testing.T, w *ConversationWorker) {
 	}
 }
 
+// gateNextMockPause holds the mock's delivery goroutine just before it
+// announces the next paused response, and returns the release. Waiting for the
+// returned function to be called is the goroutine's only ordering with the test,
+// so whatever the test does between the two calls is concurrent with everything
+// the announcement goes on to do.
+func gateNextMockPause(t *testing.T, w *ConversationWorker) (release func()) {
+	t.Helper()
+	gate := &announceGate{arrived: make(chan struct{}), release: make(chan struct{})}
+	w.mock.gate.Store(gate)
+	t.Cleanup(func() {
+		// A test that never got there must not leave the goroutine parked.
+		if w.mock.gate.Swap(nil) != nil {
+			return
+		}
+		select {
+		case <-gate.release:
+		default:
+			close(gate.release)
+		}
+	})
+
+	select {
+	case <-gate.arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the mock's delivery goroutine never reached the pause announcement")
+	}
+	return func() { close(gate.release) }
+}
+
 // awaitNoLiveRun waits for the registry to empty again.
 func awaitNoLiveRun(t *testing.T, w *ConversationWorker) {
 	t.Helper()
@@ -320,6 +349,49 @@ func TestCancelDuringADispatchedTurnUnblocksIt(t *testing.T) {
 	}
 	if w.hasActiveRun() {
 		t.Fatal("a cancelled turn left a claim behind")
+	}
+}
+
+// TestAPausedMockOutlivingItsTurnReadsNoTurnState pins the rule live_runs.go
+// states and mock_llm.go has to keep: a run's thread field is plain memory the
+// turn goroutine owns, so anything running elsewhere carries its own copy, taken
+// before it left.
+//
+// The mock's delivery goroutine is the one thing that routinely outlives the
+// turn that started it: parked on releaseCh, it is still there when a cancel
+// wakes the turn, and the turn's unwind through finishStrategyRun clears the
+// field underneath it. Run without the copy, this fails under -race with a
+// write/read report naming resetThreadContext and announceMockPause.
+//
+// The order of the two matters, which is why the sleep below is load-bearing and
+// must not become a wait on anything. Announcement first is not a race and never
+// reports as one: the announcement's patch takes ycrdtMu, and the unwind takes it
+// afterwards, so the lock orders the read ahead of the write. Only unwind-first
+// is unsynchronized. Learning that the unwind has happened is exactly what the
+// test may not do — every route to that knowledge (the live-run registry's
+// atomic, an idle frame off the client channel) is itself the edge that would
+// order the pair and bury the bug again. So the test waits out a period far
+// longer than an unwind takes and then releases, which orders nothing. Should
+// the machine be slow enough to defeat that, the two land in the harmless order
+// and the test passes without catching: it can fail to detect, but it cannot
+// fail spuriously.
+func TestAPausedMockOutlivingItsTurnReadsNoTurnState(t *testing.T) {
+	mc := newMsgChan()
+	w := startTurningWorker(t, mc)
+
+	sendUserMessage(t, w, "hello")
+	releaseAnnouncement := gateNextMockPause(t, w)
+
+	// Cancel, never release the response: the turn unwinds while the mock's
+	// goroutine is held one statement short of the announcement.
+	w.Send("cancel", json.RawMessage(`{"reason":"test"}`))
+	time.Sleep(300 * time.Millisecond)
+	releaseAnnouncement()
+
+	awaitNoLiveRun(t, w)
+
+	if got := w.anyRunState(); got != StateIdle {
+		t.Fatalf("conversation state after a cancelled turn = %v, want %v", got, StateIdle)
 	}
 }
 

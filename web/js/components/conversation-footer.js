@@ -199,6 +199,7 @@ class ConversationFooter extends HTMLElement {
     if (this._statusUnsubscribe) { this._statusUnsubscribe(); this._statusUnsubscribe = null; }
     this._hideUndoOffer();
     this._cancelDeferredTokenDisplayUpdate();
+    this._cancelBlobRetry();
   }
 
   /**
@@ -229,6 +230,7 @@ class ConversationFooter extends HTMLElement {
       this._pendingTxnId = '';
       this._blobRetries.clear();
       this._lastLiveUsage = null;
+      this._cancelBlobRetry();
     }
     this._cancelDeferredTokenDisplayUpdate();
     // Cheap to re-resolve once per rebind, and the thread being handed over may
@@ -310,6 +312,7 @@ class ConversationFooter extends HTMLElement {
     if (on) {
       // No meter to keep current, and no in-flight refresh worth landing.
       this._cancelDeferredTokenDisplayUpdate();
+      this._cancelBlobRetry();
       /** @type {any} */ (tokenDisplay)?.clear?.();
     } else {
       // The status-only footer hides itself while its run is settled; a full
@@ -441,12 +444,33 @@ class ConversationFooter extends HTMLElement {
     }, TOKEN_UPDATE_DEBOUNCE_MS);
   }
 
-  /** @private */
+  /**
+   * Drop the coalesced render, and nothing else.
+   *
+   * Deliberately not the blob re-ask, which is a different question: this one is
+   * "draw again shortly", the re-ask is "the data to draw has not arrived".
+   * Every conversation:changed comes through _scheduleTokenDisplayUpdate, which
+   * begins by cancelling — so cancelling the re-ask here would mean a
+   * conversation that keeps changing repeatedly takes away the one thing that
+   * would fetch the number, while the render it substitutes finds the same empty
+   * cache and restarts the wait. During a turn, when every status frame is a
+   * conversation:changed, that leaves the meter blank for as long as the turn
+   * lasts, and on a busy conversation for good.
+   * @private
+   */
   _cancelDeferredTokenDisplayUpdate() {
     if (this._tokenUpdateTimer !== undefined) {
       window.clearTimeout(this._tokenUpdateTimer);
       this._tokenUpdateTimer = undefined;
     }
+  }
+
+  /**
+   * Drop a pending re-ask, for the cases where there will be nothing to draw it
+   * on: the element is going away, or the thread it was fetched for is.
+   * @private
+   */
+  _cancelBlobRetry() {
     if (this._blobRetryTimer !== undefined) {
       window.clearTimeout(this._blobRetryTimer);
       this._blobRetryTimer = undefined;

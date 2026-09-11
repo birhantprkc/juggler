@@ -73,6 +73,20 @@ function findFooter(conversation) {
  * to budget=0 (empty render). Force a known budget so the rest of the
  * test can assert real numbers, and notify the session so the footer
  * re-runs `_updateTokenDisplay` against the new budget.
+ *
+ * The notify alone is not enough to wait on, and waiting on it is what made
+ * this file's first assertion the most-reported flake in the suite. The footer
+ * takes session events through a 2000ms coalescing timer that every further
+ * event restarts, so the earliest a notified meter can paint is 2000ms plus a
+ * worker round-trip, plus another 250ms if the blob was not saved when it
+ * asked — against budgets of 3000ms. That leaves a few hundred milliseconds of
+ * headroom on an idle machine and none at all on one running four suites, which
+ * is exactly where the give-ups landed (3242ms, 3610ms).
+ *
+ * So drive the render as well as notifying it. The notify stays because the
+ * event path is part of what these tests cover; the direct call is what removes
+ * two seconds of dead time from every wait below, and it fetches through the
+ * same `_updateTokenDisplay` the timer would have called.
  * @param {import('../../model/conversation.js').default} conversation
  * @param {number} budget
  */
@@ -82,6 +96,7 @@ function forceContextWindow(conversation, budget) {
   if (session?.notifyConversationChange) {
     session.notifyConversationChange('conversation:context-window-updated', conversation);
   }
+  /** @type {any} */ (findFooter(conversation))?._updateTokenDisplay?.();
 }
 
 // ============================================================================

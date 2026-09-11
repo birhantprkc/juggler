@@ -245,7 +245,9 @@ class EngineApp {
     // because only the engine can seed a conversation (see engine-one-shot.js),
     // and the caller is blocked on the single reply it sends.
     if (data.type === 'run-one-shot') {
-      runOneShot(this.getSession(), data);
+      // Handed the realm's readiness rather than waited on here: runOneShot owes
+      // the caller exactly one reply, including when the wait is what failed.
+      runOneShot(this.getSession(), data, this._connectionManager?.whenReadyToRun?.());
       return;
     }
 

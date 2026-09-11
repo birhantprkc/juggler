@@ -38,11 +38,22 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
  * Run one prompt to completion and report what happened.
+ *
+ * `ready` is what separates a connected engine from a usable one. The server
+ * dispatches this the moment the engine's WebSocket registers, but the realm
+ * behind that socket cannot spawn a worker until its session has loaded and
+ * initialised the worker manager — which takes an HTTP round-trip of its own.
+ * Seeding a conversation in that gap throws about an uninitialised worker
+ * manager, and the run reports that as its outcome: a caller who typed a prompt
+ * is told nothing it can act on, having had nothing run. Waiting closes the gap,
+ * and a realm that never becomes ready arrives here as a rejection carrying the
+ * reason, which is a better answer than the one the spawn would have given.
  * @param {any} session - The engine's live Session
  * @param {{requestId?: string, prompt?: string, strategyId?: string, name?: string, timeoutMs?: number}} request - The server's run-one-shot message
+ * @param {Promise<void>} [ready] - Settles when the realm can spawn workers
  * @returns {Promise<void>} Resolves once the single result has been sent
  */
-export async function runOneShot(session, request) {
+export async function runOneShot(session, request, ready) {
   const requestId = String(request?.requestId || '');
   const prompt = String(request?.prompt || '');
   const strategyId = String(request?.strategyId || 'yolo');
@@ -60,6 +71,11 @@ export async function runOneShot(session, request) {
   };
 
   try {
+    // Before anything touches the session: the caller's own timeout is the only
+    // clock on this wait, which is correct — a realm that is slow to come up is
+    // indistinguishable from a run that is slow to finish, and both are the
+    // caller's to give up on.
+    if (ready) await ready;
     if (!session) throw new Error('the engine has no session to run in');
     if (!prompt.trim()) throw new Error('there is no prompt to run');
 

@@ -96,9 +96,10 @@ function makeSession(conversation) {
  * Run one prompt and capture the single result it reports.
  * @param {any} session - Session to run in
  * @param {object} [request] - Overrides for the run-one-shot message
+ * @param {Promise<void>} [ready] - Realm readiness the run must wait on
  * @returns {Promise<any>} The result that would have gone back to the server
  */
-async function capture(session, request = {}) {
+async function capture(session, request = {}, ready = undefined) {
   const original = wsService.sendOneShotResult;
   /** @type {any} */
   let sent = null;
@@ -109,7 +110,7 @@ async function capture(session, request = {}) {
     return true;
   };
   try {
-    await runOneShot(session, { requestId: 'run_1', prompt: 'do the thing', strategyId: 'yolo', timeoutMs: 2000, ...request });
+    await runOneShot(session, { requestId: 'run_1', prompt: 'do the thing', strategyId: 'yolo', timeoutMs: 2000, ...request }, ready);
   } finally {
     wsService.sendOneShotResult = original;
   }
@@ -141,6 +142,75 @@ export async function runTests(_ctx) {
       errors.push(`${name}: ${e.message}`);
     }
   };
+
+  // A run is dispatched the moment the engine's SOCKET registers, and the realm
+  // behind that socket is not ready yet: workerManager.init runs later, when the
+  // session's own /api/session round-trip returns. Spawning in the gap throws
+  // "[WorkerManager] Not initialized - call init() first", which the run reports
+  // as an ordinary failure — so `juggler run` exits 1, having done nothing, and
+  // says something about a worker manager to someone who typed a prompt. It is
+  // decided by whether one HTTP round-trip beats a 100ms poll, so it is rare on
+  // an idle machine and routine on a loaded one.
+  await test('a run dispatched before the realm is ready waits for it rather than failing', async () => {
+    const conversation = makeConversation({ completedTurns: 3 });
+    conversation.sendMessage = async () => {
+      conversation.state.items.push(item({ type: 'assistant', content: 'ran after all' }));
+      conversation.state.completedTurns = 4;
+      queueMicrotask(conversation.fire);
+      return null;
+    };
+
+    let created = 0;
+    const session = {
+      createConversation: async () => { created++; return 'conv_test123'; },
+      getConversation: (/** @type {string} */ id) => (id === 'conv_test123' ? conversation : null)
+    };
+
+    /** @type {() => void} */
+    let realmIsReady = () => {};
+    const ready = new Promise((resolve) => { realmIsReady = () => resolve(undefined); });
+
+    const original = wsService.sendOneShotResult;
+    /** @type {any} */
+    let sent = null;
+    wsService.sendOneShotResult = (/** @type {any} */ result) => { sent = result; return true; };
+    let run;
+    try {
+      run = runOneShot(session, { requestId: 'run_ready', prompt: 'do the thing', strategyId: 'yolo', timeoutMs: 2000 }, ready);
+
+      // Ten turns of the microtask queue — everything an unguarded run would
+      // have done to the session, it would have done by now.
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      assert(created === 0, `the run seeded a conversation ${created}× before the realm could spawn a worker for it`);
+      assert(sent === null, `the run reported ${JSON.stringify(sent && sent.status)} without having attempted anything`);
+
+      realmIsReady();
+      await run;
+    } finally {
+      wsService.sendOneShotResult = original;
+    }
+
+    assert(created === 1, `once ready, the run must proceed exactly once; created ${created}`);
+    assert(sent && sent.status === 'completed', `status was ${JSON.stringify(sent && sent.status)}`);
+  });
+
+  // The same wait covers the case where the realm never becomes ready at all — a
+  // session load that threw is never retried, so every run after it fails. What
+  // must not happen is that it fails citing the worker manager: the reason is the
+  // load, and the reason is what the caller has to act on.
+  await test('a realm that never became ready reports why, not what it noticed second', async () => {
+    const result = await capture(
+      makeSession(makeConversation()),
+      { requestId: 'run_1' },
+      Promise.reject(new Error('the engine could not load its session: connection refused'))
+    );
+
+    assert(result.status === 'failed', `status was ${result.status}`);
+    assert(/could not load its session/.test(result.errorText),
+      `the failure must name the load that failed; got ${JSON.stringify(result.errorText)}`);
+    assert(!/WorkerManager/.test(result.errorText),
+      `the failure must not blame the worker manager; got ${JSON.stringify(result.errorText)}`);
+  });
 
   await test('a completed turn reports its answer, and the conversation was configured for nobody being there', async () => {
     const conversation = makeConversation({ completedTurns: 3 });

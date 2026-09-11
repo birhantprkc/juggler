@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -317,11 +318,18 @@ func runOneShot(t *testing.T, binary, proj, cfgDir string, timeout time.Duration
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
+	// A run started from a pipe has no terminal, so it discards its console and
+	// writes everything diagnostic to this directory instead — the engine's own
+	// lines included. Its stderr carries only the two startup banners, which say
+	// nothing about how a run went wrong, so a failure that reads its stderr and
+	// stops there is reading the one stream guaranteed to be uninformative. Hold
+	// the directory so the reporters below can quote the log that matters.
+	logDir := t.TempDir()
 	cmd := exec.CommandContext(ctx, binary, "run",
 		"--project", proj, "--json", "--timeout", timeout.String(), prompt)
 	cmd.Env = append(environWithoutJuggler(),
 		"JUGGLER_CONFIG_DIR="+cfgDir,
-		"JUGGLER_LOG_DIR="+t.TempDir(),
+		"JUGGLER_LOG_DIR="+logDir,
 		"JUGGLER_ENGINE_HOST=node")
 	setProcGroupAttr(cmd)
 
@@ -340,7 +348,8 @@ func runOneShot(t *testing.T, binary, proj, cfgDir string, timeout time.Duration
 
 	err := cmd.Wait()
 	if ctx.Err() != nil {
-		t.Fatalf("`juggler run` did not exit within the test's own deadline\n%s", tailLog(errBuf.String()))
+		t.Fatalf("`juggler run` did not exit within the test's own deadline\n%s%s",
+			tailLog(errBuf.String()), tailRunLog(logDir))
 	}
 	var exitErr *exec.ExitError
 	switch {
@@ -349,9 +358,50 @@ func runOneShot(t *testing.T, binary, proj, cfgDir string, timeout time.Duration
 	case errors.As(err, &exitErr):
 		code = exitErr.ExitCode()
 	default:
-		t.Fatalf("wait for `juggler run`: %v\n%s", err, tailLog(errBuf.String()))
+		t.Fatalf("wait for `juggler run`: %v\n%s%s", err,
+			tailLog(errBuf.String()), tailRunLog(logDir))
 	}
+	// A run that reported an outcome the caller did not expect is the case this
+	// log exists for, and the directory goes when the test does — so attach it
+	// to any failure the caller goes on to report, rather than to none.
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("`juggler run` exited %d\n%s", code, tailRunLog(logDir))
+		}
+	})
 	return outBuf.String(), errBuf.String(), code
+}
+
+// tailRunLog returns the end of whatever the run wrote under its log directory.
+// Every file, because which one carries the answer depends on how it failed: the
+// server's own log holds startup, and the engine's stdout is bridged into it.
+func tailRunLog(logDir string) string {
+	var out strings.Builder
+	// Walked rather than listed: the server files its log under a per-project
+	// subdirectory of the log dir, so nothing a run writes is at the top level.
+	err := filepath.WalkDir(logDir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return nil //nolint:nilerr // an unreadable corner is not worth failing a report over
+		}
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		rel, relErr := filepath.Rel(logDir, path)
+		if relErr != nil {
+			rel = path
+		}
+		out.WriteString("\n--- " + rel + " ---\n")
+		out.WriteString(tailLog(string(body)))
+		return nil
+	})
+	if err != nil {
+		return "\n--- run log unreadable: " + err.Error() + " ---"
+	}
+	if out.Len() == 0 {
+		return "\n--- the run wrote no log at all ---"
+	}
+	return out.String()
 }
 
 // environWithoutJuggler is the ambient environment with every JUGGLER_ variable

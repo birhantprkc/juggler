@@ -147,18 +147,42 @@ export async function runTests(ctx) {
    * Wait for the pin's body to say a particular thing. A re-read replaces text
    * with other text, so "it has drawn" is not a strong enough condition to catch
    * one — the case has to name what it is waiting for.
+   *
+   * `nudge` is for the cases driven by a change event. The pin reads on being
+   * told to, and a read that comes back with the bytes it already has draws
+   * nothing and schedules nothing — so if one read observes the file before the
+   * write is visible to it, a case that signals once waits out its whole budget
+   * on a pin that will never look again. Re-signalling asks the same question of
+   * the pin rather than of the filesystem's timing: it still fails if a change
+   * event does not make the pin re-read, which is the thing being tested, but it
+   * no longer turns on whether one read won a race. That race is the only
+   * account anyone has of the 2026-09-09 sighting, which showed the first
+   * content still on screen with the second never drawn.
+   *
+   * It has to be re-signalled SLOWLY. The pin coalesces change events behind a
+   * short settling timer that each new event restarts, so a nudge faster than
+   * that timer holds the read off for as long as the nudging continues — this
+   * waiter, written at the poll interval, reproduced a permanent blank every
+   * run. Anything comfortably longer than the settling period lets each nudge
+   * land as its own read.
    * @param {HTMLElement} body - The pin's body.
    * @param {(text: string) => boolean} wanted - What the body should end up saying.
    * @param {number} [timeout] - How long to give it.
+   * @param {() => void} [nudge] - Re-signal the pin, at most every NUDGE_INTERVAL_MS.
    * @returns {Promise<string>} The body's text.
    */
-  async function until(body, wanted, timeout = 5000) {
+  async function until(body, wanted, timeout = 5000, nudge = undefined) {
     const deadline = Date.now() + timeout;
+    let nextNudge = Date.now() + NUDGE_INTERVAL_MS;
     let text = '';
     while (Date.now() < deadline) {
       text = body.textContent || '';
       if (wanted(text)) return text;
       await new Promise((r) => { setTimeout(r, 20); });
+      if (nudge && Date.now() >= nextNudge) {
+        nudge();
+        nextNudge = Date.now() + NUDGE_INTERVAL_MS;
+      }
     }
     throw new Error(`the pin never said it (showed "${text}")`);
   }
@@ -178,6 +202,9 @@ export async function runTests(ctx) {
   }
 
   const TWO_FACTS = '# Memory\n\n- [2026-06-14] Build is `make build`\n- [2026-06-15] Tests are `make test-all`\n';
+
+  /** Comfortably longer than the pin's settling period, so a nudge becomes a read. */
+  const NUDGE_INTERVAL_MS = 600;
 
   // --- the manifest and its gates ------------------------------------------
 
@@ -289,7 +316,7 @@ export async function runTests(ctx) {
     // What a `remember` tool action looks like from the pin: the conversation's
     // context items changed, so the file it reads may have too.
     m.fireChange();
-    await until(m.body, (t) => t.includes('Two facts'));
+    await until(m.body, (t) => t.includes('Two facts'), 5000, m.fireChange);
     m.teardown();
   });
 

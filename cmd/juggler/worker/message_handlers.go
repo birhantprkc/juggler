@@ -1033,6 +1033,22 @@ func (w *ConversationWorker) handleEngineTrace(payload json.RawMessage) {
 	if decoded && probe.ToolUseID != "" {
 		w.tools.recordTrace(probe.ToolUseID, probe.Reason, now)
 	}
+	if decoded {
+		// On the tape, because this is the only account of what the engine did
+		// with a command and the tape is the only one of these records a failing
+		// browser test can read. Without it a failure block shows `tool-command`
+		// repeating every six seconds and nothing at all about the answer — so an
+		// engine that declined, an engine that never got there, and an engine that
+		// evaluated the tool and lost the write all leave identical evidence. The
+		// summaries that would separate them (tool-command-held, the escalation
+		// verdict) need more than thirty seconds of attempts and so cannot fire
+		// inside a test's budget at all.
+		w.tape.Record("engine-trace", map[string]any{
+			"event":  probe.Event,
+			"id":     probe.ToolUseID,
+			"reason": probe.Reason,
+		})
+	}
 	if decoded && probe.Reason == engineReasonConvNotLoaded {
 		// The engine says it holds no copy of this conversation, so the ops the
 		// worker believes it has, it does not — every later delta would build on a

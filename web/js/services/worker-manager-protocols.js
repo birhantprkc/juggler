@@ -691,11 +691,26 @@ export async function handleEvaluateTool(wm, conversationId, toolUseId) {
     return true;
   }
   c._handlingNewToolAction.add(toolUseId);
+  // Entering and leaving are traced separately because the gap between them is
+  // unbounded: the evaluation awaits action.prepare(), which for the edit family
+  // is an HTTP round-trip whose only backstop is measured in minutes. Without the
+  // pair, an evaluation still inside prepare() and one that finished and lost its
+  // write look the same from the worker — and so does a command that never
+  // arrived, since success used to say nothing at all.
+  sendEngineTrace(wm, conversationId, 'evaluate-start', { toolUseId });
   try {
     await handleNewToolAction(mt, toolUseId, c);
+  } catch (err) {
+    // Carried as `error`, like the other acting traces, rather than as `reason`:
+    // a reason is the worker's wire contract for classifying a DECLINE, and this
+    // is not one — the engine acted and the action threw, which is engagement and
+    // should reach the attempt cap rather than be held as an unreachable engine.
+    sendEngineTrace(wm, conversationId, 'evaluate-error', { toolUseId, error: extractErrorMessage(err) });
+    throw err;
   } finally {
     c._handlingNewToolAction.delete(toolUseId);
   }
+  sendEngineTrace(wm, conversationId, 'evaluate-done', { toolUseId });
   return true;
 }
 

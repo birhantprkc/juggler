@@ -55,6 +55,25 @@ class ConnectionManager {
 
     /** @type {{show: () => void, hide: () => void, startCountdown: (delayMs: number) => void}|null} @private */
     this._disconnectionOverlay = options.disconnectionOverlay || null;
+
+    // Settled when the session has finished loading, which is the point at which
+    // the realm can spawn a worker: workerManager.init runs at the end of that
+    // load and nothing before it. Created here rather than at load time because
+    // the thing that waits on it — a run dispatched off the socket registering —
+    // can arrive before the load has been started at all.
+    /** @type {(value?: any) => void} @private */
+    this._markSessionReady = () => {};
+    /** @type {(reason?: any) => void} @private */
+    this._markSessionUnusable = () => {};
+    /** @type {Promise<void>} @private */
+    this._sessionReady = new Promise((resolve, reject) => {
+      this._markSessionReady = resolve;
+      this._markSessionUnusable = reject;
+    });
+    // Nobody may be waiting when it settles, and a rejection with no handler is
+    // an unhandled rejection. This one is always handled; the waiters get their
+    // own derived promise and their own copy of the reason.
+    this._sessionReady.catch(() => {});
   }
 
   /**
@@ -63,6 +82,21 @@ class ConnectionManager {
    */
   getSession() {
     return this._session;
+  }
+
+  /**
+   * Settles when this realm can actually run something.
+   *
+   * `getSession()` is non-null well before that: `_initializeSession` assigns
+   * the Session synchronously and *then* awaits its load, so a caller that
+   * checks for a session finds one that cannot yet spawn a worker. Rejects with
+   * the load's own error if the load failed, because that failure is permanent —
+   * nothing retries it — and every later attempt to use the realm will fail for
+   * that reason whatever it reports.
+   * @returns {Promise<void>} Settles when the session has loaded, or rejects with why it did not
+   */
+  whenReadyToRun() {
+    return this._sessionReady;
   }
 
   /**
@@ -255,6 +289,16 @@ class ConnectionManager {
       // explicitly below rather than silently bricking with no controls.
       console.error('[ConnectionManager] Session load failed:', errorMessage);
       loadError = errorMessage;
+    }
+
+    // Release anything holding for a realm it can run in — with the reason, if
+    // there isn't one. A load that threw leaves the worker manager uninitialised
+    // for good, so reporting that now is the difference between a caller being
+    // told what went wrong and being told what noticed.
+    if (loadError) {
+      this._markSessionUnusable(new Error(`the engine could not load its session: ${loadError}`));
+    } else {
+      this._markSessionReady();
     }
 
     // Notify app that session is initialized (so it can create session-dependent services)

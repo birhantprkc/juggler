@@ -26,6 +26,23 @@ type mockLLMCaller struct {
 	// releaseCh unblocks a paused response (MockResponse.PauseBeforeReturn).
 	// Buffered so a release sent before the pause is reached is captured.
 	releaseCh chan struct{}
+	// gate, when installed, holds the delivery goroutine on its way into the
+	// pause announcement. One-shot: the goroutine takes it, so a script with
+	// several paused responses gates only the first.
+	gate atomic.Pointer[announceGate]
+}
+
+// announceGate stops the delivery goroutine immediately before it announces a
+// pause, so a test can place that announcement genuinely beside something it
+// does to the turn. The goroutine reports that it has arrived and then waits;
+// the test starts the other half and lets this one go, and the two proceed with
+// no ordering between them. That is the only arrangement that can honestly ask
+// whether the announcement touches state belonging to the turn's goroutine —
+// wait for the announcement instead and the wait itself orders the pair, which
+// is a different question with a different answer.
+type announceGate struct {
+	arrived chan struct{}
+	release chan struct{}
 }
 
 func newMockLLMCaller() *mockLLMCaller {
@@ -115,6 +132,12 @@ func (r *run) popMockResponse(turnID string, sink func(StreamChunk)) (*LLMRespon
 	}
 
 	paused := mock.PauseBeforeReturn
+	// The thread this run writes to, read here on the goroutine that owns it. The
+	// goroutine below outlives the turn whenever a cancel lands on a paused
+	// response — it stays parked while the turn unwinds and clears the field — so
+	// it carries its own copy, the same way liveRunEntry does for everyone else
+	// reading a run's thread from off its goroutine.
+	threadItemID := r.t.thread.itemID
 
 	go func() {
 		for _, block := range mock.Blocks {
@@ -136,7 +159,11 @@ func (r *run) popMockResponse(turnID string, sink func(StreamChunk)) (*LLMRespon
 		}
 
 		if paused {
-			r.announceMockPause()
+			if gate := r.mock.gate.Swap(nil); gate != nil {
+				close(gate.arrived)
+				<-gate.release
+			}
+			r.announceMockPause(threadItemID)
 			select {
 			case <-r.mock.releaseCh:
 			case <-r.done:
@@ -162,8 +189,12 @@ func (r *run) popMockResponse(turnID string, sink func(StreamChunk)) (*LLMRespon
 // first rests that turn and retires it; a frame written here afterwards would
 // then put the claim back on a thread with nothing running, leaving the
 // conversation busy forever. The gated patch is a no-op once the claim is gone.
-func (r *run) announceMockPause() {
-	r.patchRunIf(r.t.thread.itemID,
+//
+// threadItemID is passed in rather than read from the run for the same reason:
+// off the turn's goroutine, the run's thread field may be being cleared by that
+// very cancel.
+func (r *run) announceMockPause(threadItemID string) {
+	r.patchRunIf(threadItemID,
 		func(entry map[string]any) bool { return entryActivity(entry) != ActivityNone },
 		func(entry, _ map[string]any) { entry["status"] = "mock-paused" },
 	)

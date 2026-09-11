@@ -135,7 +135,7 @@ import { runTests as runWriteFileActionTests } from '../unit-tests/write-file-ac
 import { runTests as runYjsCompatTests } from '../unit-tests/yjs-compat-test.js';
 import { runTests as runBase64Tests } from '../unit-tests/base64-test.js';
 import { runTests as runWSChunkTests } from '../unit-tests/ws-chunk-test.js';
-import { runTests as runRenderPerformanceTests } from '../unit-tests/render-performance-tests.js';
+import { runTests as runRenderScalingTests } from '../unit-tests/render-scaling-tests.js';
 import { runTests as runTestBudgetTests } from '../unit-tests/test-budget-test.js';
 import { runTests as runEngineAutoloadTests } from '../unit-tests/engine-autoload-test.js';
 import { runTests as runSyncBatchBackoffTests } from '../unit-tests/sync-batch-backoff-test.js';
@@ -479,7 +479,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:yjs-compat', run: runYjsCompatTests },
   { name: 'unit:base64', run: runBase64Tests },
   { name: 'unit:ws-chunk', run: runWSChunkTests },
-  { name: 'unit:render-performance', run: runRenderPerformanceTests },
+  { name: 'unit:render-scaling', run: runRenderScalingTests },
   { name: 'unit:test-budget', run: runTestBudgetTests },
   { name: 'unit:engine-autoload', run: runEngineAutoloadTests },
   { name: 'unit:sync-batch-backoff', run: runSyncBatchBackoffTests },

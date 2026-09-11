@@ -174,5 +174,58 @@ export async function runTests(_ctx) {
     if (conversation) await releaseTestConversation(session, conversation.id, 'token-meter-2');
   }
 
+  // =========================================================================
+  // 3: a conversation still changing must not cancel the re-ask
+  // =========================================================================
+  conversation = null;
+  mounted = null;
+  try {
+    conversation = await createTestConversation(session);
+    const thread = conversation.rootMessageThread;
+    addAnchoredTurn(thread, 'txn-busy-conversation');
+
+    let asks = 0;
+    workerManager.getTransaction = async () => {
+      asks++;
+      return asks > 2 ? MEASURED_BLOB : undefined;
+    };
+
+    const footer = /** @type {any} */ (document.createElement('conversation-footer'));
+    document.body.appendChild(footer);
+    // Every conversation:changed reaches the meter as a request to coalesce a
+    // render, and during a turn that is every status frame. Standing in for one
+    // here with only the cancellation it performs — no rescheduled render —
+    // leaves the blob re-ask as the sole route to the number, which is exactly
+    // what _retryBlobLoad's comment claims it is. If a coalescing request can
+    // take that route away, the meter stays blank for good.
+    footer._scheduleTokenDisplayUpdate = () => footer._cancelDeferredTokenDisplayUpdate();
+    footer.setMessageThread(thread);
+    mounted = {
+      footer,
+      meterText: () => footer.querySelector('token-display')?.textContent?.trim() ?? ''
+    };
+
+    // A turn's worth of frames, arriving faster than the re-ask waits.
+    const busy = setInterval(() => footer._scheduleTokenDisplayUpdate(), 50);
+    try {
+      await waitFor(() => /\bcached\b/.test(mounted.meterText()), {
+        timeoutMs: budgetFor(2000),
+        description: 'the meter draws its blob while the conversation keeps changing'
+      });
+    } finally {
+      clearInterval(busy);
+    }
+    assert(asks > 2, `the meter must keep asking while events arrive, asked ${asks}×`);
+
+    passed++;
+  } catch (e) {
+    failed++;
+    errors.push(`re-asks while the conversation keeps changing: ${msg(e)}`);
+  } finally {
+    workerManager.getTransaction = realGetTransaction;
+    mounted?.footer.remove();
+    if (conversation) await releaseTestConversation(session, conversation.id, 'token-meter-3');
+  }
+
   return { passed, failed, errors };
 }
