@@ -109,7 +109,7 @@ jobs:
       # WebKitGTK/GTK4/libsoup dev headers for the cgo Wails v3 Linux backend.
       # The server (hidden engine WebView) and the desktop app both link
       # against these.
-      # xvfb: the browser suite spawns bin/juggler, a Wails/WebKitGTK app whose
+      # xvfb: the browser suite spawns bin/juggler-testsrv, a Wails/WebKitGTK app whose
       # hidden engine WebView needs an X display even in --test mode. Hosted
       # Linux runners are headless, so the suite runs under a virtual framebuffer
       # (see the "Run tests" step). macOS (WKWebView) / Windows (WebView2) don't.
@@ -132,27 +132,26 @@ jobs:
         shell: bash
         run: make lint
 
-      # Plain unstamped builds: this workflow ships nothing, so the release
-      # pipeline's version/commit ldflags stamping is deliberately absent.
+      # `make test-build`, never a bare `go build`: the suites below spawn this
+      # server, and several of their spawn sites run it WITHOUT --test, each in a
+      # config dir of its own. Such a server polls the update endpoint exactly
+      # like an install, and the -test version stamp is the only thing that tells
+      # the endpoint otherwise — an unstamped build calls itself vX.Y.Z-dev
+      # (cmd/juggler/core.resolveVersion) and every runner in this matrix then
+      # reports itself as somebody's brand new install, on every run.
+      #
+      # The target also regenerates the go:embed sources from assets/
+      # (cmd/juggler/icon.png is gitignored, so absent on a fresh checkout) and
+      # picks the platform executable name, so the harness's serverBinary()
+      # finds it on Windows, where `go build -o` writes the name verbatim.
       - name: Build binaries
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p bin
-          # Regenerate the go:embed source files from their assets/ sources
-          # (cmd/juggler/icon.png is gitignored, so absent on a fresh checkout).
-          # `make lint` above also does this as a side effect, but the build is
-          # what actually depends on it — keep it explicit here.
-          make app-icon-embed wails-runtime-embed
-          # bin/juggler is what the browser test suite spawns, so the tests
-          # below exercise the very binary we just built. On Windows the output
-          # must be named .exe: `go build -o` writes the name verbatim (no auto
-          # .exe on a Windows target) and Windows can't exec an extension-less
-          # file — the harness's serverBinary() resolves the same name.
+          make test-build
           EXE=""
           [ "${RUNNER_OS}" = "Windows" ] && EXE=".exe"
-          go build -o "bin/juggler${EXE}" ./cmd/juggler
-          go build -o "bin/juggler-test${EXE}" ./cmd/juggler-test
+          echo "JUGGLER_TEST_SERVER=${PWD}/bin/juggler-testsrv${EXE}" >> "${GITHUB_ENV}"
 
       # The Linux desktop app (GTK), built on every run as a continuous
       # compile-regression guard: juggler-app's Linux build is new, so a break
@@ -172,7 +171,7 @@ jobs:
         run: go test -count=1 -race -timeout 5m ./cmd/...
 
       # Browser test suite: drives the WebKitGTK engine inside a spawned
-      # bin/juggler. -count=1 (not -short) is load-bearing — under -short the
+      # bin/juggler-testsrv. -count=1 (not -short) is load-bearing — under -short the
       # whole suite self-skips (browser_suite_test.go / main_test.go TestMain),
       # so this is the step that actually exercises the behavioural gate.
       # On Linux the spawned server needs a display, so run under xvfb; other
@@ -242,7 +241,7 @@ jobs:
             go test -count=1 -race -timeout 15m ./tests/integration/...
           fi
 
-      # Diagnostics on a browser-suite failure. Each spawned bin/juggler pipes
+      # Diagnostics on a browser-suite failure. Each spawned server pipes
       # its stderr — the WebKitGTK/libEGL/WebProcess-crash output, and the fatal
       # line a server writes on its way out, neither of which reaches the go-test
       # log — to <tempdir>/juggler-test-logs/juggler-stderr-*.log (see

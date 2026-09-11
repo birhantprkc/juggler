@@ -77,9 +77,12 @@ line you already had and cuts the assertion that says what broke.
   make test RUN='TestDiffView/collapsed'  # one subtest
   make test-go RUN='TestWorker'           # restrict to the fast unit layer
   ```
-- Browser tests launch `bin/juggler --assets-from-disk`, serving the local
-  `web/` tree. Once `bin/juggler` exists, web-only edits don't need a rebuild —
-  rerun `make test RUN='<name>'` (Go builds are incremental, so this is cheap).
+- Browser tests launch `bin/juggler-testsrv --assets-from-disk`, serving the
+  local `web/` tree. That is the test-capable server `make test` builds beside
+  the app (`make test-build` on its own), stamped `-test` so a server a suite
+  spawned says so when it talks to the update endpoint; `bin/juggler` stays the
+  app you launch. Once it exists, web-only edits don't need a rebuild — rerun
+  `make test RUN='<name>'` (Go builds are incremental, so this is cheap).
   Rebuild only for Go / embedded-asset / build-file changes.
 - Browser-test lanes share one offscreen pool window. They do not reliably paint,
   so a test must not await `requestAnimationFrame` or a post-layout

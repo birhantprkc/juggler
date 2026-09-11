@@ -1,4 +1,4 @@
-.PHONY: build test test-go test-full benchmark dev clean fmt lint lint-files lint-go lint-deadcode lint-js lint-types lint-css fix fix-files fix-fmt fix-go fix-js fix-css node-deps help mac-app install-mac app-icon-embed wails-runtime-embed win-icon release-build-mac mac-dmg mac-dmg-pack win-installer win-installer-pack linux-binaries linux-tarball linux-tarball-pack mac-codesign linux-compat-server
+.PHONY: build test test-build test-go test-full benchmark dev clean fmt lint lint-files lint-go lint-deadcode lint-js lint-types lint-css fix fix-files fix-fmt fix-go fix-js fix-css node-deps help mac-app install-mac app-icon-embed wails-runtime-embed win-icon release-build-mac mac-dmg mac-dmg-pack win-installer win-installer-pack linux-binaries linux-tarball linux-tarball-pack mac-codesign linux-compat-server
 
 # Binary name
 BINARY_NAME=juggler
@@ -184,6 +184,28 @@ else
 endif
 	@$(GOBUILD) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/juggler-test$(BIN_EXT) ./cmd/juggler-test
 	@echo "✓ built juggler, juggler-app, juggler-test ($(VERSION_STAMP))"
+
+# Where the server the suites drive is built. Beside the app, never in it:
+# bin/juggler is the slot the desktop app occupies (on macOS a symlink into
+# Juggler.app), so building a test server there would leave a `make build` owing
+# after every test run. The suites find this one through JUGGLER_TEST_SERVER
+# (tests/integration/main_test.go).
+TEST_SERVER_BIN := $(BUILD_DIR)/juggler-testsrv$(BIN_EXT)
+
+## test-build: Build the test-capable server the suites spawn, stamped -test.
+## No production tag: the browser suite needs the //go:build !production handlers.
+##
+## The stamp is what keeps a test run from being counted as an install. A spawned
+## server behaves like one in every other respect — it polls the update endpoint
+## on the same schedule, from whatever config dir the test handed it — so the
+## version is all the endpoint has to tell them apart, and several spawn sites
+## here start the server without --test. Stamped -dev, one run of this suite
+## reports a handful of brand new installs, and a CI matrix does it per runner.
+test-build: app-icon-embed wails-runtime-embed
+	@mkdir -p $(BUILD_DIR)
+	@$(GOBUILD) -ldflags "$(TEST_LDFLAGS)" -o $(TEST_SERVER_BIN) ./cmd/juggler
+	@$(GOBUILD) -ldflags "$(TEST_LDFLAGS)" -o $(BUILD_DIR)/juggler-test$(BIN_EXT) ./cmd/juggler-test
+	@echo "✓ built juggler-testsrv, juggler-test ($(TEST_VERSION_STAMP))"
 
 ## release-build: Build juggler with -tags production. Excludes test handlers
 ## (cmd/juggler/testing/, worker_test_support.go) so they can't be reached in
@@ -592,6 +614,7 @@ test: test-go
 	@mkdir -p $(BUILD_DIR)
 	@echo "── integration + browser suite ──"
 	@bash -c 'set -o pipefail; \
+		export JUGGLER_TEST_SERVER="$(abspath $(TEST_SERVER_BIN))"; \
 		$(GOTEST) -count=1 $(RACE) -timeout 15m $(GOTEST_RUN) ./tests/integration/... 2>&1 $(QUIET_UNMATCHED) | tee $(BUILD_DIR)/test.log; \
 		rc=$${PIPESTATUS[0]}; \
 		if [ $$rc -eq 0 ]; then echo "✓ all tests passed"; else echo "✗ the integration + browser suite failed — its output is above"; fi; \
@@ -602,7 +625,7 @@ test: test-go
 ## (~75s under -race; claudecode ~55s) — and
 ## includes the tool-delivery permutation harness, which `make test` otherwise
 ## only compiled (via lint) and never executed.
-test-go: go-build
+test-go: go-build test-build
 	@mkdir -p $(BUILD_DIR)
 	@echo "── Go package tests ──"
 	@bash -c 'set -o pipefail; \
