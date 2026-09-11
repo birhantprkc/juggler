@@ -71,7 +71,22 @@ export async function runTests(ctx) {
   }
 
   const pin = new ProjectFilesPin();
-  const base = `${ctx.fixtureDir}/_projfiles_${Math.random().toString(36).slice(2, 10)}`;
+
+  /**
+   * Spell a path the way the platform under test spells one.
+   *
+   * The pin gives every row the root's own separator, so that a child is never
+   * spelled differently from the parent it is compared against and handed to the
+   * OS with. A project root arrives from the backend native — backslashed on
+   * Windows — so a fixture root joined with forward slashes is a root the pin is
+   * never given in earnest, and its rows would come back in a spelling this
+   * suite then had to know about. Every path here is built the one way instead.
+   * @param {string} path - A forward-slashed path under the fixture.
+   * @returns {string} The same path, separated as the fixture root is.
+   */
+  const native = (path) => (ctx.fixtureDir.includes('\\') ? path.replace(/\//g, '\\') : path);
+
+  const base = native(`${ctx.fixtureDir}/_projfiles_${Math.random().toString(36).slice(2, 10)}`);
   // `mkdir` makes one directory, not a path, so the base has to exist before
   // anything is created under it.
   await mkdirOp({ path: base });
@@ -85,10 +100,10 @@ export async function runTests(ctx) {
    * @returns {Promise<string>} The absolute root.
    */
   async function makeTree(name, dirs, files) {
-    const root = `${base}/${name}`;
+    const root = native(`${base}/${name}`);
     await mkdirOp({ path: root });
-    for (const dir of dirs) await mkdirOp({ path: `${root}/${dir}` });
-    for (const file of files) await writeFileOp({ path: `${root}/${file}`, content: `${file}\n` });
+    for (const dir of dirs) await mkdirOp({ path: native(`${root}/${dir}`) });
+    for (const file of files) await writeFileOp({ path: native(`${root}/${file}`), content: `${file}\n` });
     return root;
   }
 
@@ -262,7 +277,7 @@ export async function runTests(ctx) {
       assert(rows[0].expanded === 'false', 'a folder starts closed');
       assert(rows[1].expanded === null, 'a file is not a thing that can be expanded');
       assert(rows.every((r) => r.level === '1'), 'everything in the root is at the first level');
-      assert(rows[0].path === `${root}/zed`, `rows carry the absolute path, got "${rows[0].path}"`);
+      assert(rows[0].path === native(`${root}/zed`), `rows carry the absolute path, got "${rows[0].path}"`);
     } finally {
       mounted.teardown();
     }
@@ -346,7 +361,7 @@ export async function runTests(ctx) {
   });
 
   await test('a folder that cannot be read says why, in the op\'s own words', async () => {
-    const mounted = mount(`${base}/never-made`);
+    const mounted = mount(native(`${base}/never-made`));
     try {
       await waitFor(() => (mounted.body.textContent || '').includes("Couldn't read this folder."),
         'the failure to be reported', mounted.body);
@@ -411,7 +426,7 @@ export async function runTests(ctx) {
       /** @type {HTMLElement} */ (first.body.querySelector('.project-files-pin__row')).click();
       await waitFor(() => namesOf(first.body).includes('deep'), 'the folder to open', first.body);
       const deep = [...first.body.querySelectorAll('.project-files-pin__row')]
-        .find((row) => /** @type {HTMLElement} */ (row).dataset.filePath === `${root}/zed/deep`);
+        .find((row) => /** @type {HTMLElement} */ (row).dataset.filePath === native(`${root}/zed/deep`));
       /** @type {HTMLElement} */ (deep).click();
       await waitFor(() => namesOf(first.body).includes('leaf.txt'), 'the inner folder to open', first.body);
       assert(JSON.stringify(first.saved()?.expanded) === '["zed","zed/deep"]',
@@ -467,9 +482,9 @@ export async function runTests(ctx) {
       // Both folders gain a file on disk, and the pin is told about one of them.
       // A pin that re-read the tree would show both, which is the failure this
       // is here to catch.
-      await writeFileOp({ path: `${root}/a/added.txt`, content: 'a\n' });
-      await writeFileOp({ path: `${root}/b/added.txt`, content: 'b\n' });
-      mounted.fireChange([{ path: `${root}/a/added.txt`, event: 'create' }]);
+      await writeFileOp({ path: native(`${root}/a/added.txt`), content: 'a\n' });
+      await writeFileOp({ path: native(`${root}/b/added.txt`), content: 'b\n' });
+      mounted.fireChange([{ path: native(`${root}/a/added.txt`), event: 'create' }]);
 
       await waitFor(() => namesOf(mounted.body).includes('added.txt'),
         'the changed folder to be read again', mounted.body);
@@ -489,7 +504,7 @@ export async function runTests(ctx) {
 
       // No change event: this is exactly the case Refresh exists for, since the
       // watcher is rooted at the project and cannot see everything.
-      await writeFileOp({ path: `${root}/second.txt`, content: 'two\n' });
+      await writeFileOp({ path: native(`${root}/second.txt`), content: 'two\n' });
       const actions = mounted.controller.getActions();
       assert(actions.length === 1 && actions[0].id === 'refresh',
         `the toolbar offers exactly Refresh, got ${JSON.stringify(actions.map((/** @type {any} */ a) => a.id))}`);
