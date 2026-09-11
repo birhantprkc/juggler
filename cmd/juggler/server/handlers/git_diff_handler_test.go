@@ -237,6 +237,10 @@ func TestGitDiffReadsUntrackedFilesItself(t *testing.T) {
 			t.Errorf("len(Hunks) = %d, want no invented text for binary content", len(resp.Hunks))
 		}
 	})
+	// A symlink's own content is the path it holds, and that is what git would
+	// store for it. Reading through it would show a file from somewhere else under
+	// this file's name; showing nothing at all would leave the user looking at a
+	// file the review says exists and cannot describe.
 	t.Run("symlink", func(t *testing.T) {
 		if err := os.Symlink(filepath.Join(p.dir, "committed.txt"), filepath.Join(p.dir, "link.txt")); err != nil {
 			t.Skipf("symlinks unavailable here: %v", err)
@@ -245,8 +249,14 @@ func TestGitDiffReadsUntrackedFilesItself(t *testing.T) {
 		if resp.Status != "untracked" {
 			t.Errorf("Status = %q, want %q", resp.Status, "untracked")
 		}
-		if len(resp.Hunks) != 0 {
-			t.Errorf("the link was read through: %s", lineText(resp))
+		if got := lineText(resp); got != "+"+filepath.Join(p.dir, "committed.txt")+"\n" {
+			t.Errorf("lines = %q, want the link's own text added", got)
+		}
+		if resp.NewMode != gitSymlinkMode {
+			t.Errorf("NewMode = %q, want %q — without it a link reads as an ordinary file holding a path", resp.NewMode, gitSymlinkMode)
+		}
+		if resp.Added != 1 {
+			t.Errorf("Added = %d, want 1", resp.Added)
 		}
 	})
 }
@@ -388,6 +398,14 @@ func TestGitDiffReportsAModeChange(t *testing.T) {
 	if err := os.Chmod(abs, 0o750); err != nil {
 		t.Skipf("file modes are not settable here: %v", err)
 	}
+	// Chmod returns success on a filesystem that has no executable bit to set,
+	// and git sets core.filemode=false wherever it finds one, so what the call
+	// returned says nothing about whether there is now a mode change to report.
+	// Only git can answer that, and where its answer is no there is no
+	// behaviour here to test.
+	if !strings.Contains(p.git("diff", "--summary"), "mode change") {
+		t.Skip("git does not track the executable bit on this filesystem")
+	}
 
 	resp := p.diff("script.sh")
 	if resp.OldMode == resp.NewMode {
@@ -519,7 +537,7 @@ func TestGitDiffRefusesToLeaveTheProject(t *testing.T) {
 	p := newGitProject(t)
 	p.write("inside.txt", "x\n")
 	p.commit("init")
-	if err := os.WriteFile(filepath.Join(filepath.Dir(p.root), "secret.txt"), []byte("secret\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(filepath.Dir(p.root), "secret.txt"), []byte("THE-CONTENTS\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(p.root, "plain"), 0o750); err != nil {
@@ -539,13 +557,38 @@ func TestGitDiffRefusesToLeaveTheProject(t *testing.T) {
 			t.Errorf("status = %d, want %d — an ordinary directory is not a repository", rec.Code, http.StatusBadRequest)
 		}
 	})
+	// A directory in the path is a different matter from the file at the end of
+	// it: follow a symlinked directory and the file opened is an ordinary file
+	// somewhere else entirely, with nothing about it to say so.
+	t.Run("symlinked directory in the path", func(t *testing.T) {
+		outside := t.TempDir()
+		if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("THE-CONTENTS\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(p.dir, "linkdir")); err != nil {
+			t.Skipf("symlinks unavailable here: %v", err)
+		}
+		rec, resp := p.ask(t.Context(), "linkdir/secret.txt")
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+		}
+		if strings.Contains(lineText(resp), "THE-CONTENTS") {
+			t.Errorf("the endpoint read through a linked directory:\n%s", lineText(resp))
+		}
+	})
+	// The link is shown as what it is — a path — and never as what it points at.
+	// Naming a file outside the project is the whole of what a link can do here;
+	// opening one would be reading that file into a review of this project.
 	t.Run("untracked symlink out of the project", func(t *testing.T) {
 		if err := os.Symlink(filepath.Join(filepath.Dir(p.root), "secret.txt"), filepath.Join(p.dir, "escape.txt")); err != nil {
 			t.Skipf("symlinks unavailable here: %v", err)
 		}
 		_, resp := p.ask(t.Context(), "escape.txt")
-		if strings.Contains(lineText(resp), "secret") {
+		if strings.Contains(lineText(resp), "THE-CONTENTS") {
 			t.Errorf("the endpoint read through a link out of the project:\n%s", lineText(resp))
+		}
+		if got := lineText(resp); !strings.Contains(got, "secret.txt") {
+			t.Errorf("lines = %q, want the link's own text", got)
 		}
 	})
 }
