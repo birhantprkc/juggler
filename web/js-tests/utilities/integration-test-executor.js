@@ -167,6 +167,8 @@ import { runTests as runConversationFocusPolicyTests } from '../unit-tests/conve
 import { runTests as runMobileComposerTests } from '../unit-tests/mobile-composer-test.js';
 import { runTests as runComposerSendLatchTests } from '../unit-tests/composer-send-latch-test.js';
 import { runTests as runComposerAutoresizeDeferTests } from '../unit-tests/composer-autoresize-defer-test.js';
+import { runTests as runComposerRestoreMessageTests } from '../unit-tests/composer-restore-message-test.js';
+import { runTests as runPendingMessageRestoreTests } from '../unit-tests/pending-message-restore-test.js';
 import { runTests as runWindowResizeCursorTests } from '../unit-tests/window-resize-cursor-test.js';
 import { runTests as runScheduledSendTests } from '../unit-tests/scheduled-send-test.js';
 import { runTests as runSidebarDrawerTests } from '../unit-tests/sidebar-drawer-test.js';
@@ -446,6 +448,8 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:mobile-composer', run: runMobileComposerTests },
   { name: 'unit:composer-send-latch', run: runComposerSendLatchTests },
   { name: 'unit:composer-autoresize-defer', run: runComposerAutoresizeDeferTests },
+  { name: 'unit:composer-restore-message', run: runComposerRestoreMessageTests },
+  { name: 'unit:pending-message-restore', run: runPendingMessageRestoreTests },
   { name: 'unit:window-resize-cursor', run: runWindowResizeCursorTests },
   { name: 'unit:scheduled-send', run: runScheduledSendTests },
   { name: 'unit:sidebar-drawer', run: runSidebarDrawerTests },

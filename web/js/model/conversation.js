@@ -1690,8 +1690,10 @@ class Conversation {
       return `conversation ${this.id} is processing`;
     }
 
-    // Save message before clearing, so we can restore on validation failure
-    this._pendingUserMessage = userMessage;
+    // Save the message before clearing, so a refusal can hand it back or resend
+    // it. The WHOLE message: the box is about to be emptied and the worker has
+    // written nothing, so this record is the only copy of the images too.
+    this._pendingUserMessage = { content: userMessage, attachments: options.attachments || [] };
 
     // Validation passed locally - now clear the input. Only clear the box when
     // it is showing the thread we sent to: a scheduled send fired from the
@@ -1765,6 +1767,15 @@ class Conversation {
    * @type {boolean}
    */
   _modelSelfHealAttempted = false;
+
+  /**
+   * The message a send handed to the worker, held from the moment the box is
+   * cleared until the worker accepts the turn. One record, text and images
+   * together, because a refusal has to hand back (or resend) the whole message
+   * and nothing else is holding either half by then.
+   * @type {{content: string, attachments: Array<import('../utils/attachments.js').AssetRef>}|null}
+   */
+  _pendingUserMessage = null;
 
   /**
    * Optimistic Pause marks, keyed as the worker keys its own: `''` is the root
@@ -2511,7 +2522,7 @@ class Conversation {
     if (this._modelSelfHealAttempted) return false;
     const cfg = this.modelConfig;
     const pending = this._pendingUserMessage;
-    if (!cfg || !cfg.provider || !cfg.model || !pending) return false;
+    if (!cfg || !cfg.provider || !cfg.model || !pending || this._isEmptyMessage(pending)) return false;
     this._modelSelfHealAttempted = true;
     this.resyncToWorker();
     this.resendToWorker(pending, threadItemId);
@@ -2529,16 +2540,34 @@ class Conversation {
   }
 
   /**
-   * Restore the pending user message to the composer after a send failure
+   * Put the refused message back into the composer after a send failure —
+   * text and images together, since that is what the user sent and the box was
+   * cleared of both. Restoring the images is also what keeps their bytes alive:
+   * a bounced send wrote no item, so the persisted draft becomes the only thing
+   * referencing them (see the worker's CollectDraftAssetIDs).
+   * @returns {void}
    */
   restorePendingMessage() {
     const message = this._pendingUserMessage;
     this._pendingUserMessage = null;
-    if (!message) return;
+    if (!message || this._isEmptyMessage(message)) return;
     const composer = this._getComposer();
-    if (composer && 'setText' in composer) {
-      /** @type {any} */ (composer).setText(message);
+    if (composer && typeof (/** @type {any} */ (composer).restoreMessage) === 'function') {
+      /** @type {any} */ (composer).restoreMessage(message);
     }
+  }
+
+  /**
+   * Whether a pending message holds nothing worth restoring or resending.
+   * Judged on BOTH halves: an image-only send has empty text, so a text-only
+   * test would read it as nothing and drop the images it was holding.
+   * @param {{content?: string, attachments?: Array<any>}|null} message - The pending message, if any.
+   * @returns {boolean} True when there is nothing to hand back.
+   * @private
+   */
+  _isEmptyMessage(message) {
+    if (!message) return true;
+    return !(message.content || '').trim() && !(message.attachments || []).length;
   }
 
   /**
@@ -2620,14 +2649,18 @@ class Conversation {
    * after resyncToWorker(). Deliberately bypasses the local sendMessage guards:
    * they already passed for the original send, and this must ride the same FIFO
    * worker channel immediately after the resync so the model config lands before
-   * the resend is re-validated. Text-only (attachments, if any, were already
-   * consumed by the original attempt); no-op if the worker isn't ready.
-   * @param {string} text - The pending user message to resend.
+   * the resend is re-validated. No-op if the worker isn't ready.
+   *
+   * Carries the attachments, because the refused attempt consumed nothing: a
+   * `no-model` send is bounced before the worker appends the user item, so the
+   * refs are unreferenced rather than spent and the resend is the first thing to
+   * record them.
+   * @param {{content?: string, attachments?: Array<any>}} message - The pending message to resend.
    * @param {string|null} [threadItemId] - Target thread, or null for root.
    */
-  resendToWorker(text, threadItemId = null) {
+  resendToWorker(message, threadItemId = null) {
     if (workerManager.isWorkerReady(this.id)) {
-      workerManager.sendMessage(this.id, text, threadItemId, undefined);
+      workerManager.sendMessage(this.id, message.content || '', threadItemId, message.attachments);
     }
   }
 

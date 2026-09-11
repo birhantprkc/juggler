@@ -906,6 +906,10 @@ class JugglerApp {
    * intact and never reach into individual fields; that is what keeps a new
    * message field (e.g. another attachment kind) from having to be threaded
    * through every move/restore site by hand.
+   *
+   * Everything the box has to do about it — preserving the overwritten draft,
+   * the caret, the token mirror, the Send button, persistence — belongs to the
+   * composer, so this only reads the message and hands it over.
    * @param {import('./model/conversation.js').default} conversation - The conversation
    * @param {{get?: (k:string)=>any, content?: string, attachments?: any}} message - The user message item (Y.Map) or a plain record
    * @private
@@ -920,30 +924,11 @@ class JugglerApp {
     // Pull the message's fields whether it's a Y.Map item or a plain record.
     const read = (/** @type {string} */ key) =>
       (message && typeof message.get === 'function') ? message.get(key) : /** @type {any} */ (message)?.[key];
-    const text = read('content') || '';
-    const attachments = normalizeAttachments(read('attachments'));
 
-    const textarea = composer.querySelector('textarea');
-    if (textarea) {
-      // Save any existing draft to history before overwriting
-      const existingText = textarea.value.trim();
-      if (existingText && this._connectionManager) {
-        const session = this._connectionManager.getSession();
-        if (session) {
-          session.addMessageToHistory({ content: existingText, attachments: [] });
-        }
-      }
-
-      textarea.value = text;
-      // @ts-ignore - autoResize exists on Composer custom element
-      composer.autoResize(textarea);
-      textarea.focus();
-    }
-    // Restore staged image attachments. Always call so restoring a message
-    // with no attachments also clears any previously-staged attachments.
-    if (typeof (/** @type {any} */ (composer).setPendingAttachments) === 'function') {
-      /** @type {any} */ (composer).setPendingAttachments(attachments);
-    }
+    /** @type {any} */ (composer).restoreMessage({
+      content: read('content') || '',
+      attachments: normalizeAttachments(read('attachments'))
+    });
   }
 
   /**

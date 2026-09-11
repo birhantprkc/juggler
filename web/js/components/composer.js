@@ -1064,10 +1064,7 @@ class Composer extends HTMLElement {
     if (textarea.value === '') return false;
 
     // Save the draft to history before clearing so ArrowUp can retrieve it.
-    const trimmed = textarea.value.trim();
-    if (trimmed && this.session) {
-      this.session.addMessageToHistory({ content: trimmed, attachments: [] });
-    }
+    this._saveDraftToHistory();
 
     textarea.focus();
     textarea.select();
@@ -1156,6 +1153,37 @@ class Composer extends HTMLElement {
       textarea.setSelectionRange(end, end);
     } catch {
       // setSelectionRange throws on some input types — non-fatal.
+    }
+  }
+
+  /**
+   * Put a stored user message back into the box as the live draft: its text AND
+   * its staged image attachments, since a message is one unit. Used by the
+   * rewind and branch flows, which delete a message and hand it back for
+   * editing and re-sending.
+   *
+   * Whatever was already typed goes to history first, so overwriting a draft
+   * never loses it (ArrowUp retrieves it). The attachment set is replaced
+   * wholesale rather than merged — restoring a message with no images clears
+   * any that were staged — which is also what persists the restored draft.
+   * @param {{content?: string, attachments?: Array<import('../utils/attachments.js').AssetRef>}} message - The message to restore.
+   */
+  restoreMessage({ content = '', attachments = [] } = {}) {
+    this._saveDraftToHistory();
+    this.setDraft(content);
+    this.setPendingAttachments(attachments);
+  }
+
+  /**
+   * Save whatever is currently in the box to the shared message history, so an
+   * ArrowUp brings it back after the box is cleared or overwritten. No-op on an
+   * empty box, or before a session is wired up.
+   * @private
+   */
+  _saveDraftToHistory() {
+    const trimmed = this.getText().trim();
+    if (trimmed && this.session) {
+      this.session.addMessageToHistory({ content: trimmed, attachments: [] });
     }
   }
 

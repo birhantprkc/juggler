@@ -179,17 +179,17 @@ export const rewindRestoresAttachmentsTest = {
         throw new Error(`Expected sent user item to carry the attachment; got ${JSON.stringify(first.atts)}`);
       }
 
-      // 2. Rewind to that user message — mirrors app.js _handleRollbackFromItem:
-      //    read content + attachments, delete the range, restore into the box.
+      // 2. Rewind to that user message — what app.js _handleRollbackFromItem
+      //    does: read content + attachments, delete the range, hand the whole
+      //    message to the composer's restore door.
       const restoredText = conversation.rootMessageThread.items[first.idx].get('content');
       const restoredAtts = normalizeAttachments(conversation.rootMessageThread.items[first.idx].get('attachments'));
       conversation.deleteRangeWithCleanup(conversation.rootMessageThread, first.idx);
-      composer.setText(restoredText);
-      const staged = composer.setPendingAttachments(restoredAtts);
+      composer.restoreMessage({ content: restoredText, attachments: restoredAtts });
 
       // 3. The composer now holds the attachment again (pending + chip).
-      if (staged !== 1) {
-        throw new Error(`Expected setPendingAttachments to stage 1 attachment; got ${staged}`);
+      if (composer.getText() !== restoredText) {
+        throw new Error(`Expected the rewound text in the box; got ${JSON.stringify(composer.getText())}`);
       }
       if (composer._pendingAttachments.length !== 1 || composer._pendingAttachments[0].id !== ref.id) {
         throw new Error(`Pending attachments not restored; got ${JSON.stringify(composer._pendingAttachments)}`);
