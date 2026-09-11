@@ -216,7 +216,7 @@ func (c *Client) enhanceError(err error) error {
 		case http.StatusUnauthorized:
 			return fmt.Errorf("%w (hint: your API key may be invalid)", err)
 		case http.StatusTooManyRequests:
-			return fmt.Errorf("%w (hint: rate limit reached, please wait)", err)
+			return rateLimited(err, apiErr)
 		}
 		if apiErr.Code == "insufficient_quota" {
 			return fmt.Errorf("%w (hint: your account may be out of credits)", err)
@@ -229,7 +229,7 @@ func (c *Client) enhanceError(err error) error {
 	case strings.Contains(errMsg, "401") || strings.Contains(errMsg, "Unauthorized"):
 		return fmt.Errorf("%w (hint: your API key may be invalid)", err)
 	case strings.Contains(errMsg, "429") || strings.Contains(errMsg, "Too Many Requests"):
-		return fmt.Errorf("%w (hint: rate limit reached, please wait)", err)
+		return rateLimited(err, nil)
 	case strings.Contains(errMsg, "insufficient_quota") || strings.Contains(errMsg, "quota") ||
 		strings.Contains(errMsg, "Insufficient balance") || strings.Contains(errMsg, "no resource package"):
 		return fmt.Errorf("%w (hint: your account may be out of credits)", err)
@@ -238,6 +238,30 @@ func (c *Client) enhanceError(err error) error {
 	}
 
 	return err
+}
+
+// rateLimited builds the typed refusal for a 429, carrying the wait the
+// provider stated. Both the header and the response body are read: a throttle
+// answers with `Retry-After`, while a ChatGPT-subscription usage cap states its
+// reset only in the body. apiErr is nil when the 429 was recognised from the
+// message text alone, in which case the text is all there is to read — the SDK
+// embeds the response body in it, so the body fields are still reachable.
+func rateLimited(err error, apiErr *openai.Error) error {
+	var header http.Header
+	body := err.Error()
+	if apiErr != nil {
+		if apiErr.Response != nil {
+			header = apiErr.Response.Header
+		}
+		if raw := apiErr.RawJSON(); raw != "" {
+			body = raw
+		}
+	}
+	return &provider.RateLimitedError{
+		RetryAfter: utils.ParseRateLimitHint(header, body),
+		Message:    fmt.Sprintf("%s (hint: rate limit reached, please wait)", err.Error()),
+		Cause:      err,
+	}
 }
 
 // ModelFilterFunc is a function that filters model IDs

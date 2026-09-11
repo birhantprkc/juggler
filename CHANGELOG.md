@@ -14,6 +14,7 @@ of changes; this project follows semantic versioning.
 - Code blocks in replies are syntax-highlighted, as are diffs, in the language of the file
 - A block comment or multi-line string keeps its colour across every line it covers
 - A file in the Changed files pin opens onto everything this conversation did to it, as one diff
+- A usage limit now stops the conversation once, saying when it resets, instead of every thread retrying
 - A window that starts up off-screen is now brought back, instead of running where you can't see it
 - Linux Window edges are easier to grab, and show a resize cursor over buttons and the composer
 - Typing while a thread runs no longer waits on the whole transcript to relayout

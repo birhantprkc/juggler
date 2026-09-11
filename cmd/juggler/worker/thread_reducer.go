@@ -679,6 +679,26 @@ func (r *run) dispatchCallLLMOnThread(threadItemID string) {
 		return
 	}
 
+	// A usage cap this conversation has already met stands over every thread on
+	// that provider until it lifts. The thread that met it reported it; the rest
+	// take the same promote-and-idle exit a pause takes, leaving a clean,
+	// resumable prefix, because there is nothing they could send that the account
+	// would answer. Same guard as the pause branch: resting a thread that holds no
+	// claim and has nothing queued would write an idle frame per reconcile pass.
+	//
+	// Nothing wakes the conversation when the cap lifts, and that is deliberate —
+	// the reset is hours away and the user's next message is what starts it again.
+	//
+	// Gated on there being any hold at all, so the ordinary dispatch — every
+	// dispatch, on every turn — does not pay for a document read to resolve a
+	// provider name nothing is going to be compared against.
+	if mc := r.rateLimitedModelConfig(threadItemID); mc != nil {
+		if r.threadActivity(threadItemID) != ActivityNone || r.hasPendingItems(threadItemID) {
+			r.restPromotingQueue(threadItemID)
+		}
+		return
+	}
+
 	// Transition this thread from "awaiting_llm" → "calling_llm".
 	// Consume the one-shot continuation marker only once we are actually going
 	// to dispatch; if the dispatch is refused, leave it for the next reconcile tick.

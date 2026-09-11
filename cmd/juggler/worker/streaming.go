@@ -791,20 +791,38 @@ func isTransientMsg(msg string) bool {
 	return providerutils.TransientMessage(msg)
 }
 
-// parseRetryWaitFromMsg extracts a suggested retry delay from an error string
-// ("in 1.9s", "after 2s", etc.). Falls back to 2 seconds.
-func parseRetryWaitFromMsg(msg string) time.Duration {
+// defaultRetryWait is what a rate limit that states no reset is retried after.
+// It is a guess, and callers are told as much (the second return of
+// parseRetryWaitFromMsg) so that nothing treats it as the provider's word.
+const defaultRetryWait = 2 * time.Second
+
+// parseRetryWaitFromMsg extracts the wait a provider stated, from a 429's body
+// fields where it carries them and otherwise from the message prose ("in 1.9s",
+// "after 2s"). The second return reports whether the provider actually said
+// anything; when it is false the duration is defaultRetryWait, a guess.
+//
+// The distinction is the whole point. A conversation that reads an unstated
+// wait as "about two seconds" retries into a four-hour cap, three times per
+// thread, and learns nothing it could have acted on.
+func parseRetryWaitFromMsg(msg string) (time.Duration, bool) {
+	// The body a provider states its reset in is embedded in the error text by
+	// the time it reaches here, so it is read from the text directly. Providers
+	// that hand us the response itself go through providerutils.ParseRateLimitHint
+	// at the provider boundary, where the headers are still attached.
+	if d := providerutils.ParseRateLimitHint(nil, msg); d > 0 {
+		return d, true
+	}
 	lower := strings.ToLower(msg)
 	for _, prefix := range []string{"in ", "after "} {
 		if idx := strings.Index(lower, prefix); idx != -1 {
 			rest := msg[idx+len(prefix):]
 			var secs float64
-			if _, err := fmt.Sscanf(rest, "%fs", &secs); err == nil && secs > 0 && secs < 120 {
-				return time.Duration(secs * float64(time.Second))
+			if _, err := fmt.Sscanf(rest, "%fs", &secs); err == nil && secs > 0 {
+				return min(time.Duration(secs*float64(time.Second)), providerutils.MaxRateLimitHint), true
 			}
 		}
 	}
-	return 2 * time.Second
+	return defaultRetryWait, false
 }
 
 // RetryWaitResult reports how a waitForRetryDelay call ended.

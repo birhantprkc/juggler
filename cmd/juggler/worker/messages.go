@@ -99,7 +99,13 @@ type retryableError interface {
 // RateLimitError is returned by callLLM when the provider responds with a
 // rate-limit (429). The strategy loop retries after Wait.
 type RateLimitError struct {
-	Wait    time.Duration
+	Wait time.Duration
+	// ResetAt is when the provider said the limit lifts, or the zero time when
+	// it said nothing and Wait is therefore a guess. Only a stated reset may
+	// stand over the rest of the conversation (see rate_limit_latch.go): holding
+	// every thread on a number nobody supplied would turn one unlucky 429 into a
+	// conversation that refuses to run.
+	ResetAt time.Time
 	Message string
 	Cause   error
 }

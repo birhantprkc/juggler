@@ -351,6 +351,17 @@ type ConversationWorker struct {
 	// goroutines — without a lock. See polite_stop.go, which owns every rule here.
 	politeStops atomic.Pointer[map[string]bool]
 
+	// rateLimits holds the account-level usage caps standing over this
+	// conversation: provider name → when that provider said the cap lifts. One
+	// thread discovers a cap and every other thread on that provider rests
+	// instead of spending a request to be told the same thing. An immutable map
+	// behind an atomic pointer like politeStops, but rewritten under
+	// compare-and-swap rather than by a single writer: the writers here are turn
+	// goroutines racing each other — six threads meeting the same 429 at once —
+	// and the CAS is what makes exactly one of them the discoverer who reports it.
+	// See rate_limit_latch.go, which owns every rule here.
+	rateLimits atomic.Pointer[map[string]time.Time]
+
 	// mock is non-nil iff this worker is under test with scripted LLM
 	// responses installed. See mock_llm.go. Production binaries leave it nil.
 	mock *mockLLMCaller

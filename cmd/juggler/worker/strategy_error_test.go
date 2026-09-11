@@ -187,6 +187,54 @@ func TestClassifyLLMErrorPreservesTypedCause(t *testing.T) {
 	}
 }
 
+// codexUsageLimitBody is the body a ChatGPT-subscription account's hard usage
+// cap returns with its 429: not a per-minute throttle but "come back in four
+// hours". The delay is stated as a field, and reading it is the difference
+// between resting once and every thread finding out for itself.
+const codexUsageLimitBody = `{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"plus","resets_at":1789081159,"resets_in_seconds":14476}`
+
+func TestClassifyLLMErrorReadsUsageLimitResetFromBody(t *testing.T) {
+	msg := `POST "https://chatgpt.com/backend-api/codex/responses": 429 Too Many Requests ` + codexUsageLimitBody
+
+	err := classifyLLMError(msg, nil)
+	var rateLimit *RateLimitError
+	if !errors.As(err, &rateLimit) {
+		t.Fatalf("error = %T %v, want RateLimitError", err, err)
+	}
+	if want := 14476 * time.Second; rateLimit.Wait != want {
+		t.Fatalf("Wait = %v, want %v — the cap states its own reset, so nothing may guess", rateLimit.Wait, want)
+	}
+	if rateLimit.ResetAt.IsZero() {
+		t.Fatal("ResetAt is zero — a stated reset must arrive as a wall-clock time, since that is what stands over the conversation")
+	}
+}
+
+// TestCallLLMWithRetryDoesNotRetryPastTheReset: three attempts two seconds apart
+// buy nothing against a cap that lifts in four hours; they only spend the
+// account's next window. A hint the budget cannot cover is terminal on the spot.
+func TestCallLLMWithRetryDoesNotRetryPastTheReset(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+
+	calls := 0
+	w.llmCallFunc = func(context.Context, json.RawMessage, func(StreamChunk)) (*LLMResponse, error) {
+		calls++
+		return nil, &RateLimitError{Wait: 5 * time.Second, Message: "usage limit reached"}
+	}
+
+	// Leaves a second of the allowance — far less than the wait the provider asked for.
+	w.turn.retrySpent = MaxLLMRetryWindow - time.Second
+
+	_, err := w.currentRun().callLLMWithRetry(nil)
+	var rateLimit *RateLimitError
+	if !errors.As(err, &rateLimit) {
+		t.Fatalf("error = %T %v, want the rate limit to surface", err, err)
+	}
+	if calls != 1 {
+		t.Fatalf("provider calls = %d, want 1 — a wait past the budget must not buy another attempt", calls)
+	}
+}
+
 func TestClassifyLLMResponseErrorCompatibility(t *testing.T) {
 	w := NewConversationWorker("test-conv", "user:test")
 	defer w.doc.Destroy()

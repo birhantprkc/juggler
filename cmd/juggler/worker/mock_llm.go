@@ -211,10 +211,13 @@ func (r *run) callLLMMockWithSink(turnID string, sink func(StreamChunk)) (*LLMRe
 			return nil, err
 		}
 		// A scripted turn with Error set simulates a provider failure. The
-		// non-mock callLLM translates response.Error after waitForLLMResponse;
-		// the mock branch returns early, so mirror that translation here.
+		// non-mock callLLM classifies response.Error after waitForLLMResponse;
+		// the mock branch returns early, so it runs the same classifier here.
+		// Wrapping the text by hand instead would hand every scripted failure to
+		// the turn loop as a bare error, so a scripted rate limit would be the one
+		// thing a test of rate limiting could not produce.
 		if response.Error != "" {
-			return nil, fmt.Errorf("LLM error: %s", response.Error)
+			return nil, classifyLLMError(response.Error, nil)
 		}
 		return response, nil
 	}

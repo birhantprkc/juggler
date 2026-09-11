@@ -449,6 +449,38 @@ func (r *run) runOneTurn(st *strategyRunState, explicitContinuation bool) turnVe
 		for k, v := range compactionErrorData(err) {
 			errorData[k] = v
 		}
+
+		// A usage cap the provider dated is a fact about the ACCOUNT, not about
+		// this request, so it is latched here — the one place every terminal LLM
+		// error passes — and stands over every thread in the conversation until it
+		// lifts. Exactly one thread wins that latch and reports it; the others met
+		// the same refusal and have nothing to add, so they rest silently and the
+		// conversation says this once instead of once per thread.
+		//
+		// Both rest the way a Pause rests, without settling: a thread stopped by a
+		// cap is not a thread that finished, and settling would report an answer it
+		// never gave and hand its parent a fresh turn — straight back into the wall.
+		var rateLimit *RateLimitError
+		if errors.As(err, &rateLimit) && !rateLimit.ResetAt.IsZero() {
+			providerName := ""
+			if mc := r.resolveModelConfig(); mc != nil {
+				providerName = mc.Provider
+			}
+			if !r.latchRateLimit(providerName, rateLimit.ResetAt) {
+				r.log.Info("Usage limit on %s already reported for this conversation — resting this thread instead of reporting it again", providerName)
+				r.promotePendingItems(r.t.thread.itemID)
+				r.t.politelyStopped = true
+				r.t.txnID = ""
+				return turnDone
+			}
+			r.log.Info("Usage limit on %s stands until %s — latched, so no thread here calls it again until the user sends", providerName, rateLimit.ResetAt.Format(time.RFC3339))
+			r.sendErrorWithData(rateLimitReport(providerName, rateLimit.ResetAt, time.Now(), err.Error()), "", errorData)
+			r.promotePendingItems(r.t.thread.itemID)
+			r.t.politelyStopped = true
+			r.t.txnID = ""
+			return turnDone
+		}
+
 		// turn.txnID is still set, so insertTargetMessage stamps the
 		// error item with txnID — the View Transaction button opens the
 		// blob saved above.
@@ -877,6 +909,18 @@ func (r *run) callLLMWithRetry(req json.RawMessage) (*LLMResponse, error) {
 		}
 
 		wait := rErr.retryWait()
+
+		// A wait the budget cannot cover is a wall, not a backoff: the attempts
+		// it would buy all land inside the same refusal, and against a usage cap
+		// each one is charged to the window the user is waiting for. Surface it
+		// now, with the provider's own number intact.
+		if remaining := MaxLLMRetryWindow - r.t.retrySpent; wait > remaining {
+			r.log.Info("Retryable LLM error (%v), but it asks for %v and only %v of the %v budget is left — surfacing instead of retrying",
+				err, wait.Round(time.Second), remaining.Round(time.Second), MaxLLMRetryWindow)
+			r.resetLLMRetryBudget()
+			return nil, err
+		}
+
 		r.log.Info("Retryable LLM error (%v), retrying in %v (attempt %d/%d, %v of %v budget spent)",
 			err, wait, attempt+1, MaxLLMRetries, r.t.retrySpent.Round(time.Second), MaxLLMRetryWindow)
 
@@ -1119,9 +1163,18 @@ func (r *run) callLLMWithSink(request json.RawMessage, sink func(StreamChunk)) (
 // Wire and scripted responses have no concrete cause and continue to use their
 // LLMResponse.Error text.
 func classifyLLMError(msg string, cause error) error {
+	// A provider that read its own 429 hands us the wait as a number, taken from
+	// the header the message text never carries. Prefer it, and fall through to
+	// reading the text when the provider stated nothing.
+	var limited *provider.RateLimitedError
+	if errors.As(cause, &limited) && limited.RetryAfter > 0 {
+		return newRateLimitError(limited.RetryAfter, true, msg, cause)
+	}
+
 	switch {
 	case isRateLimitMsg(msg):
-		return &RateLimitError{Wait: parseRetryWaitFromMsg(msg), Message: "LLM error: " + msg, Cause: cause}
+		wait, stated := parseRetryWaitFromMsg(msg)
+		return newRateLimitError(wait, stated, msg, cause)
 	case isTransientMsg(msg):
 		return &TransientError{Wait: TransientRetryWait, Message: "LLM error: " + msg, Cause: cause}
 	case cause != nil:
@@ -1129,6 +1182,18 @@ func classifyLLMError(msg string, cause error) error {
 	default:
 		return fmt.Errorf("LLM error: %s", msg)
 	}
+}
+
+// newRateLimitError stamps a stated wait with the wall-clock time it expires,
+// which is what the rest of the conversation and the user-facing report need. A
+// wait nobody stated is left unstamped: it is a guess, and a guess must not
+// stand over anything.
+func newRateLimitError(wait time.Duration, stated bool, msg string, cause error) *RateLimitError {
+	err := &RateLimitError{Wait: wait, Message: "LLM error: " + msg, Cause: cause}
+	if stated {
+		err.ResetAt = time.Now().Add(wait)
+	}
+	return err
 }
 
 // providerUnavailableDetail returns the credential resolver's own explanation

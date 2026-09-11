@@ -336,6 +336,13 @@ func (r *run) handleSendMessage(payload json.RawMessage) {
 		return
 	}
 
+	// Same reasoning as the pause above, for the other thing that stops a
+	// conversation without being asked to: a usage cap this conversation met
+	// earlier is our record of a refusal, not the provider's current answer.
+	// Sending is an explicit "try anyway", and one request is what it costs to
+	// find out — far better than answering the user from a four-hour-old 429.
+	r.clearRateLimit(modelConfig.Provider)
+
 	// A send/continue is a fresh user intent to drive the LLM after any prior
 	// undo/redo history navigation.
 	r.suppressReconcileAfterHistoryNavUntilMs = 0
