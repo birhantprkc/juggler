@@ -229,6 +229,7 @@ import { runTests as runReplySuggestionsTests } from '../unit-tests/reply-sugges
 import { runTests as runCommandEditorTests } from '../unit-tests/command-editor-test.js';
 import { runTests as runFindTests } from '../unit-tests/find-test.js';
 import { runTests as runContextMenuTests } from '../unit-tests/context-menu-test.js';
+import { runTests as runComposerSelectionQuoteTests } from '../unit-tests/composer-selection-quote-test.js';
 import { runTests as runDisconnectionOverlayTests } from '../unit-tests/disconnection-overlay-test.js';
 import { runTests as runExtensionRegistryTests } from '../unit-tests/extension-registry-test.js';
 import { runTests as runFileViewerRegistryTests } from '../unit-tests/file-viewer-registry-test.js';
@@ -557,6 +558,8 @@ const UNIT_TEST_SUITES = [
   // one of them (tabReorder) gates every lane's Session.bumpConversation.
   { name: 'unit:tab-behaviour-prefs', run: runTabBehaviourPrefsTests, needsExclusiveRun: true },
   { name: 'unit:context-menu', run: runContextMenuTests },
+  // Drives the document's one live Selection, which every other suite shares.
+  { name: 'unit:composer-selection-quote', run: runComposerSelectionQuoteTests, needsExclusiveRun: true },
   { name: 'unit:disconnection-overlay', run: runDisconnectionOverlayTests },
   { name: 'unit:extension-registry', run: runExtensionRegistryTests },
   { name: 'unit:file-viewer-registry', run: runFileViewerRegistryTests },

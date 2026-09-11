@@ -59,7 +59,10 @@
  */
 
 import { copyToClipboard, readFromClipboard } from '../../sdk/lib/clipboard.js';
+import { formatCodeReference } from '../../sdk/lib/context-item-utils.js';
 import { markPopupOpen } from '../utils/popup-manager.js';
+import { resolveCodeSelection } from '../utils/code-selection.js';
+import { insertAtCaret } from '../components/composer-paste-tokens.js';
 
 /** @type {ContextMenuProvider[]} @private */
 const _providers = [];
@@ -235,12 +238,68 @@ export function buildTextEditMenu(start) {
     ];
   }
 
-  // Non-editable element with a live selection: copy only.
+  // Non-editable element with a live selection: copy, and — over code that says
+  // which file it is — quote it to the agent instead of retyping where you mean.
   if (selectionText) {
-    return [{ label: 'Copy', onClick: () => writeClipboard(selectionText) }];
+    /** @type {ContextMenuItem[]} */
+    const items = [{ label: 'Copy', onClick: () => writeClipboard(selectionText) }];
+    const reference = resolveCodeSelection(window.getSelection?.());
+    // Offered only where there is a composer to put it in: a detached Pinboard
+    // window has code to select and nothing to ask.
+    if (reference && activeComposer()) {
+      items.push({ label: 'Ask about selection', onClick: () => askAboutSelection(reference) });
+    }
+    return items;
   }
 
   return [];
+}
+
+/**
+ * The composer of the conversation being looked at, or null when this window has
+ * none.
+ * @returns {any} The composer element, or null.
+ * @private
+ */
+function activeComposer() {
+  const tab = /** @type {any} */ (document.querySelector('conversation-tab.active'));
+  return tab?.getComposer?.() || null;
+}
+
+/**
+ * Write a code reference into a composer at its caret, on its own line.
+ *
+ * Insertion, never replacement: the draft the user was part-way through is the
+ * thing this must not cost them, and one undo takes the quote back out. Nothing
+ * is sent — the block ends on an empty line, which is where they say what they
+ * wanted to ask.
+ * @param {any} composer - The composer element.
+ * @param {import('../utils/code-selection.js').CodeSelection|object} reference - What to quote.
+ * @returns {boolean} True when the text landed.
+ */
+export function insertCodeReference(composer, reference) {
+  const textarea = /** @type {HTMLTextAreaElement|null} */ (composer?.querySelector?.('textarea'));
+  if (!textarea) return false;
+  const caret = textarea.selectionStart ?? textarea.value.length;
+  const before = textarea.value.slice(0, caret);
+  // The header must start a line to be read as one, so a caret left mid-sentence
+  // gets a break first rather than the reference spliced into the sentence.
+  const lead = before !== '' && !before.endsWith('\n') ? '\n' : '';
+  insertAtCaret(composer, textarea, lead + formatCodeReference(reference));
+  return true;
+}
+
+/**
+ * Quote the current selection into the composer and put the cursor there.
+ * @param {import('../utils/code-selection.js').CodeSelection} reference - What to quote.
+ * @private
+ */
+function askAboutSelection(reference) {
+  const composer = activeComposer();
+  if (!composer) return;
+  if (insertCodeReference(composer, reference)) {
+    composer.querySelector('textarea')?.focus();
+  }
 }
 
 /**

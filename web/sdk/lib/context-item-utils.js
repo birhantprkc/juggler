@@ -105,6 +105,96 @@ export function basename(path) {
 }
 
 /**
+ * How many lines a quote carries before the rest is elided. A quote is a
+ * reminder of which code is meant, not a copy of it: the range printed above it
+ * is the precise part, and the reader it is sent to can open the file.
+ */
+const QUOTE_MAX_LINES = 3;
+
+/** Column at which a quoted line is cut. */
+const QUOTE_MAX_COLUMNS = 120;
+
+/**
+ * Write one reference to code, as a block of text for a reader.
+ *
+ * This is the app's one way of saying "this code, here" to the agent, and it is
+ * deliberately the convention the default system prompt already asks for in the
+ * other direction — `file_path:line_number`. Review comments and a selection
+ * quoted out of a file both come through here, so the agent meets one format
+ * rather than two.
+ *
+ * The block is a header naming the file and lines, the quoted source beneath it,
+ * and then whatever the reader has to say:
+ *
+ * ```text
+ * ./web/js/app.js:60-62 (new)
+ * > const hunks = computeDiff(a, b);
+ * > render(hunks);
+ * Split this into two methods.
+ * ```
+ *
+ * Nothing in it is hidden and nothing is parsed back: it is text, and the person
+ * sending it may edit it first. With no `body` the block ends in a newline, so a
+ * caret placed after it lands on the empty line the format leaves for one.
+ * @param {object} [reference] - The reference to write.
+ * @param {string} [reference.path] - The file, project-relative unless `outOfRoot`.
+ * @param {boolean} [reference.outOfRoot] - True to print the path as-is, for a file outside the project.
+ * @param {number} [reference.startLine] - First line, 1-indexed; omit for a whole-file reference.
+ * @param {number} [reference.endLine] - Last line, inclusive; omit or repeat `startLine` for one line.
+ * @param {'old'|'new'} [reference.side] - Which side of a diff, where that disambiguates. Anything else is dropped.
+ * @param {string[]} [reference.lines] - The source of the full span, quoted and bounded here.
+ * @param {string} [reference.body] - The reader's words.
+ * @returns {string} The reference block.
+ */
+export function formatCodeReference({
+  path = '', outOfRoot = false, startLine, endLine, side, lines = [], body = '',
+} = {}) {
+  let header = outOfRoot ? path : formatDisplayPath(path);
+
+  const start = Number(startLine);
+  if (Number.isFinite(start) && start > 0) {
+    const end = Number(endLine);
+    const last = Number.isFinite(end) && end > start ? end : start;
+    header += last > start ? `:${start}-${last}` : `:${start}`;
+  }
+  // Only where it tells the reader something. A context line whose old and new
+  // numbers are equal has one truthful line number, and a marker there is noise.
+  if (side === 'old' || side === 'new') header += ` (${side})`;
+
+  return `${[header, ...quoteSource(lines)].join('\n')}\n${body || ''}`;
+}
+
+/**
+ * The quoted-source lines of a reference block, bounded in both directions.
+ * @param {string[]} lines - The full span's source.
+ * @returns {string[]} Quote lines, each already carrying its `>` marker.
+ * @private
+ */
+function quoteSource(lines) {
+  const source = Array.isArray(lines) ? lines : [];
+  const shown = source.length > QUOTE_MAX_LINES ? source.slice(0, QUOTE_MAX_LINES - 1) : source;
+  const quoted = shown.map(quoteSourceLine);
+  if (shown.length < source.length) quoted.push('> …');
+  return quoted;
+}
+
+/**
+ * Quote one line of source: verbatim, trailing whitespace gone, cut at a column
+ * bound. A line that already begins with `>` simply gains another, and a blank
+ * one is a bare marker rather than a marker and a space.
+ * @param {string} line - The source line.
+ * @returns {string} The quote line.
+ * @private
+ */
+function quoteSourceLine(line) {
+  let text = String(line ?? '').replace(/\s+$/, '');
+  if (text.length > QUOTE_MAX_COLUMNS) {
+    text = `${text.slice(0, QUOTE_MAX_COLUMNS).replace(/\s+$/, '')}…`;
+  }
+  return text === '' ? '>' : `> ${text}`;
+}
+
+/**
  * Create an empty state element
  * @param {string} message - Empty state message
  * @param {string} [icon=''] - Optional icon

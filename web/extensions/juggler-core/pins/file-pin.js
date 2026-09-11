@@ -205,6 +205,13 @@ class FilePin extends PinboardItemType {
       const mine = ++generation;
       const path = absoluteFilePinPath(context.pin.config, context.active);
       const userInitiated = context.pin.config?.agentRequested !== true;
+      // Say which file the lines below belong to, so selecting some of them can
+      // be quoted into the composer as a reference rather than as loose text.
+      // A pin may point anywhere, so a file outside the project says so and is
+      // named in full.
+      const relative = projectRelative(path, context.active?.project?.path || '');
+      body.setAttribute('data-code-ref-path', relative || path);
+      body.toggleAttribute('data-code-ref-absolute', !relative);
       body.replaceChildren(createElement('div', 'file-content-loading', 'Loading…'));
 
       const result = await fetchLiveFile(path, {
@@ -263,6 +270,22 @@ class FilePin extends PinboardItemType {
       ],
     };
   }
+}
+
+/**
+ * A path rewritten relative to the project root, or '' when it lies outside it.
+ * Either separator is accepted and the result is spelled with forward slashes,
+ * because the backend reports native paths and a reference is read by a model
+ * that was told the project in one spelling.
+ * @param {string} path - The absolute path.
+ * @param {string} project - The project root.
+ * @returns {string} The relative path, or '' when the file is not under it.
+ */
+function projectRelative(path, project) {
+  if (!path || !project || !path.startsWith(project)) return '';
+  const rest = path.slice(project.length);
+  if (!/^[/\\]/.test(rest)) return '';
+  return rest.replace(/^[/\\]+/, '').replace(/\\/g, '/');
 }
 
 /**

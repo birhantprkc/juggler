@@ -6,6 +6,7 @@ of changes; this project follows semantic versioning.
 ## [Unreleased]
 
 - A grep reading its patterns or exclusions from a file outside the project now asks first
+- Right-click a selection in a pinned file to quote it into the composer, file and lines named
 
 ## [0.6.2] - 2026-09-11
 

@@ -12,6 +12,10 @@ export {
   basename,
   formatFileContentForLLM,
   normalizeFilePath,
+  // Pure string work with no DOM behind it, so the worker gets the real thing
+  // rather than a stub: an engine-side plugin writing a code reference must
+  // produce the same bytes the viewer would.
+  formatCodeReference,
 } from './lib/context-item-utils.js';
 
 /** @param {string} name */

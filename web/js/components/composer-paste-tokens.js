@@ -97,19 +97,24 @@ export function capturePaste(composer, content) {
     composer._pasteBlobs.set(id, { content, bytes });
   }
   insertAtCaret(composer, textarea, makeToken(id, bytes));
-  afterTokenMutation(composer, textarea);
 }
 
 /**
  * Insert `text` at the caret, preferring the native undoable path
  * (execCommand) and falling back to a direct value splice where the host
  * rejects the command (older engines, headless test window). Leaves the caret
- * after the inserted text.
+ * after the inserted text, and settles the box around it — mirror, autosize,
+ * Send button, persisted draft — exactly as a typed edit would.
+ *
+ * The composer's only insert-at-caret primitive, so anything putting generated
+ * text into the box goes through it: replacing the whole value instead would
+ * silently destroy a draft the user was part-way through, and would not be one
+ * undo away from where they were.
  * @param {any} composer - Composer instance
  * @param {HTMLTextAreaElement} textarea
  * @param {string} text
  */
-function insertAtCaret(composer, textarea, text) {
+export function insertAtCaret(composer, textarea, text) {
   textarea.focus();
   const before = textarea.value;
   // Baseline the reconciler to the pre-insert value: execCommand fires `input`
@@ -118,12 +123,14 @@ function insertAtCaret(composer, textarea, text) {
   composer._pasteLastValue = before;
   let ok = false;
   try { ok = document.execCommand('insertText', false, text); } catch { ok = false; }
-  if (ok && textarea.value !== before) return;
-  const start = textarea.selectionStart;
-  const end = textarea.selectionEnd;
-  textarea.value = before.slice(0, start) + text + before.slice(end);
-  const pos = start + text.length;
-  try { textarea.setSelectionRange(pos, pos); } catch { /* non-fatal */ }
+  if (!ok || textarea.value === before) {
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    textarea.value = before.slice(0, start) + text + before.slice(end);
+    const pos = start + text.length;
+    try { textarea.setSelectionRange(pos, pos); } catch { /* non-fatal */ }
+  }
+  afterTokenMutation(composer, textarea);
 }
 
 /**

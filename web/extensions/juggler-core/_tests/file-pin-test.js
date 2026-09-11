@@ -268,6 +268,46 @@ export async function runTests(ctx) {
     }
   });
 
+  await test('a pinned file says which file its lines belong to', async () => {
+    // What lets a selection over those lines be quoted into the composer as a
+    // reference. The numbering is the rendered rows' own; this is the other half
+    // — the path those numbers are numbers in.
+    const path = await writeFixture('coderef.txt', 'alpha\nbeta\ngamma');
+    const mounted = mount({ path });
+    try {
+      await settled(mounted.body);
+      const rows = [...mounted.body.querySelectorAll('.ci-line[data-line]')];
+      assert(rows.length === 3, `the lines a reference would name are the rendered rows, got ${rows.length}`);
+      // Resolved the way a selection resolves it: from a line, upwards.
+      const host = rows[0]?.closest('[data-code-ref-path]');
+      assert(!!host, 'a rendered line can find the file it belongs to');
+      assert(host?.getAttribute('data-code-ref-path') === '_filepin_coderef.txt',
+        `a file under the project is named relative to it, got "${host?.getAttribute('data-code-ref-path')}"`);
+      assert(!host?.hasAttribute('data-code-ref-absolute'),
+        'and is not marked as living outside it');
+    } finally {
+      mounted.teardown();
+    }
+  });
+
+  await test('a pin outside the project is named in full', async () => {
+    // A pin may point anywhere, and a path stripped of a root it was never under
+    // would name a different file — so one outside says so and is printed whole.
+    const outside = ctx.fixtureDir.replace(/[\\/][^\\/]+$/, '');
+    assert(outside && outside !== ctx.fixtureDir, 'the fixture must have a parent to point at');
+    const mounted = mount({ path: outside, isDirectory: true });
+    try {
+      await settled(mounted.body);
+      const host = mounted.body.querySelector('[data-code-ref-path]');
+      assert(!!host?.hasAttribute('data-code-ref-absolute'),
+        'a path above the project root is marked out-of-root');
+      assert(host?.getAttribute('data-code-ref-path') === outside,
+        `and keeps its own spelling, got "${host?.getAttribute('data-code-ref-path')}"`);
+    } finally {
+      mounted.teardown();
+    }
+  });
+
   await test('a pinned directory lists what is in it', async () => {
     await writeFixture('dir/inside.txt', 'here');
     const mounted = mount({ path: `${base}_dir`, isDirectory: true });
