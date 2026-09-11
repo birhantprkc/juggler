@@ -8,7 +8,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -26,9 +30,14 @@ import (
 const (
 	gitDiffContext  = 3       // lines of context git is asked for around each hunk
 	gitDiffMaxLines = 20000   // diff lines returned before the rest is dropped
-	gitDiffMaxBytes = 8 << 20 // patch bytes read from git before it is cut short
+	gitDiffMaxBytes = 8 << 20 // patch bytes kept before the rest is dropped
+	gitDiffMaxMeta  = 8 << 20 // bytes kept from git's metadata passes
 	gitDiffSniff    = 8000    // bytes of an untracked file read to judge it binary
 )
+
+// gitAbsentMode is the mode git writes for the side of a change a file does not
+// exist on.
+const gitAbsentMode = "000000"
 
 // gitDiffLine is one line of a hunk. Old and New are the line's number on each
 // side, and are 0 on the side the line does not exist — an added line has no
@@ -57,16 +66,33 @@ type gitDiffHunk struct {
 // working tree against HEAD. Status is what happened to the file rather than a
 // porcelain letter, because a reader is being told a story about the file and
 // not asked to decode one.
+// Status is one of modified, added, deleted, renamed, copied, typechange,
+// conflicted, untracked or unchanged.
+//
+// Revision fingerprints the change this response describes — every byte git
+// produced for it, or every byte of an untracked file's content, including the
+// bytes past a ceiling that were never returned. A comment is anchored to it, so
+// it answers the only question an anchor has: is this still the same file I
+// commented on. HEAD cannot answer that, because almost every edit under review
+// happens without HEAD moving at all.
+//
+// OldMode and NewMode are git's six-digit modes, carried whenever they differ: a
+// file can change without a line of it changing, and an empty patch with no
+// modes reads as nothing having happened.
 type gitDiffResponse struct {
-	Repo      string        `json:"repo"`
-	Path      string        `json:"path"`
-	OldPath   string        `json:"oldPath,omitempty"`
-	Status    string        `json:"status"` // modified, added, deleted, renamed, untracked, unchanged
-	Binary    bool          `json:"binary"`
-	Truncated bool          `json:"truncated"`
-	Added     int           `json:"added"`
-	Removed   int           `json:"removed"`
-	Hunks     []gitDiffHunk `json:"hunks"`
+	Repo       string        `json:"repo"`
+	Path       string        `json:"path"`
+	OldPath    string        `json:"oldPath,omitempty"`
+	Status     string        `json:"status"`
+	Binary     bool          `json:"binary"`
+	Conflicted bool          `json:"conflicted,omitempty"`
+	Truncated  bool          `json:"truncated"`
+	Added      int           `json:"added"`
+	Removed    int           `json:"removed"`
+	Revision   string        `json:"revision"`
+	OldMode    string        `json:"oldMode,omitempty"`
+	NewMode    string        `json:"newMode,omitempty"`
+	Hunks      []gitDiffHunk `json:"hunks"`
 }
 
 // HandleGitDiff handles GET /api/git/diff?repo=<rel>&path=<rel>. It answers with
@@ -101,6 +127,13 @@ func (a *GitStatusAPI) HandleGitDiff(w http.ResponseWriter, r *http.Request) {
 
 	dir, ok := resolveRepoDir(ctx, root, repoRel)
 	if !ok {
+		// Discovery that ran out of time finds nothing, which is not the same as
+		// there being nothing to find. Reported as the latter it becomes a settled
+		// fact about the project rather than the passing failure it is.
+		if ctx.Err() != nil {
+			WriteError(w, r, http.StatusBadGateway, "Couldn't read the diff. "+ctx.Err().Error())
+			return
+		}
 		WriteError(w, r, http.StatusBadRequest, "Not a repository in this project: repo")
 		return
 	}
@@ -112,27 +145,89 @@ func (a *GitStatusAPI) HandleGitDiff(w http.ResponseWriter, r *http.Request) {
 
 	resp := gitDiffResponse{Repo: repoRel, Path: fileRel, Status: "unchanged", Hunks: []gitDiffHunk{}}
 
-	patch, truncated, err := gitFilePatch(ctx, dir, fileRel)
+	base, err := gitDiffBase(ctx, dir)
 	if err != nil {
 		WriteError(w, r, http.StatusBadGateway, "Couldn't read the diff. "+err.Error())
 		return
 	}
-	resp.Truncated = truncated
-	if len(patch) > 0 {
-		parseGitPatch(patch, &resp)
-		WriteJSON(w, r, 0, resp)
+
+	// What happened to a file is settled before the file's own patch is asked
+	// for, because some of it cannot be seen from there: a rename is a statement
+	// about two paths, and a pathspec naming one of them is a file that appeared
+	// from nowhere. The metadata is keyed by the file's current path, which is
+	// the path the review lists a renamed file under.
+	meta, err := gitDiffMetadata(ctx, dir, base)
+	if err != nil {
+		WriteError(w, r, http.StatusBadGateway, "Couldn't read the diff. "+err.Error())
 		return
 	}
+	file, changed := meta[fileRel]
 
-	// Nothing from `git diff` is either an unchanged file or one git has never
-	// been told about, and only the second has anything to show. An untracked
-	// file is diffed here rather than by `--no-index` against the null device,
-	// which is spelled differently on each platform for a file we have to read
-	// anyway to know whether it is text.
-	if untracked, uerr := gitIsUntracked(ctx, dir, fileRel); uerr == nil && untracked {
-		untrackedDiff(abs, &resp)
+	// Both sides of a rename go into the pathspec, so that git pairs them again
+	// rather than reporting the deletion and the creation it would otherwise see.
+	paths := []string{fileRel}
+	if file.OldPath != "" {
+		paths = append(paths, file.OldPath)
+	}
+
+	patch, err := gitFilePatch(ctx, dir, base, paths)
+	if err != nil {
+		WriteError(w, r, http.StatusBadGateway, "Couldn't read the diff. "+err.Error())
+		return
+	}
+	resp.Revision, resp.Truncated = patch.Revision, patch.Truncated
+	if len(patch.Kept) > 0 {
+		parseGitPatch(patch.Kept, &resp)
+	}
+
+	switch {
+	case changed:
+		applyGitFileMeta(&resp, file)
+		// The working tree of a conflicted file holds both sides and the markers
+		// between them. Shown as an ordinary diff, that reads as text the user
+		// wrote, so the state is reported rather than left to be inferred.
+		if gitFileConflicted(ctx, dir, fileRel) {
+			resp.Status, resp.Conflicted = "conflicted", true
+		}
+		// A patch cut short took the rest of its own tally with it. git still has
+		// the whole one, and a truncated diff that understated the change would be
+		// truncation nobody could see.
+		if resp.Truncated {
+			if stat, ok := gitNumstatCounts(ctx, dir, base, paths); ok {
+				resp.Added, resp.Removed = stat.Added, stat.Removed
+			}
+		}
+	case len(patch.Kept) == 0:
+		// Nothing from `git diff` is either an unchanged file or one git has never
+		// been told about, and only the second has anything to show. An untracked
+		// file is diffed here rather than by `--no-index` against the null device,
+		// which is spelled differently on each platform for a file we have to read
+		// anyway to know whether it is text.
+		if untracked, uerr := gitIsUntracked(ctx, dir, fileRel); uerr == nil && untracked {
+			untrackedDiff(ctx, abs, &resp)
+		}
 	}
 	WriteJSON(w, r, 0, resp)
+}
+
+// applyGitFileMeta overlays what the repository-wide pass established onto what
+// the file's own patch said. The patch is read for its hunks; the metadata is
+// what the status and the paths are taken from, since a patch for one pathspec
+// cannot see past itself.
+func applyGitFileMeta(resp *gitDiffResponse, file gitFileMeta) {
+	if file.Status != "" {
+		resp.Status = file.Status
+	}
+	if file.OldPath != "" {
+		resp.OldPath = file.OldPath
+	}
+	// Modes are worth reporting when a file lived on both sides of the change and
+	// its mode moved: that is a change with no lines in it, and without the modes
+	// the response is an empty patch that reads as nothing having happened. On an
+	// added or deleted file the absent side's mode says nothing the status has not.
+	if file.OldMode != file.NewMode && file.OldMode != gitAbsentMode && file.NewMode != gitAbsentMode {
+		resp.OldMode, resp.NewMode = file.OldMode, file.NewMode
+	}
 }
 
 // resolveRepoDir turns the client's `repo` into the directory git runs in, and
@@ -228,53 +323,301 @@ func hasDriveLetter(p string) bool {
 	return (p[0] >= 'a' && p[0] <= 'z') || (p[0] >= 'A' && p[0] <= 'Z')
 }
 
-// gitFilePatch runs the diff for one path and returns its raw patch text, empty
-// when the file is unchanged or untracked, and whether the patch was cut short.
-// The flags match the status poll's for the same reasons — no index.lock, no
-// path escaping — plus the ones that keep the output parseable and the ones that
-// keep it inert: no colour, and no external diff driver or textconv filter,
-// either of which would run a command out of the repository's own configuration.
-func gitFilePatch(ctx context.Context, dir, fileRel string) ([]byte, bool, error) {
+// gitFileMeta is what one repository-wide pass establishes about a single file:
+// what happened to it, where it came from if it arrived from somewhere, and its
+// mode on each side of the change.
+type gitFileMeta struct {
+	Status  string
+	OldPath string
+	OldMode string
+	NewMode string
+}
+
+// boundedOutput is what was read from a stream that may be larger than anything
+// worth returning.
+//
+// Revision fingerprints every byte of the stream, including the ones past the
+// ceiling that were dropped: a change is not a different change because the part
+// that differs fell off the end, and an anchor that moved when nothing moved is
+// worse than no anchor. Lines counts the whole stream for the same reason, so an
+// untracked file can say how long it is without being held in memory.
+type boundedOutput struct {
+	Kept      []byte
+	Lines     int
+	Truncated bool
+	Revision  string
+}
+
+// readBounded reads r to the end, keeping at most limit bytes of it and hashing
+// all of it.
+//
+// What is kept ends at a line boundary whenever anything was dropped. Half a
+// line parses as a real line holding half its text — a quieter wrong answer than
+// a missing one — and cutting at a newline is also what keeps a multi-byte
+// character whole, since no byte of one can be a newline.
+func readBounded(ctx context.Context, r io.Reader, limit int) (boundedOutput, error) {
+	var (
+		out    boundedOutput
+		kept   bytes.Buffer
+		digest = sha256.New()
+		buf    = make([]byte, 64*1024)
+		total  int64
+		last   byte
+	)
+	for {
+		if err := ctx.Err(); err != nil {
+			return out, err
+		}
+		n, err := r.Read(buf)
+		if chunk := buf[:n]; len(chunk) > 0 {
+			digest.Write(chunk)
+			out.Lines += bytes.Count(chunk, []byte{'\n'})
+			last = chunk[len(chunk)-1]
+			total += int64(len(chunk))
+			if room := limit - kept.Len(); room > 0 {
+				if room > len(chunk) {
+					room = len(chunk)
+				}
+				kept.Write(chunk[:room])
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return out, err
+		}
+	}
+
+	// A final line nobody terminated is still a line.
+	if total > 0 && last != '\n' {
+		out.Lines++
+	}
+	out.Revision = hex.EncodeToString(digest.Sum(nil))
+	out.Kept = kept.Bytes()
+	if total > int64(len(out.Kept)) {
+		out.Truncated = true
+		if i := bytes.LastIndexByte(out.Kept, '\n'); i >= 0 {
+			out.Kept = out.Kept[:i+1]
+		} else {
+			out.Kept = nil
+		}
+	}
+	return out, nil
+}
+
+// gitCommand builds one git invocation with the flags every read here carries.
+// --no-optional-locks keeps a read from taking index.lock and contending with
+// the user's own git client mid-operation, and core.quotePath=false stops git
+// escaping non-ASCII paths into \303\251. diff.external is emptied for the same
+// reason --no-ext-diff and --no-textconv are passed to the commands that accept
+// them: reading a project is not consent to run commands its configuration
+// names.
+func gitCommand(ctx context.Context, dir string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", append([]string{
+		"--no-optional-locks", "-c", "core.quotePath=false", "-c", "diff.external=",
+	}, args...)...)
+	cmd.Dir = dir
+	return cmd
+}
+
+// gitRead runs one git command and streams its output under a ceiling, so that
+// nothing git can produce has to fit in memory first. Every failure is a
+// failure: read as an empty diff, a command that could not run becomes the claim
+// that a file did not change, which is the one thing this must never say wrongly.
+func gitRead(ctx context.Context, dir string, limit int, args ...string) (boundedOutput, error) {
 	cctx, cancel := context.WithTimeout(ctx, gitStatusPerCmd)
 	defer cancel()
 
-	cmd := exec.CommandContext(cctx, "git",
-		"--no-optional-locks", "-c", "core.quotePath=false", "-c", "diff.external=",
-		"diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames",
-		"--unified="+strconv.Itoa(gitDiffContext), "HEAD", "--", fileRel)
-	cmd.Dir = dir
-	out, err := cmd.Output()
+	cmd := gitCommand(cctx, dir, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		if cctx.Err() != nil {
-			return nil, false, cctx.Err()
-		}
-		// An unborn repository has no HEAD to compare against; everything in it is
-		// untracked, which the caller handles. Every other failure is a failure and
-		// is reported as one — read as an empty diff it would become the claim that
-		// a file did not change, which is the one thing this must never say wrongly.
-		var exit *exec.ExitError
-		if errors.As(err, &exit) && bytes.Contains(exit.Stderr, []byte("unknown revision")) {
-			return nil, false, nil
-		}
-		return nil, false, err
+		return boundedOutput{}, err
 	}
-	patch, truncated := capAtLineBoundary(out)
-	return patch, truncated, nil
+	if err := cmd.Start(); err != nil {
+		return boundedOutput{}, err
+	}
+
+	out, readErr := readBounded(cctx, stdout, limit)
+	// The output is read to the end even when it is past the ceiling, so git is
+	// never left blocked on a pipe nobody is draining.
+	_, _ = io.Copy(io.Discard, stdout)
+	waitErr := cmd.Wait()
+
+	switch {
+	case cctx.Err() != nil:
+		return boundedOutput{}, gitDeadlineError(ctx, cctx)
+	case readErr != nil:
+		return boundedOutput{}, readErr
+	case waitErr != nil:
+		return boundedOutput{}, gitFailure(waitErr, stderr.String())
+	}
+	return out, nil
 }
 
-// capAtLineBoundary limits how much text is read, cutting at the last line
-// boundary below the ceiling so that what survives ends in a whole line. Half a
-// line would parse as a real line holding half its text, which is a worse answer
-// than the line being absent, and the bool is how the caller knows to say so.
-func capAtLineBoundary(b []byte) ([]byte, bool) {
-	if len(b) <= gitDiffMaxBytes {
-		return b, false
+// gitDeadlineError says which clock ran out: the request's, meaning the caller
+// is gone or the whole budget is spent, or this one command's.
+func gitDeadlineError(ctx, cctx context.Context) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
-	cut := b[:gitDiffMaxBytes]
-	if i := bytes.LastIndexByte(cut, '\n'); i >= 0 {
-		cut = cut[:i+1]
+	return fmt.Errorf("git took longer than %s", gitStatusPerCmd)
+}
+
+// gitFailure names what git complained about, since "exit status 128" names
+// nothing.
+func gitFailure(err error, stderr string) error {
+	if line, _, _ := strings.Cut(strings.TrimSpace(stderr), "\n"); line != "" {
+		return errors.New(line)
 	}
-	return cut, true
+	return err
+}
+
+// gitDiffBase names what the working tree is compared against: HEAD, or — in a
+// repository whose first commit has not been made — the empty tree, against
+// which everything already staged reads as the addition it is. The empty tree's
+// id is asked of git rather than written down here, because it is the hash of
+// nothing under whichever algorithm the repository was created with.
+func gitDiffBase(ctx context.Context, dir string) (string, error) {
+	cctx, cancel := context.WithTimeout(ctx, gitStatusPerCmd)
+	defer cancel()
+
+	if err := gitCommand(cctx, dir, "rev-parse", "--verify", "-q", "HEAD").Run(); err == nil {
+		return "HEAD", nil
+	}
+	if cctx.Err() != nil {
+		return "", gitDeadlineError(ctx, cctx)
+	}
+
+	out, err := gitRead(ctx, dir, 1024, "hash-object", "-t", "tree", "--stdin")
+	if err != nil {
+		return "", err
+	}
+	empty := strings.TrimSpace(string(out.Kept))
+	if empty == "" {
+		return "", errors.New("this repository has no commits and no empty tree to compare against")
+	}
+	return empty, nil
+}
+
+// gitDiffMetadata reads one raw diff for the whole repository, keyed by each
+// file's current path. Rename and copy detection compares every path that
+// changed against every other, so it is asked for once, here, rather than being
+// expected from a pathspec holding a single file.
+//
+// A metadata pass past its ceiling simply stops describing the files past the
+// cut; their patches still carry their own headers, which is less than this
+// knows but more than nothing.
+func gitDiffMetadata(ctx context.Context, dir, base string) (map[string]gitFileMeta, error) {
+	out, err := gitRead(ctx, dir, gitDiffMaxMeta,
+		"diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--find-copies",
+		"--raw", "-z", base, "--")
+	if err != nil {
+		return nil, err
+	}
+	return parseGitRawDiff(out.Kept), nil
+}
+
+// parseGitRawDiff reads `git diff --raw -z`: a record of colon-prefixed fields,
+// ":<oldMode> <newMode> <oldBlob> <newBlob> <status>", then the path it
+// describes — or the old path and then the new one when a file was renamed or
+// copied, which are the only statuses that name two.
+func parseGitRawDiff(out []byte) map[string]gitFileMeta {
+	meta := make(map[string]gitFileMeta)
+	records := bytes.Split(out, []byte{0})
+
+	for i := 0; i < len(records); i++ {
+		record := string(records[i])
+		if !strings.HasPrefix(record, ":") {
+			continue
+		}
+		fields := strings.Fields(record[1:])
+		if len(fields) < 5 {
+			continue
+		}
+		letter := fields[4]
+		file := gitFileMeta{
+			OldMode: fields[0],
+			NewMode: fields[1],
+			Status:  gitRawStatus(letter),
+		}
+
+		paths := 1
+		if letter[0] == 'R' || letter[0] == 'C' {
+			paths = 2
+		}
+		if i+paths >= len(records) {
+			break // a truncated pass can stop between a record and the path it is about
+		}
+		if paths == 2 {
+			file.OldPath = string(records[i+1])
+		}
+		i += paths
+		if path := string(records[i]); path != "" {
+			meta[path] = file
+		}
+	}
+	return meta
+}
+
+// gitRawStatus turns a raw diff's status letter into what happened to the file.
+// An unmerged or unknown letter is left unnamed: the conflict check and the
+// patch itself both say more about those than a letter does.
+func gitRawStatus(letter string) string {
+	switch letter[0] {
+	case 'A':
+		return "added"
+	case 'D':
+		return "deleted"
+	case 'M':
+		return "modified"
+	case 'R':
+		return "renamed"
+	case 'C':
+		return "copied"
+	case 'T':
+		return "typechange"
+	default:
+		return ""
+	}
+}
+
+// gitFileConflicted reports whether the index holds unmerged stages for a path,
+// which is where a conflict lives: the diff of a conflicted file against HEAD is
+// an ordinary-looking patch whose added lines include the markers.
+func gitFileConflicted(ctx context.Context, dir, fileRel string) bool {
+	out, err := gitRead(ctx, dir, 64*1024, "ls-files", "-u", "-z", "--", fileRel)
+	return err == nil && len(out.Kept) > 0
+}
+
+// gitNumstatCounts asks git for one file's line tally, for when the patch was
+// cut short and can no longer be counted from.
+func gitNumstatCounts(ctx context.Context, dir, base string, paths []string) (gitDiffstat, bool) {
+	args := append([]string{
+		"diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--find-copies",
+		"--numstat", "-z", base, "--",
+	}, paths...)
+	out, err := gitRead(ctx, dir, gitDiffMaxMeta, args...)
+	if err != nil {
+		return gitDiffstat{}, false
+	}
+	// A rename's record is keyed by the path the file now has, which is the path
+	// the patch was asked for under.
+	stat, ok := parseGitNumstat(out.Kept)[paths[0]]
+	return stat, ok
+}
+
+// gitFilePatch runs the diff for one file and returns its patch text, empty when
+// the file is unchanged or untracked. Both sides of a rename are passed as the
+// pathspec so that git pairs them; --no-color keeps the output parseable.
+func gitFilePatch(ctx context.Context, dir, base string, paths []string) (boundedOutput, error) {
+	args := append([]string{
+		"diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames",
+		"--unified=" + strconv.Itoa(gitDiffContext), base, "--",
+	}, paths...)
+	return gitRead(ctx, dir, gitDiffMaxBytes, args...)
 }
 
 // gitIsUntracked reports whether git has never been told about this path. A
@@ -296,8 +639,9 @@ func gitIsUntracked(ctx context.Context, dir, fileRel string) (bool, error) {
 
 // untrackedDiff fills resp with a file that is entirely new: one hunk holding
 // every line, added. A binary file says so and shows nothing, exactly as git
-// would have.
-func untrackedDiff(abs string, resp *gitDiffResponse) {
+// would have. The content is read the same way a patch is — under a ceiling,
+// fingerprinted whole — because this is the one file git is not reading for us.
+func untrackedDiff(ctx context.Context, abs string, resp *gitDiffResponse) {
 	// Lstat rather than Stat: a symlink is a pointer, and the bytes on the other
 	// end of it may be anywhere on disk. An untracked link is a link — it is
 	// reported as present and shown as nothing, because there is no honest way to
@@ -311,12 +655,20 @@ func untrackedDiff(abs string, resp *gitDiffResponse) {
 		return
 	}
 
-	data, err := os.ReadFile(abs) //nolint:gosec // path is validated and symlinks are refused above
+	f, err := os.Open(abs) //nolint:gosec // path is validated and symlinks are refused above
+	if err != nil {
+		return
+	}
+	defer f.Close() //nolint:errcheck // read-only
+
+	out, err := readBounded(ctx, f, gitDiffMaxBytes)
 	if err != nil {
 		return
 	}
 	resp.Status = "untracked"
-	sniff := data
+	resp.Revision = out.Revision
+
+	sniff := out.Kept
 	if len(sniff) > gitDiffSniff {
 		sniff = sniff[:gitDiffSniff]
 	}
@@ -324,13 +676,15 @@ func untrackedDiff(abs string, resp *gitDiffResponse) {
 		resp.Binary = true
 		return
 	}
-	data, cut := capAtLineBoundary(data)
-	if cut {
+	if out.Truncated {
 		resp.Truncated = true
 	}
+	// The count is every line the file adds, not every line shown: a truncated
+	// response still tells the truth about the size of the change.
+	resp.Added = out.Lines
 
-	text := strings.TrimSuffix(string(data), "\n")
-	if text == "" && len(data) == 0 {
+	text := strings.TrimSuffix(string(out.Kept), "\n")
+	if text == "" && len(out.Kept) == 0 {
 		return
 	}
 	lines := strings.Split(text, "\n")
@@ -342,9 +696,6 @@ func untrackedDiff(abs string, resp *gitDiffResponse) {
 		}
 		hunk.Lines = append(hunk.Lines, gitDiffLine{Kind: "add", New: i + 1, Text: strings.TrimSuffix(line, "\r")})
 	}
-	// The count is every line the file adds, not every line shown: a truncated
-	// response still tells the truth about the size of the change.
-	resp.Added = len(lines)
 	resp.Hunks = append(resp.Hunks, hunk)
 }
 

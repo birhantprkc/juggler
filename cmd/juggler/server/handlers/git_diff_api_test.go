@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // newDiffResponse builds the zero value HandleGitDiff starts from, so a parser
@@ -336,23 +337,98 @@ func TestWithinDirRefusesAPathThatLeavesThroughASymlink(t *testing.T) {
 
 // Cutting on a byte count alone leaves a partial final line, which parses as a
 // real line holding half its text — a quieter wrong answer than a missing line.
-func TestCapAtLineBoundaryKeepsWholeLines(t *testing.T) {
-	body := []byte(strings.Repeat("0123456789abcdef\n", (gitDiffMaxBytes/17)+64))
-	got, truncated := capAtLineBoundary(body)
-
-	if !truncated {
-		t.Fatal("truncated = false for input past the ceiling")
-	}
-	if len(got) > gitDiffMaxBytes {
-		t.Errorf("len = %d, want no more than %d", len(got), gitDiffMaxBytes)
-	}
-	if len(got) == 0 || got[len(got)-1] != '\n' {
-		t.Error("cut mid-line: the result does not end at a line boundary")
+func TestReadBoundedKeepsWholeLines(t *testing.T) {
+	body := strings.Repeat("0123456789abcdef\n", (gitDiffMaxBytes/17)+64)
+	got, err := readBounded(t.Context(), strings.NewReader(body), gitDiffMaxBytes)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	short := []byte("one\ntwo\n")
-	if got, truncated := capAtLineBoundary(short); truncated || string(got) != "one\ntwo\n" {
-		t.Errorf("capAtLineBoundary(short) = %q, %v; want it returned whole", got, truncated)
+	if !got.Truncated {
+		t.Fatal("Truncated = false for input past the ceiling")
+	}
+	if len(got.Kept) > gitDiffMaxBytes {
+		t.Errorf("kept %d bytes, want no more than %d", len(got.Kept), gitDiffMaxBytes)
+	}
+	if len(got.Kept) == 0 || got.Kept[len(got.Kept)-1] != '\n' {
+		t.Error("cut mid-line: what was kept does not end at a line boundary")
+	}
+	// A ceiling is a limit on what is returned, not on what is counted.
+	if want := strings.Count(body, "\n"); got.Lines != want {
+		t.Errorf("Lines = %d, want every line of the stream %d", got.Lines, want)
+	}
+
+	short, err := readBounded(t.Context(), strings.NewReader("one\ntwo\n"), gitDiffMaxBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if short.Truncated || string(short.Kept) != "one\ntwo\n" {
+		t.Errorf("readBounded(short) = %q, truncated %v; want it returned whole", short.Kept, short.Truncated)
+	}
+	if short.Lines != 2 {
+		t.Errorf("Lines = %d, want 2", short.Lines)
+	}
+}
+
+// The fingerprint answers "is this the same content I commented on", so it is
+// taken over everything the stream held. Hashing only what survived the ceiling
+// would make every change past it invisible to the one question it is asked.
+func TestReadBoundedFingerprintsTheBytesItDropped(t *testing.T) {
+	tail := strings.Repeat("x", 64) + "\n"
+	body := strings.Repeat("same\n", 400) + tail
+	limit := 100
+
+	first, err := readBounded(t.Context(), strings.NewReader(body), limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err := readBounded(t.Context(), strings.NewReader(strings.Repeat("same\n", 400)+strings.Repeat("y", 64)+"\n"), limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if first.Revision == "" {
+		t.Fatal("Revision is empty")
+	}
+	if first.Revision == changed.Revision {
+		t.Error("two streams differing only past the ceiling share a fingerprint")
+	}
+	if string(first.Kept) != string(changed.Kept) {
+		t.Fatal("the test does not prove what it claims: the bytes kept differ too")
+	}
+}
+
+// A ceiling counted in bytes falls wherever it falls, including inside a
+// character. Cutting back to a line boundary is what keeps one whole, since no
+// byte of a multi-byte character can be a newline.
+func TestReadBoundedNeverCutsACharacterInHalf(t *testing.T) {
+	body := strings.Repeat("héllo wörld ☃\n", 40)
+	for limit := 8; limit < len(body); limit += 7 {
+		got, err := readBounded(t.Context(), strings.NewReader(body), limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !utf8.Valid(got.Kept) {
+			t.Fatalf("limit %d kept %q, which is not valid UTF-8", limit, got.Kept)
+		}
+	}
+}
+
+// A stream with no line boundary under the ceiling has nothing that can be
+// returned whole, and half a line is not an answer.
+func TestReadBoundedDropsALineItCannotFinish(t *testing.T) {
+	got, err := readBounded(t.Context(), strings.NewReader(strings.Repeat("z", 500)), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Truncated {
+		t.Error("Truncated = false for a line past the ceiling")
+	}
+	if len(got.Kept) != 0 {
+		t.Errorf("kept %q, want nothing rather than part of a line", got.Kept)
+	}
+	if got.Lines != 1 {
+		t.Errorf("Lines = %d, want the unterminated line counted as 1", got.Lines)
 	}
 }
 
@@ -363,7 +439,7 @@ func TestUntrackedDiffShowsEveryLineAsAdded(t *testing.T) {
 	}
 
 	resp := newDiffResponse()
-	untrackedDiff(abs, resp)
+	untrackedDiff(t.Context(), abs, resp)
 
 	if resp.Status != "untracked" {
 		t.Errorf("Status = %q, want %q", resp.Status, "untracked")
@@ -394,7 +470,7 @@ func TestUntrackedDiffStripsCarriageReturns(t *testing.T) {
 	}
 
 	resp := newDiffResponse()
-	untrackedDiff(abs, resp)
+	untrackedDiff(t.Context(), abs, resp)
 
 	for _, l := range resp.Hunks[0].Lines {
 		if strings.HasSuffix(l.Text, "\r") {
@@ -410,7 +486,7 @@ func TestUntrackedDiffReportsBinaryWithoutShowingIt(t *testing.T) {
 	}
 
 	resp := newDiffResponse()
-	untrackedDiff(abs, resp)
+	untrackedDiff(t.Context(), abs, resp)
 
 	if !resp.Binary {
 		t.Error("Binary = false for a file with a NUL in it")
@@ -427,7 +503,7 @@ func TestUntrackedDiffEmptyFileHasNoHunk(t *testing.T) {
 	}
 
 	resp := newDiffResponse()
-	untrackedDiff(abs, resp)
+	untrackedDiff(t.Context(), abs, resp)
 
 	if resp.Status != "untracked" {
 		t.Errorf("Status = %q, want %q", resp.Status, "untracked")
@@ -453,7 +529,7 @@ func TestUntrackedDiffDoesNotReadThroughASymlink(t *testing.T) {
 	}
 
 	resp := newDiffResponse()
-	untrackedDiff(link, resp)
+	untrackedDiff(t.Context(), link, resp)
 
 	for _, h := range resp.Hunks {
 		for _, l := range h.Lines {
@@ -479,7 +555,7 @@ func TestUntrackedDiffCountsEveryLineItTruncates(t *testing.T) {
 	}
 
 	resp := newDiffResponse()
-	untrackedDiff(abs, resp)
+	untrackedDiff(t.Context(), abs, resp)
 
 	if !resp.Truncated {
 		t.Error("Truncated = false after dropping lines")
@@ -509,7 +585,7 @@ func TestGitDiffReportsAScanThatCouldNotFinish(t *testing.T) {
 // an error and not an untracked file.
 func TestUntrackedDiffMissingFileSaysNothing(t *testing.T) {
 	resp := newDiffResponse()
-	untrackedDiff(filepath.Join(t.TempDir(), "gone.txt"), resp)
+	untrackedDiff(t.Context(), filepath.Join(t.TempDir(), "gone.txt"), resp)
 
 	if resp.Status != "unchanged" {
 		t.Errorf("Status = %q, want it left as %q", resp.Status, "unchanged")
