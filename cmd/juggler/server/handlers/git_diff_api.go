@@ -36,8 +36,11 @@ const (
 )
 
 // gitAbsentMode is the mode git writes for the side of a change a file does not
-// exist on.
-const gitAbsentMode = "000000"
+// exist on, and gitSymlinkMode the mode it writes for a symbolic link.
+const (
+	gitAbsentMode  = "000000"
+	gitSymlinkMode = "120000"
+)
 
 // gitDiffLine is one line of a hunk. Old and New are the line's number on each
 // side, and are 0 on the side the line does not exist — an added line has no
@@ -78,7 +81,9 @@ type gitDiffHunk struct {
 //
 // OldMode and NewMode are git's six-digit modes, carried whenever they differ: a
 // file can change without a line of it changing, and an empty patch with no
-// modes reads as nothing having happened.
+// modes reads as nothing having happened. An untracked symbolic link carries a
+// NewMode alone, which is the only thing separating the path it holds from an
+// ordinary new file whose one line happens to be a path.
 type gitDiffResponse struct {
 	Repo       string        `json:"repo"`
 	Path       string        `json:"path"`
@@ -138,7 +143,7 @@ func (a *GitStatusAPI) HandleGitDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	abs := filepath.Join(dir, filepath.FromSlash(fileRel))
-	if !withinDir(abs, dir) {
+	if !fileWithinRepo(abs, dir) {
 		WriteError(w, r, http.StatusBadRequest, "Not a path inside the repository: path")
 		return
 	}
@@ -238,24 +243,46 @@ func applyGitFileMeta(resp *gitDiffResponse, file gitFileMeta) {
 // never opened.
 func resolveRepoDir(ctx context.Context, root, repoRel string) (string, bool) {
 	dir := filepath.Join(root, filepath.FromSlash(repoRel))
-	for _, found := range discoverRepos(ctx, root) {
-		if resolvedPath(found) == resolvedPath(dir) {
-			return dir, true
-		}
+	if repoIsAmong(dir, discoverRepos(ctx, root)) {
+		return dir, true
+	}
+	// The cheap search skips the directories that cost the most to walk, and the
+	// review's search does not — so a checkout under vendor/ can be listed for
+	// review, and a file in it has to be openable from that list. The thorough
+	// search is only paid for once the cheap one has said no.
+	if repoIsAmong(dir, scanRepos(ctx, root, reviewScanLimits()).Repos) {
+		return dir, true
 	}
 	return "", false
 }
 
-// withinDir reports whether abs lives inside dir once every symlink in both has
-// been resolved. A path can be lexically innocent and still leave the project by
-// passing through a symlinked directory, and resolving it is the only way to
-// find that out.
-func withinDir(abs, dir string) bool {
-	realAbs, realDir := resolvedPath(abs), resolvedPath(dir)
-	if realAbs == realDir {
-		return false
+// repoIsAmong reports whether dir is one of the repositories found, comparing
+// resolved paths so that two names for one place are one place.
+func repoIsAmong(dir string, repos []string) bool {
+	resolved := resolvedPath(dir)
+	for _, found := range repos {
+		if resolvedPath(found) == resolved {
+			return true
+		}
 	}
-	return strings.HasPrefix(realAbs, realDir+string(filepath.Separator))
+	return false
+}
+
+// fileWithinRepo reports whether abs names a file inside dir.
+//
+// Every directory along the way is resolved, because a symlinked directory is
+// how a lexically innocent path leaves the project, and resolving is the only
+// way to find that out. The last component is deliberately not resolved: a link
+// is a file this endpoint describes rather than opens, and resolving it would
+// refuse to say anything at all about a link purely because of what it names.
+// That is safe only because it is paired with the Lstat in untrackedDiff — the
+// link's own text is read with Readlink, and nothing at the end of it is opened.
+func fileWithinRepo(abs, dir string) bool {
+	parent, realDir := resolvedPath(filepath.Dir(abs)), resolvedPath(dir)
+	if parent == realDir {
+		return true
+	}
+	return strings.HasPrefix(parent, realDir+string(filepath.Separator))
 }
 
 // resolvedPath is a path with its symlinks followed. Resolving matters even for
@@ -643,14 +670,20 @@ func gitIsUntracked(ctx context.Context, dir, fileRel string) (bool, error) {
 // fingerprinted whole — because this is the one file git is not reading for us.
 func untrackedDiff(ctx context.Context, abs string, resp *gitDiffResponse) {
 	// Lstat rather than Stat: a symlink is a pointer, and the bytes on the other
-	// end of it may be anywhere on disk. An untracked link is a link — it is
-	// reported as present and shown as nothing, because there is no honest way to
-	// render whatever it names as the contents of a file inside the project.
+	// end of it may be anywhere on disk. The link is never opened — what is shown
+	// is the link's own content, which is the path it holds, and that is what git
+	// would have stored for it.
 	info, err := os.Lstat(abs)
 	if err != nil {
 		return
 	}
-	if !info.Mode().IsRegular() {
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		untrackedSymlinkDiff(abs, resp)
+		return
+	case !info.Mode().IsRegular():
+		// A socket, a device or a fifo has no content to show and no mode git has
+		// a name for. It is reported as present and left at that.
 		resp.Status = "untracked"
 		return
 	}
@@ -697,6 +730,32 @@ func untrackedDiff(ctx context.Context, abs string, resp *gitDiffResponse) {
 		hunk.Lines = append(hunk.Lines, gitDiffLine{Kind: "add", New: i + 1, Text: strings.TrimSuffix(line, "\r")})
 	}
 	resp.Hunks = append(resp.Hunks, hunk)
+}
+
+// untrackedSymlinkDiff fills resp with a link that git has not been told about:
+// one added line holding the path the link names, and the mode that says the
+// line is a link and not the first line of a file.
+//
+// A link's content is its text, so it is read with Readlink and never opened.
+// The path it names may be anywhere, including outside the project — that is a
+// fact about the link, which is worth showing, and not permission to read what
+// is at the end of it.
+func untrackedSymlinkDiff(abs string, resp *gitDiffResponse) {
+	target, err := os.Readlink(abs)
+	if err != nil {
+		return
+	}
+	digest := sha256.Sum256([]byte(target))
+
+	resp.Status = "untracked"
+	resp.NewMode = gitSymlinkMode
+	resp.Revision = hex.EncodeToString(digest[:])
+	resp.Added = 1
+	resp.Hunks = append(resp.Hunks, gitDiffHunk{
+		NewStart: 1,
+		NewLines: 1,
+		Lines:    []gitDiffLine{{Kind: "add", New: 1, Text: target}},
+	})
 }
 
 // parseGitPatch reads a unified patch for a single file into resp.

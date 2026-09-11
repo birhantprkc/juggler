@@ -8,9 +8,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"io/fs"
 	"net/http"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -32,9 +32,11 @@ func NewGitStatusAPI(pathProvider func() string) *GitStatusAPI {
 	return &GitStatusAPI{pathProvider: pathProvider}
 }
 
-// Repo-discovery bounds. The walk is deliberately shallow — a git repo lives at
-// the top of its tree, so scanning a few levels catches the root repo and its
-// direct submodules without risking a long recursive crawl of a deep source tree.
+// The card's bounds. Its walk is deliberately shallow — a git repo lives at the
+// top of its tree, so scanning a few levels catches the root repo and its direct
+// submodules without risking a long recursive crawl of a deep source tree. What
+// that misses is what an explicit review is for; a card polled every twenty
+// seconds settles for the cheap answer.
 const (
 	gitScanMaxDepth  = 4   // directory levels below the project root to descend
 	gitScanMaxRepos  = 32  // stop discovering after this many repos
@@ -65,8 +67,9 @@ type gitDiffstat struct {
 
 // gitRepoStatus is one repository's summary. Path is relative to the project
 // root ("" for the root repo itself), always forward-slashed. Files is bounded
-// at gitStatusMaxFile entries; Truncated says the tree holds more than that and
-// Total says how many. Changed, Staged and Total count the whole tree either way.
+// by whatever ceiling its caller asked for; Truncated says the tree holds more
+// than the list shows and Total says how many. Changed, Staged and Total count
+// the whole tree either way.
 type gitRepoStatus struct {
 	Path       string          `json:"path"`
 	Changed    int             `json:"changed"` // files with working-tree changes (incl. untracked)
@@ -110,15 +113,14 @@ func (a *GitStatusAPI) HandleGitStatus(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	for _, dir := range discoverRepos(ctx, root) {
-		status, ok := repoStatus(ctx, dir)
-		if !ok {
-			continue
+		status, err := repoStatus(ctx, dir, repoStatusOptions{maxFiles: gitStatusMaxFile})
+		if err != nil {
+			continue // best-effort: a repo git cannot report is left off the card
 		}
-		rel, err := filepath.Rel(root, dir)
-		if err != nil || rel == "." {
-			rel = ""
-		}
-		status.Path = filepath.ToSlash(rel)
+		// Line counts are a nicety on a card and the whole point of a review, so
+		// this is the one caller that can shrug at losing them.
+		_ = repoDiffstats(ctx, dir, &status)
+		status.Path = repoRelativePath(root, dir)
 		resp.Repos = append(resp.Repos, status)
 	}
 
@@ -131,100 +133,223 @@ func (a *GitStatusAPI) HandleGitStatus(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, r, 0, resp)
 }
 
-// discoverRepos walks the project tree (bounded in depth, repo count, and pruned
-// of heavy/uninteresting directories) and returns the absolute path of every
-// directory that holds a `.git` entry. `.git` is a directory in a normal repo
-// and a file in a submodule or linked worktree, so both are recognised. The walk
+// repoScanLimits bounds a search for repositories. The status card runs one on
+// every poll and wants it cheap; an explicit review runs one when asked and
+// wants it complete, settling for saying where it stopped.
+type repoScanLimits struct {
+	maxRepos int  // repositories named before the search gives up
+	maxDirs  int  // directories visited before it gives up; 0 for no limit
+	maxDepth int  // levels below the root it descends; 0 for no limit
+	prune    bool // skip directories that are expensive to walk and rarely repositories
+}
+
+// repoScan is what one search found, and each way it fell short of the whole
+// tree — in the words the user reads, since a reader is what an incomplete
+// answer needs. Cut being empty is the only thing that makes Repos the whole
+// list, so the two travel together.
+type repoScan struct {
+	Repos []string
+	Cut   []string
+}
+
+// cut records a way the search fell short, once. A ceiling met a thousand times
+// is one fact about the search and not a thousand of them.
+func (s *repoScan) cut(reason string) {
+	for _, existing := range s.Cut {
+		if existing == reason {
+			return
+		}
+	}
+	s.Cut = append(s.Cut, reason)
+}
+
+// scanRepos walks the project tree and returns the absolute path of every
+// directory holding a `.git` entry. `.git` is a directory in a normal repo and a
+// file in a submodule or linked worktree, so both are recognised. The walk
 // aborts promptly if ctx is cancelled (e.g. the client disconnected).
-func discoverRepos(ctx context.Context, root string) []string {
-	var repos []string
+//
+// Juggler's own state and git's internals are never walked into whatever the
+// limits say: neither holds a repository anybody opened this project to read.
+func scanRepos(ctx context.Context, root string, limits repoScanLimits) repoScan {
+	scan := repoScan{Repos: []string{}}
 	sep := string(filepath.Separator)
+	dirs := 0
 
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // unreadable entry — skip it, keep walking
 		}
 		if ctx.Err() != nil {
-			return filepath.SkipAll // request cancelled / budget spent — stop walking
+			scan.cut("The search for repositories ran out of time")
+			return filepath.SkipAll
 		}
-		if len(repos) >= gitScanMaxRepos {
+		if len(scan.Repos) >= limits.maxRepos {
+			scan.cut(fmt.Sprintf("Stopped after finding %d repositories", limits.maxRepos))
 			return filepath.SkipAll
 		}
 
 		if !d.IsDir() {
 			// A `.git` file marks a submodule or linked-worktree repo root.
 			if d.Name() == ".git" {
-				repos = append(repos, filepath.Dir(p))
+				scan.Repos = append(scan.Repos, filepath.Dir(p))
 			}
 			return nil
 		}
 
 		name := d.Name()
 		if name == ".git" {
-			repos = append(repos, filepath.Dir(p))
+			scan.Repos = append(scan.Repos, filepath.Dir(p))
 			return fs.SkipDir // never descend into git internals
 		}
 		if p == root {
 			return nil // always scan the root itself
 		}
-		// Prune directories that are large and never repo roots we care about.
-		switch name {
-		case "node_modules", "vendor", "dist", "build", ".juggler":
+		if name == ".juggler" {
 			return fs.SkipDir
 		}
-		// Depth guard: stop descending past the configured level.
-		if rel, rerr := filepath.Rel(root, p); rerr == nil {
-			if strings.Count(rel, sep)+1 >= gitScanMaxDepth {
+
+		dirs++
+		if limits.maxDirs > 0 && dirs > limits.maxDirs {
+			scan.cut(fmt.Sprintf("Stopped after searching %d directories", limits.maxDirs))
+			return filepath.SkipAll
+		}
+		if limits.prune {
+			// Large, slow, and almost never a repository the project was opened to
+			// review — but "almost never" is why only the cheap search skips them.
+			switch name {
+			case "node_modules", "vendor", "dist", "build":
 				return fs.SkipDir
+			}
+		}
+		if limits.maxDepth > 0 {
+			if rel, rerr := filepath.Rel(root, p); rerr == nil {
+				if strings.Count(rel, sep)+1 >= limits.maxDepth {
+					return fs.SkipDir
+				}
 			}
 		}
 		return nil
 	})
 
-	return repos
+	return scan
 }
 
-// repoStatus runs git in dir and summarises the working tree. ok is false when
-// git could not report (missing binary, not a work tree, timeout), so the caller
-// can omit the repo entirely. Path is left for the caller to fill in.
-func repoStatus(ctx context.Context, dir string) (gitRepoStatus, bool) {
-	cctx, cancel := context.WithTimeout(ctx, gitStatusPerCmd)
-	defer cancel()
+// discoverRepos is the cheap search: shallow, capped and pruned of the
+// directories that cost the most to walk. It is what the card polls with, and
+// what a diff asks first.
+func discoverRepos(ctx context.Context, root string) []string {
+	return scanRepos(ctx, root, repoScanLimits{
+		maxRepos: gitScanMaxRepos,
+		maxDepth: gitScanMaxDepth,
+		prune:    true,
+	}).Repos
+}
 
-	// --no-optional-locks: this is a background poll, so never take index.lock to
-	// write back refreshed stat info — that would contend with the user's own git
-	// client mid-operation. Status is still computed correctly, just not persisted.
-	//
-	// core.quotePath=false stops git escaping non-ASCII paths, which would
-	// otherwise reach the UI as \303\251 rather than é.
-	//
+// repoRelativePath names a repository the way a client asks for it: relative to
+// the project root, forward-slashed, and "" for the root repository itself.
+func repoRelativePath(root, dir string) string {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == "." {
+		return ""
+	}
+	return filepath.ToSlash(rel)
+}
+
+// repoStatusOptions is how much of a repository's state the caller is asking
+// for. The card wants a summary; a review wants the files themselves.
+type repoStatusOptions struct {
+	maxFiles int // files listed one by one before the list is cut
+
+	// allUntracked names every untracked file instead of letting git collapse a
+	// whole new directory into a single entry. It costs a full walk of every
+	// untracked directory, and it is the difference between "somebody added
+	// src/generated/" and a list of what is in it.
+	allUntracked bool
+}
+
+// repoStatus runs git in dir and summarises the working tree. The error carries
+// git's own complaint, because a caller that reports a repository it could not
+// read has to say why. Path is left for the caller to fill in.
+func repoStatus(ctx context.Context, dir string, opts repoStatusOptions) (gitRepoStatus, error) {
 	// Porcelain v2 with --branch reports the branch, its upstream, ahead/behind
 	// and per-file detail in one invocation. --show-stash adds the stash count to
 	// that same header block.
-	cmd := exec.CommandContext(cctx, "git",
-		"--no-optional-locks", "-c", "core.quotePath=false",
-		"status", "--porcelain=v2", "--branch", "--show-stash")
-	cmd.Dir = dir
-	out, err := cmd.Output()
+	args := []string{"status", "--porcelain=v2", "--branch", "--show-stash"}
+	if opts.allUntracked {
+		args = append(args, "--untracked-files=all")
+	}
+	out, err := gitRead(ctx, dir, gitDiffMaxMeta, args...)
 	if err != nil {
-		return gitRepoStatus{}, false
+		return gitRepoStatus{}, err
 	}
-	status := parseGitStatusV2(out)
 
-	// One combined diff against HEAD answers what the checked-out files amount to,
-	// rather than separately reporting the index and worktree versions of a file.
-	// An unborn repository has no HEAD, and untracked/binary files have no honest
-	// line count; all three simply carry no per-file diffstat.
-	if !status.Initial {
-		diff := exec.CommandContext(cctx, "git",
-			"--no-optional-locks", "-c", "core.quotePath=false",
-			"diff", "--numstat", "-z", "HEAD", "--")
-		diff.Dir = dir
-		if diffOut, diffErr := diff.Output(); diffErr == nil {
-			applyGitDiffstats(&status, parseGitNumstat(diffOut))
-		}
+	status := parseGitStatusV2(out.Kept)
+	if opts.allUntracked {
+		dropDirectoryEntries(&status)
 	}
-	return status, true
+	// Status past the ceiling was never read, so nothing downstream can count it
+	// either: the summary is short by an unknown amount and says so.
+	if out.Truncated {
+		status.Truncated = true
+	}
+	truncateGitFiles(&status, opts.maxFiles)
+	return status, nil
+}
+
+// dropDirectoryEntries removes entries that name a directory rather than a file.
+//
+// Once git has been asked for every untracked file by name, the only thing it
+// still reports as a directory is a repository it will not walk into — a nested
+// checkout or a submodule. That repository is reviewed in its own right, so
+// leaving the entry here lists the same tree twice, the second time under a path
+// with no diff to show for it.
+func dropDirectoryEntries(status *gitRepoStatus) {
+	kept := status.Files[:0]
+	for _, file := range status.Files {
+		if file.Worktree == "?" && strings.HasSuffix(file.Path, "/") {
+			status.Total--
+			status.Changed--
+			continue
+		}
+		kept = append(kept, file)
+	}
+	status.Files = kept
+}
+
+// repoDiffstats attaches line counts to a repository's files and totals them.
+//
+// One combined diff against the baseline answers what the checked-out files
+// amount to, rather than separately reporting the index and worktree versions of
+// a file — the same comparison a single file's diff is taken from, so a count
+// here and a patch there can never disagree. Untracked and binary files have no
+// honest line count and simply carry none.
+func repoDiffstats(ctx context.Context, dir string, status *gitRepoStatus) error {
+	base, err := gitDiffBase(ctx, dir)
+	if err != nil {
+		return err
+	}
+	out, err := gitRead(ctx, dir, gitDiffMaxMeta,
+		"diff", "--no-ext-diff", "--no-textconv", "--numstat", "-z", base, "--")
+	if err != nil {
+		return err
+	}
+	applyGitDiffstats(status, parseGitNumstat(out.Kept))
+	return nil
+}
+
+// truncateGitFiles bounds the files a summary lists one by one. The counts are
+// left alone: "200 of 4000 files" is a useful thing to be able to say, and it
+// needs the 4000. A ceiling of zero lists none of them, which is what is left
+// for a repository reached after a shared budget was spent.
+func truncateGitFiles(status *gitRepoStatus, maxFiles int) {
+	if len(status.Files) <= maxFiles {
+		return
+	}
+	if maxFiles < 0 {
+		maxFiles = 0
+	}
+	status.Files = status.Files[:maxFiles]
+	status.Truncated = true
 }
 
 // parseGitStatusV2 reads `git status --porcelain=v2 --branch` output.
@@ -286,10 +411,6 @@ func parseGitStatusV2(out []byte) gitRepoStatus {
 		}
 		if worktree != "." {
 			status.Changed++
-		}
-		if len(status.Files) >= gitStatusMaxFile {
-			status.Truncated = true
-			continue
 		}
 		status.Files = append(status.Files, gitFileStatus{
 			Path:       unquoteGitPath(path),

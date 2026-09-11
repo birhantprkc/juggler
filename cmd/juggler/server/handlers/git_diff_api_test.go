@@ -308,7 +308,9 @@ func TestResolveRepoDirRefusesADirectoryThatIsNotARepo(t *testing.T) {
 
 // A path can be lexically innocent and still leave the project by passing
 // through a symlinked directory, which no amount of cleaning the string finds.
-func TestWithinDirRefusesAPathThatLeavesThroughASymlink(t *testing.T) {
+// A link at the end of the path is the one that is kept: it is a file to be
+// described, and the endpoint reads its text rather than opening it.
+func TestFileWithinRepoRefusesAPathThatLeavesThroughASymlink(t *testing.T) {
 	base := t.TempDir()
 	dir := filepath.Join(base, "repo")
 	outside := filepath.Join(base, "outside")
@@ -324,14 +326,19 @@ func TestWithinDirRefusesAPathThatLeavesThroughASymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !withinDir(filepath.Join(dir, "ordinary.go"), dir) {
+	if !fileWithinRepo(filepath.Join(dir, "ordinary.go"), dir) {
 		t.Error("refused an ordinary path inside the repo")
 	}
-	if withinDir(filepath.Join(dir, "escape", "secret.txt"), dir) {
+	if fileWithinRepo(filepath.Join(dir, "escape", "secret.txt"), dir) {
 		t.Error("accepted a path that leaves the repo through a symlinked directory")
 	}
-	if withinDir(dir, dir) {
+	if fileWithinRepo(dir, dir) {
 		t.Error("accepted the directory itself as a file inside it")
+	}
+	// The link itself lives in the repo whatever it names, and naming something
+	// outside is the fact about it worth reporting.
+	if !fileWithinRepo(filepath.Join(dir, "escape"), dir) {
+		t.Error("refused a link inside the repo for pointing out of it")
 	}
 }
 

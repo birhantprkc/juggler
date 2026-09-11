@@ -249,6 +249,7 @@ func TestGitStatusBoundsTheFileListButNotTheCounts(t *testing.T) {
 	}
 
 	got := parseGitStatusV2([]byte(strings.Join(lines, "\n")))
+	truncateGitFiles(&got, gitStatusMaxFile)
 	if len(got.Files) != gitStatusMaxFile {
 		t.Errorf("Files = %d entries, want %d", len(got.Files), gitStatusMaxFile)
 	}
