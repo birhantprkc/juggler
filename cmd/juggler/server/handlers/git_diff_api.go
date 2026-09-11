@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Diff bounds. A diff is read to be looked at, so the ceilings are the size of a
@@ -33,6 +34,18 @@ const (
 	gitDiffMaxBytes = 8 << 20 // patch bytes kept before the rest is dropped
 	gitDiffMaxMeta  = 8 << 20 // bytes kept from git's metadata passes
 	gitDiffSniff    = 8000    // bytes of an untracked file read to judge it binary
+)
+
+// The diff's clocks, which are not the status card's. A card is polled in the
+// background and settles for the cheap answer, so it gives up quickly; a diff is
+// asked for once, by somebody waiting to look at it, and the patch it is allowed
+// to return runs to eight megabytes. Git reads the file for the metadata pass,
+// again for the patch and again for the tally behind a truncated one, and on a
+// loaded machine those reads take seconds rather than milliseconds. Refusing a
+// diff that another few seconds would have produced is the worse answer.
+const (
+	gitDiffPerCmd = 10 * time.Second // one git command's clock
+	gitDiffBudget = 30 * time.Second // the whole request's, across all of them
 )
 
 // gitAbsentMode is the mode git writes for the side of a change a file does not
@@ -127,7 +140,7 @@ func (a *GitStatusAPI) HandleGitDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), gitStatusBudget)
+	ctx, cancel := context.WithTimeout(r.Context(), gitDiffBudget)
 	defer cancel()
 
 	dir, ok := resolveRepoDir(ctx, root, repoRel)
@@ -150,7 +163,7 @@ func (a *GitStatusAPI) HandleGitDiff(w http.ResponseWriter, r *http.Request) {
 
 	resp := gitDiffResponse{Repo: repoRel, Path: fileRel, Status: "unchanged", Hunks: []gitDiffHunk{}}
 
-	base, err := gitDiffBase(ctx, dir)
+	base, err := gitDiffBase(ctx, dir, gitDiffPerCmd)
 	if err != nil {
 		WriteError(w, r, http.StatusBadGateway, "Couldn't read the diff. "+err.Error())
 		return
@@ -452,8 +465,11 @@ func gitCommand(ctx context.Context, dir string, args ...string) *exec.Cmd {
 // nothing git can produce has to fit in memory first. Every failure is a
 // failure: read as an empty diff, a command that could not run becomes the claim
 // that a file did not change, which is the one thing this must never say wrongly.
-func gitRead(ctx context.Context, dir string, limit int, args ...string) (boundedOutput, error) {
-	cctx, cancel := context.WithTimeout(ctx, gitStatusPerCmd)
+// The budget is the caller's, because how long one command may take is a
+// property of what is being served: a poll that wants an answer now, or a diff
+// somebody is waiting to read.
+func gitRead(ctx context.Context, dir string, budget time.Duration, limit int, args ...string) (boundedOutput, error) {
+	cctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
 	cmd := gitCommand(cctx, dir, args...)
@@ -475,7 +491,7 @@ func gitRead(ctx context.Context, dir string, limit int, args ...string) (bounde
 
 	switch {
 	case cctx.Err() != nil:
-		return boundedOutput{}, gitDeadlineError(ctx, cctx)
+		return boundedOutput{}, gitDeadlineError(ctx, cctx, budget)
 	case readErr != nil:
 		return boundedOutput{}, readErr
 	case waitErr != nil:
@@ -486,11 +502,11 @@ func gitRead(ctx context.Context, dir string, limit int, args ...string) (bounde
 
 // gitDeadlineError says which clock ran out: the request's, meaning the caller
 // is gone or the whole budget is spent, or this one command's.
-func gitDeadlineError(ctx, cctx context.Context) error {
+func gitDeadlineError(ctx, cctx context.Context, budget time.Duration) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	return fmt.Errorf("git took longer than %s", gitStatusPerCmd)
+	return fmt.Errorf("git took longer than %s", budget)
 }
 
 // gitFailure names what git complained about, since "exit status 128" names
@@ -507,18 +523,18 @@ func gitFailure(err error, stderr string) error {
 // which everything already staged reads as the addition it is. The empty tree's
 // id is asked of git rather than written down here, because it is the hash of
 // nothing under whichever algorithm the repository was created with.
-func gitDiffBase(ctx context.Context, dir string) (string, error) {
-	cctx, cancel := context.WithTimeout(ctx, gitStatusPerCmd)
+func gitDiffBase(ctx context.Context, dir string, budget time.Duration) (string, error) {
+	cctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
 	if err := gitCommand(cctx, dir, "rev-parse", "--verify", "-q", "HEAD").Run(); err == nil {
 		return "HEAD", nil
 	}
 	if cctx.Err() != nil {
-		return "", gitDeadlineError(ctx, cctx)
+		return "", gitDeadlineError(ctx, cctx, budget)
 	}
 
-	out, err := gitRead(ctx, dir, 1024, "hash-object", "-t", "tree", "--stdin")
+	out, err := gitRead(ctx, dir, budget, 1024, "hash-object", "-t", "tree", "--stdin")
 	if err != nil {
 		return "", err
 	}
@@ -538,7 +554,7 @@ func gitDiffBase(ctx context.Context, dir string) (string, error) {
 // cut; their patches still carry their own headers, which is less than this
 // knows but more than nothing.
 func gitDiffMetadata(ctx context.Context, dir, base string) (map[string]gitFileMeta, error) {
-	out, err := gitRead(ctx, dir, gitDiffMaxMeta,
+	out, err := gitRead(ctx, dir, gitDiffPerCmd, gitDiffMaxMeta,
 		"diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--find-copies",
 		"--raw", "-z", base, "--")
 	if err != nil {
@@ -615,7 +631,7 @@ func gitRawStatus(letter string) string {
 // which is where a conflict lives: the diff of a conflicted file against HEAD is
 // an ordinary-looking patch whose added lines include the markers.
 func gitFileConflicted(ctx context.Context, dir, fileRel string) bool {
-	out, err := gitRead(ctx, dir, 64*1024, "ls-files", "-u", "-z", "--", fileRel)
+	out, err := gitRead(ctx, dir, gitDiffPerCmd, 64*1024, "ls-files", "-u", "-z", "--", fileRel)
 	return err == nil && len(out.Kept) > 0
 }
 
@@ -626,7 +642,7 @@ func gitNumstatCounts(ctx context.Context, dir, base string, paths []string) (gi
 		"diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--find-copies",
 		"--numstat", "-z", base, "--",
 	}, paths...)
-	out, err := gitRead(ctx, dir, gitDiffMaxMeta, args...)
+	out, err := gitRead(ctx, dir, gitDiffPerCmd, gitDiffMaxMeta, args...)
 	if err != nil {
 		return gitDiffstat{}, false
 	}
@@ -644,7 +660,7 @@ func gitFilePatch(ctx context.Context, dir, base string, paths []string) (bounde
 		"diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames",
 		"--unified=" + strconv.Itoa(gitDiffContext), base, "--",
 	}, paths...)
-	return gitRead(ctx, dir, gitDiffMaxBytes, args...)
+	return gitRead(ctx, dir, gitDiffPerCmd, gitDiffMaxBytes, args...)
 }
 
 // gitIsUntracked reports whether git has never been told about this path. A

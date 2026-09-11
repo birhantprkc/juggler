@@ -376,13 +376,29 @@ func TestGitDeadlineErrorNamesTheClockThatRanOut(t *testing.T) {
 	defer cancelCommand()
 
 	cancelCommand()
-	if got := gitDeadlineError(request, command); !strings.Contains(got.Error(), "git took longer than") {
+	// The budget named is the one the command was actually given, so a reader is
+	// not told a diff gave up after the status card's three seconds when it waited
+	// far longer than that.
+	if got := gitDeadlineError(request, command, gitDiffPerCmd); !strings.Contains(got.Error(), "git took longer than "+gitDiffPerCmd.String()) {
 		t.Errorf("one command's clock ran out and the error said %q", got)
 	}
 
 	cancelRequest()
-	if got := gitDeadlineError(request, command); !errors.Is(got, context.Canceled) {
+	if got := gitDeadlineError(request, command, gitDiffPerCmd); !errors.Is(got, context.Canceled) {
 		t.Errorf("the request was cancelled and the error said %q", got)
+	}
+}
+
+// The card is polled and can give up quickly; a diff is asked for once, by
+// somebody waiting for it, and reads a file git may have to hash several times.
+// Serving it on the poll's clock is what refuses a large diff that was perfectly
+// readable, and the whole-request budget has to hold more than one such command.
+func TestGitDiffIsNotHeldToTheStatusCardsClock(t *testing.T) {
+	if gitDiffPerCmd <= gitStatusPerCmd {
+		t.Errorf("gitDiffPerCmd = %s, want longer than the card's %s", gitDiffPerCmd, gitStatusPerCmd)
+	}
+	if gitDiffBudget < 2*gitDiffPerCmd {
+		t.Errorf("gitDiffBudget = %s, want room for more than one %s command", gitDiffBudget, gitDiffPerCmd)
 	}
 }
 

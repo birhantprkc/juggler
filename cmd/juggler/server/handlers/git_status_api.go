@@ -278,7 +278,7 @@ func repoStatus(ctx context.Context, dir string, opts repoStatusOptions) (gitRep
 	if opts.allUntracked {
 		args = append(args, "--untracked-files=all")
 	}
-	out, err := gitRead(ctx, dir, gitDiffMaxMeta, args...)
+	out, err := gitRead(ctx, dir, gitStatusPerCmd, gitDiffMaxMeta, args...)
 	if err != nil {
 		return gitRepoStatus{}, err
 	}
@@ -324,11 +324,11 @@ func dropDirectoryEntries(status *gitRepoStatus) {
 // here and a patch there can never disagree. Untracked and binary files have no
 // honest line count and simply carry none.
 func repoDiffstats(ctx context.Context, dir string, status *gitRepoStatus) error {
-	base, err := gitDiffBase(ctx, dir)
+	base, err := gitDiffBase(ctx, dir, gitStatusPerCmd)
 	if err != nil {
 		return err
 	}
-	out, err := gitRead(ctx, dir, gitDiffMaxMeta,
+	out, err := gitRead(ctx, dir, gitStatusPerCmd, gitDiffMaxMeta,
 		"diff", "--no-ext-diff", "--no-textconv", "--numstat", "-z", base, "--")
 	if err != nil {
 		return err
