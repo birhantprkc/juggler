@@ -8,6 +8,7 @@ import { createElement, injectStylesOnce } from 'juggler/ui';
 import { createTextBlock } from 'juggler/item-utils';
 import { systemPromptRegistry, getDefaultIdentityText } from '../../../sdk/lib/system-prompt-registry.js';
 import { showPresetBrowser } from './system-prompt/preset-browser.js';
+import { formatTokens } from '../../../js/utils/format.js';
 
 // ============================================================================
 // Styles
@@ -760,10 +761,17 @@ class SystemPromptContextItem extends ContextItem {
   _buildToolInventoryView(inventory, groups, servers, parseMcp, drift, mcpNotice = '') {
     const wrap = createElement('div', 'system-prompt-tools');
 
+    // The schemas are the bulk of what every turn pays before the user has
+    // typed anything, and nothing else in the UI says so until after a turn has
+    // been sent. Stating it here is what makes the cost of a tool — or of a
+    // talkative MCP server — something you can see and act on, since this panel
+    // is already where tools are switched off.
+    const tokens = groups.reduce((sum, group) => sum + group.tokens, 0);
     const count = createElement('div', 'system-prompt-tools-count');
     count.textContent = inventory.offered.length === 1
-      ? '1 tool available to the model'
-      : `${inventory.offered.length} tools available to the model`;
+      ? `1 tool available to the model · ~${formatTokens(tokens)} tokens`
+      : `${inventory.offered.length} tools available to the model · ~${formatTokens(tokens)} tokens`;
+    count.title = 'Estimated tokens (~4 characters per token), sent on every turn.';
     wrap.appendChild(count);
 
     if (drift?.changes) {
@@ -782,7 +790,7 @@ class SystemPromptContextItem extends ContextItem {
 
     for (const group of groups) {
       const heading = createElement('div', 'system-prompt-tools-group');
-      heading.textContent = group.title;
+      heading.textContent = `${group.title} · ~${formatTokens(group.tokens)}`;
       if (group.server) {
         const status = servers.get(group.server)?.status;
         if (status && status !== 'running') heading.textContent += ` — ${status}`;

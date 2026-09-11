@@ -16,6 +16,9 @@
 
 import SystemPromptContextItem from '../context-items/system-prompt-context-item.js';
 import { getDefaultIdentityText } from '../../../sdk/lib/system-prompt-registry.js';
+import { groupToolsByOrigin, parseMcpToolName } from '../../../js/services/thread-tool-inventory.js';
+import { estimateValueTokens } from '../../../js/utils/token-estimate.js';
+import { formatTokens } from '../../../js/utils/format.js';
 import { assert } from '../../../js-tests/utilities/test-helpers.js';
 
 /**
@@ -111,6 +114,72 @@ export async function runTests(_ctx) {
     const prompt = item.buildPrompt();
     const todayLive = new Date().toISOString().split('T')[0];
     assert(prompt.includes(`Today's date: ${todayLive}`), `with no conversation.created the fallback live date should appear:\n${prompt}`);
+  });
+
+  // ---- The Tools section states what the tool list costs ----
+
+  // Everything the panel shows about size is an estimate of the SAME tool
+  // objects the turn path sends, grouped by groupToolsByOrigin. These pin the
+  // figure to that grouping rather than to a literal, so the panel cannot come
+  // to state a number the turn does not send.
+
+  /**
+   * Render the Tools section against a fixed inventory, with no MCP servers,
+   * no drift and no notice.
+   * @param {Array<Record<string, any>>} offered - Tools the model is given
+   * @param {Array<Record<string, any>>} [withheld] - Tools the strategy holds back
+   * @returns {HTMLElement} The rendered section body
+   */
+  function renderTools(offered, withheld = []) {
+    return makeItem()._buildToolInventoryView(
+      { offered, withheld, strategyName: withheld.length ? 'Read-only' : '' },
+      groupToolsByOrigin(offered),
+      new Map(),
+      parseMcpToolName,
+      null,
+      ''
+    );
+  }
+
+  const TOOLS = [
+    { name: 'read', category: 'read', description: 'Reads a file.', input_schema: { type: 'object' } },
+    { name: 'bash', category: 'write', description: 'Runs a command.', input_schema: { type: 'object' } },
+    { name: 'mcp__linear__list', category: 'read', description: 'Lists issues.', input_schema: { type: 'object' } }
+  ];
+
+  await test('the tool count line states what the list costs', () => {
+    const view = renderTools(TOOLS);
+    const line = view.querySelector('.system-prompt-tools-count');
+    const total = TOOLS.reduce((sum, t) => sum + estimateValueTokens(t), 0);
+    assert(!!line, 'the Tools section should render a count line');
+    assert(/** @type {HTMLElement} */ (line).textContent.includes(`~${formatTokens(total)}`),
+      `the count line should state the estimated cost of the whole list; got "${/** @type {HTMLElement} */ (line).textContent}"`);
+  });
+
+  await test('each group states its own cost, so a chatty MCP server is attributable', () => {
+    const view = renderTools(TOOLS);
+    const headings = [...view.querySelectorAll('.system-prompt-tools-group')]
+      .map((h) => /** @type {HTMLElement} */ (h).textContent);
+    for (const group of groupToolsByOrigin(TOOLS)) {
+      assert(headings.some((h) => h.includes(group.title) && h.includes(`~${formatTokens(group.tokens)}`)),
+        `the "${group.title}" heading should state its own cost; got ${JSON.stringify(headings)}`);
+    }
+  });
+
+  await test('the stated cost counts only what the model is offered', () => {
+    // A withheld tool is listed, struck through, below the offered groups. It
+    // is not sent, so it must not be counted — otherwise switching to Read-only
+    // would report a payload that grew.
+    const offered = [TOOLS[0]];
+    const withheld = [TOOLS[1]];
+    const line = renderTools(offered, withheld).querySelector('.system-prompt-tools-count');
+    const offeredOnly = estimateValueTokens(TOOLS[0]);
+    const both = offeredOnly + estimateValueTokens(TOOLS[1]);
+    const text = /** @type {HTMLElement} */ (line).textContent;
+    assert(text.includes(`~${formatTokens(offeredOnly)}`),
+      `the count line should state the offered cost; got "${text}"`);
+    assert(offeredOnly === both || !text.includes(`~${formatTokens(both)}`),
+      `the count line must not count withheld tools; got "${text}"`);
   });
 
   return { passed, failed, errors };
