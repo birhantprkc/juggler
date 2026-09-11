@@ -51,6 +51,159 @@ export function pathAllowed(p, ctx) {
 }
 
 /**
+ * The flag grammar of a getopt-shaped command, in the pieces {@link parseFlags}
+ * needs to walk it. A flag that takes a value states the check its value must
+ * pass, which is where a handler says "this one names a file I must contain"
+ * or "this one is a count" — instead of a walker of its own to say it in.
+ * @typedef {object} FlagGrammar
+ * @property {string} [boolShort] cluster letters taking no value (`-lah`)
+ * @property {Map<string, (value: string) => boolean>} [valueShort] cluster letters
+ *   taking a value — glued (`-n5`) or the next word (`-n 5`) — and its check
+ * @property {Set<string>} [boolLong] `--word` flags taking no value
+ * @property {Map<string, (value: string) => boolean>} [valueLong] `--word` flags
+ *   taking a value — `--word=v` or `--word v` — and its check
+ * @property {Set<string>} [optionalValueLong] `--word[=v]` flags, whose value is
+ *   glued when present, so the following word is never consumed
+ * @property {boolean} [permute] keep reading flags after an operand, GNU-style
+ *   (`du web -sh`); by default the first operand ends the flag prefix
+ * @property {boolean} [unknownIsOperand] take an unrecognised flag word as the
+ *   first operand rather than rejecting — for a command whose operand may itself
+ *   start with `-` (a grep pattern in sink position)
+ */
+
+/**
+ * A completed {@link parseFlags} walk.
+ * @typedef {object} ParsedFlags
+ * @property {string[]} operands the words after the flag prefix, in order
+ * @property {Set<string>} flags the flags recognised on the way — a long flag as
+ *   its `--word` (without any `=value`), a short one as its bare letter
+ */
+
+/** @type {Set<string>} */
+const NO_FLAG_WORDS = new Set();
+/** @type {Map<string, (value: string) => boolean>} */
+const NO_VALUED_FLAGS = new Map();
+
+/**
+ * A context that contains nothing, for a sink parse: input arrives on the pipe,
+ * so no flag value there may name a file whatever the roots are.
+ * @type {ApprovalCtx}
+ */
+const NO_ROOTS_CTX = { platform: '', allowedRoots: [] };
+
+/**
+ * The value of a flag the command only ever treats as data — a separator, a
+ * field list, a glob. Nothing to contain, so anything parses.
+ * @returns {boolean} always true
+ */
+const anyValue = () => true;
+
+/**
+ * @param {string} value the flag's value
+ * @returns {boolean} true when the value is a plain non-negative integer
+ */
+const numericValue = (value) => /^\d+$/.test(value);
+
+/**
+ * The value of a flag that names a file, in a position where no root can vouch
+ * for it. Refusing is the only safe answer.
+ * @returns {boolean} always false
+ */
+const rejectValue = () => false;
+
+/**
+ * Walk a getopt-shaped argument list: a prefix of flags, then the operands.
+ *
+ * One walker for every command of that shape, because the fiddly parts — `--`
+ * ending the flag prefix, a lone `-` being an operand, a short value glued
+ * (`-n5`) or in the next word (`-n 5`), a long value as `--key=v` or `--key v`
+ * — are exactly what a per-command re-implementation gets subtly wrong, and
+ * each of these decisions gates auto-approval.
+ *
+ * Null is the answer whenever the grammar doesn't recognise a flag, a
+ * value-taking flag has no value, or a value fails its check: the command's
+ * shape is then unsafe, so no path grant can rescue it.
+ * @param {string[]} args the command's args, head command already removed
+ * @param {FlagGrammar} grammar the command's flag grammar
+ * @returns {ParsedFlags | null} the walk, or null when a flag or value is refused
+ */
+function parseFlags(args, grammar) {
+  const boolShort = grammar.boolShort || '';
+  const valueShort = grammar.valueShort || NO_VALUED_FLAGS;
+  const boolLong = grammar.boolLong || NO_FLAG_WORDS;
+  const valueLong = grammar.valueLong || NO_VALUED_FLAGS;
+  const optionalValueLong = grammar.optionalValueLong || NO_FLAG_WORDS;
+  /** @type {string[]} */
+  const operands = [];
+  /** @type {Set<string>} */
+  const flags = new Set();
+  let readingFlags = true;
+
+  for (let i = 0; i < args.length; i++) {
+    const a = checkedAt(args, i);
+    if (!readingFlags || !a.startsWith('-') || a === '-') {
+      operands.push(a);
+      if (!grammar.permute) readingFlags = false;
+      continue;
+    }
+    if (a === '--') { readingFlags = false; continue; }
+
+    if (a.startsWith('--')) {
+      const eq = a.indexOf('=');
+      const word = eq === -1 ? a : a.slice(0, eq);
+      if (boolLong.has(word) || optionalValueLong.has(word)) { flags.add(word); continue; }
+      const check = valueLong.get(word);
+      if (!check) {
+        if (!grammar.unknownIsOperand) return null;
+        operands.push(a);
+        readingFlags = false;
+        continue;
+      }
+      let value;
+      if (eq === -1) {
+        if (i + 1 >= args.length) return null;
+        value = checkedAt(args, ++i);
+      } else {
+        value = a.slice(eq + 1);
+      }
+      if (!check(value)) return null;
+      flags.add(word);
+      continue;
+    }
+
+    const cluster = a.slice(1);
+    let consumedNext = false;
+    let unknown = false;
+    for (let k = 0; k < cluster.length; k++) {
+      const ch = checkedAt(cluster, k);
+      const check = valueShort.get(ch);
+      if (check) {
+        let value = cluster.slice(k + 1);
+        if (!value) {
+          if (i + 1 >= args.length) return null;
+          value = checkedAt(args, i + 1);
+          consumedNext = true;
+        }
+        if (!check(value)) return null;
+        flags.add(ch);
+        break;
+      }
+      if (!boolShort.includes(ch)) { unknown = true; break; }
+      flags.add(ch);
+    }
+    if (unknown) {
+      if (!grammar.unknownIsOperand) return null;
+      operands.push(a);
+      readingFlags = false;
+      continue;
+    }
+    if (consumedNext) i++;
+  }
+
+  return { operands, flags };
+}
+
+/**
  * Base class for a per-command safety policy.
  *
  * Each subclass owns the policy for exactly one head command. Keep them
@@ -324,33 +477,12 @@ class LsHandler extends CommandHandler {
   static commandName = 'ls';
 
   /**
-   * Parse args into positional path arguments, validating flags along the way.
-   * Returns null when a flag is unrecognised — the command shape itself is
-   * unsafe, so no path grant could rescue it.
-   * @param {string[]} args args
-   * @returns {string[] | null} positional paths, or null on an unsafe flag
+   * `ls [FLAGS] [FILE...]`, with flags and file operands freely interleaved
+   * (`ls web -la` is as ordinary as `ls -la web`).
+   * @returns {FlagGrammar} grammar
    */
-  static _parsePaths(args) {
-    /** @type {string[]} */
-    const paths = [];
-    for (const a of args) {
-      if (a.startsWith('--')) {
-        const eq = a.indexOf('=');
-        const flag = eq === -1 ? a : a.slice(0, eq);
-        if (!LS_LONG_FLAGS.has(flag)) return null;
-        continue;
-      }
-      if (a.startsWith('-') && a !== '-') {
-        const cluster = a.slice(1);
-        if (cluster.length === 0) return null;
-        for (const ch of cluster) {
-          if (!LS_SHORT_FLAGS.includes(ch)) return null;
-        }
-        continue;
-      }
-      paths.push(a);
-    }
-    return paths;
+  static grammar() {
+    return { boolShort: LS_SHORT_FLAGS, boolLong: LS_LONG_FLAGS, permute: true };
   }
 
   /**
@@ -359,7 +491,7 @@ class LsHandler extends CommandHandler {
    * @returns {boolean} safe
    */
   static isSafe(args, ctx) {
-    const paths = LsHandler._parsePaths(args);
+    const paths = LsHandler.pathArgs(args);
     if (paths === null) return false;
     for (const p of paths) {
       if (!pathAllowed(p, ctx)) return false;
@@ -368,11 +500,14 @@ class LsHandler extends CommandHandler {
   }
 
   /**
+   * Null when a flag is unrecognised — the command shape itself is unsafe, so
+   * no path grant could rescue it.
    * @param {string[]} args args
    * @returns {string[] | null} positional paths, or null on an unsafe flag
    */
   static pathArgs(args) {
-    return LsHandler._parsePaths(args);
+    const parsed = parseFlags(args, LsHandler.grammar());
+    return parsed === null ? null : parsed.operands;
   }
 }
 
@@ -385,76 +520,34 @@ class LsHandler extends CommandHandler {
 class DuHandler extends CommandHandler {
   static commandName = 'du';
 
-  /** Boolean short flags accepted in clusters (BSD/GNU common read-only flags). */
-  static BOOL_SHORT = 'abcDhkHklLmsxP0';
-
-  /** Short flags that take a following/attached value. */
-  static VALUE_SHORT = new Set(['d', 't', 'B', 'I', 'X']);
-
-  /** Long flags that take no value. */
-  static BOOL_LONG = new Set([
-    '--all', '--total', '--human-readable', '--summarize', '--separate-dirs',
-    '--one-file-system', '--count-links', '--dereference', '--dereference-args',
-    '--no-dereference', '--apparent-size', '--inodes', '--si', '--time',
-    '--null', '--bytes', '--kilobytes'
-  ]);
-
-  /** Long flags that take a value (either `--key=val` or `--key val`). */
-  static VALUE_LONG = new Set([
-    '--max-depth', '--threshold', '--block-size', '--exclude', '--exclude-from',
-    '--time-style', '--time'
-  ]);
-
   /**
-   * @param {string[]} args args
+   * `du [FLAGS] [PATH...]`, flags and paths interleaved. `-X` /
+   * `--exclude-from` name a file du reads, so their values are contained like
+   * any other read; `-d` / `--max-depth` must be a depth and not a path.
    * @param {ApprovalCtx} ctx ctx
-   * @returns {string[] | null} positional paths, or null on unsafe flags/values
+   * @returns {FlagGrammar} grammar
    */
-  static _parseFlags(args, ctx) {
-    const paths = [];
-    let stopOptions = false;
-    for (let i = 0; i < args.length; i++) {
-      const a = checkedAt(args, i);
-      if (stopOptions || !a.startsWith('-') || a === '-') {
-        paths.push(a);
-        continue;
-      }
-      if (a === '--') { stopOptions = true; continue; }
-      if (a.startsWith('--')) {
-        const eq = a.indexOf('=');
-        const flag = eq === -1 ? a : a.slice(0, eq);
-        if (DuHandler.BOOL_LONG.has(flag)) continue;
-        if (DuHandler.VALUE_LONG.has(flag)) {
-          let val = eq === -1 ? '' : a.slice(eq + 1);
-          if (eq === -1) {
-            if (i + 1 >= args.length) return null;
-            val = checkedAt(args, ++i);
-          }
-          if ((flag === '--max-depth') && !/^\d+$/.test(val)) return null;
-          if (flag === '--exclude-from' && !pathAllowed(val, ctx)) return null;
-          continue;
-        }
-        return null;
-      }
-
-      const cluster = a.slice(1);
-      if (!cluster) return null;
-      for (let k = 0; k < cluster.length; k++) {
-        const ch = checkedAt(cluster, k);
-        if (!DuHandler.BOOL_SHORT.includes(ch) && !DuHandler.VALUE_SHORT.has(ch)) return null;
-        if (DuHandler.VALUE_SHORT.has(ch)) {
-          let val = cluster.slice(k + 1);
-          if (!val) {
-            if (i + 1 >= args.length) return null;
-            val = checkedAt(args, ++i);
-          }
-          if (ch === 'd' && !/^\d+$/.test(val)) return null;
-          if (ch === 'X' && !pathAllowed(val, ctx)) return null;
-          break;
-        }
-      }
-    }
-    return paths;
+  static grammar(ctx) {
+    return {
+      boolShort: 'abcDhkHklLmsxP0',
+      valueShort: new Map([
+        ['d', numericValue], ['t', anyValue], ['B', anyValue], ['I', anyValue],
+        ['X', (/** @type {string} */ value) => pathAllowed(value, ctx)]
+      ]),
+      boolLong: new Set([
+        '--all', '--total', '--human-readable', '--summarize', '--separate-dirs',
+        '--one-file-system', '--count-links', '--dereference', '--dereference-args',
+        '--no-dereference', '--apparent-size', '--inodes', '--si', '--time',
+        '--null', '--bytes', '--kilobytes'
+      ]),
+      valueLong: new Map([
+        ['--max-depth', numericValue], ['--threshold', anyValue],
+        ['--block-size', anyValue], ['--exclude', anyValue],
+        ['--exclude-from', (/** @type {string} */ value) => pathAllowed(value, ctx)],
+        ['--time-style', anyValue]
+      ]),
+      permute: true
+    };
   }
 
   /**
@@ -463,7 +556,7 @@ class DuHandler extends CommandHandler {
    * @returns {boolean} safe
    */
   static isSafe(args, ctx) {
-    const paths = DuHandler._parseFlags(args, ctx);
+    const paths = DuHandler.pathArgs(args, ctx);
     if (paths === null) return false;
     for (const p of paths) {
       if (!pathAllowed(p, ctx)) return false;
@@ -478,7 +571,7 @@ class DuHandler extends CommandHandler {
    * @returns {boolean} safe sink
    */
   static isSafeAsSink(args) {
-    const paths = DuHandler._parseFlags(args, { platform: '', allowedRoots: [] });
+    const paths = DuHandler.pathArgs(args, NO_ROOTS_CTX);
     return paths !== null && paths.length === 0;
   }
 
@@ -488,7 +581,8 @@ class DuHandler extends CommandHandler {
    * @returns {string[] | null} positional paths, or null on unsafe flags/values
    */
   static pathArgs(args, ctx) {
-    return DuHandler._parseFlags(args, ctx);
+    const parsed = parseFlags(args, DuHandler.grammar(ctx));
+    return parsed === null ? null : parsed.operands;
   }
 }
 /**
@@ -989,75 +1083,30 @@ class SeqHandler extends ArgOnlyHandler {
 class SortHandler extends CommandHandler {
   static commandName = 'sort';
 
-  /** Long flags that take no value. */
-  static BOOL_LONG = new Set([
-    '--ignore-leading-blanks', '--dictionary-order', '--ignore-case',
-    '--general-numeric-sort', '--human-numeric-sort', '--ignore-nonprinting',
-    '--month-sort', '--numeric-sort', '--reverse', '--random-sort',
-    '--stable', '--unique', '--version-sort', '--check', '--zero-terminated',
-    '--debug'
-  ]);
-
-  /** Long flags taking a value that writes / execs nothing. */
-  static VALUE_LONG = new Set([
-    '--key', '--field-separator', '--buffer-size', '--temporary-directory'
-  ]);
-
-  /** Short cluster letters that take no value. */
-  static BOOL_SHORT = 'bdfghiMnrRsuVcCz';
-
-  /** Short flags taking a value (glued `-k2` or separate `-k 2`). */
-  static VALUE_SHORT = new Set(['k', 't', 'S', 'T']);
-
   /**
-   * Walk the flag prefix. Returns the index of the first positional arg, or
-   * -1 if any flag is unrecognised or writes/execs.
-   * @param {string[]} args args
-   * @returns {number} first-positional index, or -1 on reject
+   * `sort [FLAGS] [FILE...]`. The output / program flags are simply absent from
+   * the grammar, so they are rejected with everything else unrecognised; the
+   * values that remain (`-k` keys, `-t` separators, buffer sizes) are data.
+   * @returns {FlagGrammar} grammar
    */
-  static _parseFlags(args) {
-    let i = 0;
-    while (i < args.length) {
-      const a = checkedAt(args, i);
-      if (a === '--') return i + 1;
-      if (!a.startsWith('-') || a === '-') break;
-
-      if (a.startsWith('--')) {
-        const eq = a.indexOf('=');
-        const flag = eq === -1 ? a : a.slice(0, eq);
-        if (SortHandler.BOOL_LONG.has(flag)) { i++; continue; }
-        if (SortHandler.VALUE_LONG.has(flag)) {
-          if (eq === -1) {
-            if (i + 1 >= args.length) return -1;
-            i += 2;
-          } else {
-            i++;
-          }
-          continue;
-        }
-        return -1;
-      }
-
-      const cluster = a.slice(1);
-      let consumedNext = false;
-      let j = 0;
-      while (j < cluster.length) {
-        const ch = checkedAt(cluster, j);
-        if (SortHandler.VALUE_SHORT.has(ch)) {
-          const rest = cluster.slice(j + 1);
-          if (rest.length === 0) {
-            if (i + 1 >= args.length) return -1;
-            consumedNext = true;
-          }
-          j = cluster.length;
-          break;
-        }
-        if (!SortHandler.BOOL_SHORT.includes(ch)) return -1;
-        j++;
-      }
-      i += consumedNext ? 2 : 1;
-    }
-    return i;
+  static grammar() {
+    return {
+      boolShort: 'bdfghiMnrRsuVcCz',
+      valueShort: new Map([
+        ['k', anyValue], ['t', anyValue], ['S', anyValue], ['T', anyValue]
+      ]),
+      boolLong: new Set([
+        '--ignore-leading-blanks', '--dictionary-order', '--ignore-case',
+        '--general-numeric-sort', '--human-numeric-sort', '--ignore-nonprinting',
+        '--month-sort', '--numeric-sort', '--reverse', '--random-sort',
+        '--stable', '--unique', '--version-sort', '--check', '--zero-terminated',
+        '--debug'
+      ]),
+      valueLong: new Map([
+        ['--key', anyValue], ['--field-separator', anyValue],
+        ['--buffer-size', anyValue], ['--temporary-directory', anyValue]
+      ])
+    };
   }
 
   /**
@@ -1066,10 +1115,10 @@ class SortHandler extends CommandHandler {
    * @returns {boolean} safe
    */
   static isSafe(args, ctx) {
-    const start = SortHandler._parseFlags(args);
-    if (start === -1) return false;
-    for (let j = start; j < args.length; j++) {
-      if (!pathAllowed(checkedAt(args, j), ctx)) return false;
+    const paths = SortHandler.pathArgs(args);
+    if (paths === null) return false;
+    for (const p of paths) {
+      if (!pathAllowed(p, ctx)) return false;
     }
     return true;
   }
@@ -1079,9 +1128,8 @@ class SortHandler extends CommandHandler {
    * @returns {boolean} safe sink
    */
   static isSafeAsSink(args) {
-    const start = SortHandler._parseFlags(args);
-    if (start === -1) return false;
-    return start === args.length;
+    const paths = SortHandler.pathArgs(args);
+    return paths !== null && paths.length === 0;
   }
 
   /**
@@ -1089,8 +1137,8 @@ class SortHandler extends CommandHandler {
    * @returns {string[] | null} positional (input) file paths, or null on reject
    */
   static pathArgs(args) {
-    const start = SortHandler._parseFlags(args);
-    return start === -1 ? null : args.slice(start);
+    const parsed = parseFlags(args, SortHandler.grammar());
+    return parsed === null ? null : parsed.operands;
   }
 }
 
@@ -1111,76 +1159,27 @@ class SortHandler extends CommandHandler {
 class UniqHandler extends CommandHandler {
   static commandName = 'uniq';
 
-  /** Long flags that take no value. */
-  static BOOL_LONG = new Set([
-    '--count', '--repeated', '--ignore-case', '--unique', '--zero-terminated'
-  ]);
-
-  /** Long flags taking a (numeric) value, either `--key=N` or `--key N`. */
-  static VALUE_LONG = new Set(['--skip-fields', '--skip-chars', '--check-chars']);
-
-  /** Long flags with an OPTIONAL `=METHOD` value and never a separate arg. */
-  static OPTIONAL_VALUE_LONG = new Set(['--all-repeated', '--group']);
-
-  /** Short cluster letters that take no value (`-D` = all-repeated, no method). */
-  static BOOL_SHORT = 'cduizD';
-
-  /** Short flags taking a numeric value (glued `-f2` or separate `-f 2`). */
-  static VALUE_SHORT = new Set(['f', 's', 'w']);
-
   /**
-   * Walk the flag prefix; return the positional args, or null on any
-   * unrecognised flag or non-numeric value.
-   * @param {string[]} args args
-   * @returns {string[] | null} positionals, or null on reject
+   * `uniq [FLAGS] [INPUT [OUTPUT]]`. Every value-taking flag here counts fields
+   * or characters, so every value must be numeric — a non-numeric one means the
+   * args aren't the shape we think they are.
+   * @returns {FlagGrammar} grammar
    */
-  static _parseFlags(args) {
-    let i = 0;
-    while (i < args.length) {
-      const a = checkedAt(args, i);
-      if (a === '--') { i++; break; }
-      if (!a.startsWith('-') || a === '-') break;
-
-      if (a.startsWith('--')) {
-        const eq = a.indexOf('=');
-        const flag = eq === -1 ? a : a.slice(0, eq);
-        if (UniqHandler.BOOL_LONG.has(flag)) { i++; continue; }
-        if (UniqHandler.OPTIONAL_VALUE_LONG.has(flag)) { i++; continue; }
-        if (UniqHandler.VALUE_LONG.has(flag)) {
-          if (eq === -1) {
-            if (i + 1 >= args.length || !/^\d+$/.test(checkedAt(args, i + 1))) return null;
-            i += 2;
-          } else {
-            if (!/^\d+$/.test(a.slice(eq + 1))) return null;
-            i++;
-          }
-          continue;
-        }
-        return null;
-      }
-
-      const cluster = a.slice(1);
-      let consumedNext = false;
-      let j = 0;
-      while (j < cluster.length) {
-        const ch = checkedAt(cluster, j);
-        if (UniqHandler.VALUE_SHORT.has(ch)) {
-          const rest = cluster.slice(j + 1);
-          if (rest.length > 0) {
-            if (!/^\d+$/.test(rest)) return null;
-          } else {
-            if (i + 1 >= args.length || !/^\d+$/.test(checkedAt(args, i + 1))) return null;
-            consumedNext = true;
-          }
-          j = cluster.length;
-          break;
-        }
-        if (!UniqHandler.BOOL_SHORT.includes(ch)) return null;
-        j++;
-      }
-      i += consumedNext ? 2 : 1;
-    }
-    return args.slice(i);
+  static grammar() {
+    return {
+      boolShort: 'cduizD',
+      valueShort: new Map([
+        ['f', numericValue], ['s', numericValue], ['w', numericValue]
+      ]),
+      boolLong: new Set([
+        '--count', '--repeated', '--ignore-case', '--unique', '--zero-terminated'
+      ]),
+      valueLong: new Map([
+        ['--skip-fields', numericValue], ['--skip-chars', numericValue],
+        ['--check-chars', numericValue]
+      ]),
+      optionalValueLong: new Set(['--all-repeated', '--group'])
+    };
   }
 
   /**
@@ -1191,10 +1190,9 @@ class UniqHandler extends CommandHandler {
    * @returns {boolean} safe
    */
   static isSafe(args, ctx) {
-    const positionals = UniqHandler._parseFlags(args);
-    if (positionals === null) return false;
-    if (positionals.length > 1) return false; // 2nd positional = output file
-    for (const p of positionals) {
+    const paths = UniqHandler.pathArgs(args);
+    if (paths === null) return false;
+    for (const p of paths) {
       if (!pathAllowed(p, ctx)) return false;
     }
     return true;
@@ -1207,9 +1205,8 @@ class UniqHandler extends CommandHandler {
    * @returns {boolean} safe sink
    */
   static isSafeAsSink(args) {
-    const positionals = UniqHandler._parseFlags(args);
-    if (positionals === null) return false;
-    return positionals.length === 0;
+    const paths = UniqHandler.pathArgs(args);
+    return paths !== null && paths.length === 0;
   }
 
   /**
@@ -1220,10 +1217,10 @@ class UniqHandler extends CommandHandler {
    * @returns {string[] | null} the INPUT path, or null on reject / output-file form
    */
   static pathArgs(args) {
-    const positionals = UniqHandler._parseFlags(args);
-    if (positionals === null) return null;
-    if (positionals.length > 1) return null; // 2nd positional = output file (write)
-    return positionals;
+    const parsed = parseFlags(args, UniqHandler.grammar());
+    if (parsed === null) return null;
+    if (parsed.operands.length > 1) return null; // 2nd positional = output file (write)
+    return parsed.operands;
   }
 }
 
@@ -1240,69 +1237,24 @@ class UniqHandler extends CommandHandler {
 class CutHandler extends CommandHandler {
   static commandName = 'cut';
 
-  /** Long flags that take no value. */
-  static BOOL_LONG = new Set(['--complement', '--only-delimited', '--zero-terminated']);
-
-  /** Long flags taking a value, either `--key=val` or `--key val`. */
-  static VALUE_LONG = new Set([
-    '--bytes', '--characters', '--delimiter', '--fields', '--output-delimiter'
-  ]);
-
-  /** Short cluster letters that take no value (`-n` is a no-op kept for compat). */
-  static BOOL_SHORT = 'snz';
-
-  /** Short flags taking a value (glued `-f1-2` / `-d/` or separate `-f 1-2`). */
-  static VALUE_SHORT = new Set(['b', 'c', 'd', 'f']);
-
   /**
-   * Walk the flag prefix; return the positional (file) args, or null on any
-   * unrecognised flag or a value flag missing its value.
-   * @param {string[]} args args
-   * @returns {string[] | null} positionals, or null on reject
+   * `cut OPTION... [FILE]...`. Every value here is a byte / character / field
+   * list or a delimiter — data, never a path or a program — so the values are
+   * taken as they come and only the operands are contained.
+   * @returns {FlagGrammar} grammar
    */
-  static _parseFlags(args) {
-    let i = 0;
-    while (i < args.length) {
-      const a = checkedAt(args, i);
-      if (a === '--') { i++; break; }
-      if (!a.startsWith('-') || a === '-') break;
-
-      if (a.startsWith('--')) {
-        const eq = a.indexOf('=');
-        const flag = eq === -1 ? a : a.slice(0, eq);
-        if (CutHandler.BOOL_LONG.has(flag)) { i++; continue; }
-        if (CutHandler.VALUE_LONG.has(flag)) {
-          if (eq === -1) {
-            if (i + 1 >= args.length) return null;
-            i += 2;
-          } else {
-            i++;
-          }
-          continue;
-        }
-        return null;
-      }
-
-      const cluster = a.slice(1);
-      let consumedNext = false;
-      let j = 0;
-      while (j < cluster.length) {
-        const ch = checkedAt(cluster, j);
-        if (CutHandler.VALUE_SHORT.has(ch)) {
-          // Value is the rest of the cluster (`-f1-2`, `-d/`) or the next arg.
-          if (cluster.slice(j + 1).length === 0) {
-            if (i + 1 >= args.length) return null;
-            consumedNext = true;
-          }
-          j = cluster.length;
-          break;
-        }
-        if (!CutHandler.BOOL_SHORT.includes(ch)) return null;
-        j++;
-      }
-      i += consumedNext ? 2 : 1;
-    }
-    return args.slice(i);
+  static grammar() {
+    return {
+      boolShort: 'snz',
+      valueShort: new Map([
+        ['b', anyValue], ['c', anyValue], ['d', anyValue], ['f', anyValue]
+      ]),
+      boolLong: new Set(['--complement', '--only-delimited', '--zero-terminated']),
+      valueLong: new Map([
+        ['--bytes', anyValue], ['--characters', anyValue], ['--delimiter', anyValue],
+        ['--fields', anyValue], ['--output-delimiter', anyValue]
+      ])
+    };
   }
 
   /**
@@ -1312,9 +1264,9 @@ class CutHandler extends CommandHandler {
    * @returns {boolean} safe
    */
   static isSafe(args, ctx) {
-    const positionals = CutHandler._parseFlags(args);
-    if (positionals === null) return false;
-    for (const p of positionals) {
+    const paths = CutHandler.pathArgs(args);
+    if (paths === null) return false;
+    for (const p of paths) {
       if (!pathAllowed(p, ctx)) return false;
     }
     return true;
@@ -1326,9 +1278,8 @@ class CutHandler extends CommandHandler {
    * @returns {boolean} safe sink
    */
   static isSafeAsSink(args) {
-    const positionals = CutHandler._parseFlags(args);
-    if (positionals === null) return false;
-    return positionals.length === 0;
+    const paths = CutHandler.pathArgs(args);
+    return paths !== null && paths.length === 0;
   }
 
   /**
@@ -1336,7 +1287,8 @@ class CutHandler extends CommandHandler {
    * @returns {string[] | null} positional (input) file paths, or null on reject
    */
   static pathArgs(args) {
-    return CutHandler._parseFlags(args);
+    const parsed = parseFlags(args, CutHandler.grammar());
+    return parsed === null ? null : parsed.operands;
   }
 }
 
@@ -1353,36 +1305,29 @@ class CutHandler extends CommandHandler {
 class TrHandler extends CommandHandler {
   static commandName = 'tr';
 
-  /** Long flags, all valueless and non-writing. */
-  static BOOL_LONG = new Set([
-    '--complement', '--delete', '--squeeze-repeats', '--truncate-set1'
-  ]);
-
-  /** Short cluster letters, all valueless and non-writing. */
-  static BOOL_SHORT = 'cCdst';
+  /**
+   * `tr [FLAGS] SET1 [SET2]`. No flag takes a value, so the grammar is two
+   * whitelists; the operands are character sets, pure data with nothing to
+   * contain.
+   * @returns {FlagGrammar} grammar
+   */
+  static grammar() {
+    return {
+      boolShort: 'cCdst',
+      boolLong: new Set([
+        '--complement', '--delete', '--squeeze-repeats', '--truncate-set1'
+      ])
+    };
+  }
 
   /**
-   * Validate the flag prefix. tr has no value-taking flags, so the only job is
-   * to reject an unrecognised flag; everything after the first non-flag (or
-   * `--`) is a positional SET, which is pure data.
+   * Validate the flag prefix — the only job, since an unrecognised flag is the
+   * only way tr's args can be unsafe.
    * @param {string[]} args args
    * @returns {boolean} true if every flag is recognised
    */
   static _flagsOk(args) {
-    for (let i = 0; i < args.length; i++) {
-      const a = checkedAt(args, i);
-      if (a === '--') return true;
-      if (!a.startsWith('-') || a === '-') return true;
-
-      if (a.startsWith('--')) {
-        if (!TrHandler.BOOL_LONG.has(a)) return false;
-        continue;
-      }
-      for (const ch of a.slice(1)) {
-        if (!TrHandler.BOOL_SHORT.includes(ch)) return false;
-      }
-    }
-    return true;
+    return parseFlags(args, TrHandler.grammar()) !== null;
   }
 
   /**
@@ -1523,87 +1468,61 @@ class TeeHandler extends CommandHandler {
 class GrepHandler extends CommandHandler {
   static commandName = 'grep';
 
-  /** Short flags safe in any cluster (`-iE`, `-rn`, etc.). */
-  static SHORT_FLAGS = 'EFGPHhIilLnoqRrsvwxaczZ';
-
-  /** Long flags with no value. */
-  static LONG_FLAGS_NOVAL = new Set([
-    '--basic-regexp', '--extended-regexp', '--fixed-strings', '--perl-regexp',
-    '--ignore-case', '--no-ignore-case', '--invert-match', '--word-regexp',
-    '--line-regexp', '--count', '--files-with-matches', '--files-without-match',
-    '--no-filename', '--with-filename', '--line-number', '--only-matching',
-    '--quiet', '--silent', '--recursive', '--dereference-recursive',
-    '--no-messages', '--null-data', '--null', '--text', '--binary-files',
-    '--line-buffered', '--color', '--colour', '--no-color', '--no-colour',
-    '--initial-tab', '--byte-offset'
-  ]);
-
-  /** Long flags that take a value (either `--key=val` or `--key val`). */
-  static LONG_FLAGS_VALUED = new Set([
-    '--after-context', '--before-context', '--context',
-    '--max-count', '--regexp', '--file',
-    '--include', '--exclude', '--exclude-from', '--exclude-dir', '--include-dir',
-    '--label', '--devices', '--directories', '--group-separator'
-  ]);
+  /**
+   * grep's flag grammar. Three flags name a file grep opens — `-f` / `--file`
+   * (patterns) and `--exclude-from` (a list of names to skip) — so their values
+   * are contained like any other read. In sink position (`… | grep …`) the pipe
+   * supplies the input and there is no vouched-for root to judge a filename
+   * against, so those three are refused outright; and an unrecognised
+   * dash-leading word there is grep's PATTERN (`grep -E "--- FAIL"`) rather than
+   * a parse error.
+   * @param {ApprovalCtx} ctx ctx
+   * @param {boolean} [sink] true in pipeline-sink position
+   * @returns {FlagGrammar} grammar
+   */
+  static grammar(ctx, sink) {
+    const fileValue = sink ? rejectValue : (/** @type {string} */ value) => pathAllowed(value, ctx);
+    return {
+      boolShort: 'EFGPHhIilLnoqRrsvwxaczZ',
+      // `-A`, `-B`, `-C`, `-m`, `-e`, `-f`, `-d` (--directories), `-D`
+      // (--devices) take a value, attached (`-A3`) or as the next word.
+      valueShort: new Map([
+        ['A', anyValue], ['B', anyValue], ['C', anyValue], ['m', anyValue],
+        ['e', anyValue], ['d', anyValue], ['D', anyValue], ['f', fileValue]
+      ]),
+      boolLong: new Set([
+        '--basic-regexp', '--extended-regexp', '--fixed-strings', '--perl-regexp',
+        '--ignore-case', '--no-ignore-case', '--invert-match', '--word-regexp',
+        '--line-regexp', '--count', '--files-with-matches', '--files-without-match',
+        '--no-filename', '--with-filename', '--line-number', '--only-matching',
+        '--quiet', '--silent', '--recursive', '--dereference-recursive',
+        '--no-messages', '--null-data', '--null', '--text', '--binary-files',
+        '--line-buffered', '--color', '--colour', '--no-color', '--no-colour',
+        '--initial-tab', '--byte-offset'
+      ]),
+      valueLong: new Map([
+        ['--after-context', anyValue], ['--before-context', anyValue],
+        ['--context', anyValue], ['--max-count', anyValue], ['--regexp', anyValue],
+        ['--file', fileValue], ['--exclude-from', fileValue],
+        ['--include', anyValue], ['--exclude', anyValue],
+        ['--exclude-dir', anyValue], ['--include-dir', anyValue],
+        ['--label', anyValue], ['--devices', anyValue],
+        ['--directories', anyValue], ['--group-separator', anyValue]
+      ]),
+      unknownIsOperand: sink === true
+    };
+  }
 
   /**
-   * Walk grep args and split into (consumed-up-to index, remaining positionals).
-   * Returns null on any unknown / unsafe flag.
+   * The words left after grep's flag prefix: the PATTERN (unless `-e` / `-f`
+   * supplied it) followed by the search paths.
    * @param {string[]} args args
    * @param {ApprovalCtx} ctx ctx
-   * @returns {string[] | null} positional args after flag-parsing, or null on reject
+   * @returns {string[] | null} positional args, or null on an unknown / unsafe flag
    */
-  static _parseFlags(args, ctx) {
-    let i = 0;
-    while (i < args.length) {
-      const a = checkedAt(args, i);
-      if (!a.startsWith('-') || a === '-' || a === '--') {
-        if (a === '--') i++;
-        break;
-      }
-      if (a.startsWith('--')) {
-        const eq = a.indexOf('=');
-        const flag = eq === -1 ? a : a.slice(0, eq);
-        if (GrepHandler.LONG_FLAGS_NOVAL.has(flag)) { i++; continue; }
-        if (GrepHandler.LONG_FLAGS_VALUED.has(flag)) {
-          if (eq === -1) {
-            if (i + 1 >= args.length) return null;
-            i += 2;
-          } else {
-            i++;
-          }
-          continue;
-        }
-        return null;
-      }
-      // Short cluster, possibly with attached numeric value (e.g. -A3).
-      const cluster = a.slice(1);
-      // `-A`, `-B`, `-C`, `-m`, `-e`, `-f`, `-d` (--directories), `-D`
-      // (--devices) may take a value (attached or next arg).
-      const valFlags = 'ABCmefdD';
-      let consumed = false;
-      for (let k = 0; k < cluster.length; k++) {
-        const ch = checkedAt(cluster, k);
-        if (!GrepHandler.SHORT_FLAGS.includes(ch) && !valFlags.includes(ch)) return null;
-        if (valFlags.includes(ch)) {
-          // Value is either the rest of the cluster or the next arg.
-          const rest = cluster.slice(k + 1);
-          if (rest.length > 0) {
-            if (ch === 'f' && !pathAllowed(rest, ctx)) return null;
-          } else {
-            if (i + 1 >= args.length) return null;
-            const val = checkedAt(args, i + 1);
-            if (ch === 'f' && !pathAllowed(val, ctx)) return null;
-            i++;
-          }
-          consumed = true;
-          break;
-        }
-      }
-      i++;
-      if (consumed) continue;
-    }
-    return args.slice(i);
+  static _positionals(args, ctx) {
+    const parsed = parseFlags(args, GrepHandler.grammar(ctx));
+    return parsed === null ? null : parsed.operands;
   }
 
   /**
@@ -1616,7 +1535,7 @@ class GrepHandler extends CommandHandler {
    */
   static isSafe(args, ctx) {
     const isRecursive = args.some(a => a === '-r' || a === '-R' || a === '--recursive' || a === '--dereference-recursive' || (a.startsWith('-') && !a.startsWith('--') && /[rR]/.test(a)));
-    const positionals = GrepHandler._parseFlags(args, ctx);
+    const positionals = GrepHandler._positionals(args, ctx);
     if (positionals === null) return false;
     // A single path-looking positional is almost always a mistaken/file-intended
     // grep invocation (`grep /tmp/foo`). Treat it as a path obstacle for approval
@@ -1648,58 +1567,10 @@ class GrepHandler extends CommandHandler {
    * @returns {boolean} safe sink
    */
   static isSafeAsSink(args) {
-    let i = 0;
-    let sawPattern = false;
-
-    while (i < args.length) {
-      const a = checkedAt(args, i);
-      if (a === '--') { i++; break; }
-      if (!a.startsWith('-') || a === '-') break;
-
-      if (a.startsWith('--')) {
-        const eq = a.indexOf('=');
-        const flag = eq === -1 ? a : a.slice(0, eq);
-        if (flag === '--file') return false;
-        if (GrepHandler.LONG_FLAGS_NOVAL.has(flag)) { i++; continue; }
-        if (GrepHandler.LONG_FLAGS_VALUED.has(flag)) {
-          if (eq === -1) {
-            if (i + 1 >= args.length) return false;
-            i += 2;
-          } else {
-            i++;
-          }
-          if (flag === '--regexp') sawPattern = true;
-          continue;
-        }
-        break; // dash-leading pattern, not a recognised option
-      }
-
-      const cluster = a.slice(1);
-      const valFlags = 'ABCmefdD';
-      let consumed = false;
-      let invalid = false;
-      for (let k = 0; k < cluster.length; k++) {
-        const ch = checkedAt(cluster, k);
-        if (ch === 'f') return false;
-        if (!GrepHandler.SHORT_FLAGS.includes(ch) && !valFlags.includes(ch)) { invalid = true; break; }
-        if (valFlags.includes(ch)) {
-          if (cluster.slice(k + 1).length === 0) {
-            if (i + 1 >= args.length) return false;
-            i++;
-          }
-          if (ch === 'e') sawPattern = true;
-          consumed = true;
-          break;
-        }
-      }
-      if (invalid) break; // dash-leading pattern, not a recognised option cluster
-      i++;
-      if (consumed) continue;
-    }
-
-    const positionals = args.slice(i);
-    if (sawPattern) return positionals.length === 0;
-    return positionals.length === 1;
+    const parsed = parseFlags(args, GrepHandler.grammar(NO_ROOTS_CTX, true));
+    if (parsed === null) return false;
+    const sawPattern = parsed.flags.has('e') || parsed.flags.has('--regexp');
+    return parsed.operands.length === (sawPattern ? 0 : 1);
   }
 
   /**
@@ -1731,7 +1602,7 @@ class GrepHandler extends CommandHandler {
    * @returns {string[] | null} search paths, or null on an unsafe flag
    */
   static pathArgs(args, ctx) {
-    const positionals = GrepHandler._parseFlags(args, ctx);
+    const positionals = GrepHandler._positionals(args, ctx);
     if (positionals === null) return null;
     if (positionals.length === 1 && (checkedAt(positionals, 0).startsWith('/') || checkedAt(positionals, 0).startsWith('~/'))) {
       return [checkedAt(positionals, 0)];

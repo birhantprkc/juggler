@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- A grep reading its patterns or exclusions from a file outside the project now asks first
+
 ## [0.6.2] - 2026-09-11
 
 - The footer states what the whole conversation has spent, every thread included
