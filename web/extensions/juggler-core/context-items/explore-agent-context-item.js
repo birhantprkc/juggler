@@ -48,14 +48,14 @@ class ExploreAgentContextItem extends SubagentContextItem {
     strategy: ExploreSubagentStrategyType,
     badge: { color: 'thread', icon: 'icon-grep' },
     description:
-      'Investigate this codebase in a sub-agent context and get back only what it found. ' +
-      'The sub-agent searches and reads with its own read-only tools; the files it opens never enter this conversation, so an open-ended question costs you one result instead of thirty tool calls.\n' +
-      'Use it for questions that need reading and judgment — "how does auth work here", "what calls this and why", "where would a new X go". ' +
-      'Use `query_code` instead when the answer is one you can compute in a script and want exactly; use `Research` instead when the answer is on the web (Explore has no network access).',
+      'Investigate this codebase with a read-only sub-agent and get back only what it found; ' +
+      'the files it opens never enter this conversation, so an open-ended question costs one result instead of thirty tool calls.\n' +
+      'For questions that need reading and judgment — "how does auth work here", "what calls this and why". ' +
+      'Use `query_code` instead when the answer is computable exactly in a script; use `Research` when it is on the web (Explore has no network access).',
     goalExample: 'Trace auth flow',
     task:
-      'What to find out, stated in full. The sub-agent shares your project but none of your conversation, ' +
-      'so name the files, symbols, or behaviour you mean rather than referring to what was said here.',
+      'What to find out, stated in full: name the files, symbols, or behaviour you mean ' +
+      'rather than referring to what was said here.',
     continues: 'investigation',
     lead: 'Investigate this codebase and answer the following.',
     resultSpec:

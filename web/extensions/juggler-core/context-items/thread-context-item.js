@@ -43,25 +43,25 @@ class ThreadContextItem extends ContextItem {
       {
         name: 'create_thread',
         category: 'write',
-        description: 'Run one focused sub-task in an isolated sub-conversation. The child cannot see this conversation, so `prompt` must contain the complete task and all context it needs. Only its last message returns; use `resultSpec` to say what that message must contain and how it must be shaped. `goal` is only the short label shown in the UI. A thread outlives the call: every result opens with its session name, and passing that name back as `session` continues the same thread. Give each thread one self-contained task, never a task list, and never tell it to spawn its own threads.',
+        description: 'Run one focused sub-task in an isolated sub-conversation; only its last message returns. The child cannot see this conversation, so `prompt` must be self-contained. `resultSpec` says what the final message must contain; `goal` is only the UI label. Every result opens with the thread\'s session name — pass it back as `session` to continue that thread. One task per thread, never a task list, and never tell it to spawn threads of its own.',
         input_schema: {
           type: 'object',
           properties: {
             goal: {
               type: 'string',
-              description: 'Very short, single-line, user-facing label for the item card and thread header. Aim for a few words (for example, "Trace auth flow"). Do not put instructions, background, or output requirements here.'
+              description: 'Very short, single-line, user-facing label (for example, "Trace auth flow"). No instructions, background, or output requirements here.'
             },
             prompt: {
               type: 'string',
-              description: 'Complete, self-contained task and instructions for the child. Include every relevant fact, path, symbol, decision, and constraint because it cannot see this conversation. Put the required shape of the final answer in `resultSpec`, not here.'
+              description: 'The complete, self-contained task: every relevant fact, path, symbol, decision, and constraint. The required shape of the answer goes in `resultSpec`, not here.'
             },
             resultSpec: {
               type: 'string',
-              description: 'Optional return contract for the child\'s last message: what facts or artifacts it must contain and how to structure them (for example, "each match as `file:line — description`" or "the final diff and nothing else"). Do not repeat the task or background.'
+              description: 'Optional return contract for the child\'s last message: what it must contain and how to structure it (for example, "each match as `file:line — description`"). Do not repeat the task here.'
             },
             session: {
               type: 'string',
-              description: 'Optional. The session name of a thread you already ran here: your prompt is appended to that thread and it carries on, keeping everything it has read and worked out. A name that matches nothing starts a new thread under it. Omit it to start a fresh thread.'
+              description: 'Optional session name of a thread you already ran here: your prompt continues that thread, which keeps everything it has read and worked out. Omit it to start a fresh thread.'
             }
           },
           required: ['goal', 'prompt']

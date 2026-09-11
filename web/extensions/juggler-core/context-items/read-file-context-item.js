@@ -100,7 +100,7 @@ class ReadFileContextItem extends ContextItem {
       required: ['file_path']
     };
 
-    const description = 'Reads a file from the local filesystem. Returns content wrapped in <file> tags with line numbers in cat -n format. A file too large to return at once arrives a page at a time: the footer names the lines you got and the offset the next page starts at, so following it reads the whole file without gaps. Use offset and limit to choose a range yourself.';
+    const description = 'Reads a local file, returned in <file> tags with cat -n line numbers. A file too large to return at once arrives a page at a time: the footer names the lines returned and the offset the next page starts at, so following it reads the whole file without gaps. Use offset and limit to choose a range yourself.';
 
     return [
       {

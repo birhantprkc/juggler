@@ -57,7 +57,7 @@ class MonitorContextItem extends ContextItem {
       properties: {
         command: {
           type: 'string',
-          description: 'Shell command to run in the background. Each stdout line becomes an event delivered into the conversation. Self-filter the stream (e.g. `tail -f build.log | grep --line-buffered -E "ERROR|FAILED|exit"`) so only lines you would act on are emitted. Flush every pipe stage (grep --line-buffered, awk fflush()).'
+          description: 'Shell command whose stdout lines become events. Self-filter so only lines you would act on are emitted (e.g. `tail -f build.log | grep --line-buffered -E "ERROR|FAILED"`), and flush every pipe stage (grep --line-buffered, awk fflush()).'
         },
         description: {
           type: 'string',
@@ -65,7 +65,7 @@ class MonitorContextItem extends ContextItem {
         },
         persistent: {
           type: 'boolean',
-          description: 'Keep the monitor running for the lifetime of the session. Use for log tails you want to watch indefinitely. When false (default) the monitor ends when the command exits or its timeout elapses.'
+          description: 'Keep the monitor running for the session\'s lifetime (for log tails watched indefinitely). When false (default) it ends when the command exits or times out.'
         },
         timeout_ms: {
           type: 'number',
@@ -75,7 +75,7 @@ class MonitorContextItem extends ContextItem {
       required: ['command', 'description']
     };
 
-    const description = 'Start a background command whose stdout lines stream into the conversation as events. Delivery is at turn boundaries: you keep working and accumulated events surface when you next yield — they are not replies from the user. Use for "tell me when the build fails / an ERROR appears / the deploy finishes". Read full output with TaskOutput; stop with TaskStop.';
+    const description = 'Start a background command whose stdout lines stream into the conversation as events, surfacing when you next yield — they are not replies from the user. Use for "tell me when the build fails / the deploy finishes". Read full output with TaskOutput; stop with TaskStop.';
 
     return [
       {

@@ -91,7 +91,7 @@ class JugglerSourceContextItem extends ContextItem {
         path: {
           type: 'string',
           description: 'Repo-relative path under sdk/ or extensions/ — e.g. '
-            + '"sdk/context-item.js", "sdk/command-type.js", or '
+            + '"sdk/context-item.js" or '
             + '"extensions/juggler-core/context-items/read-file-context-item.js". '
             + 'A leading "web/" is accepted.'
         }
@@ -99,14 +99,13 @@ class JugglerSourceContextItem extends ContextItem {
       required: ['path']
     };
 
-    const description = 'Read the actual source of Juggler\'s extension SDK base '
-      + 'classes and built-in example extensions, to write or debug a Juggler '
-      + 'extension without the repo checked out. Give a path under sdk/ (the base '
-      + 'classes: context-item.js, strategy-type.js, command-type.js — each opens '
-      + 'with a quickstart and full method reference) or extensions/ (working '
-      + 'examples under extensions/juggler-core/). Returns the file\'s source text. '
-      + 'Use this when the AboutJuggler manual points you at a file and you need '
-      + 'its exact API. For anything else about Juggler, call AboutJuggler instead.';
+    const description = 'Read the source of Juggler\'s extension SDK base classes '
+      + 'and built-in example extensions, for writing or debugging an extension '
+      + 'without the repo checked out: sdk/ holds the base classes (context-item.js, '
+      + 'strategy-type.js, command-type.js — each opens with a quickstart and method '
+      + 'reference), extensions/ the working examples. Use it when the AboutJuggler '
+      + 'manual points at a file and you need its exact API; for anything else about '
+      + 'Juggler, call AboutJuggler.';
 
     return [
       {

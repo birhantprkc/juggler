@@ -319,7 +319,7 @@ class ExecuteContextItem extends ContextItem {
         },
         run_in_background: {
           type: 'boolean',
-          description: 'Run the command as a detached background process and return its task id immediately, instead of blocking for output. Use this when you want a durable process handle you manage yourself: a long-lived dev server you keep running while you work, or a long build/test you kick off then read once at the end. Read output with TaskOutput (which returns only NEW output since your last read, so polling is cheap) and stop it with TaskStop. For "wait until X is ready then tell me", prefer a foreground command with an `until … done` guard (one command that exits when the condition holds) or the Monitor tool (a filtered event stream) — do not spin-poll TaskOutput in a loop.'
+          description: 'Run detached and return a task id immediately instead of blocking. Use for a durable process you manage yourself: a dev server kept running while you work, or a long build/test read once at the end. Read new output with TaskOutput; stop with TaskStop. For "wait until X is ready then tell me", prefer a foreground `until … done` command or the Monitor tool — do not spin-poll TaskOutput in a loop.'
         }
       },
       required: ['command']

@@ -111,12 +111,10 @@ class MemoryContextItem extends ContextItem {
         name: 'memory',
         category: 'meta', // internal durable state, not a project-source mutation
         description:
-					'Record or remove a durable project fact in long-term memory. Memory persists across ' +
-					'all conversations; what you record now is injected at the start of every future one. ' +
-					'Use action "remember" to ' +
-					'store a concise, durable fact (a build/test command, a convention, a correction the user ' +
-					'made); use action "forget" to remove a fact that is now stale or wrong. Do NOT use memory ' +
-					'for ephemeral within-task state.',
+					'Record or remove a durable project fact in long-term memory, injected at the start of ' +
+					'every future conversation. "remember" stores one concise durable fact (a build/test ' +
+					'command, a convention, a correction the user made); "forget" removes one now stale or ' +
+					'wrong. NOT for ephemeral within-task state.',
         input_schema: {
           type: 'object',
           properties: {

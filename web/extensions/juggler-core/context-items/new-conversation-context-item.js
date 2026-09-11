@@ -80,21 +80,21 @@ class NewConversationContextItem extends ContextItem {
       {
         name: 'new_conversation',
         category: 'write',
-        description: 'Open a new, independent conversation seeded with an initial message you provide. "New conversation", "new tab", and "new chat" all mean this same tool. Unlike create_thread, this is NOT a sub-task and does NOT report back: the new conversation is a peer of this one (its own tab), works on its own, and you receive only a confirmation that it was created — never its results. Use it to spin off a separate, self-contained line of work; because it cannot see this conversation, the message must carry every fact the new conversation needs. The new tab is opened and the user is taken to it if they are watching this conversation and have not started typing; if they have moved on, the tab still opens and waits for them.',
+        description: 'Open a new, independent conversation ("new tab" / "new chat") seeded with an initial message. Unlike create_thread it is a peer, not a sub-task: it works on its own in its own tab and never reports back — you receive only a creation confirmation. It cannot see this conversation, so the message must carry every fact it needs. The user is taken to the new tab unless they have started typing or moved on; either way it opens and waits.',
         input_schema: {
           type: 'object',
           properties: {
             message: {
               type: 'string',
-              description: 'The initial message to seed the new conversation with. It is the new conversation\'s first user message, so it must be self-contained — the new conversation cannot see this one.'
+              description: 'The new conversation\'s first user message. Must be self-contained — it cannot see this conversation.'
             },
             name: {
               type: 'string',
-              description: 'Optional title for the new conversation. When omitted, it is left untitled for the user to name.'
+              description: 'Optional title. When omitted, it is left untitled for the user to name.'
             },
             autostart: {
               type: 'boolean',
-              description: 'Whether to start the new conversation working on the message immediately (default true). When false, the message is placed ready to send but no turn starts, so the user can review or edit it before pressing Send.'
+              description: 'Start work on the message immediately (default true). When false, the message is left ready to send so the user can review or edit it first.'
             }
           },
           required: ['message']

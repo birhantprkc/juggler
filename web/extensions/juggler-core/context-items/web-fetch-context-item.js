@@ -78,11 +78,11 @@ class WebFetchContextItem extends ContextItem {
         },
         goal: {
           type: 'string',
-          description: 'Very short, single-line, user-facing label for EXTRACT mode, shown on the item card and thread header. Aim for a few words (for example, "Find release date"). Ignored in RAW mode.'
+          description: 'Very short, single-line, user-facing label for EXTRACT mode (for example, "Find release date"). Ignored in RAW mode.'
         },
         prompt: {
           type: 'string',
-          description: 'Leave UNSET to read the page/file — the raw content comes straight back to you (no sub-agent). Set this ONLY to ask a question about a large, noisy page you do NOT want in your context: a sub-agent reads the page and returns just its (lossy) answer, and you never see the page itself. To read, quote, or work with a file such as an .md, .txt, JSON, or source file, do NOT set this — a prompt here would summarise it instead of returning it.'
+          description: 'Leave UNSET to read the content (RAW). Set ONLY to ask one question about a large, noisy page you do not want in your context — the answer is a lossy summary, so never set it for a file you mean to read, quote, or work with (.md, .txt, JSON, source).'
         },
         session: {
           type: 'string',
@@ -93,9 +93,9 @@ class WebFetchContextItem extends ContextItem {
     };
 
     const description = 'Fetch a URL. Two modes, chosen by whether you pass `prompt`:\n' +
-      '• RAW (omit `prompt`) — returns the page/file content verbatim into this conversation (HTML is converted to markdown; .md/.txt/JSON/source come back as-is). Use this whenever you actually want to read the content.\n' +
-      '• EXTRACT (pass `prompt`) — a sub-agent reads the page in its own context and returns ONLY the answer to your prompt; the page never enters this conversation and the answer is a lossy summary. Use this only for large/noisy pages where you want one specific fact, not the whole thing.\n' +
-      'Default to RAW: if you want the content itself, omit `prompt`. Includes a 15-minute cache.';
+      '• RAW (omit `prompt`) — the content itself, verbatim (HTML converted to markdown; .md/.txt/JSON/source as-is). Use whenever you want to read the content.\n' +
+      '• EXTRACT (pass `prompt`) — a sub-agent reads the page and returns ONLY a lossy answer to your prompt; the page never enters this conversation. Only for large/noisy pages where you want one specific fact.\n' +
+      'Default to RAW. 15-minute cache.';
 
     return [
       {

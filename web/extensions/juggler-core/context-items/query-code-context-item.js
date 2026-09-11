@@ -58,7 +58,7 @@ class QueryCodeContextItem extends ContextItem {
           },
           description: {
             type: 'string',
-            description: 'Short human-readable description of what this query does (e.g. "find all files importing auth module"). Shown to the user in the conversation.'
+            description: 'Short user-facing description of what this query does.'
           },
           timeout: {
             type: 'number',

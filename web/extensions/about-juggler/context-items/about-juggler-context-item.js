@@ -132,19 +132,19 @@ class AboutJugglerContextItem extends ContextItem {
       properties: {
         question: {
           type: 'string',
-          description: 'Optional: the specific thing the user wants to know about '
-            + 'Juggler, recorded for display. The full manual is returned regardless.'
+          description: 'Optional: the specific question, recorded for display. '
+            + 'The full manual is returned regardless.'
         }
       },
       required: []
     };
 
-    const description = 'Returns Juggler\'s own reference manual: what Juggler is, '
-      + 'its tools, strategies, slash-commands, keyboard shortcuts, supported model '
-      + 'providers, configuration and data locations, and extensions. Call this ONLY '
-      + 'when the user asks about Juggler itself — the application, its features, UI, '
-      + 'shortcuts, config, or how to use it. Do NOT call it for questions about the '
-      + 'user\'s own code, project, or general programming. One call returns the whole manual.';
+    const description = 'Returns Juggler\'s own reference manual — what Juggler is, '
+      + 'its tools, strategies, slash-commands, keyboard shortcuts, model providers, '
+      + 'configuration and data locations, and extensions — whole, in one call. '
+      + 'Call it ONLY when the user asks about Juggler itself (the application, its '
+      + 'features, UI, config); NOT for questions about their own code, project, or '
+      + 'general programming.';
 
     return [
       {

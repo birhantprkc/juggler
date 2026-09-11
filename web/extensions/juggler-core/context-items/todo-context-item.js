@@ -95,7 +95,7 @@ class TodoContextItem extends ContextItem {
       {
         name: 'todo',
         category: 'meta',  // meta = internal state only, doesn't modify files. Ensures MCP ReadOnlyHint=true
-        description: 'Track multi-step work with a lightweight todo checklist shown to the user. Each call replaces the entire list — include every item, updating statuses as work progresses. Use for organizing your own execution; NOT for proposing an approach for user review (use the plan tool for that). Exactly one item should be in_progress at a time.',
+        description: 'Track multi-step work with a lightweight todo checklist shown to the user. Each call replaces the entire list — include every item, with updated statuses, and exactly one in_progress. For organizing your own execution; proposing an approach for user review is the plan tool\'s job.',
         input_schema: {
           type: 'object',
           properties: {
@@ -116,7 +116,7 @@ class TodoContextItem extends ContextItem {
                 },
                 required: ['content']
               },
-              description: 'The complete todo list. Replaces the previous list in full — include every item each call.'
+              description: 'The complete todo list — replaces the previous one in full.'
             }
           },
           required: ['todos']

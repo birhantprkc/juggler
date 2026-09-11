@@ -106,7 +106,7 @@ export default class SubagentContextItem extends ContextItem {
           properties: {
             goal: {
               type: 'string',
-              description: `Very short, single-line, user-facing label shown on the item card and thread header. Aim for a few words (for example, "${goalExample}"). Do not put the task or the return requirements here.`
+              description: `Very short, single-line, user-facing label (for example, "${goalExample}"). Not the task or the return requirements.`
             },
             task: {
               type: 'string',
@@ -114,7 +114,7 @@ export default class SubagentContextItem extends ContextItem {
             },
             session: {
               type: 'string',
-              description: `Optional ${tool} session name returned by an earlier call. Set it to continue that same ${continues} with this task; omit it to start a fresh session.`
+              description: `Optional ${tool} session name from an earlier call — continues that same ${continues}; omit it to start fresh.`
             },
             thoroughness: thoroughnessSchema()
           },

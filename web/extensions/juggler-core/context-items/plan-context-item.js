@@ -144,7 +144,7 @@ class PlanContextItem extends ContextItem {
       {
         name: 'plan',
         category: 'meta',  // meta = internal state only, doesn't modify files. Ensures MCP ReadOnlyHint=true
-        description: 'Propose an implementation plan for user review and approval, then track its execution. Use ONLY when proposing an approach that warrants user sign-off, or when asked to plan — for lightweight progress tracking of routine multi-step work, use the todo tool instead. Actions: "submit" presents the plan for approval; "start_step" / "complete_step" / "fail_step" / "skip_step" track execution of the approved plan.',
+        description: 'Propose an implementation plan for user review and approval, then track its execution. Use ONLY when an approach warrants user sign-off, or when asked to plan — routine progress tracking is the todo tool\'s job. "submit" presents the plan for approval; the *_step actions track execution of the approved plan.',
         input_schema: {
           type: 'object',
           properties: {
@@ -164,7 +164,7 @@ class PlanContextItem extends ContextItem {
                 properties: {
                   content: {
                     type: 'string',
-                    description: 'What this step will accomplish, in enough detail to review: the files involved (`backticks` for paths/code), the change to make, and how it will be verified. One reviewable unit of work per step.'
+                    description: 'What this step accomplishes, in enough detail to review: the files involved (`backticks` for paths/code), the change, and how it is verified. One reviewable unit of work per step.'
                   },
                   status: {
                     type: 'string',

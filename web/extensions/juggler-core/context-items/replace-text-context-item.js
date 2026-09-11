@@ -75,7 +75,7 @@ class ReplaceTextContextItem extends EditBase {
       required: ['file_path', 'old_string', 'new_string']
     };
 
-    const description = 'Performs exact string replacements in files. Read the file first — an edit is refused if this conversation has not read it, or if its contents changed on disk since. The edit will FAIL if old_string is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use replace_all to change every instance.';
+    const description = 'Performs exact string replacements in files. Read the file first — the edit is refused if this conversation has not read it, or if it changed on disk since. It also fails if old_string is not unique in the file: include more surrounding context, or use replace_all.';
 
     return [
       {

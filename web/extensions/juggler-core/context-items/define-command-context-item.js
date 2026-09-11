@@ -70,10 +70,10 @@ class DefineCommandContextItem extends ContextItem {
         name: 'define_command',
         category: 'meta',
         description:
-          'Create a user-defined slash command the user can invoke with /name. Use when the user asks ' +
-          'to save, name, or repeat a prompt or workflow as a reusable command. The command is a prompt ' +
-          'template: use $1..$9 for positional arguments and $ARGUMENTS for everything after the command ' +
-          'name. Always requires the user to approve the full definition before it is written.',
+          'Create a user-defined slash command, invoked with /name — for when the user asks to save, ' +
+          'name, or repeat a prompt or workflow. The command is a prompt template: $1..$9 for ' +
+          'positional arguments, $ARGUMENTS for everything after the command name. The user approves ' +
+          'the full definition before it is written.',
         input_schema: {
           type: 'object',
           properties: {
@@ -87,7 +87,7 @@ class DefineCommandContextItem extends ContextItem {
             },
             template: {
               type: 'string',
-              description: 'The prompt template. Use $1..$9 for positional args and $ARGUMENTS for the full argument string.',
+              description: 'The prompt template ($1..$9 positional args, $ARGUMENTS for the full argument string).',
             },
             run: {
               type: 'string',
@@ -108,7 +108,7 @@ class DefineCommandContextItem extends ContextItem {
             },
             goal: {
               type: 'string',
-              description: 'Optional very short, single-line, user-facing thread label (subthread run mode only). Keep the task in `template`.',
+              description: 'Optional very short user-facing thread label (subthread run mode only); the task belongs in `template`.',
             },
             scope: {
               type: 'string',

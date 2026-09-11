@@ -40,7 +40,7 @@ class TaskOutputContextItem extends ContextItem {
       {
         name: 'TaskOutput',
         category: 'read',
-        description: 'Read a background task\'s status and NEW output since your last read (started by Monitor or by bash with run_in_background). Each call returns only output produced since the previous TaskOutput call for this task — NOT the whole log again — plus the exit code once finished. So polling a running task is cheap and never re-returns output you have already seen. To be told when a task finishes rather than polling, prefer an `until … done` guard in the background command (one completion notification) or the Monitor tool.',
+        description: 'Read a background task\'s status and only the NEW output since your last read (tasks started by Monitor or bash run_in_background), plus the exit code once finished — polling is cheap and never repeats output. To learn of completion without polling, prefer an `until … done` guard in the background command, or Monitor.',
         input_schema: {
           type: 'object',
           properties: {
