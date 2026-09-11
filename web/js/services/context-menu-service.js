@@ -61,8 +61,16 @@
 import { copyToClipboard, readFromClipboard } from '../../sdk/lib/clipboard.js';
 import { formatCodeReference } from '../../sdk/lib/context-item-utils.js';
 import { markPopupOpen } from '../utils/popup-manager.js';
-import { resolveCodeSelection } from '../utils/code-selection.js';
+import { resolveCodeSelection, proseReference } from '../utils/code-selection.js';
 import { insertAtCaret } from '../components/composer-paste-tokens.js';
+
+/**
+ * The row that puts a reference to the selected file content into the prompt.
+ * One spelling, shared by every surface that offers it — the text-edit menu here
+ * and the code-block and diff-viewer providers, which are reached first and so
+ * have to offer it themselves.
+ */
+export const PASTE_REFERENCE_LABEL = 'Paste path and line number into prompt';
 
 /** @type {ContextMenuProvider[]} @private */
 const _providers = [];
@@ -238,8 +246,10 @@ export function buildTextEditMenu(start) {
     ];
   }
 
-  // Non-editable element with a live selection: copy, and — over code that says
-  // which file it is — quote it to the agent instead of retyping where you mean.
+  // Non-editable element with a live selection: copy, and — over content that
+  // says which file it is — put a reference to it in the prompt instead of
+  // retyping where you mean. Code contributes line numbers; prose has none to
+  // give, so the reference names the file alone.
   if (selectionText) {
     /** @type {ContextMenuItem[]} */
     const items = [{ label: 'Copy', onClick: () => writeClipboard(selectionText) }];
@@ -247,7 +257,7 @@ export function buildTextEditMenu(start) {
     // Offered only where there is a composer to put it in: a detached Pinboard
     // window has code to select and nothing to ask.
     if (reference && activeComposer()) {
-      items.push({ label: 'Ask about selection', onClick: () => askAboutSelection(reference) });
+      items.push({ label: PASTE_REFERENCE_LABEL, onClick: () => askAboutSelection(reference) });
     }
     return items;
   }
@@ -300,6 +310,47 @@ function askAboutSelection(reference) {
   if (insertCodeReference(composer, reference)) {
     composer.querySelector('textarea')?.focus();
   }
+}
+
+/**
+ * The selected text, but only when the whole selection lies inside the element
+ * the menu is about. A selection left behind somewhere else on the page is not
+ * this file's content, and quoting it under this file's path would attribute
+ * text to a file it was never in.
+ * @param {Selection|null|undefined} selection - The document's selection.
+ * @param {Element} [within] - The element the selection must be inside.
+ * @returns {string} The selected text, or '' when it is elsewhere.
+ * @private
+ */
+function selectionTextWithin(selection, within) {
+  if (!selection || !within || selection.rangeCount === 0 || selection.isCollapsed) return '';
+  const range = selection.getRangeAt(0);
+  if (!within.contains(range.startContainer) || !within.contains(range.endContainer)) return '';
+  return range.toString();
+}
+
+/**
+ * The paste-reference row for the current selection, or null when there is
+ * nothing to reference or nowhere to put it. For providers that match before the
+ * text-edit menu is reached and so must offer the row themselves.
+ *
+ * A surface that renders numbered rows needs only `path`, since the line numbers
+ * come from the rows; one that does not — a `<code-block>`, a diff — supplies
+ * the path it knows, and the reference carries the selected text alone.
+ * @param {object} [options] - The surface's own knowledge.
+ * @param {string} [options.path] - Path to print when the DOM advertises none.
+ * @param {boolean} [options.outOfRoot] - Whether that path is outside the project.
+ * @param {'old'|'new'} [options.side] - Which side of a diff the lines are from.
+ * @param {Element} [options.within] - The subject the selection must lie inside.
+ * @returns {ContextMenuItem|null} The row, or null.
+ */
+export function codeReferenceMenuItem({ path = '', outOfRoot = false, side, within } = {}) {
+  const selection = window.getSelection?.();
+  const reference = resolveCodeSelection(selection)
+    || proseReference(path, outOfRoot, selectionTextWithin(selection, within));
+  if (!reference || !activeComposer()) return null;
+  const full = side ? { ...reference, side } : reference;
+  return { label: PASTE_REFERENCE_LABEL, onClick: () => askAboutSelection(full) };
 }
 
 /**

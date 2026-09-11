@@ -14,7 +14,8 @@
 import { revealLabel } from '../components/reveal-button.js';
 import { showNotice } from '../components/modal-dialog.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
-import { registerContextMenuProvider } from '../services/context-menu-service.js';
+import { registerContextMenuProvider, codeReferenceMenuItem } from '../services/context-menu-service.js';
+import { isAbsolutePath } from './code-selection.js';
 import { osOpenPath, osRevealPath } from '../services/ops-api.js';
 import { localFilePathFromHref } from '../../sdk/lib/window-control.js';
 import pinboardView from '../services/pinboard-view.js';
@@ -334,6 +335,17 @@ registerContextMenuProvider({
         },
       },
     ];
+    // This provider claims anything carrying a path, which includes surfaces
+    // that render content under one — a <code-block> with a data-file-path is
+    // matched by both this and its own provider, and which of the two answers is
+    // decided by module load order. Offering the row here as well as there makes
+    // the selection referenceable whichever one wins.
+    const paste = codeReferenceMenuItem({
+      path,
+      outOfRoot: isAbsolutePath(path),
+      within: subject,
+    });
+    if (paste) items.push(paste);
     // Offered on the same terms as the pin button: asked first, left out when
     // nothing enabled would take it.
     const source = pinSource(path);

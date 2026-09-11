@@ -25,10 +25,14 @@ import {
   buildTextEditMenu,
   resolveMenu,
   registerContextMenuProvider,
+  PASTE_REFERENCE_LABEL,
 } from '../../js/services/context-menu-service.js';
 // Imported for its registration: the file-reference menu is a side effect of
 // loading the module that owns it, and these tests are about that menu.
 import '../../js/utils/properties-panel-helpers.js';
+// Likewise the code-block provider, which claims a block before the text-edit
+// menu is reached and so must offer the paste row itself.
+import '../../js/components/code-block.js';
 import pinboardItemRegistry from '../../js/registries/pinboard-item-registry.js';
 
 // Unique marker so our test provider never collides with real providers or
@@ -266,6 +270,59 @@ export async function runTests() {
     sel?.removeAllRanges();
   } finally {
     para.remove();
+  }
+
+  // === The paste-reference row, over a provider that matches first ===
+  // A <code-block> is claimed by its own provider, which resolveMenu returns
+  // before the text-edit menu is ever reached — so the row has to be offered
+  // there too, or it silently disappears on every surface with a provider.
+  const tab = document.createElement('conversation-tab');
+  tab.className = 'active';
+  const composerStub = document.createElement('div');
+  composerStub.appendChild(document.createElement('textarea'));
+  /** @type {any} */ (tab).getComposer = () => composerStub;
+  document.body.appendChild(tab);
+
+  const block = document.createElement('code-block');
+  block.setAttribute('code', 'const x = 1;');
+  block.setAttribute('data-file-path', 'web/js/app.js');
+  document.body.appendChild(block);
+  try {
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+
+    const noSelection = labelsOf(resolveMenu(block)?.items || []);
+    tally(check(!noSelection.includes(PASTE_REFERENCE_LABEL),
+      `code-block: with nothing selected there is nothing to reference (got ${JSON.stringify(noSelection)})`, errors));
+
+    const range = document.createRange();
+    range.selectNodeContents(block);
+    selection?.addRange(range);
+
+    // Which provider answers is module load order — a block carrying a path is
+    // claimed by the file-reference provider as readily as by its own. The row
+    // has to survive either answer, which is why both offer it.
+    const selected = labelsOf(resolveMenu(block)?.items || []);
+    tally(check(selected.includes(PASTE_REFERENCE_LABEL),
+      `code-block: a selection offers the paste row whichever provider claims the block (got ${JSON.stringify(selected)})`, errors));
+
+    // A selection somewhere else entirely is not this block's content.
+    const elsewhere = document.createElement('p');
+    elsewhere.textContent = 'unrelated prose';
+    document.body.appendChild(elsewhere);
+    const strayRange = document.createRange();
+    strayRange.selectNodeContents(elsewhere);
+    selection?.removeAllRanges();
+    selection?.addRange(strayRange);
+    const stray = labelsOf(resolveMenu(block)?.items || []);
+    tally(check(!stray.includes(PASTE_REFERENCE_LABEL),
+      `code-block: a selection outside the block is not quoted under its path (got ${JSON.stringify(stray)})`, errors));
+    elsewhere.remove();
+    selection?.removeAllRanges();
+  } finally {
+    block.remove();
+    tab.remove();
+    composerStub.remove();
   }
 
   // Plain element, no selection → no menu at all.

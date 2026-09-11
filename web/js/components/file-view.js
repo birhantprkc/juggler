@@ -6,6 +6,7 @@ import fileViewerRegistry from '../registries/file-viewer-registry.js';
 import { toDescriptor } from '../../sdk/file-source.js';
 import { formatFileSize, injectFileContentStyles } from '../../sdk/lib/context-item-utils.js';
 import { addFilePath } from '../utils/properties-panel-helpers.js';
+import { CODE_REF_PATH_ATTR, CODE_REF_ABSOLUTE_ATTR, isAbsolutePath } from '../utils/code-selection.js';
 
 injectFileContentStyles();
 
@@ -49,6 +50,21 @@ class FileView extends HTMLElement {
      * @type {boolean}
      */
     this.showPath = true;
+    /**
+     * The path a reference to a selection in this content should print, when the
+     * host knows a better spelling than the source carries. A pin knows the
+     * project root and so can name a file relative to it; the source's own path
+     * is whatever the server reported, which for a live read is absolute.
+     * Empty to use the source's.
+     * @type {string}
+     */
+    this.codeRefPath = '';
+    /**
+     * Whether {@link codeRefPath} lies outside the project, and so must be
+     * printed in full. Ignored when `codeRefPath` is empty.
+     * @type {boolean}
+     */
+    this.codeRefAbsolute = false;
   }
 
   /**
@@ -131,6 +147,18 @@ class FileView extends HTMLElement {
 
     const host = document.createElement('div');
     host.className = 'file-view-content';
+    // Say which file the content below belongs to, so a selection in it can be
+    // pasted into the prompt as a reference. Every file surface — pin, read
+    // result, write result, dropped file — renders through here, so this is the
+    // one place that has to know. Failing a spelling from the host, the source's
+    // own path is used, and an absolute one is printed in full because nothing
+    // here knows the root it would be relative to.
+    const refPath = this.codeRefPath || source.path || source.absPath || '';
+    if (refPath) {
+      host.setAttribute(CODE_REF_PATH_ATTR, refPath);
+      host.toggleAttribute(CODE_REF_ABSOLUTE_ATTR,
+        this.codeRefPath ? this.codeRefAbsolute : isAbsolutePath(refPath));
+    }
     this.appendChild(host);
 
     this._abort = new AbortController();

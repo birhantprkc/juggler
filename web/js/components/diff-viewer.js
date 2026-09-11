@@ -6,8 +6,9 @@ import { computeDiff } from '../lib/diff-utils.js';
 import { escapeHtml } from '../../sdk/lib/html.js';
 import { highlightCodeLines } from '../../sdk/lib/syntax-highlight.js';
 import { languageForPath } from '../../sdk/lib/languages.js';
-import { registerContextMenuProvider } from '../services/context-menu-service.js';
+import { registerContextMenuProvider, codeReferenceMenuItem } from '../services/context-menu-service.js';
 import { copyToClipboard } from '../../sdk/lib/clipboard.js';
+import { isAbsolutePath } from '../utils/code-selection.js';
 
 /** @typedef {import('../lib/diff-types.js').DiffHunk} DiffHunk */
 /** @typedef {import('../lib/diff-types.js').DiffLine} DiffLine */
@@ -242,8 +243,30 @@ class DiffViewer extends HTMLElement {
 
 customElements.define('diff-viewer', DiffViewer);
 
-// Right-click menu for diffs: copy the changed file's path and its new content.
-// Reads the DiffViewer instance's own fields (set via setDiff).
+/**
+ * Which side of the diff a selection is wholly within, or undefined when it
+ * covers both or neither. A span of removals is the old file and a span of
+ * additions the new one; anything mixed has no one answer, and a reference that
+ * picked a side would be naming lines in a file half of them are not in.
+ * @param {Element} subject - The diff-viewer element.
+ * @returns {'old'|'new'|undefined} The side, when there is exactly one.
+ */
+function selectedDiffSide(subject) {
+  const selection = window.getSelection?.();
+  if (!selection || selection.rangeCount === 0) return undefined;
+  const range = selection.getRangeAt(0);
+  const touched = Array.from(subject.querySelectorAll('.diff-line'))
+    .filter((line) => range.intersectsNode(line));
+  if (touched.length === 0) return undefined;
+  if (touched.every((line) => line.classList.contains('remove'))) return 'old';
+  if (touched.every((line) => line.classList.contains('add'))) return 'new';
+  return undefined;
+}
+
+// Right-click menu for diffs: copy the changed file's path and its new content,
+// and paste a reference to the selection. Reads the DiffViewer instance's own
+// fields (set via setDiff). Offered here rather than left to the text-edit menu,
+// which this provider is reached before and so would hide.
 registerContextMenuProvider({
   match: (start) => start?.closest('diff-viewer') || null,
   build: (subject) => {
@@ -260,6 +283,15 @@ registerContextMenuProvider({
       disabled: !newContent,
       onClick: () => { void copyToClipboard(newContent).catch(() => {}); },
     }];
+    if (filePath) {
+      const paste = codeReferenceMenuItem({
+        path: filePath,
+        outOfRoot: isAbsolutePath(filePath),
+        side: selectedDiffSide(subject),
+        within: subject,
+      });
+      if (paste) items.push(paste);
+    }
     return items;
   },
 });

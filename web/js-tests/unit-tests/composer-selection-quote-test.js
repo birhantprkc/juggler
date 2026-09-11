@@ -250,6 +250,37 @@ export async function runTests() {
     window.getSelection()?.removeAllRanges();
   }
 
+  // Rendered prose — a markdown file, which is shown as formatted text and so
+  // has no line rows to count. The file is still known, so the selection is
+  // still a reference to it; only the line numbers are missing.
+  const prose = document.createElement('div');
+  prose.setAttribute('data-code-ref-path', 'docs/design.md');
+  const para = document.createElement('p');
+  para.textContent = 'The pinboard is shared between windows.';
+  prose.appendChild(para);
+  document.body.appendChild(prose);
+  try {
+    const range = document.createRange();
+    range.setStart(para.firstChild || para, 4);
+    range.setEnd(para.firstChild || para, 12);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    const ref = resolveCodeSelection(window.getSelection());
+    tally(check(!!ref && ref.path === 'docs/design.md',
+      'prose: a selection over rendered text still names its file', errors));
+    tally(check(!!ref && ref.startLine === undefined && ref.endLine === undefined,
+      'prose: text with no line rows claims no line numbers', errors));
+    tally(check(!!ref && ref.lines.join('|') === 'pinboard',
+      'prose: the selected text is quoted, there being no rows to widen it to', errors));
+    tally(check(!!ref && formatCodeReference(ref) === './docs/design.md\n> pinboard\n',
+      'prose: the reference formats as a path and a quote, with no line part', errors));
+  } finally {
+    prose.remove();
+    window.getSelection()?.removeAllRanges();
+  }
+
   // === Landing it in the composer ===
 
   {

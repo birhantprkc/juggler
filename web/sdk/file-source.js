@@ -13,7 +13,7 @@
 
 /**
  * @typedef {object} FileSource
- * @property {string} path - Project-relative path (display + language detection)
+ * @property {string} path - Path as the producer spelled it (display + language detection). Usually project-relative, but a live read reports the absolute one — treat it as either.
  * @property {string} absPath - Absolute path (content endpoint + dedupe key)
  * @property {string} mime - Server-reported mime ('' when unknown)
  * @property {number} size - Bytes on disk

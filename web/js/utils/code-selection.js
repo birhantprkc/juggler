@@ -11,9 +11,15 @@
  * breaks on wrapping, on windowed rendering, and on every element boundary
  * syntax highlighting introduces mid-line.
  *
- * A surface opts in by marking the element around its code with
+ * Not every file is shown that way. Markdown is rendered as formatted prose
+ * (see {@link module:sdk/lib/context-item-utils.createFileContentBlock}), which
+ * has no rows to count — so a selection there resolves to the file and the text,
+ * with no line numbers. Naming the file is most of the value, and a line number
+ * inferred from prose would be a guess dressed as a citation.
+ *
+ * A surface opts in by marking the element around its content with
  * `data-code-ref-path`, holding the path a reference should print, plus
- * `data-code-ref-absolute` when that path is outside the project. Code with no
+ * `data-code-ref-absolute` when that path is outside the project. Content with no
  * such host yields nothing — better than guessing at which file the reader meant.
  * @module utils/code-selection
  */
@@ -25,13 +31,26 @@ export const CODE_REF_PATH_ATTR = 'data-code-ref-path';
 export const CODE_REF_ABSOLUTE_ATTR = 'data-code-ref-absolute';
 
 /**
+ * Whether a path is absolute, in either platform's spelling — a POSIX root, a
+ * Windows drive, or a UNC share. A surface that has only the path the producer
+ * gave it uses this to decide whether it is naming a file outside the project:
+ * anything under the root would have been spelled relative to it.
+ * @param {string} path - The path to test.
+ * @returns {boolean} True when the path is absolute.
+ */
+export function isAbsolutePath(path) {
+  if (!path) return false;
+  return path.startsWith('/') || /^[A-Za-z]:[/\\]/.test(path) || path.startsWith('\\\\');
+}
+
+/**
  * What a selection over rendered code refers to.
  * @typedef {object} CodeSelection
  * @property {string} path - The path to print, in the host's spelling.
  * @property {boolean} outOfRoot - True when that path is outside the project.
- * @property {number} startLine - First selected line, 1-indexed and inclusive.
- * @property {number} endLine - Last selected line, inclusive.
- * @property {string[]} lines - The whole of each selected line, not the selected characters.
+ * @property {number} [startLine] - First selected line, 1-indexed and inclusive. Absent over prose.
+ * @property {number} [endLine] - Last selected line, inclusive. Absent over prose.
+ * @property {string[]} lines - Over code, the whole of each selected line; over prose, the selected text.
  */
 
 /**
@@ -53,7 +72,7 @@ export function resolveCodeSelection(selection) {
 
   const rows = /** @type {HTMLElement[]} */ (
     Array.from(host.querySelectorAll(`.ci-line[data-line]`)));
-  if (rows.length === 0) return null;
+  if (rows.length === 0) return proseSelection(host, path, range);
 
   let first = indexOfRow(rows, range.startContainer);
   let last = indexOfRow(rows, range.endContainer);
@@ -82,6 +101,39 @@ export function resolveCodeSelection(selection) {
     endLine: Number(tail.dataset.line),
     lines: chosen.map((row) => row.textContent || ''),
   };
+}
+
+/**
+ * A reference to content rendered without line rows — markdown shown as prose.
+ * The selected text stands in for the quoted rows, since there are no rows to
+ * widen it to, and the reference carries no line numbers at all.
+ * @param {Element} host - The element advertising the path.
+ * @param {string} path - The path to print.
+ * @param {Range} range - The selection's range.
+ * @returns {CodeSelection|null} The reference, or null when nothing was selected.
+ * @private
+ */
+function proseSelection(host, path, range) {
+  return proseReference(path, host.hasAttribute(CODE_REF_ABSOLUTE_ATTR), range.toString());
+}
+
+/**
+ * A line-less reference to a path, quoting text the caller already has. For
+ * surfaces that know which file they show but do not render it as numbered rows
+ * — a `<code-block>` in a message, a diff, markdown shown as prose.
+ * @param {string} path - The path to print.
+ * @param {boolean} outOfRoot - Whether that path is outside the project.
+ * @param {string} text - The selected text.
+ * @returns {CodeSelection|null} The reference, or null when the text is empty.
+ */
+export function proseReference(path, outOfRoot, text) {
+  // Trailing blank lines come from a selection dragged past the end of a
+  // paragraph, and would quote emptiness the reader never highlighted.
+  const lines = (text || '').split('\n');
+  while (lines.length > 0 && lines[lines.length - 1]?.trim() === '') lines.pop();
+  if (!path || lines.length === 0) return null;
+
+  return { path, outOfRoot, lines };
 }
 
 /**

@@ -205,10 +205,15 @@ class FilePin extends PinboardItemType {
       const mine = ++generation;
       const path = absoluteFilePinPath(context.pin.config, context.active);
       const userInitiated = context.pin.config?.agentRequested !== true;
-      // Say which file the lines below belong to, so selecting some of them can
-      // be quoted into the composer as a reference rather than as loose text.
-      // A pin may point anywhere, so a file outside the project says so and is
-      // named in full.
+      // Say which file the body below belongs to, so selecting part of it can be
+      // pasted into the prompt as a reference rather than as loose text. A pin
+      // may point anywhere, so a file outside the project says so and is named
+      // in full.
+      //
+      // Rendered file content carries its own, nearer, mark from `<file-view>`,
+      // which wins the `closest()` walk up from the selection. This one is what
+      // covers the bodies that never reach a viewer: a directory listing and the
+      // not-found state.
       const relative = projectRelative(path, context.active?.project?.path || '');
       body.setAttribute('data-code-ref-path', relative || path);
       body.toggleAttribute('data-code-ref-absolute', !relative);
@@ -225,6 +230,8 @@ class FilePin extends PinboardItemType {
         absolutePath: path,
         conversationId: context.active?.conversation?.id,
         userInitiated,
+        codeRefPath: relative || path,
+        codeRefAbsolute: !relative,
       });
 
       // The pin asks for the whole file, so this only speaks up when the read

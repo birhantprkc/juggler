@@ -9,8 +9,14 @@ import { languageForPath } from 'juggler/ui';
 
 /**
  * TextFileViewer — the fallback viewer, and the one that handles almost
- * everything. Renders a file as syntax-highlighted text (or rendered markdown),
- * and extracts it as the line-numbered `<file>` block the model reads.
+ * everything. Renders a file as syntax-highlighted text, and extracts it as the
+ * line-numbered `<file>` block the model reads.
+ *
+ * Markdown is the exception, and the branch is one level down, in
+ * `createFileContentBlock`: it renders as formatted prose rather than numbered
+ * lines. Anything reading line numbers back out of the rendered DOM gets none
+ * from a markdown file — see `utils/code-selection`, which falls back to naming
+ * the file alone.
  *
  * It is the only viewer that sets `matchAll`, so it is a candidate for every
  * file; `priority: 0` puts it in the fallback tier beneath any viewer with a

@@ -183,8 +183,10 @@ export function liveFileInfo(result) {
  * is, above — so `<file-view>` renders content alone.
  * @param {HTMLElement} container - The region to fill.
  * @param {LiveFileResult} result - A live read.
- * @param {{absolutePath?: string, conversationId?: string, userInitiated?: boolean}} [options] - The path to
- *   attribute the bytes to, the conversation they are for, and its path provenance.
+ * @param {{absolutePath?: string, conversationId?: string, userInitiated?: boolean,
+ *   codeRefPath?: string, codeRefAbsolute?: boolean}} [options] - The path to
+ *   attribute the bytes to, the conversation they are for, its path provenance,
+ *   and the spelling a reference to a selection should print.
  * @returns {void}
  */
 export function renderLiveFileBody(container, result, options = {}) {
@@ -204,6 +206,10 @@ export function renderLiveFileBody(container, result, options = {}) {
 
   const view = /** @type {any} */ (document.createElement('file-view'));
   view.showPath = false;
+  if (options.codeRefPath) {
+    view.codeRefPath = options.codeRefPath;
+    view.codeRefAbsolute = !!options.codeRefAbsolute;
+  }
   view.setSource(liveFileSource(result, absolutePath, options));
   container.appendChild(view);
 }
