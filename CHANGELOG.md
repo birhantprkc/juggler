@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-11
+
 - The footer states what the whole conversation has spent, every thread included
 - Past a user-settable spend ceiling, delegated threads are asked to report what they have and no more are started
 - A conversation sitting idle offers things you might say next; clicking one drafts it, never sends it
