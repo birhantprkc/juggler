@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"juggler/cmd/juggler/worker"
+	"juggler/tests/integration/helpers"
 	"strings"
 	"testing"
 	"time"
@@ -645,10 +646,8 @@ func initWorker(t *testing.T, manager *worker.Manager, tmpDir string) *worker.Co
 		t.Fatal("Init not handled")
 	}
 
-	select {
-	case <-readyChan:
-	case <-time.After(1 * time.Second):
-		t.Fatal("Timeout waiting for ready message")
+	if err := helpers.WaitForReady(t, readyChan); err != nil {
+		t.Fatal(err)
 	}
 
 	w := manager.Get("test-conv")

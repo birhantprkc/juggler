@@ -72,10 +72,8 @@ func TestWorkerPersistsStateOnChange(t *testing.T) {
 	}
 
 	// Wait for ready message before accessing document
-	select {
-	case <-readyChan:
-	case <-time.After(1 * time.Second):
-		t.Fatal("Timeout waiting for ready message")
+	if err := helpers.WaitForReady(t, readyChan); err != nil {
+		t.Fatal(err)
 	}
 
 	w := manager.Get(convID)
@@ -163,11 +161,8 @@ func TestWorkerPersistsOnShutdown(t *testing.T) {
 		t.Fatal("Init message not handled")
 	}
 
-	// Wait for ready message
-	select {
-	case <-readyChan:
-	case <-time.After(1 * time.Second):
-		t.Fatal("Timeout waiting for ready message")
+	if err := helpers.WaitForReady(t, readyChan); err != nil {
+		t.Fatal(err)
 	}
 
 	w := manager.Get(convID)
@@ -267,11 +262,8 @@ func TestWorkerLoadsPersistedState(t *testing.T) {
 		t.Fatal("Init message not handled")
 	}
 
-	// Wait for ready message
-	select {
-	case <-readyChan:
-	case <-time.After(1 * time.Second):
-		t.Fatal("Timeout waiting for ready message")
+	if err := helpers.WaitForReady(t, readyChan); err != nil {
+		t.Fatal(err)
 	}
 
 	w := manager.Get(convID)
@@ -334,11 +326,8 @@ func TestWorkerPersistsMultipleChanges(t *testing.T) {
 		t.Fatal("Init message not handled")
 	}
 
-	// Wait for ready message
-	select {
-	case <-readyChan:
-	case <-time.After(1 * time.Second):
-		t.Fatal("Timeout waiting for ready message")
+	if err := helpers.WaitForReady(t, readyChan); err != nil {
+		t.Fatal(err)
 	}
 
 	w := manager.Get(convID)

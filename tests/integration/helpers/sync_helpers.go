@@ -12,6 +12,33 @@ import (
 	"juggler/cmd/juggler/worker"
 )
 
+// ReadyTimeout is how long a test waits for a worker's "ready" reply after
+// sending it an init.
+//
+// It is deliberately far longer than an init takes. Init is queued through the
+// manager's actor, run on the worker's own goroutine and delivered through a
+// client mailbox, and along the way it reads and writes the conversation from
+// disk and takes the process-wide y-crdt lock that every other worker in the
+// binary shares. This package's parallel tests all resume together the moment
+// the serial ones finish, so dozens of inits contend for that lock at once and
+// how long any one of them takes is a scheduling question, not a latency one.
+// A ready that arrives costs nothing to have waited for; a ready that never
+// arrives is a hang, and this deadline only has to name it.
+const ReadyTimeout = 30 * time.Second
+
+// WaitForReady blocks until ready is signalled — the channel an init's
+// send-callback pushes to when it sees the worker's "ready" reply.
+func WaitForReady(t *testing.T, ready <-chan struct{}) error {
+	t.Helper()
+
+	select {
+	case <-ready:
+		return nil
+	case <-time.After(ReadyTimeout):
+		return fmt.Errorf("timeout waiting for ready message after %v", ReadyTimeout)
+	}
+}
+
 // WaitForDocumentCondition polls the document until the condition returns true or timeout.
 // Uses exponential backoff (10ms -> 100ms) for efficient polling.
 func WaitForDocumentCondition(

@@ -121,10 +121,8 @@ func initWorker(t *testing.T, manager *worker.Manager, tmpDir string, convID str
 		t.Fatal("Init not handled")
 	}
 
-	select {
-	case <-readyChan:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Timeout waiting for ready message")
+	if err := WaitForReady(t, readyChan); err != nil {
+		t.Fatal(err)
 	}
 
 	w := manager.Get(convID)
