@@ -700,7 +700,7 @@ exist:
 |---------|-------------------|
 | `services.files` | `onChange(listener)` — files changing on disk, absolute paths. Only inside the open project, and never dot-files: the watcher is rooted at the project and skips them. Offer a way to re-read rather than trusting it to be complete, and never poll for what it does not tell you. |
 | `services.contextItems` | `find(type, from?)` — the nearest context item of a type, as a copy, with the thread it came from; `onChange(listener)` — the items or the focused thread moved, call `find` again; `reveal(threadId)` — bring that thread's column into view. |
-| `services.git` | `status()` — every repository under the project with its branch, upstream divergence, counts and bounded file list, or null before the first read; `error()` — the last read's failure, shown beside the last good status rather than instead of it; `onChange(listener)`; `refresh()`. |
+| `services.git` | The ambient half: `status()` — every repository under the project with its branch, upstream divergence, counts and bounded file list, or null before the first read; `error()` — the last read's failure, shown beside the last good status rather than instead of it; `onChange(listener)`; `refresh()`. The deliberate half: `review({signal})` — every repository and every changed file in each of them, with whatever could not be reached named in `warnings`; `diff(repo, path, {signal})` — one file's whole working-tree change against `HEAD`, as structured hunks. |
 | `services.fileEdits` | `list({tools, limit})` — the file edits this conversation's transcript records for the tools you name, newest first; `snapshot(itemId)` — one edit's before and after, as two whole files, or null; `onChange(listener)`; `reveal(itemId)` — select the tool action that made one. You supply the tool names: which tools mutate a file is your knowledge, not the host's. |
 | `services.tasks` | `list()` — the background tasks this conversation has running, newest first, or null before the first check; `error()`; `onChange(listener)`; `reveal(itemId)` — select the tool action that started one; `stop(taskId)`. |
 
@@ -729,6 +729,20 @@ watcher, so the host asks git on a timer while the window is focused, and
 `onChange` means a fresh answer arrived rather than that the repository changed
 when it did. Give the user a way to ask again, and never poll yourself — every
 surface shares the one poll, and a second would run git twice.
+
+`review()` and `diff()` are the other half of that service, and they are the
+opposite of the poll: asked for rather than kept up to date, and never quietly
+shortened. A review reads every repository under the project, so ask when a
+review is opened or refreshed — concurrent callers share one read, so a second
+surface costs nothing, but a loop here runs git in a loop. Its `complete` field
+is the one thing not to paper over: false means something is missing, `warnings`
+says what in sentences fit to show a user, and partial results are worth keeping
+on screen as long as you describe them as partial. Ask for a patch one file at a
+time, at the moment something is going to show it. Pass a `signal` to either and
+cancelling really does cancel the read; the host also cancels whatever your pin
+has out when the pin goes away. Both reject rather than resolving with nothing —
+the read failed, you cancelled it, or the project changed while it was out — so a
+cancelled request is never mistaken for a file that turned out to be unchanged.
 
 `services.fileEdits` is derived from the transcript, not from the filesystem, so
 it is exactly as durable as the conversation and no broader than it. It lists

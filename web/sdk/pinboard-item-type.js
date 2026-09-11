@@ -259,9 +259,96 @@ import { validateManifest } from './lib/manifest.js';
  */
 
 /**
+ * One repository in a review manifest: everything the card reports about it,
+ * plus whether that is the whole story.
+ *
+ * A repository git could not read is listed all the same, with `error` carrying
+ * git's own first line of complaint — an uninitialised submodule is the everyday
+ * case. Dropping it would turn "I could not read this" into "there is nothing
+ * here", which is the one thing a review may never say.
+ * @typedef {PinGitRepo & {complete: boolean, error?: string}} PinGitReviewRepo
+ */
+
+/**
+ * The working tree as a review reads it: every repository under the project and
+ * every changed file in each of them, asked for rather than polled.
+ *
+ * `complete` is the field this whole answer turns on, and the one a surface must
+ * not paper over. Ceilings and failures are unavoidable; presenting what they
+ * left behind as the whole working tree is not. Partial results are worth showing
+ * — they are just not everything, and each gap names itself in `warnings`, in
+ * sentences meant for the user rather than for a log.
+ * @typedef {object} PinGitReview
+ * @property {string} root - Absolute project root path
+ * @property {boolean} complete - Whether every repository and file was reached
+ * @property {string[]} warnings - What could not be reviewed, one sentence each.
+ *   Always an array; empty when nothing was missed.
+ * @property {PinGitReviewRepo[]} repos - Every repository found, root repo first
+ */
+
+/**
+ * One line of a hunk. `oldLine` and `newLine` are its number on each side, and
+ * the side a line does not exist on has neither — an added line has no number in
+ * the old file. `text` carries no leading +/-/space: which side a line is on is
+ * `kind`'s job, not the text's.
+ * @typedef {object} PinGitDiffLine
+ * @property {string} kind - 'context', 'add' or 'remove'
+ * @property {number} [oldLine] - Line number on the old side
+ * @property {number} [newLine] - Line number on the new side
+ * @property {string} text - The line itself
+ */
+
+/**
+ * One run of changed lines and the context around it.
+ * @typedef {object} PinGitDiffHunk
+ * @property {number} oldStart - First line covered on the old side
+ * @property {number} oldLines - Lines covered there
+ * @property {number} newStart - First line covered on the new side
+ * @property {number} newLines - Lines covered there
+ * @property {string} [heading] - The section git names in the `@@` line, usually
+ *   the enclosing function. Often absent.
+ * @property {PinGitDiffLine[]} lines - The hunk's lines, in file order
+ */
+
+/**
+ * One file's whole working-tree change against `HEAD` — index and worktree folded
+ * together, which is the same comparison the file's line counts in the manifest
+ * come from, so the two can never disagree.
+ *
+ * `revision` fingerprints every byte the answer describes, including any past a
+ * ceiling that were never sent. It is what an anchor asks about: a comment left
+ * on a line wants to know whether this is still the same file it was left on, and
+ * `HEAD` cannot answer that, because almost every edit under review happens
+ * without `HEAD` moving at all.
+ * @typedef {object} PinGitDiff
+ * @property {string} repo - Repository this file belongs to, '' for the root repo
+ * @property {string} path - File path relative to that repository
+ * @property {string} [oldPath] - Former path, for a rename or copy
+ * @property {string} status - modified, added, deleted, renamed, copied,
+ *   typechange, conflicted, untracked or unchanged
+ * @property {boolean} binary - Whether git judged it binary. No patch text is
+ *   invented for one: say that it changed and offer what a reader can do with it.
+ * @property {boolean} [conflicted] - Whether the index holds unmerged stages for it
+ * @property {boolean} truncated - Whether the patch was cut short. The counts
+ *   still describe all of it, so say "the rest is not shown" rather than nothing.
+ * @property {number} added - Added lines
+ * @property {number} removed - Removed lines
+ * @property {string} revision - Fingerprint of the change this describes
+ * @property {string} [oldMode] - Git's six-digit mode on the old side, when it moved
+ * @property {string} [newMode] - Git's six-digit mode on the new side, when it moved
+ * @property {PinGitDiffHunk[]} hunks - The patch, hunk by hunk. Empty for a pure
+ *   rename, a mode change, or a binary file — all of which are still changes.
+ */
+
+/**
  * The project's git working tree.
  *
- * This is a **poll, not a watch**. Nothing under `.git` is ever reported by the
+ * There are two questions here and they are not the same one. `status` is
+ * ambient: small, bounded, best-effort, and shared with the info card. `review`
+ * and `diff` are the deliberate read — what the user works from before telling
+ * the agent what to fix — and they are asked for, never polled.
+ *
+ * The ambient half is a **poll, not a watch**. Nothing under `.git` is ever reported by the
  * file watcher — it skips dot-directories before it starts watching — so there is
  * no event to subscribe to and the host asks git on a timer, and only while the
  * window is focused. `onChange` therefore tells you a fresh answer arrived, not
@@ -280,6 +367,22 @@ import { validateManifest } from './lib/manifest.js';
  *   function; the host also drops the subscription when the pin is torn down.
  * @property {() => Promise<void>} refresh - Ask git now. Never rejects: a failure
  *   shows up on `error()`.
+ * @property {(options?: {signal?: AbortSignal}) => Promise<PinGitReview>} review -
+ *   Read the whole working tree for review: every repository, every changed file,
+ *   nothing skipped for being expensive, and whatever could not be reached named
+ *   in `warnings` rather than quietly left out. Ask when a review is opened or
+ *   refreshed and not on a timer — concurrent callers share one read, so a second
+ *   surface costs nothing, but a loop here runs git in a loop. Rejects if the read
+ *   failed, if you cancelled it, or if the project changed while it was out: an
+ *   answer about a project nobody is looking at is not an answer.
+ * @property {(repo: string, path: string, options?: {signal?: AbortSignal}) => Promise<PinGitDiff>} diff -
+ *   One file's change, named the way the manifest names it: `repo` is the
+ *   repository's path within the project ('' for the root repo) and `path` is the
+ *   file's path within that repository. Asked for one file at a time, when
+ *   something is about to show it — never in a loop over a manifest. Pass a signal
+ *   and cancelling actually cancels the read, which is what keeps a user clicking
+ *   down a file list from leaving a queue of patches behind them. The host also
+ *   cancels everything this pin has out when the pin goes away.
  */
 
 /**

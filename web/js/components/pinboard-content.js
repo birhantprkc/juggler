@@ -26,6 +26,7 @@ import pinboardStore from '../services/pinboard-store.js';
 import pinboardView from '../services/pinboard-view.js';
 import wsService from '../services/websocket.js';
 import gitStatusCache from '../services/git-status-cache.js';
+import gitReviewService from '../services/git-review-service.js';
 import { shellKill, shellTaskStatus } from '../services/ops-api.js';
 import { openMenuAt } from '../services/context-menu-service.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
@@ -1169,6 +1170,12 @@ class PinboardContent extends JugglerElement {
           refresh: async () => {
             await gitStatusCache.refresh();
           },
+          review: (options) => this._gitRequest(
+            signal, options?.signal, (linked) => gitReviewService.review({ signal: linked })
+          ),
+          diff: (repo, path, options) => this._gitRequest(
+            signal, options?.signal, (linked) => gitReviewService.diff(repo, path, { signal: linked })
+          ),
         },
         fileEdits: {
           list: (query) => this._listFileEdits(query),
@@ -1269,6 +1276,39 @@ class PinboardContent extends JugglerElement {
     });
     signal.addEventListener('abort', unsubscribe, { once: true });
     return unsubscribe;
+  }
+
+  /**
+   * Run one read of git under both signals that may end it: the pin's mount, and
+   * whatever the pin passed for the request itself.
+   *
+   * A pin that passes nothing still gets the first, which is the point — a review
+   * a pin asked for and then went away from is a read nobody will look at, and
+   * leaving it running is how a board that has been closed for a minute is still
+   * shelling out to git. Both listeners come off again the moment the read
+   * settles, because a pin selects file after file and the mount outlives every
+   * one of them.
+   * @template T
+   * @param {AbortSignal} mount - The pin's mount signal.
+   * @param {AbortSignal|undefined} caller - The signal the pin passed, if any.
+   * @param {(signal: AbortSignal) => Promise<T>} read - The read to run.
+   * @returns {Promise<T>} What it answered.
+   * @private
+   */
+  async _gitRequest(mount, caller, read) {
+    const child = new AbortController();
+    const abort = () => child.abort();
+    if (mount.aborted || caller?.aborted) abort();
+    else {
+      mount.addEventListener('abort', abort);
+      caller?.addEventListener('abort', abort);
+    }
+    try {
+      return await read(child.signal);
+    } finally {
+      mount.removeEventListener('abort', abort);
+      caller?.removeEventListener('abort', abort);
+    }
   }
 
   /**

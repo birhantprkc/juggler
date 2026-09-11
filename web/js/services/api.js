@@ -90,6 +90,58 @@ import { fetchJson } from './http.js';
  */
 
 /**
+ * @typedef {GitRepoStatus & {complete: boolean, error?: string}} GitReviewRepo
+ *   One repository in a review manifest: everything the card reports about it,
+ *   plus whether that is the whole story and git's own complaint when it is not.
+ *   A repository git could not read is listed all the same.
+ */
+
+/**
+ * @typedef {object} GitReview
+ * @property {string} root - Absolute project root path.
+ * @property {boolean} complete - Whether every repository and file was reached.
+ * @property {string[]} warnings - What the review could not reach, in sentences.
+ * @property {GitReviewRepo[]} repos - Every repository found, root repo first.
+ */
+
+/**
+ * @typedef {object} GitDiffLine
+ * @property {string} kind - "context", "add" or "remove".
+ * @property {number} [oldLine] - Line number on the old side; absent for an added line.
+ * @property {number} [newLine] - Line number on the new side; absent for a removed line.
+ * @property {string} text - The line, with no leading +/-/space.
+ */
+
+/**
+ * @typedef {object} GitDiffHunk
+ * @property {number} oldStart - First line this hunk covers on the old side.
+ * @property {number} oldLines - Lines it covers there.
+ * @property {number} newStart - First line it covers on the new side.
+ * @property {number} newLines - Lines it covers there.
+ * @property {string} [heading] - The section git names in the `@@` line, often absent.
+ * @property {GitDiffLine[]} lines - The hunk's lines, in file order.
+ */
+
+/**
+ * @typedef {object} GitFileDiff
+ * @property {string} repo - Repository the file belongs to, "" for the root repo.
+ * @property {string} path - File path relative to that repository.
+ * @property {string} [oldPath] - Former path, for a rename or copy.
+ * @property {string} status - modified, added, deleted, renamed, copied, typechange,
+ *   conflicted, untracked or unchanged.
+ * @property {boolean} binary - Whether git judged it binary; no patch text is invented for one.
+ * @property {boolean} [conflicted] - Whether the index holds unmerged stages for it.
+ * @property {boolean} truncated - Whether the patch was cut short; the counts still describe all of it.
+ * @property {number} added - Added lines.
+ * @property {number} removed - Removed lines.
+ * @property {string} revision - Fingerprint of every byte this response describes,
+ *   including the bytes past a ceiling that were never returned.
+ * @property {string} [oldMode] - Git's six-digit mode on the old side, when it differs.
+ * @property {string} [newMode] - Git's six-digit mode on the new side, when it differs.
+ * @property {GitDiffHunk[]} hunks - The patch, hunk by hunk.
+ */
+
+/**
  * REST API service for Juggler backend
  * @class
  */
@@ -473,6 +525,33 @@ class APIService {
    */
   async getGitStatus() {
     return await this.request('/git/status');
+  }
+
+  /**
+   * Read the review manifest: every repository under the project and every file
+   * in each of them, freshly. Unlike {@link APIService#getGitStatus} this is the
+   * question asked in earnest — nothing is skipped for being expensive, and
+   * whatever it still could not reach comes back as `complete: false` and a
+   * warning saying so rather than as a shorter list.
+   * @param {{signal?: AbortSignal}} [options] - Cancellation.
+   * @returns {Promise<GitReview>} The manifest.
+   */
+  async getGitReview(options = {}) {
+    return await this.request('/git/review', { signal: options.signal });
+  }
+
+  /**
+   * Read one file's whole working-tree change against HEAD — index and worktree
+   * folded together, which is the same comparison the status card's line counts
+   * come from.
+   * @param {string} repo - Repository relative to the project root, "" for the root repo.
+   * @param {string} path - File relative to that repository.
+   * @param {{signal?: AbortSignal}} [options] - Cancellation.
+   * @returns {Promise<GitFileDiff>} The file's patch and what happened to it.
+   */
+  async getGitDiff(repo, path, options = {}) {
+    const query = new URLSearchParams({ repo, path });
+    return await this.request(`/git/diff?${query.toString()}`, { signal: options.signal });
   }
 
   /**
