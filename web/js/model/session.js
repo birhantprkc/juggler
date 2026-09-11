@@ -2634,7 +2634,13 @@ class Session {
       const { filename, contentHash } = candidate;
       if (contentHash && seenHashes.has(contentHash)) continue;
       try {
-        await mt.executeContextItem('file-content', { path: filename });
+        // `seeded` marks this as something the session added to itself rather
+        // than something the user pinned, which is what makes it freeze at the
+        // first transaction instead of re-reading every turn. These files ride
+        // the cached prefix, and the agent editing its own AGENTS.md is routine,
+        // so a live re-read would cold-start the conversation as a matter of
+        // course. A user who wants one kept current can pin it themselves.
+        await mt.executeContextItem('file-content', { path: filename, seeded: true });
         if (contentHash) seenHashes.add(contentHash);
         addedCount++;
       } catch {

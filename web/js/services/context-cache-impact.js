@@ -124,11 +124,27 @@ function itemSignature(item) {
 }
 
 /**
- * A signature for a leading `prefix` context item (a pinned/dropped file frozen
- * at add-time): its id, type, and content length. Adding, removing, or re-pinning
- * one changes the id sequence; a re-snapshot with different bytes changes the
- * length. Same `~<len>` tail encoding as {@link itemSignature}, so
- * {@link signatureWeight} sizes its re-read slice too.
+ * A signature for a leading `prefix` context item: its id, type, and the length
+ * of whatever bytes it persists. Adding, removing, or re-pinning one changes the
+ * id sequence; a re-snapshot with different bytes changes the length. Same
+ * `~<len>` tail encoding as {@link itemSignature}, so {@link signatureWeight}
+ * sizes its re-read slice too.
+ *
+ * This weighs `data.content`, which means it sees exactly the items that keep
+ * their bytes in the document — a dropped file, and an auto-seeded agents file
+ * once it has frozen (`file-content-context-item.js`). Those are the ones whose
+ * content can change between sends without the conversation moving, so they are
+ * the ones worth signing.
+ *
+ * KNOWN BLIND SPOT: a live pin (a `file-content` item with no `seeded` flag)
+ * persists only a path, so it signs as `~0` no matter what the file says, and a
+ * change to its bytes is invisible here. That is not an oversight to tidy up
+ * cheaply — closing it needs a content signal this module can read synchronously,
+ * and the pin deliberately has no watcher (nothing re-reads the file between
+ * sends), so there would frequently be nothing current to read. The cost is
+ * bounded by the fact that pinning a file is a deliberate act on a file the user
+ * is thinking about, whereas the seeded files — which nobody chose — are frozen
+ * and therefore cannot drift silently at all.
  * @param {{id?: string, type?: string, data?: {content?: unknown}}} ci - A context item instance
  * @returns {string} The context-item signature
  */
@@ -148,11 +164,11 @@ function contextItemSignature(ci) {
  * comment): a switch diverges at index 0, so the whole prefix is re-read, which
  * is exactly what happens.
  *
- * Prefix context items (frozen pinned/dropped files) sit between tools+system and
- * the growing history, so they ARE part of the cached prefix now: adding, removing,
- * or re-pinning one busts the cache from its position, exactly like editing a
- * history item. They precede the history entries here so a divergence in them is
- * measured against everything cached after them.
+ * Prefix context items (pinned files, dropped files, seeded agents files) sit
+ * between tools+system and the growing history, so they ARE part of the cached
+ * prefix: adding, removing, or re-pinning one busts the cache from its position,
+ * exactly like editing a history item. They precede the history entries here so a
+ * divergence in them is measured against everything cached after them.
  * @param {object} args
  * @param {string} [args.modelSig] - The `provider/model#thinking` this prefix belongs to (the next send's for the outgoing one, the anchored turn's for a baseline)
  * @param {string} args.toolsetSig - Sorted tool-name signature under the effective strategy

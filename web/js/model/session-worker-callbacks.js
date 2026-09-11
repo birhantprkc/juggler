@@ -247,11 +247,16 @@ export function setupWorkerCallbacks(session) {
     const allContextItems = conv.getAllMessageThreads().flatMap((/** @type {any} */ t) => t.contextItems);
 
     try {
-      // Build proper contextParams with helpers
+      // Build proper contextParams with helpers. `forRequest` marks this as the
+      // dispatch path: an item that snapshots itself (a seeded agents file)
+      // freezes on the first render carrying this flag, so the snapshot is taken
+      // when work actually begins rather than when the conversation was created
+      // or when someone happened to open the properties panel.
       const contextParams = {
         contextWindowSize: conv.contextWindow || DEFAULT_CONTEXT_WINDOW,
         modelConfig: conv.modelConfig || null,
         helpers: FormattingHelpers,
+        forRequest: true,
         ...(req.contextParams || {})
       };
 

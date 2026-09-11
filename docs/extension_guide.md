@@ -901,15 +901,15 @@ Juggler distinguishes two ways a file's contents reach the model:
 |------|------|--------------|-----------|
 | `ReadFileContextItem` | Immutable record of a `read` tool call | Once, at call time | conversation history (part of the transcript) |
 | `FileContentContextItem` | A user's "keep this file current" pin | Live, every turn | `contextPosition: 'prefix'` (before history) |
+| `FileContentContextItem` with `data.seeded` | An agents file the session added to itself | Once, at the first transaction | `contextPosition: 'prefix'` (before history) |
 
 The split is **who asked**. A **read** is the model's: it lands in the
 append-only history as a `tool_use`/`tool_result` pair and never moves, so it is
 inside the byte-stable cached prefix and is paid for **once**.
 
-Everything the **user** points at is a pin — the file picker, an `@`-mention
-(the composer creates one pin per mentioned path), and the `CLAUDE.md` /
-`AGENTS.md` a session seeds itself with. An `@`-mention is not a read, and is
-not a one-shot: a mentioned file is as live as any other pin.
+Everything the **user** points at is a pin — the file picker and an `@`-mention
+(the composer creates one pin per mentioned path). An `@`-mention is not a read,
+and is not a one-shot: a mentioned file is as live as any other pin.
 
 A **pin** means "this file, kept current." It persists only a `path` in Yjs (no
 bytes), and `createContextText()` resolves the live file every turn. Because a pin
@@ -918,6 +918,35 @@ renders byte-identically each turn → the prompt cache hits and the pin is paid
 once; only a *genuine change* to the file busts the cache from that point — which
 is exactly the point of a pin. There is no watcher (nothing is in flight between
 sends) and no bytes in the document (pinning a 5 MB file doesn't bloat Yjs).
+
+### Seeded agents files are the exception, and they freeze
+
+The `CLAUDE.md` / `AGENTS.md` / `.cursorrules` a session seeds itself with
+(`session.js` `addAIAssistantFiles`) are the same class with `data.seeded` set,
+and they are **frozen**, not live. Nobody pinned them, so they may not spend the
+user's time: they snapshot once into `data.content` and serve that for the life of
+the conversation.
+
+Live would be the expensive default here, and for a reason specific to what these
+files are. The agent editing its own agents file is *routine* — it is the file it
+is most often asked to update — and because the item leads the cached prefix, a
+live re-read would cold-start the entire conversation every time it did so. Worse,
+it would be paying that cold start to tell the model something it already knows:
+right after such an edit the new bytes are in the history anyway, verbatim, in the
+`tool_use` pair that wrote them.
+
+Two details matter if you write another item like this:
+
+- **Freeze at the first transaction, not at add-time.** A conversation can sit
+  open for an hour before its first send, and what belongs in context is what was
+  true when work began. `contextParams.forRequest` marks the dispatch render; a
+  properties-panel render does not carry it, so merely *looking* at an item can
+  never decide what it is going to say.
+- **Give the user the live view and a way back.** The properties panel reads the
+  file live, says plainly that the conversation is reading a frozen copy, and
+  offers an update that re-snapshots on demand — stating the re-read it costs. A
+  frozen item whose staleness is invisible is a worse bug than the cold start it
+  avoided.
 
 ### `contextPosition`: where a standing item's content is injected
 
@@ -939,6 +968,17 @@ table: the system block is the head of the cached prefix, so a single edit
 doesn't just bust the current turn, it forces **every open conversation** to
 re-read its entire context at the uncached rate. Freezing costs those
 conversations nothing and lets the change reach new ones instead.
+
+At `prefix` the same question is a judgement rather than a rule, because the bill
+is smaller and lands only on the conversation that caused it: one cold start,
+here, now. Ask **who asked for this item to exist**. A user who pins a file chose
+it, is thinking about that file, and wants it kept current — live is right, and
+the occasional cold start is the deal they made. An item the session added for
+them chose nothing on their behalf, and can be edited by the agent as part of
+ordinary work, so it should freeze (see the seeded agents files above). The
+guiding line is the same one that governs `system`: **content sourced from
+outside the conversation should not be able to re-price the conversation without
+anyone asking it to.**
 
 There is deliberately **no trailing/tail position**. Standing content is either
 cacheable (`system`/`prefix`) or lives in the model's own tool history (`none`);

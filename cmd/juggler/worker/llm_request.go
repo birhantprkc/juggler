@@ -121,8 +121,14 @@ func (r *run) buildLLMRequestWithIntent(ctxResult *ContextResult, tools []ToolDe
 	messages := r.buildMessages(ctxResult.Contexts)
 	// The base prompt (identity + environment + system-position items + extension
 	// contributions) is already fully assembled by the frontend. Standing context
-	// items ride as trailing messages (buildMessages), NOT in the system prompt, so
-	// a todo update or a pinned-file edit can't cold-start the cached prefix.
+	// items are NOT in it: they ride as their own messages (buildMessages), so a
+	// todo update cannot cold-start the system prompt itself.
+	//
+	// They are LEADING messages, though (prependContextItemMessages), which puts
+	// them inside the cached prefix ahead of the whole history — so a `prefix` item
+	// whose rendered bytes change between sends does bust the cache from its own
+	// position. That is why the frontend freezes the agents files it seeds itself
+	// rather than rendering them live (file-content-context-item.js).
 	systemPrompt := ctxResult.SystemPrompt
 
 	request := map[string]any{

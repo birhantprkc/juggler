@@ -6,7 +6,7 @@
 import ContextItem from 'juggler/context-item';
 import { formatDisplayPath, formatFileContentForLLM, basename } from 'juggler/item-utils';
 import { extractFileSource } from 'juggler/registry';
-import { createElement } from 'juggler/ui';
+import { createElement, injectStylesOnce } from 'juggler/ui';
 import { addFilePath } from 'juggler/ui';
 import { buildPickerPanel } from 'juggler/ui';
 import { smartTruncate } from 'juggler/ui';
@@ -28,20 +28,36 @@ import { fetchLiveFile, liveFileSource, liveFileInfo, renderLiveFileBody } from 
  */
 const MAX_PINNED_FILE_CHARS = 2_000_000;
 
+/**
+ * Ceiling (characters) on the snapshot a SEEDED item freezes into `this.data`.
+ * Far tighter than {@link MAX_PINNED_FILE_CHARS}, and for a different reason:
+ * that one is a send-time bound on a body that is never persisted, whereas this
+ * text is written into the Yjs document, so it is replicated to every peer and
+ * kept for the life of the conversation. An agents file is prose measured in
+ * kilobytes; anything past this is not one, and truncating it beats syncing it.
+ */
+const MAX_SEEDED_SNAPSHOT_CHARS = 256_000;
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
 
 /**
- * Persisted Yjs shape for a pinned file/directory.
+ * Persisted Yjs shape for a pinned or seeded file/directory.
  *
- * Deliberately minimal: only the path and a directory marker. The actual bytes
- * are resolved live at send time (see {@link FetchResult}) and never
+ * For a PIN this is deliberately minimal: only the path and a directory marker.
+ * The bytes are resolved live at send time (see {@link FetchResult}) and never
  * round-tripped through Yjs — a pin means "this file, kept current", so there is
  * nothing to freeze.
+ *
+ * A SEEDED item (`seeded: true`) is the other case, and it does persist bytes:
+ * `content` holds the snapshot taken at the first transaction, bounded by
+ * {@link MAX_SEEDED_SNAPSHOT_CHARS}.
  * @typedef {object} FileContentData
  * @property {string} path - File or directory path (trailing "/" for dirs)
  * @property {boolean} [isDirectory] - True when path refers to a directory
+ * @property {boolean} [seeded] - Added by the session, not the user; freezes at the first transaction
+ * @property {string} [content] - Frozen snapshot; seeded items only
  */
 
 /** @typedef {import('../lib/live-file.js').LiveFileResult} LiveFileResult */
@@ -51,23 +67,41 @@ const MAX_PINNED_FILE_CHARS = 2_000_000;
 // ============================================================================
 
 /**
- * FileContentContextItem - a deliberate "keep this file current" pin.
+ * FileContentContextItem - a "keep this file current" pin, or a frozen seed.
  *
  * SEMANTICS (see docs/extension_guide.md §"Pinned file content"):
  *  - Every USER-driven file reference is this item: the file picker / paperclip,
- *    an `@file` mention (composer.js and scheduled-send-service.js both create
- *    one per mention), and the CLAUDE.md / AGENTS.md a session seeds itself with.
- *    What is NOT this is a `read` TOOL CALL — that is ReadFileContextItem, an
- *    immutable record of bytes the model saw at one turn, living in the
- *    append-only history. The split is who asked, not how casually.
- *  - The pin persists only a `path` in Yjs; file bytes are NEVER persisted.
- *  - Content is resolved LIVE (`getContextText`) from the current file each turn.
- *    Because a pin rides `contextPosition:'prefix'` (leading messages, before the
- *    growing history), the live render is byte-identical when the file is unchanged
- *    → the prompt cache hits and the pin is paid for once; when the file actually
- *    changes, the new bytes bust the cache from that point (one cold-start) — which
- *    is exactly the point of a pin. No watcher: nothing is in flight between sends.
- *  - The properties panel also reads live (nothing to be stale against).
+ *    and an `@file` mention (composer.js and scheduled-send-service.js both create
+ *    one per mention). What is NOT this is a `read` TOOL CALL — that is
+ *    ReadFileContextItem, an immutable record of bytes the model saw at one turn,
+ *    living in the append-only history. The split is who asked, not how casually.
+ *  - `data.seeded` splits this class in two, on exactly that question:
+ *
+ *    A PIN (no flag) is LIVE. It persists only a `path`; file bytes are NEVER
+ *    persisted. Content is resolved from disk on every render. Because it rides
+ *    `contextPosition:'prefix'` (leading messages, before the growing history),
+ *    the render is byte-identical while the file is unchanged → the prompt cache
+ *    hits and the pin is paid for once; a real change busts the cache from that
+ *    point (one cold start) — which is exactly the point of a pin. No watcher:
+ *    nothing is in flight between sends.
+ *
+ *    A SEEDED item is FROZEN — the CLAUDE.md / AGENTS.md a session adds to
+ *    itself (session.js `addAIAssistantFiles`). Nobody asked for it, so it may
+ *    not spend the user's time: it snapshots once into `data.content` and serves
+ *    that for the life of the conversation. Live would be the expensive default
+ *    here, because the agent editing its own agents file is routine — the file
+ *    it is most often asked to update — and every such edit would cold-start the
+ *    whole cached prefix. Freezing also stops the same bytes being sent twice:
+ *    after such an edit they are already in the history, verbatim, in the
+ *    tool_use pair that wrote them. Skills and memory freeze for the sibling
+ *    reason (memory-context-item.js).
+ *  - The snapshot is taken at the FIRST TRANSACTION, not at add-time: a
+ *    conversation can sit open for an hour before its first send, and what
+ *    belongs in context is what was true when work began. `contextParams.forRequest`
+ *    is what distinguishes a dispatch render from a properties-panel one.
+ *  - The properties panel always reads LIVE. For a pin there is nothing to be
+ *    stale against; for a seeded item it is deliberately showing the file rather
+ *    than the snapshot, says so, and offers a refresh that re-freezes on demand.
  * @class
  * @augments ContextItem
  */
@@ -85,7 +119,8 @@ class FileContentContextItem extends ContextItem {
     contextPosition: /** @type {const} */ ('prefix'),
     exampleData: {
       path: 'src/main.go',
-      isDirectory: false
+      isDirectory: false,
+      seeded: false
     }
   };
 
@@ -206,23 +241,32 @@ class FileContentContextItem extends ContextItem {
 
   /**
    * Remove legacy/transient snapshot fields from a data object in place.
+   *
+   * `content` is stripped for a PIN, whose footprint is a path and nothing else,
+   * and kept for a SEEDED item, where it is the live snapshot rather than a
+   * leftover. Getting that exception wrong is silent: the item would reload with
+   * no snapshot, take a fresh one, and behave as a live pin again — which is the
+   * whole bug this split exists to prevent. The other fields are stale companions
+   * of the old snapshot format and are dead weight for both kinds.
    * @param {Record<string, unknown>} data - The data object to clean
    * @private
    */
   static _stripLegacyFields(data) {
-    const dead = ['content', 'language', 'size', 'totalLines', 'lineOffset',
+    const dead = ['language', 'size', 'totalLines', 'lineOffset',
       'lineCount', 'exists', 'warning', 'readMode'];
+    if (!data.seeded) dead.push('content');
     for (const k of dead) {
       if (k in data) delete data[k];
     }
   }
 
   /**
-   * Execute tool call - record the pinned path.
+   * Execute tool call - record the path, and whether this was seeded.
    *
-   * No content fetch here: pinned content is resolved live at send time via
-   * {@link createContextText}. The properties panel and any UI badge that needs a
-   * line count will fetch on demand.
+   * No content fetch here, for either kind. A pin resolves live at send time; a
+   * seeded item takes its snapshot at the first transaction, which is later than
+   * this and deliberately so (see the class comment). The properties panel and
+   * any UI badge that needs a line count will fetch on demand.
    * @param {string} _toolName - Tool name (unused, only one tool)
    * @param {Record<string, any>} params - Tool parameters
    * @returns {Promise<void>}
@@ -232,6 +276,7 @@ class FileContentContextItem extends ContextItem {
       throw new Error('Missing required parameter: path');
     }
     this.data.path = params.path;
+    if (params.seeded) this.data.seeded = true;
   }
 
   /**
@@ -345,10 +390,16 @@ class FileContentContextItem extends ContextItem {
   /**
    * Create properties panel view.
    *
-   * The panel always reflects live disk contents — there is no snapshot
-   * to be stale against. We render a `Loading…` placeholder synchronously,
-   * kick off a `_fetchLive()` (which reuses the 500ms TTL cache from any
-   * just-completed send), and swap the result in when it resolves.
+   * The panel always shows LIVE disk contents. For a pin that is simply the
+   * truth — there is no snapshot to be stale against. For a seeded item it is a
+   * deliberate mismatch: the panel is the curation UI, so it must show what the
+   * file actually says, not what this conversation happens to be reading. A note
+   * states the difference and offers the refresh, because a panel that silently
+   * showed one thing while the model read another would be the worst of both.
+   *
+   * We render a `Loading…` placeholder synchronously, kick off a `_fetchLive()`
+   * (which reuses the 500ms TTL cache from any just-completed send), and swap the
+   * result in when it resolves.
    * @returns {HTMLElement} Properties panel element
    */
   createPropertiesPanelElement() {
@@ -387,9 +438,16 @@ class FileContentContextItem extends ContextItem {
       const absolute = this.getAbsolutePath() || r.path || '';
       addFilePath(headerHost, absolute || 'No file', liveFileInfo(r), { pin: absolute });
 
+      if (this.data.seeded) {
+        body.replaceChildren();
+        body.appendChild(this._buildSeededNote(container));
+      }
+
       // The header above already carries the path and the current stats, so the
       // body renders content alone.
-      renderLiveFileBody(body, r, {
+      const fileBody = this.data.seeded ? createElement('div') : body;
+      if (this.data.seeded) body.appendChild(fileBody);
+      renderLiveFileBody(fileBody, r, {
         absolutePath: this.getAbsolutePath() || r.path || this.data.path,
         conversationId: this.conversation?.id,
       });
@@ -405,19 +463,65 @@ class FileContentContextItem extends ContextItem {
   /**
    * Create context text for the LLM.
    *
-   * Resolves the pinned file's contents LIVE from disk every time the prompt is
-   * built. Because the pin rides `contextPosition:'prefix'` (before the growing
-   * history), an unchanged file renders byte-identically each turn → the prompt
-   * cache hits; only a genuine change to the file busts it. Disk bytes are never
-   * persisted to Yjs.
-   * @param {import('juggler/context-item').ContextParams} _contextParams - Context parameters
+   * A PIN resolves LIVE from disk every time the prompt is built. Because it
+   * rides `contextPosition:'prefix'` (before the growing history), an unchanged
+   * file renders byte-identically each turn → the prompt cache hits; only a
+   * genuine change busts it. Disk bytes are never persisted to Yjs.
+   *
+   * A SEEDED item serves its frozen snapshot, and takes that snapshot here on
+   * the first render where `contextParams.forRequest` is set — the first actual
+   * transaction. Display renders (the properties panel's token chip) deliberately
+   * do not latch it, so looking at the item cannot decide what it is going to say.
+   * @param {import('juggler/context-item').ContextParams} [contextParams] - Context parameters
    * @returns {Promise<string>} Formatted file content for LLM context
    */
-  async createContextText(_contextParams) {
+  async createContextText(contextParams) {
     if (!this.data.path) {
       return '';
     }
 
+    if (this.data.seeded) {
+      if (typeof this.data.content === 'string') return this.data.content;
+      const text = FileContentContextItem._boundSnapshot(await this._renderLive());
+      // Latch only on a real request. Until one arrives this renders live, so a
+      // conversation left open all morning still snapshots the file as it stands
+      // when work starts rather than as it stood when the tab was opened.
+      if (contextParams?.forRequest) this.data.content = text;
+      return text;
+    }
+
+    return this._renderLive();
+  }
+
+  /**
+   * Bound a snapshot to what is reasonable to keep in the document.
+   *
+   * Applied to the text BEFORE it is both stored and returned, so the snapshot
+   * and the bytes the model reads are the same thing — a bound applied only on
+   * the way into `data` would make the first turn and every later one differ,
+   * which is precisely the cold start the freeze exists to avoid.
+   * @param {string} text - The rendered context text
+   * @returns {string} The text, truncated if it exceeded the ceiling
+   * @private
+   */
+  static _boundSnapshot(text) {
+    const { content, truncated } = smartTruncate(text, { maxChars: MAX_SEEDED_SNAPSHOT_CHARS });
+    return truncated
+      ? content + `\n\n(Truncated from ${text.length} to ${content.length} chars)`
+      : text;
+  }
+
+  /**
+   * Render the file's current contents as LLM context text.
+   *
+   * The shared body of a pin's every-turn render, a seeded item's one-off
+   * snapshot, and the re-snapshot behind the properties panel's refresh — so all
+   * three are byte-identical for the same file, and a refresh cannot quietly
+   * produce something a send would have rendered differently.
+   * @returns {Promise<string>} Formatted file content for LLM context
+   * @private
+   */
+  async _renderLive() {
     const r = await this._fetchLive();
 
     if (!r.exists) {
@@ -465,6 +569,61 @@ class FileContentContextItem extends ContextItem {
       : formatted;
   }
 
+  /**
+   * Build the note that explains a seeded item's frozen state, and the update
+   * affordance when there is something to update to.
+   *
+   * The update control appears only once the file has actually diverged from the
+   * snapshot: an "Update" that would change nothing is a button that teaches the
+   * user it does nothing. The re-read it costs is stated next to it rather than
+   * discovered afterwards.
+   * @param {HTMLElement} container - The panel container, re-rendered after an update
+   * @returns {HTMLElement} The note element
+   * @private
+   */
+  _buildSeededNote(container) {
+    const note = createElement('div', 'file-content-seeded-note');
+
+    if (typeof this.data.content !== 'string') {
+      note.appendChild(createElement('div', 'file-content-seeded-line',
+        'Added at the start of this conversation. It is frozen as it stands when the first message is sent.'));
+      return note;
+    }
+
+    note.appendChild(createElement('div', 'file-content-seeded-line',
+      'Added at the start of this conversation and frozen when it began, so that editing this file does not make the conversation re-read itself. The file below is live.'));
+
+    // Offer the update only against a real difference.
+    this._renderLive().then(live => {
+      if (!note.isConnected) return;
+      const current = FileContentContextItem._boundSnapshot(live);
+      if (current === this.data.content) return;
+
+      const row = createElement('div', 'file-content-seeded-actions');
+      row.appendChild(createElement('span', 'file-content-seeded-changed',
+        'The file has changed since. Updating re-reads the conversation once.'));
+
+      const update = document.createElement('button');
+      update.className = 'file-content-seeded-update';
+      update.textContent = 'Update';
+      update.setAttribute('aria-label', 'Update the frozen copy of this file');
+      update.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        update.disabled = true;
+        this.data.content = FileContentContextItem._boundSnapshot(await this._renderLive());
+        this.onContentChange?.();
+        container.replaceChildren(...Array.from(this.createPropertiesPanelElement().childNodes));
+      });
+      row.appendChild(update);
+      note.appendChild(row);
+    }).catch(() => {
+      // Couldn't read the file to compare; the note above still stands and the
+      // live body below will report the failure itself.
+    });
+
+    return note;
+  }
+
   // ========== PRIVATE HELPERS ==========
 
   /**
@@ -477,5 +636,29 @@ class FileContentContextItem extends ContextItem {
     return basename(path) || path;
   }
 }
+
+const FILE_CONTENT_STYLES = `
+.file-content-seeded-note {
+  display: flex; flex-direction: column; gap: 0.5rem;
+  padding: 0 0 0.5rem 0;
+  font-size: 0.75rem; line-height: 1.5;
+  color: var(--text-tertiary, var(--text-secondary));
+}
+.file-content-seeded-actions {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+}
+.file-content-seeded-changed { color: var(--text-secondary); }
+.file-content-seeded-update {
+  padding: 0.125rem 0.625rem; border-radius: 4px;
+  font-size: 0.75rem; cursor: pointer;
+  border: 1px solid var(--border-color, rgba(127, 127, 127, 0.3));
+  background: var(--bg-raised, rgba(127, 127, 127, 0.15));
+  color: var(--text-primary);
+}
+.file-content-seeded-update:hover:not(:disabled) { background: var(--bg-hover, rgba(127, 127, 127, 0.25)); }
+.file-content-seeded-update:disabled { opacity: 0.5; cursor: default; }
+`;
+
+injectStylesOnce('file-content-styles', FILE_CONTENT_STYLES);
 
 export default FileContentContextItem;

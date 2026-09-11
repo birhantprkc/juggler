@@ -60,6 +60,7 @@ import { runTests as runContextCacheImpactTests } from '../unit-tests/context-ca
 import { runTests as runCacheBaselineAnchorTests } from '../unit-tests/cache-baseline-anchor-test.js';
 import { runTests as runCodeLinesTests } from '../unit-tests/code-lines-test.js';
 import { runTests as runCacheMissWarningTests } from '../unit-tests/cache-miss-warning-test.js';
+import { runTests as runFileContentFreezeTests } from '../unit-tests/file-content-freeze-test.js';
 import { runTests as runErrorRetryGateTests } from '../unit-tests/error-retry-gate-test.js';
 import { runTests as runAuthErrorActionTests } from '../unit-tests/auth-error-action-test.js';
 import { runTests as runKeylessSignInStatusTests } from '../unit-tests/keyless-signin-status-test.js';
@@ -369,6 +370,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:cache-baseline-anchor', run: runCacheBaselineAnchorTests },
   { name: 'unit:code-lines', run: runCodeLinesTests },
   { name: 'unit:cache-miss-warning', run: runCacheMissWarningTests },
+  { name: 'unit:file-content-freeze', run: runFileContentFreezeTests },
   { name: 'unit:error-retry-gate', run: runErrorRetryGateTests },
   { name: 'unit:auth-error-action', run: runAuthErrorActionTests },
   { name: 'unit:keyless-signin-status', run: runKeylessSignInStatusTests },

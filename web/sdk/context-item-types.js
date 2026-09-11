@@ -184,6 +184,10 @@
  * @property {number} [contextWindowSize] - Total LLM context window size in tokens
  * @property {{provider: string, model: string}|null} [modelConfig] - Model configuration
  * @property {object} helpers - Formatting helper utilities
+ * @property {boolean} [forRequest] - True when this render is building an actual
+ *   provider request, false/absent when it is for display (the properties panel
+ *   sizes its token chip by rendering too). An item that snapshots itself must
+ *   latch on this and nothing else, or merely looking at it would freeze it.
  */
 
 /**

@@ -203,23 +203,33 @@ export async function runTests(_ctx) {
     assert(impact === 'none', `a restored transcript must clear the caution, got ${impact}`);
   });
 
-  // ── Leading `prefix` context items (frozen pinned/dropped files) ──────────
-  // These sit between tools+system and the growing history, so they ARE part of
-  // the cached prefix now: add/remove/re-pin busts from their position.
+  // ── Leading `prefix` context items ───────────────────────────────────────
+  // Dropped files and seeded agents files, which keep their bytes in the
+  // document. These sit between tools+system and the growing history, so they ARE
+  // part of the cached prefix: add/remove/re-snapshot busts from their position.
   const fpp = (
     /** @type {string} */ sig,
     /** @type {any[]} */ prefixItems,
     /** @type {any[]} */ its
   ) => buildPrefixFingerprint({ toolsetSig: sig, prefixItems, items: its });
   /**
-   * A `prefix` context-item stub with a content length, so the re-read slice can
-   * be sized by content just like history items.
+   * A `prefix` context-item stub that persists its bytes, so the re-read slice
+   * can be sized by content just like history items.
    * @param {string} id - Context item id
-   * @param {number} len - Frozen content length in chars
+   * @param {number} len - Persisted content length in chars
    * @returns {{id: string, type: string, data: {content: string}}} A context-item stub
    */
   const pctx = (/** @type {string} */ id, /** @type {number} */ len) =>
     ({ id, type: 'file-content', data: { content: 'x'.repeat(len) } });
+
+  /**
+   * A LIVE pin stub: a `file-content` item with no `seeded` flag persists only a
+   * path, so there is no `data.content` for the fingerprint to weigh.
+   * @param {string} id - Context item id
+   * @returns {{id: string, type: string, data: {path: string}}} A context-item stub
+   */
+  const livePin = (/** @type {string} */ id) =>
+    ({ id, type: 'file-content', data: { path: 'src/main.go' } });
 
   test('identical prefix items → none', () => {
     const b = fpp('read,write', [pctx('FILE_1', 40)], many);
@@ -240,6 +250,22 @@ export async function runTests(_ctx) {
     const c = fpp('read,write', [pctx('FILE_1', 41)], many); // re-snapshot, new length
     const impact = classifyContextCacheImpact({ baseline: b, current: c, anchorTokens: big });
     assert(impact === 'busts-large', `a changed pin snapshot re-reads history after it, got ${impact}`);
+  });
+
+  test('a live pin is invisible to the fingerprint (known blind spot)', () => {
+    // Documented, not desired. A pin persists only its path, so changing the file
+    // it points at leaves the fingerprint identical and the composer says nothing,
+    // even though the send really does bust the cache from that item's position.
+    // This asserts the limitation so that anyone who closes it has to delete a
+    // test that says why it was open, rather than discovering it by surprise.
+    // The seeded agents files — the ones nobody chose — are frozen precisely so
+    // they cannot drift through this gap; see file-content-context-item.js.
+    const b = fpp('read,write', [livePin('FILE_1')], many);
+    const c = fpp('read,write', [livePin('FILE_1')], many);
+    assert(b.join('|') === c.join('|'),
+      'a live pin signs identically regardless of the bytes on disk');
+    const impact = classifyContextCacheImpact({ baseline: b, current: c, anchorTokens: big });
+    assert(impact === 'none', `nothing is detected for a live pin, got ${impact}`);
   });
 
   test('removing a leading prefix item shifts all history after it → busts-large', () => {
