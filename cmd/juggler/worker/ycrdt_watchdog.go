@@ -86,16 +86,17 @@ func (m *watchedMutex) sample(now time.Time) (age time.Duration, generation uint
 	return now.Sub(time.Unix(0, since)), after, true
 }
 
-// watchYcrdtStalls samples the lock forever, calling report at most once per
-// stalled acquisition. Started by init below; runs for the process lifetime.
-// report is a parameter so the detection rule can be tested without capturing
-// log output.
-func watchYcrdtStalls(m *watchedMutex, interval, threshold time.Duration, report func(age time.Duration)) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+// watchYcrdtStalls samples the lock on every tick, calling report at most once
+// per stalled acquisition. Started by init below; runs for the process
+// lifetime. Each tick carries the time the sample is taken at, so a tick
+// delayed behind a busy scheduler measures the hold as it was when the sample
+// fell due — which can only under-state a stall, never invent one. The tick
+// channel and report are parameters so the detection rule can be driven from a
+// test by hand, without a real clock or captured log output.
+func watchYcrdtStalls(m *watchedMutex, ticks <-chan time.Time, threshold time.Duration, report func(age time.Duration)) {
 	var reported uint64
-	for range ticker.C {
-		age, generation, ok := m.sample(time.Now())
+	for now := range ticks {
+		age, generation, ok := m.sample(now)
 		if !ok || age < threshold {
 			continue
 		}
@@ -128,5 +129,7 @@ func goroutineDump() string {
 }
 
 func init() {
-	go watchYcrdtStalls(&ycrdtMu, ycrdtStallCheckInterval, ycrdtStallThreshold, reportYcrdtStall)
+	// The watchdog runs until the process exits, so the ticker is never stopped.
+	ticker := time.NewTicker(ycrdtStallCheckInterval)
+	go watchYcrdtStalls(&ycrdtMu, ticker.C, ycrdtStallThreshold, reportYcrdtStall)
 }

@@ -46,61 +46,119 @@ func TestWatchedMutexSampleTracksHolds(t *testing.T) {
 	}
 }
 
+// watchdogHarness drives watchYcrdtStalls one sample at a time. The ticks a
+// test sends carry the sample time, so a stall is a tick stamped long after
+// the hold began rather than a hold the test has to sit and wait out: nothing
+// here depends on elapsed time, a timer firing promptly, or a goroutine being
+// scheduled within some deadline.
+type watchdogHarness struct {
+	m       watchedMutex
+	ticks   chan time.Time
+	reports chan time.Duration
+	done    chan struct{}
+}
+
+func newWatchdogHarness(threshold time.Duration) *watchdogHarness {
+	h := &watchdogHarness{
+		ticks:   make(chan time.Time),
+		reports: make(chan time.Duration, 16),
+		done:    make(chan struct{}),
+	}
+	go func() {
+		defer close(h.done)
+		watchYcrdtStalls(&h.m, h.ticks, threshold, func(age time.Duration) {
+			select {
+			case h.reports <- age:
+			default: // a watchdog reporting every tick fails the count, never wedges the test
+			}
+		})
+	}()
+	return h
+}
+
+// sample takes one sample stamped at, and returns once the watchdog has
+// finished handling it. The wait is the barrier tick that follows: ticks is
+// unbuffered, so that send completes only after the loop has come back round
+// from the sample before it. A zero-stamped tick is an age below any
+// threshold, so the barrier itself can never report, whenever it is handled.
+func (h *watchdogHarness) sample(at time.Time) {
+	h.ticks <- at
+	h.ticks <- time.Time{}
+}
+
+// heldSince is when the current holder acquired the lock — the instant every
+// age the watchdog reports is measured from, so stamping ticks relative to it
+// makes those ages exact.
+func (h *watchdogHarness) heldSince() time.Time {
+	return time.Unix(0, h.m.heldSince.Load())
+}
+
+// finish stops the watchdog and returns every age it reported.
+func (h *watchdogHarness) finish() []time.Duration {
+	close(h.ticks)
+	<-h.done // every tick handled, so every report is already in the channel
+	var ages []time.Duration
+	for {
+		select {
+		case age := <-h.reports:
+			ages = append(ages, age)
+		default:
+			return ages
+		}
+	}
+}
+
 // TestWatchYcrdtStallsReportsOncePerStall is the behaviour that keeps a real
 // deadlock readable: the dump costs megabytes of log, so a lock stuck for
 // hours must produce exactly one report, not one per tick. A later, separate
 // stall must still be reported.
 func TestWatchYcrdtStallsReportsOncePerStall(t *testing.T) {
-	var m watchedMutex
-	reports := make(chan time.Duration, 16)
-	go watchYcrdtStalls(&m, time.Millisecond, 5*time.Millisecond, func(age time.Duration) {
-		reports <- age
-	})
+	h := newWatchdogHarness(time.Minute)
 
-	m.Lock()
-	select {
-	case <-reports:
-	case <-time.After(2 * time.Second):
-		t.Fatal("a hold past the threshold was never reported")
-	}
-	// Stay locked well past several more ticks: no second report may arrive
-	// for the same acquisition.
-	time.Sleep(50 * time.Millisecond)
-	select {
-	case <-reports:
-		t.Fatal("the same stalled acquisition was reported more than once")
-	default:
-	}
-	m.Unlock()
+	h.m.Lock()
+	held := h.heldSince()
+	h.sample(held.Add(time.Hour))     // a stall: reported
+	h.sample(held.Add(2 * time.Hour)) // the same acquisition: silent
+	h.sample(held.Add(3 * time.Hour))
+	h.m.Unlock()
 
 	// A distinct stall later is a distinct generation, so it reports again.
-	m.Lock()
-	defer m.Unlock()
-	select {
-	case <-reports:
-	case <-time.After(2 * time.Second):
-		t.Fatal("a second, separate stall was not reported")
+	h.m.Lock()
+	held = h.heldSince()
+	h.sample(held.Add(time.Hour))
+	h.sample(held.Add(2 * time.Hour))
+	h.m.Unlock()
+
+	ages := h.finish()
+	if len(ages) != 2 {
+		t.Fatalf("got %d reports (%v), want one per stalled acquisition", len(ages), ages)
+	}
+	for _, age := range ages {
+		if age != time.Hour {
+			t.Errorf("reported age %s, want 1h — the time since that hold began", age)
+		}
 	}
 }
 
 // TestWatchYcrdtStallsIgnoresShortHolds guards against false positives: normal
 // doc mutations take microseconds and must never trigger a dump.
 func TestWatchYcrdtStallsIgnoresShortHolds(t *testing.T) {
-	var m watchedMutex
-	reports := make(chan time.Duration, 16)
-	go watchYcrdtStalls(&m, time.Millisecond, 250*time.Millisecond, func(age time.Duration) {
-		reports <- age
-	})
+	const threshold = 250 * time.Millisecond
+	h := newWatchdogHarness(threshold)
 
+	// Two hundred brief holds, each sampled from inside.
 	for range 200 {
-		m.Lock()
-		m.Unlock() //nolint:staticcheck // deliberately a short hold, not a defer
+		h.m.Lock()
+		h.sample(time.Now())
+		h.m.Unlock()
 	}
-	time.Sleep(50 * time.Millisecond)
 
-	select {
-	case age := <-reports:
-		t.Fatalf("a short hold was reported as a stall (age %s)", age)
-	default:
+	// And the boundary: a hold sampled a nanosecond short of the threshold.
+	h.m.Lock()
+	h.sample(h.heldSince().Add(threshold - time.Nanosecond))
+	h.m.Unlock()
+
+	if ages := h.finish(); len(ages) > 0 {
+		t.Fatalf("a short hold was reported as a stall (ages %v)", ages)
 	}
 }
