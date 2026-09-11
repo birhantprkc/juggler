@@ -329,7 +329,8 @@ func repoDiffstats(ctx context.Context, dir string, status *gitRepoStatus) error
 		return err
 	}
 	out, err := gitRead(ctx, dir, gitStatusPerCmd, gitDiffMaxMeta,
-		"diff", "--no-ext-diff", "--no-textconv", "--numstat", "-z", base, "--")
+		"diff-index", "--no-ext-diff", "--no-textconv", "--find-renames",
+		"--numstat", "-z", base, "--")
 	if err != nil {
 		return err
 	}

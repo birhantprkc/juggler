@@ -453,6 +453,15 @@ func readBounded(ctx context.Context, r io.Reader, limit int) (boundedOutput, er
 // reason --no-ext-diff and --no-textconv are passed to the commands that accept
 // them: reading a project is not consent to run commands its configuration
 // names.
+//
+// --no-optional-locks is not on its own enough to keep a read from writing, and
+// this is why every comparison against a tree here is asked of the plumbing
+// diff-index rather than of diff. Porcelain diff refreshes the index and writes
+// the refreshed stat information back whatever GIT_OPTIONAL_LOCKS says, so a
+// user who only looked at a review would find their index rewritten underneath
+// whatever their own git client was doing with it. diff-index answers the same
+// question — the same records, byte for byte, given the rename and abbreviation
+// options porcelain applies from configuration — and refreshes nothing.
 func gitCommand(ctx context.Context, dir string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", append([]string{
 		"--no-optional-locks", "-c", "core.quotePath=false", "-c", "diff.external=",
@@ -555,8 +564,8 @@ func gitDiffBase(ctx context.Context, dir string, budget time.Duration) (string,
 // knows but more than nothing.
 func gitDiffMetadata(ctx context.Context, dir, base string) (map[string]gitFileMeta, error) {
 	out, err := gitRead(ctx, dir, gitDiffPerCmd, gitDiffMaxMeta,
-		"diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--find-copies",
-		"--raw", "-z", base, "--")
+		"diff-index", "--no-ext-diff", "--no-textconv", "--find-renames", "--find-copies",
+		"--raw", "--abbrev", "-z", base, "--")
 	if err != nil {
 		return nil, err
 	}
@@ -639,7 +648,7 @@ func gitFileConflicted(ctx context.Context, dir, fileRel string) bool {
 // cut short and can no longer be counted from.
 func gitNumstatCounts(ctx context.Context, dir, base string, paths []string) (gitDiffstat, bool) {
 	args := append([]string{
-		"diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--find-copies",
+		"diff-index", "--no-ext-diff", "--no-textconv", "--find-renames", "--find-copies",
 		"--numstat", "-z", base, "--",
 	}, paths...)
 	out, err := gitRead(ctx, dir, gitDiffPerCmd, gitDiffMaxMeta, args...)
@@ -657,8 +666,8 @@ func gitNumstatCounts(ctx context.Context, dir, base string, paths []string) (gi
 // pathspec so that git pairs them; --no-color keeps the output parseable.
 func gitFilePatch(ctx context.Context, dir, base string, paths []string) (boundedOutput, error) {
 	args := append([]string{
-		"diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames",
-		"--unified=" + strconv.Itoa(gitDiffContext), base, "--",
+		"diff-index", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames",
+		"--patch", "--unified=" + strconv.Itoa(gitDiffContext), base, "--",
 	}, paths...)
 	return gitRead(ctx, dir, gitDiffPerCmd, gitDiffMaxBytes, args...)
 }

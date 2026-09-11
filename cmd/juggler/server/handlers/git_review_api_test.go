@@ -455,6 +455,13 @@ func TestGitReviewChangesNothingOnDisk(t *testing.T) {
 	// want to write the index back: the stat information it cached no longer
 	// matches, and refreshing it is exactly the optional lock we refuse to take.
 	p.write("kept.txt", "one\ntwo\n")
+	// Backdating that file is what makes the temptation reliable rather than a
+	// property of how fast the machine ran the test. A file written in the same
+	// filesystem tick as the index is "racily clean": git cannot trust the stat
+	// information it just read, so it declines to cache it and the index it would
+	// have rewritten stays as it was. An older timestamp is unambiguous, git
+	// caches the refreshed stat, and a porcelain read writes the index out.
+	p.backdate("kept.txt")
 
 	before := p.snapshot()
 	if !p.review().Complete {

@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // These are the handler's tests rather than its parser's: each one builds a real
@@ -98,6 +99,19 @@ func (p *gitProject) write(rel, content string) {
 	}
 }
 
+// backdate moves a working-tree file's timestamps a day into the past, which is
+// how a test says "this file was written a while ago" without waiting. git
+// distrusts stat information as new as the index it would be cached in, so a
+// file's age decides whether git can act on having re-read it.
+func (p *gitProject) backdate(rel string) {
+	p.t.Helper()
+	abs := filepath.Join(p.dir, filepath.FromSlash(rel))
+	old := time.Now().Add(-24 * time.Hour)
+	if err := os.Chtimes(abs, old, old); err != nil {
+		p.t.Fatal(err)
+	}
+}
+
 // commit stages everything in the working tree and commits it.
 func (p *gitProject) commit(message string) {
 	p.t.Helper()
@@ -150,6 +164,43 @@ func lineText(resp gitDiffResponse) string {
 		}
 	}
 	return b.String()
+}
+
+// Reading one file's diff is as much a read as reading the whole review, and it
+// is the one a user does over and over: a click per file, each of them a chance
+// to rewrite the index under the git client they have open in another window.
+func TestGitDiffChangesNothingOnDisk(t *testing.T) {
+	p := newGitProject(t)
+	p.write("kept.txt", "one\ntwo\n")
+	p.write("edited.txt", "one\n")
+	p.commit("init")
+
+	p.write("edited.txt", "one\nEDITED\n")
+	// A tracked file rewritten with the content it already has, old enough for git
+	// to trust what it just read about it, is what tempts git into refreshing the
+	// index — see TestGitReviewChangesNothingOnDisk.
+	p.write("kept.txt", "one\ntwo\n")
+	p.backdate("kept.txt")
+
+	before := p.snapshot()
+	if got := lineText(p.diff("edited.txt")); got == "" {
+		t.Fatal("the diff was empty before it could prove anything")
+	}
+	after := p.snapshot()
+
+	for path, was := range before {
+		switch now, present := after[path]; {
+		case !present:
+			t.Errorf("the diff removed %s", path)
+		case now != was:
+			t.Errorf("the diff rewrote %s", path)
+		}
+	}
+	for path := range after {
+		if _, present := before[path]; !present {
+			t.Errorf("the diff created %s", path)
+		}
+	}
 }
 
 // The index is a staging area, not a second answer: what the user has told git
