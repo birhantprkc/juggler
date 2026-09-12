@@ -261,6 +261,26 @@ class Session {
     this._remoteCreates = new Set();
 
     /**
+     * Ids this client has removed locally whose removal the server has not yet
+     * acknowledged — the bin or delete request is still on the wire.
+     *
+     * A removal is local-first: the conversation leaves the map, then the
+     * request goes out. For the width of that request the two disagree, and the
+     * manifest is still the server's answer — the server serializes session
+     * state on one goroutine that drains reads ahead of queued writes, so a GET
+     * issued after the removal request can be answered before it. A refresh
+     * reading that manifest finds an id it doesn't hold, takes it for a
+     * conversation another viewer just made, and loads it back.
+     *
+     * So the map is not the whole of what this client knows: an id in here was
+     * removed deliberately, and a manifest that still lists it is stale rather
+     * than newer. {@link Session#refreshFromServer} is the only reader.
+     * @type {Set<string>}
+     * @private
+     */
+    this._removedPendingConfirm = new Set();
+
+    /**
      * Services object passed to Conversation instances
      * Set via setServices() after services are initialized
      * @type {ConversationServices|null}
@@ -2211,23 +2231,44 @@ class Session {
     // Tear down worker + map entry and pick a fallback tab up-front. Binning the
     // last conversation leaves the session empty (clearVisibleIfNoFallback) —
     // the user starts a new one with "+".
+    // Marked before the map entry goes, so no window exists in which the
+    // conversation is absent from both the map and the tombstones and a refresh
+    // could read it back off the manifest.
+    this._removedPendingConfirm.add(conversationId);
+
     const conv = await this._dropActiveConversation(conversationId, { clearVisibleIfNoFallback: true });
     if (!conv) {
+      this._removedPendingConfirm.delete(conversationId);
       return false;
     }
 
     // The worker is already destroyed, so the folder is released before the
     // backend moves it to .juggler/bin/. Local removal is unconditional, so a
     // failed bin request still leaves the tab gone (logged, not surfaced).
+    //
+    // The tombstone is retired the moment the request settles, and not before:
+    // the server answers only once the move and the manifest write have both
+    // run, so any read issued after this line already reflects the bin. It is
+    // retired on failure too — the request is no longer in flight, and the
+    // manifest has become the better authority on a conversation this client
+    // believes it binned and the server may never have.
     try {
       await this._apiService.binConversation(conversationId);
       this.binnedCount += 1;
     } catch (error) {
       console.error(`[Session] Failed to bin conversation ${conversationId}:`, error);
+    } finally {
+      this._removedPendingConfirm.delete(conversationId);
     }
 
+    // Other viewers learn of this from the server's `conversations-changed`
+    // op="binned" broadcast, which the bin endpoint sends once the folder has
+    // actually moved. Announcing it a second time over `session-changed` would
+    // make every viewer — this one included, since the broadcast goes to the
+    // sender too — re-read the whole manifest, and a manifest read is answered
+    // ahead of a queued bin write. The reply can still list this conversation,
+    // and a refresh treats an id it doesn't hold as one to load.
     this._notify('conversation:deleted', conv);
-    this._notifyOtherViews();
     return true;
   }
 
@@ -2294,11 +2335,15 @@ class Session {
       return false;
     }
 
+    // Tombstoned for the width of the request, as binConversation explains.
+    this._removedPendingConfirm.add(conversationId);
+
     // Cancel the load, destroy the worker, drop from the active map, and switch
     // to the MRU fallback tab. The size>1 guard above means a fallback always
     // exists, so clearVisibleIfNoFallback is irrelevant here (kept false).
     const conv = await this._dropActiveConversation(conversationId, { clearVisibleIfNoFallback: false });
     if (!conv) {
+      this._removedPendingConfirm.delete(conversationId);
       return false;
     }
 
@@ -2309,10 +2354,13 @@ class Session {
       await this._apiService.deleteConversation(conversationId, { reason });
     } catch (error) {
       console.error(`[Session] Failed to delete conversation ${conversationId}:`, error);
+    } finally {
+      this._removedPendingConfirm.delete(conversationId);
     }
 
+    // Carried to other viewers by the server's `conversations-changed`
+    // op="deleted" broadcast, for the reasons given in binConversation.
     this._notify('conversation:deleted', conv);
-    this._notifyOtherViews();
     // Don't call save() - backend DELETE already updated the session
     return true;
   }
@@ -2422,6 +2470,18 @@ class Session {
     // read, and this rebuild has no opinion about it.
     const knownAtEntry = new Set(this.conversations.keys());
 
+    // The map alone would have this rebuild undo removals still in flight: an id
+    // this client has binned is absent from the map and present in a manifest
+    // read before the bin landed, which is indistinguishable from a conversation
+    // another viewer has just created. Tombstones tell the two apart.
+    //
+    // Both ends of the window are checked, because a removal can be confirmed at
+    // any point during a refresh. This snapshot catches one tombstoned before
+    // the GET went out and retired before its reply came back; the live set,
+    // read at the point of use below, catches one tombstoned while the GET was
+    // in flight. Neither check subsumes the other.
+    const tombstonedAtEntry = new Set(this._removedPendingConfirm);
+
     const data = await this._apiService.getSession();
     if (!data.conversationOrder) return;
 
@@ -2473,6 +2533,12 @@ class Session {
         if (existing.loadState === 'unloaded') this._requestConversationLoad(id);
         continue;
       }
+      // Listed by the server, gone from the map, and removed on purpose: this
+      // client binned or deleted it and the request has not settled. The
+      // manifest predates the removal rather than outranking it, so leave it
+      // out — the rebuild below then drops it from the order too.
+      if (tombstonedAtEntry.has(id) || this._removedPendingConfirm.has(id)) continue;
+
       // New conversation from another view (or restored locally) — load
       // it and announce via 'conversation:created' below so conversation-bar
       // creates the <conversation-tab> host element.
@@ -2520,7 +2586,20 @@ class Session {
   }
 
   /**
-   * Notify other views that session state has changed.
+   * Notify other views that session-level state has changed, so they re-read it.
+   *
+   * For session-level metadata only — messageHistory, metadata flags, the
+   * visible conversation — which is exactly what PUT /session writes, and its
+   * only caller is the save that issues that PUT. A conversation-list mutation
+   * must NOT travel this way: it is announced by the server's own
+   * `conversations-changed` broadcast, which names the conversation and the op,
+   * and which every client applies idempotently.
+   *
+   * The distinction is not cosmetic. This lands as `session-changed`, whose
+   * only handling is a full {@link Session#refreshFromServer} — a manifest read
+   * that the server may answer ahead of a write still queued behind it. Used to
+   * announce a removal, it invites a reply that still lists the conversation,
+   * and the refresh loads back what the removal just took out.
    * @private
    */
   _notifyOtherViews() {

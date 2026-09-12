@@ -109,6 +109,16 @@ class ConversationBar extends JugglerElement {
     /** @type {number} @private Timestamp (ms) of the last accepted new-conversation create, for leading-edge debounce */
     this._lastCreateAt = 0;
 
+    /**
+     * Conversations with a bin in flight. A bin spans a server round-trip, and
+     * every affordance that starts one — the per-tab button, the context menu,
+     * the shortcut — stays live for the whole of it. Without this, binning the
+     * same conversation twice tears it down twice and sends two requests for a
+     * folder that moved on the first.
+     * @type {Set<string>} @private
+     */
+    this._binningIds = new Set();
+
     /** @type {number|null} @private Timer retiring the bin Undo toast */
     this._binUndoTimer = null;
 
@@ -1097,10 +1107,29 @@ class ConversationBar extends JugglerElement {
     if (this._isConversationBusy(conversationId)) {
       return;
     }
-    this._flyTabToBin(conversationId);
-    const binned = await this._session.binConversation(conversationId);
-    if (binned) {
-      this._showBinUndo(conversationId);
+    if (this._binningIds.has(conversationId)) {
+      return;
+    }
+    // The tab flies only when the bin behind it will actually happen. A
+    // conversation the session no longer holds is precisely the case
+    // binConversation refuses, and flying the tab for it would take the tab
+    // away and leave the conversation — so the next render, reading the map,
+    // puts the tab straight back. Checked here rather than inferred from the
+    // return value, which arrives a round-trip too late to withhold an
+    // animation that has already played.
+    if (!this._session.conversations.has(conversationId)) {
+      return;
+    }
+
+    this._binningIds.add(conversationId);
+    try {
+      this._flyTabToBin(conversationId);
+      const binned = await this._session.binConversation(conversationId);
+      if (binned) {
+        this._showBinUndo(conversationId);
+      }
+    } finally {
+      this._binningIds.delete(conversationId);
     }
   }
 

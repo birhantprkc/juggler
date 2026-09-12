@@ -161,6 +161,7 @@ import { runTests as runThemeToggleTests } from '../unit-tests/theme-toggle-test
 import { runTests as runToolNameResolutionTests } from '../unit-tests/tool-name-resolution-test.js';
 import { runTests as runNewTabUxTests } from '../unit-tests/new-tab-ux-test.js';
 import { runTests as runBinUndoToastTests } from '../unit-tests/bin-undo-toast-test.js';
+import { runTests as runBinGhostResurrectionTests } from '../unit-tests/bin-ghost-resurrection-test.js';
 import { runTests as runBinEmptyMenuTests } from '../unit-tests/bin-empty-menu-test.js';
 import { runTests as runRestoreSelectPanelTests } from '../unit-tests/restore-select-panel-test.js';
 import { runTests as runConversationFocusPolicyTests } from '../unit-tests/conversation-focus-policy-test.js';
@@ -514,6 +515,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:tool-name-resolution', run: runToolNameResolutionTests },
   { name: 'unit:new-tab-ux', run: runNewTabUxTests },
   { name: 'unit:bin-undo-toast', run: runBinUndoToastTests },
+  { name: 'unit:bin-ghost-resurrection', run: runBinGhostResurrectionTests },
   { name: 'unit:bin-empty-menu', run: runBinEmptyMenuTests },
   { name: 'unit:restore-select-panel', run: runRestoreSelectPanelTests },
   { name: 'unit:conversation-focus-policy', run: runConversationFocusPolicyTests },
