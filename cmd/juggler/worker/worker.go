@@ -265,6 +265,13 @@ type ConversationWorker struct {
 	// process sink + console. Closed in onShutdown.
 	log *jlog.Logger
 
+	// lastGuardLog is the last context-guard decision written to that log, so an
+	// unchanged one is not restated on every dispatch. See
+	// noteContextGuardDecision, which owns the rule. Behind an atomic pointer
+	// because the guard runs on turn goroutines; a plain Store rather than a CAS
+	// because two of them racing costs one extra line and nothing else.
+	lastGuardLog atomic.Pointer[contextGuardDecision]
+
 	// pathProvider resolves convID → on-disk folder path. Used for reads
 	// and to locate the per-conversation transaction folder. Set at
 	// construction by the Manager; called on every load so a rename

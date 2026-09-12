@@ -125,6 +125,63 @@ func contextLimitFromAdvisory(advisory *provider.ContextCompactionAdvisory) *pro
 	}
 }
 
+// contextGuardLogStepFraction is how far the input estimate must move, as a
+// share of the context window, before a standing guard decision is worth
+// restating. The window is the yardstick rather than the estimate itself
+// because it is what the reader is judging the estimate against, and it scales
+// with the model instead of pinning a token count no model agrees on.
+const contextGuardLogStepFraction = 0.05
+
+// contextGuardDecision is the last guard decision a worker logged: what it
+// decided and on what basis (key), and the estimate it decided against.
+type contextGuardDecision struct {
+	key      string
+	estimate int64
+}
+
+// noteContextGuardDecision records a guard decision and reports whether it is
+// worth a line.
+//
+// The guard's decisions are level, not edge. A transcript that cannot be
+// reduced re-derives the same verdict on every dispatch, and a dispatch happens
+// between every pair of tool calls rather than once per turn, so logging on
+// occurrence states one standing condition tens of times. Nothing else in the
+// system records these — no error item, no notice, nothing in the transcript —
+// which is why the line is kept at all and why it must not become wallpaper.
+//
+// A decision earns a line when it changes: a different verdict, a different
+// basis (a billed count is not a guess), or an estimate that has moved a
+// material share of the window. The drift test is what keeps a conversation
+// that grows while it cannot shrink legible as a trajectory — a handful of
+// lines with the numbers climbing — rather than one line per dispatch.
+func (w *ConversationWorker) noteContextGuardDecision(decision, basis string, estimate, window int64) bool {
+	key := decision + "\x00" + basis
+	// At least one token, so an unknown or tiny window cannot make every repeat
+	// "material" and defeat the test it is part of.
+	step := max(int64(1), int64(float64(window)*contextGuardLogStepFraction))
+	if last := w.lastGuardLog.Load(); last != nil && last.key == key {
+		drift := estimate - last.estimate
+		if drift < 0 {
+			drift = -drift
+		}
+		if drift < step {
+			return false
+		}
+	}
+	w.lastGuardLog.Store(&contextGuardDecision{key: key, estimate: estimate})
+	return true
+}
+
+// logContextGuardDecision records one guard decision and the numbers behind it,
+// unless it only restates the last one (see noteContextGuardDecision).
+func (r *run) logContextGuardDecision(decision string, limit *provider.ContextLimitExceededError) {
+	if !r.noteContextGuardDecision(decision, limit.InputBasis(), limit.EstimatedInputTokens, limit.ContextWindowTokens) {
+		return
+	}
+	r.log.Info("[context guard] %s (%s=%d reserve=%d window=%d)",
+		decision, limit.InputBasis(), limit.EstimatedInputTokens, limit.OutputReserveTokens, limit.ContextWindowTokens)
+}
+
 func providerAuthoredContextError(overflow error) error {
 	var contextLimit *provider.ContextLimitExceededError
 	if errors.As(overflow, &contextLimit) && contextLimit.Cause != nil {
@@ -229,8 +286,7 @@ func (r *run) handleContextOverflow(
 	// re-enters here as an authoritative overflow.
 	if isAdvisory && !limit.MeasuredPrefix &&
 		provider.SaturatingAdd(limit.EstimatedInputTokens, limit.OutputReserveTokens) <= limit.ContextWindowTokens {
-		r.log.Info("[context guard] unanchored estimate %d+%d fits window %d; dispatching bypassed for a measured verdict",
-			limit.EstimatedInputTokens, limit.OutputReserveTokens, limit.ContextWindowTokens)
+		r.logContextGuardDecision("unanchored estimate fits the window; dispatching bypassed for a measured verdict", limit)
 		return overflowResult{verdict: overflowBypassAndRetry}
 	}
 
@@ -239,7 +295,7 @@ func (r *run) handleContextOverflow(
 	// budget is spent, the terminal move depends on the overflow kind.
 	if !recovery.canAttempt() {
 		if isAdvisory {
-			r.log.Info("[context guard] recovery attempt bound reached; %s=%d reserve=%d window=%d; dispatching one fallback", limit.InputBasis(), limit.EstimatedInputTokens, limit.OutputReserveTokens, limit.ContextWindowTokens)
+			r.logContextGuardDecision("recovery attempt bound reached; dispatching one fallback", limit)
 			return overflowResult{verdict: overflowBypassAndRetry}
 		}
 		// Preserve and expose the last provider-authored overflow; do not
@@ -278,7 +334,7 @@ func (r *run) handleContextOverflow(
 		return overflowResult{verdict: overflowBypassAndRetry}
 	}
 	if isAdvisory {
-		r.log.Info("[context guard] %s=%d reserve=%d window=%d; dispatching one irreducible fallback", limit.InputBasis(), limit.EstimatedInputTokens, limit.OutputReserveTokens, limit.ContextWindowTokens)
+		r.logContextGuardDecision("nothing left to reduce; dispatching one irreducible fallback", limit)
 		return overflowResult{verdict: overflowBypassAndRetry}
 	}
 	// No durable structural progress: surface the latest provider overflow

@@ -1906,3 +1906,36 @@ func TestContextRecoveryShrinkChargesMapOutputCap(t *testing.T) {
 		t.Fatal("shrunk result still carries the oversized payload")
 	}
 }
+
+// TestContextGuardLogRestatesOnlyWhatChanged pins the guard's logging policy.
+// A standing condition — a transcript that cannot be reduced — re-derives the
+// same verdict on every dispatch, and a dispatch happens between every pair of
+// tool calls, so the line must be emitted on change rather than on occurrence:
+// a new verdict, a new basis, or an estimate that has moved far enough against
+// the window to be worth reading.
+func TestContextGuardLogRestatesOnlyWhatChanged(t *testing.T) {
+	w := NewConversationWorker("test-conv", "user:test")
+	defer w.doc.Destroy()
+
+	const window int64 = 200_000
+	const irreducible = "nothing left to reduce; dispatching one irreducible fallback"
+
+	if !w.noteContextGuardDecision(irreducible, "estimated", 220_956, window) {
+		t.Fatal("first override went unlogged; nothing else in the system records one")
+	}
+	if w.noteContextGuardDecision(irreducible, "estimated", 225_000, window) {
+		t.Fatal("same verdict, estimate moved 4k of a 200k window: a restatement, not information")
+	}
+	if !w.noteContextGuardDecision(irreducible, "estimated", 235_000, window) {
+		t.Fatal("estimate drifted past the step and the trajectory went unlogged")
+	}
+	if w.noteContextGuardDecision(irreducible, "estimated", 235_000, window) {
+		t.Fatal("identical line repeated after the drift re-anchored")
+	}
+	if !w.noteContextGuardDecision(irreducible, "measured", 235_000, window) {
+		t.Fatal("basis moved from guess to billed count and was suppressed as a repeat")
+	}
+	if !w.noteContextGuardDecision("recovery attempt bound reached; dispatching one fallback", "measured", 235_000, window) {
+		t.Fatal("a different verdict was suppressed")
+	}
+}
