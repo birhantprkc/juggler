@@ -17,7 +17,10 @@
  *    elements or read-only fields — this is what keeps the native menu (with its
  *    Inspect Element / Writing Tools items) from ever showing over text;
  *  - end-to-end wiring: a real `contextmenu` event opens the juggler popup,
- *    suppresses the native menu (preventDefault), and Escape dismisses it.
+ *    suppresses the native menu (preventDefault), and Escape dismisses it;
+ *  - scroll dismissal scoped to the anchor: a scroller containing what the menu
+ *    was opened on dismisses it, any other scroller — the conversation area or
+ *    properties panel following a streaming turn — leaves it open.
  * @module unit-tests/context-menu-test
  */
 
@@ -390,6 +393,38 @@ export async function runTests() {
       'e2e: Escape should dismiss the juggler menu', errors));
   } finally {
     host.remove();
+    const leftover = document.querySelector('.juggler-context-menu');
+    if (leftover) leftover.remove();
+  }
+
+  // === Scroll dismissal is scoped to scrollers that move the anchor ===
+  const scrollHost = document.createElement('div');
+  scrollHost.setAttribute(MARK, 'normal');
+  const elsewhere = document.createElement('div');
+  document.body.appendChild(scrollHost);
+  document.body.appendChild(elsewhere);
+  try {
+    scrollHost.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, clientX: 20, clientY: 20,
+    }));
+    tally(check(document.querySelector('.juggler-context-menu') !== null,
+      'scroll: menu should open on the anchor', errors));
+
+    // A scroll elsewhere in the page — the conversation area or properties panel
+    // following a streaming turn — leaves the anchor exactly where it was, so the
+    // menu must survive it.
+    elsewhere.dispatchEvent(new Event('scroll'));
+    tally(check(document.querySelector('.juggler-context-menu') !== null,
+      'scroll: a scroller that does not contain the anchor must not dismiss', errors));
+
+    // A scroll that does move the anchor still dismisses: the menu is positioned
+    // in viewport coords and cannot follow it.
+    document.body.dispatchEvent(new Event('scroll'));
+    tally(check(document.querySelector('.juggler-context-menu') === null,
+      'scroll: a scroller containing the anchor should dismiss', errors));
+  } finally {
+    scrollHost.remove();
+    elsewhere.remove();
     const leftover = document.querySelector('.juggler-context-menu');
     if (leftover) leftover.remove();
   }

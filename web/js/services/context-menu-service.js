@@ -87,6 +87,14 @@ let _openMenu = null;
 let _releaseOpenState = null;
 
 /**
+ * The element the open menu was opened on — the right-clicked target, or the
+ * button an {@link openMenuAt} menu hangs off. Scroll dismissal is scoped to it.
+ * @type {Element|null}
+ * @private
+ */
+let _anchor = null;
+
+/**
  * Register a juggler context-menu provider. Call once at module load from the
  * component that owns the relevant DOM + behaviour.
  * @param {ContextMenuProvider} provider
@@ -393,12 +401,14 @@ export function resolveMenu(start, event) {
  * @param {ContextMenuItem[]} items - The rows to show.
  * @param {number} x - Viewport x to open at, usually a button's left edge.
  * @param {number} y - Viewport y to open at, usually a button's bottom edge.
+ * @param {Element|null} [anchor] - The button the menu hangs off. Pass it so a
+ *   scroll that doesn't move the button leaves the menu open.
  * @returns {void}
  */
-export function openMenuAt(items, x, y) {
+export function openMenuAt(items, x, y, anchor) {
   const rows = (items || []).filter(Boolean);
   if (!rows.length) return;
-  showMenu(rows, x, y);
+  showMenu(rows, x, y, anchor);
 }
 
 /**
@@ -426,10 +436,33 @@ function closeMenu() {
     _releaseOpenState();
     _releaseOpenState = null;
   }
+  _anchor = null;
   document.removeEventListener('pointerdown', _onOutside, true);
   window.removeEventListener('blur', closeMenu);
   window.removeEventListener('resize', closeMenu);
-  window.removeEventListener('scroll', closeMenu, true);
+  window.removeEventListener('scroll', _onScroll, true);
+}
+
+/**
+ * Dismiss the menu on a scroll that moves what it was opened on.
+ *
+ * The listener is capture-phase on `window`, so it sees every scroller in the
+ * document — including the conversation area and the properties panel, which
+ * scroll themselves to follow each block of a streaming turn. The menu is
+ * positioned in viewport coords and cannot track its anchor, so a scroll of an
+ * ancestor scroller dismisses it; a scroll anywhere else leaves the anchor
+ * exactly where it was and is ignored. An anchor a re-render has detached is
+ * inside no scroller, so its menu survives — the rows captured what they act on
+ * when they were built.
+ * @param {Event} e - The scroll event.
+ * @private
+ */
+function _onScroll(e) {
+  const scroller = /** @type {any} */ (e.target);
+  const scopedOut = _anchor && scroller && typeof scroller.contains === 'function'
+    && !scroller.contains(_anchor);
+  if (scopedOut) return;
+  closeMenu();
 }
 
 /**
@@ -448,9 +481,10 @@ function _onOutside(e) {
  * @param {ContextMenuItem[]} items
  * @param {number} x
  * @param {number} y
+ * @param {Element|null} [anchor] - What the menu was opened on; scopes scroll dismissal.
  * @private
  */
-function showMenu(items, x, y) {
+function showMenu(items, x, y, anchor) {
   closeMenu();
 
   const menu = document.createElement('div');
@@ -492,6 +526,7 @@ function showMenu(items, x, y) {
   menu.style.visibility = 'hidden';
   document.body.appendChild(menu);
   _openMenu = menu;
+  _anchor = anchor || null;
   // Escape and the browser/mobile Back button dismiss via popup-manager.
   _releaseOpenState = markPopupOpen(() => closeMenu());
 
@@ -512,7 +547,7 @@ function showMenu(items, x, y) {
   document.addEventListener('pointerdown', _onOutside, true);
   window.addEventListener('blur', closeMenu);
   window.addEventListener('resize', closeMenu);
-  window.addEventListener('scroll', closeMenu, true);
+  window.addEventListener('scroll', _onScroll, true);
 }
 
 /**
@@ -533,7 +568,7 @@ function onContextMenu(e) {
   if (resolved) {
     e.preventDefault();
     e.stopImmediatePropagation();
-    showMenu(resolved.items, e.clientX, e.clientY);
+    showMenu(resolved.items, e.clientX, e.clientY, start);
     return;
   }
 
@@ -544,7 +579,7 @@ function onContextMenu(e) {
   if (textItems.length) {
     e.preventDefault();
     e.stopImmediatePropagation();
-    showMenu(textItems, e.clientX, e.clientY);
+    showMenu(textItems, e.clientX, e.clientY, start);
     return;
   }
 

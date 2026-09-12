@@ -775,7 +775,7 @@ class PinboardContent extends JugglerElement {
         label: this._actionList[index]?.label || '',
         disabled: this._actionList[index]?.disabled === true,
         onClick: () => this._runActionAt(index),
-      })), rect.left, rect.bottom + 4);
+      })), rect.left, rect.bottom + 4, more);
     });
     host.appendChild(more);
   }
