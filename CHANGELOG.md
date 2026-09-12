@@ -11,6 +11,7 @@ of changes; this project follows semantic versioning.
 - The footer's conversation spend total is gone; it counted re-sent cached context, not cost
 - The spend ceiling counts only input a conversation hasn't already paid for, and now defaults to 10M
 - Past the spend ceiling, a WebFetch you asked for runs without a sub-thread instead of being refused
+- Double-click a file in the Project files pin to pin it to the Pinboard
 
 ## [0.6.2] - 2026-09-11
 

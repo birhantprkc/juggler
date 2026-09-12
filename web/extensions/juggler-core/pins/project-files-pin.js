@@ -5,7 +5,7 @@
 
 import PinboardItemType from 'juggler/pinboard-item-type';
 import { expandDirectory, openPath } from 'juggler/ops';
-import { createElement, createFileActions, extractErrorMessage, injectStylesOnce } from 'juggler/ui';
+import { createElement, createFileActions, extractErrorMessage, injectStylesOnce, pinFile } from 'juggler/ui';
 import { reconcileRows, setText } from '../lib/reconcile.js';
 import { pinEmpty } from '../lib/pin-empty.js';
 
@@ -35,7 +35,9 @@ injectStylesOnce('project-files-pin-styles', `
   padding-right: 0.25rem;
   border-radius: 0.25rem;
   line-height: 1.7;
-  cursor: default;
+  /* Every row answers a click — a folder opens, a file is selected and pins on a
+     second — so every row says so under the pointer. */
+  cursor: pointer;
 }
 .project-files-pin__row:hover {
   background: color-mix(in srgb, var(--text-primary) 5%, transparent);
@@ -43,9 +45,6 @@ injectStylesOnce('project-files-pin-styles', `
 .project-files-pin__row:focus-visible {
   outline: 0.125rem solid var(--accent-blue);
   outline-offset: -0.125rem;
-}
-.project-files-pin__row.is-dir {
-  cursor: pointer;
 }
 /* Drawn rather than written: a glyph would be at the mercy of whichever font the
    platform has, and this one only ever has to be a triangle that turns. A file
@@ -606,6 +605,15 @@ class ProjectFilesPin extends PinboardItemType {
         // for the reader who did mean it.
         if (row.dataset.dir === '1') toggle(path);
         moveTo(path);
+      });
+      row.addEventListener('dblclick', (event) => {
+        if (/** @type {HTMLElement} */ (event.target).closest('.project-files-pin__actions')) return;
+        // A folder's clicks are its own: each one opens or closes it, and a
+        // reader who double-clicks one meant to open it, not to pin it. A file
+        // has nothing a second click could mean instead, so it means the thing
+        // the row's own Pin button means.
+        if (row.dataset.dir === '1') return;
+        void pinFile(path);
       });
       return row;
     };

@@ -245,16 +245,29 @@ function pinSource(path) {
 }
 
 /**
+ * Put a file on the Pinboard. Shared so that the button, the right-click row and
+ * a listing that pins a file of its own all mean one thing. Pinning is a view,
+ * not a context change: the file appears on the board and no conversation is any
+ * the wiser.
+ * @param {string} path - Absolute path to pin.
+ * @returns {Promise<boolean>} True when something enabled took it.
+ */
+export async function pinFile(path) {
+  if (!path) return false;
+  const source = pinSource(path);
+  if (!pinboardView.canPin(source)) return false;
+  return !!(await pinboardView.addSource(source));
+}
+
+/**
  * The button that puts a file on the Pinboard, or null when there is nothing to
- * pin or nothing enabled to pin it with. Pinning is a view, not a context
- * change: the file appears on the board and no conversation is any the wiser.
+ * pin or nothing enabled to pin it with.
  * @param {string} path - Absolute path to pin.
  * @returns {HTMLElement|null} The button, or null to offer nothing.
  */
 function createPinButton(path) {
   if (!path) return null;
-  const source = pinSource(path);
-  if (!pinboardView.canPin(source)) return null;
+  if (!pinboardView.canPin(pinSource(path))) return null;
 
   const button = document.createElement('button');
   button.type = 'button';
@@ -262,7 +275,7 @@ function createPinButton(path) {
   button.title = PIN_LABEL;
   button.setAttribute('aria-label', PIN_LABEL);
   button.innerHTML = PIN_SVG;
-  button.addEventListener('click', () => { void pinboardView.addSource(source); });
+  button.addEventListener('click', () => { void pinFile(path); });
   return button;
 }
 
@@ -354,9 +367,8 @@ registerContextMenuProvider({
     if (paste) items.push(paste);
     // Offered on the same terms as the pin button: asked first, left out when
     // nothing enabled would take it.
-    const source = pinSource(path);
-    if (pinboardView.canPin(source)) {
-      items.push({ label: PIN_LABEL, onClick: () => { void pinboardView.addSource(source); } });
+    if (pinboardView.canPin(pinSource(path))) {
+      items.push({ label: PIN_LABEL, onClick: () => { void pinFile(path); } });
     }
     const host = subject.closest('[data-context-item-id]');
     const unpin = host && /** @type {any} */ (host)._jugglerRemoveFromContext;

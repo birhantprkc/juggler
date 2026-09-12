@@ -51,6 +51,7 @@ export {
   labeledSubsection,
   addFilePath,
   createFileActions,
+  pinFile,
   addDiffViewer,
 } from '../js/utils/properties-panel-helpers.js';
 

@@ -22,6 +22,10 @@
  */
 
 import ProjectFilesPin from '../pins/project-files-pin.js';
+import FilePin from '../pins/file-pin.js';
+import pinboardItemRegistry from '../../../js/registries/pinboard-item-registry.js';
+import pinboardStore from '../../../js/services/pinboard-store.js';
+import pinboardView from '../../../js/services/pinboard-view.js';
 import { writeFileOp, mkdirOp } from '../../../js/services/ops-api.js';
 import { assert } from '../../../js-tests/utilities/test-helpers.js';
 
@@ -229,6 +233,48 @@ export async function runTests(ctx) {
   const press = (list, key) => {
     list.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
   };
+
+  /**
+   * A board a test owns, so that pinning can be followed from the row all the way
+   * to what the server is asked to store. Only the pinboard's own requests are
+   * answered here — this suite's real directory reads, and the harness posting
+   * its result, go to the real fetch.
+   * @returns {{pins: any[], restore: () => void}} The board and how to give the
+   *   app back the one it had.
+   */
+  function stubBoard() {
+    const fetched = window.fetch;
+    /** @type {any[]} */
+    const pins = [];
+    pinboardStore.reset();
+    pinboardView.reset();
+    pinboardItemRegistry.reset();
+    pinboardItemRegistry.registerClass(/** @type {any} */ (FilePin), { extensionId: 'test' });
+
+    window.fetch = /** @type {any} */ (async (/** @type {any} */ url, /** @type {any} */ opts) => {
+      const target = String(url);
+      if (target.includes('/pinboard/operations')) {
+        for (const op of JSON.parse(opts.body).operations) {
+          if (op.op === 'add' && !pins.some((p) => p.id === op.id)) {
+            pins.push({ id: op.id, type: op.type, config: op.config || {} });
+          }
+        }
+        return { ok: true, json: async () => ({ pins }) };
+      }
+      if (target.includes('/session/pinboard')) return { ok: true, json: async () => ({ pins }) };
+      return fetched(url, opts);
+    });
+
+    return {
+      pins,
+      restore: () => {
+        window.fetch = fetched;
+        pinboardStore.reset();
+        pinboardView.reset();
+        pinboardItemRegistry.reset();
+      },
+    };
+  }
 
   // ========================================================================
   // What it draws, without touching the disk
@@ -550,6 +596,35 @@ export async function runTests(ctx) {
       assert(slot.childElementCount === 1 && slot.firstElementChild === built,
         'and pointing again reuses them rather than stacking another set');
     } finally {
+      mounted.teardown();
+    }
+  });
+
+  await test('double-clicking a file pins it, and a folder is left to its own clicks', async () => {
+    const root = await makeTree('dblclick', ['zed'], ['apple.txt']);
+    const mounted = mount(root);
+    const board = stubBoard();
+    try {
+      await settled(mounted.body);
+      const rows = [...mounted.body.querySelectorAll('.project-files-pin__row')]
+        .map((el) => /** @type {HTMLElement} */ (el));
+      const folder = rows.find((row) => row.dataset.dir === '1');
+      const file = rows.find((row) => row.dataset.dir !== '1');
+      assert(!!folder && !!file, 'the fixture has one of each to double-click');
+
+      /** @type {HTMLElement} */ (folder).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      await new Promise((r) => { setTimeout(r, 0); });
+      assert(board.pins.length === 0,
+        `a folder's second click opens it again, it does not pin it — got ${JSON.stringify(board.pins)}`);
+
+      /** @type {HTMLElement} */ (file).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      await waitFor(() => board.pins.length === 1, 'the file to reach the board', mounted.body);
+      assert(board.pins[0].type === 'file',
+        `a file double-clicked is a File pin, got "${board.pins[0].type}"`);
+      assert(board.pins[0].config.path === native(`${root}/apple.txt`),
+        `the pin is of the row that was double-clicked, got "${board.pins[0].config.path}"`);
+    } finally {
+      board.restore();
       mounted.teardown();
     }
   });
