@@ -497,6 +497,70 @@ import { validateManifest } from './lib/manifest.js';
  */
 
 /**
+ * One comment written against a diff, on its way to the conversation. A superset
+ * of what the diff renderer draws: it also carries where the comment came from
+ * and when, which is what it takes to find it again and to send it.
+ * @typedef {object} PinReviewComment
+ * @property {string} id - Identifies the comment for edit and delete
+ * @property {string} repo - The repository it belongs to, '' for the project's own
+ * @property {string} path - The file, relative to that repository
+ * @property {string} [oldPath] - Where the file was, for a rename
+ * @property {'old'|'new'|'file'} side - Which side of the diff it hangs on, or
+ *   'file' for one about the file rather than any line in it
+ * @property {number} [startLine] - First line it covers, absent for a file comment
+ * @property {number} [endLine] - Last line it covers, absent for a file comment
+ * @property {string[]} lineText - The source it quoted when it was written, kept
+ *   because it is all there is left to show once the file has moved on from it
+ * @property {string} body - What the reader wrote
+ * @property {string} revision - The fingerprint of the patch it was written
+ *   against, as `diff()` reported it
+ * @property {number} createdAt - Unix ms it was written
+ * @property {number} updatedAt - Unix ms it was last edited
+ */
+
+/**
+ * A thread's unsent review.
+ * @typedef {object} PinReviewDraft
+ * @property {number} version - The record's shape. Always 1.
+ * @property {'head'} base - What the review compares against. One scope exists.
+ * @property {PinReviewComment[]} comments - The comments, in the order to show them
+ */
+
+/**
+ * The comments written against a review and not yet sent, kept where the message
+ * they will become would go: on the thread the reader is in, in that
+ * conversation's own document.
+ *
+ * **The draft belongs to a thread, not to the project or the board.** Moving to
+ * another thread or another conversation reveals that one's comments; it never
+ * retargets the ones already written, because a comment is addressed to whoever
+ * is going to read it. The same follows for a detached board, which keeps the
+ * conversation it was opened with and so goes on reading and writing the same
+ * durable draft as the window it left.
+ *
+ * It survives what a review has to survive — a tab switch, a detached board, a
+ * restart — because it is in the conversation document rather than in pin config
+ * or in the DOM. Pin config would be the wrong home twice over: it is capped, and
+ * it is copied when a board is detached, so two boards would drift apart.
+ * @typedef {object} PinReviewService
+ * @property {() => PinReviewDraft|null} draft - The comments on the thread being
+ *   read, as a copy. Null means there is no conversation to hold one — a board
+ *   opened on a project with nothing active — which is not the same as a review
+ *   with no comments yet, and a surface that treats it as such offers somewhere
+ *   to write that quietly discards.
+ * @property {(listener: () => void) => (() => void)} onChange - Called when the
+ *   draft being read may have changed — saved here, saved in another window, or
+ *   a different one now because the reader moved thread. Carries nothing: call
+ *   `draft`. Returns an unsubscribe function; the host also drops the
+ *   subscription on teardown.
+ * @property {(draft: {comments: PinReviewComment[]}) => Promise<void>} save -
+ *   Replace the draft on the thread being read. Rejects if there is nowhere to
+ *   put it or the draft is over a limit, and writes nothing in either case — so
+ *   keep the text on screen and show what came back rather than clearing it.
+ * @property {() => Promise<void>} clear - Discard every comment on that thread.
+ */
+
+/**
  * Host services, for data the active-context snapshot does not carry. Each is
  * read-only and cancellable: a pin is a view, so it never gets a mutable handle
  * on model state, and it asks the host rather than reaching into it.
@@ -506,6 +570,12 @@ import { validateManifest } from './lib/manifest.js';
  * conversation already offers a Stop button for. It is not a precedent for a
  * service that writes.
  *
+ * `review.save` and `review.clear` are the second, and are narrow in a different
+ * way: what they write is the user's own unsent text, at the moment the user
+ * saves or discards it, into a record that exists for no other purpose. They are
+ * still not a handle on the conversation — a pin cannot reach the transcript,
+ * the composer, or any other thread's draft through them.
+ *
  * Services are added one at a time, as the provider that needs one lands. Write
  * against what is here rather than what you expect to be.
  * @typedef {object} PinServices
@@ -514,6 +584,7 @@ import { validateManifest } from './lib/manifest.js';
  * @property {PinGitService} git - The project's git working tree
  * @property {PinFileEditsService} fileEdits - What this conversation's tools changed
  * @property {PinTasksService} tasks - The background tasks this conversation is running
+ * @property {PinReviewService} review - The unsent review comments on the thread being read
  */
 
 /**

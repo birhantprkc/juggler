@@ -695,8 +695,8 @@ with the error text intact, so let a real failure throw rather than rendering yo
 own apology.
 
 **Services are read-only, and added one at a time** as the provider that needs one
-lands — so write against what is there rather than what you expect to be. Five
-exist:
+lands — so write against what is there rather than what you expect to be. Six
+exist, and the two that write are called out as the exceptions they are:
 
 | Service | What it gives you |
 |---------|-------------------|
@@ -705,6 +705,7 @@ exist:
 | `services.git` | The ambient half: `status()` — every repository under the project with its branch, upstream divergence, counts and bounded file list, or null before the first read; `error()` — the last read's failure, shown beside the last good status rather than instead of it; `onChange(listener)`; `refresh()`. The deliberate half: `review({signal})` — every repository and every changed file in each of them, with whatever could not be reached named in `warnings`; `diff(repo, path, {signal})` — one file's whole working-tree change against `HEAD`, as structured hunks. |
 | `services.fileEdits` | `list({tools, limit})` — the file edits this conversation's transcript records for the tools you name, newest first; `snapshot(itemId)` — one edit's before and after, as two whole files, or null; `onChange(listener)`; `reveal(itemId)` — select the tool action that made one. You supply the tool names: which tools mutate a file is your knowledge, not the host's. |
 | `services.tasks` | `list()` — the background tasks this conversation has running, newest first, or null before the first check; `error()`; `onChange(listener)`; `reveal(itemId)` — select the tool action that started one; `stop(taskId)`. |
+| `services.review` | `draft()` — the unsent review comments on the thread being read, as a copy, or null when there is no conversation to hold any; `onChange(listener)` — they changed, here or in another window, or the reader moved to a thread with different ones; `save({comments})` — replace them; `clear()` — discard them. |
 
 `contextItems.find()` resolves the way the columns do: the thread the user is
 reading first, then its ancestors, nearest first, ending at the root. That is why
@@ -773,6 +774,23 @@ of those are alive, so nothing here can show you another conversation's work.
 deliberate exception rather than a precedent: it acts on a process, at the user's
 request, on a surface the conversation already offers a Stop button for. It
 rejects if the task could not be asked to stop — show what came back.
+
+**A review draft belongs to a thread, not to your pin or to the project.** It is
+kept where the message it will become would go, in the conversation's own
+document, which is what makes it survive a tab switch, a detached board and a
+restart — and what makes two boards on the same conversation two views of one
+draft rather than two drafts. Moving to another thread or another conversation
+therefore reveals that one's comments; it never carries these across, because a
+comment is addressed to whoever is going to read it. `draft()` returning null is
+that situation rather than an empty review: there is no conversation, so there is
+nowhere to write, and offering somewhere anyway would quietly discard it.
+
+`review.save` is the second write, and it refuses rather than trims: a draft over
+a limit — 500 comments, 8000 characters in one of them — rejects and writes
+nothing, as does a save with no conversation to write to. Keep the text on screen
+and show what came back beside it. What you get from `draft()` is a copy, so edit
+it and save it back; the comments you send are yours to build, but the quoted
+source lines are bounded on the way in, being a copy of code the file still holds.
 
 **The board and your pin share a keyboard, and position decides who gets a key.**
 While focus is on the board itself — the region a reader lands on when the board

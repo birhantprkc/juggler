@@ -32,6 +32,7 @@ import * as permissionsHelpers from './message-thread-permissions.js';
 import * as contextItemHelpers from './message-thread-context-items.js';
 import { recordTape } from '../utils/event-tape.js';
 import { normalizeDraft, normalizeAttachments, normalizeTextFiles, normalizePasteBlobs, normalizeScheduledSendMode } from '../utils/attachments.js';
+import { normalizeReviewDraft } from '../utils/review-draft.js';
 
 /**
  * @typedef {import('../../sdk/lib/message.js').Message} Message
@@ -267,6 +268,75 @@ export default class MessageThread {
       // behaviour) rather than deleted.
       this.conversation.setMetadata('draft', empty ? { text: '', attachments: [], textFiles: [], pasteBlobs: [] } : record);
     }
+  }
+
+  /**
+   * The unsent working-tree review for this thread: the comments written against
+   * the diff and not yet sent. Stored the same way the composer draft is — on
+   * the thread container for a sub-thread, in conversation metadata for the root
+   * — because it is the same kind of thing, unsent input belonging to one
+   * destination, and it must survive a tab switch, a detached board and a
+   * restart exactly as the composer's does.
+   *
+   * It is a separate key rather than part of `draft` precisely because the two
+   * are sent separately: a review is one message of its own, and folding it into
+   * the composer record would make discarding one discard the other.
+   * @returns {import('../utils/review-draft.js').ReviewDraft} The comments, always well-formed.
+   */
+  get gitReviewDraft() {
+    const raw = this.threadItemId
+      ? this.container.get('gitReviewDraft')
+      : this.conversation.getMetadata('gitReviewDraft');
+    return normalizeReviewDraft(raw);
+  }
+
+  /**
+   * @param {{comments?: import('../utils/review-draft.js').ReviewComment[]}|null} value -
+   *   The draft to store; null or a draft with no comments clears it.
+   */
+  set gitReviewDraft(value) {
+    const record = normalizeReviewDraft(value);
+    const empty = record.comments.length === 0;
+    if (this.threadItemId) {
+      this.transact(() => {
+        if (empty) {
+          this.container.delete('gitReviewDraft');
+        } else {
+          this.container.set('gitReviewDraft', convertToYType(record));
+        }
+      });
+    } else {
+      // Root: conversation metadata, which has no delete — so an emptied review
+      // is stored as the empty record, exactly as the composer draft is.
+      this.conversation.setMetadata('gitReviewDraft', record);
+    }
+  }
+
+  /**
+   * Watch this thread's review draft for changes, including ones made in another
+   * window: a detached board and the window it came from write the same record
+   * through the same document, so each has to see the other's comments arrive.
+   *
+   * Returns its own unsubscribe rather than taking the listener back, because a
+   * sub-thread's `MessageThread` is a fresh wrapper every time it is resolved —
+   * there is no instance for a later `unobserve` call to find the registration on.
+   * @param {() => void} listener - Called after the draft may have changed.
+   * @returns {() => void} Unsubscribe.
+   */
+  observeGitReviewDraft(listener) {
+    /** @param {any} event - The Y.Map event. */
+    const observer = (event) => {
+      if (event?.keysChanged?.has?.('gitReviewDraft')) listener();
+    };
+    if (this.threadItemId) {
+      // A thread-container write fires no metadata observer, so the container is
+      // what has to be watched — the items observers are on the items array and
+      // never see a field written beside it.
+      this.container.observe(observer);
+      return () => this.container.unobserve(observer);
+    }
+    this.conversation.observeMetadata(observer);
+    return () => this.conversation.unobserveMetadata(observer);
   }
 
   /**

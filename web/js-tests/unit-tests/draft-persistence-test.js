@@ -13,6 +13,10 @@
  * record on the model, reloads the conversation from the backend, and asserts
  * both halves come back.
  *
+ * The unsent review beside it makes the same trip for the same reason, on both
+ * of the routes a draft can take: the root's through conversation metadata, a
+ * sub-thread's onto its own container.
+ *
  * Mirrors conversation-name-persistence-test.js (true destroy + reload), not an
  * in-memory shortcut, so it exercises the on-disk Yjs round-trip.
  */
@@ -50,6 +54,29 @@ export async function runTests(_ctx) {
 
   // Set the draft as ONE object — text + attachments + scheduled-send target.
   conversation.rootMessageThread.draft = { text: draftText, attachments: [ref], scheduledSendAt };
+
+  // A part-written review is unsent input too, kept beside the draft in the same
+  // document and for the same reason: a review can take long enough that a
+  // restart in the middle of one must not erase it. Both halves are written,
+  // because they persist by different routes — the root's into conversation
+  // metadata, a sub-thread's onto its own container as a converted Y type, which
+  // is the half a round-trip can actually break.
+  /**
+   * @param {string} id - The comment's id.
+   * @param {string} body - What the reader wrote.
+   * @returns {any} One comment, as the review pin saves it.
+   */
+  const reviewComment = (id, body) => ({
+    id, repo: '', path: 'web/js/app.js', side: 'new', startLine: 12, endLine: 12,
+    lineText: ['  const x = 1;'], body, revision: 'sha256:9f1c',
+    createdAt: 1_700_000_000_000, updatedAt: 1_700_000_000_000,
+  });
+  conversation.rootMessageThread.gitReviewDraft = { comments: [reviewComment('r1', 'This loop runs twice')] };
+  const reviewThreadId = conversation.rootMessageThread
+    .createSubThread({ goal: 'Review the diff' }).threadId;
+  conversation.resolveMessageThread(reviewThreadId).gitReviewDraft = {
+    comments: [reviewComment('r2', 'The sub-thread\'s own comment')],
+  };
   // Push the write to the worker promptly so the only thing left to wait on is
   // the worker's debounced save, not browser→worker sync latency.
   conversation._doc.flushPendingUpdates();
@@ -114,8 +141,22 @@ export async function runTests(_ctx) {
     errors.push(`Clearing the target left a turn-end wait armed, got ${JSON.stringify(thread.draft.scheduledSendMode)}`);
   }
 
+  const review = reloaded.rootMessageThread.gitReviewDraft;
+  if (review.comments.length !== 1 || review.comments[0].id !== 'r1') {
+    errors.push(`Root review draft not persisted across reload. Expected the one comment 'r1', got ${JSON.stringify(review.comments)}`);
+  } else if (review.comments[0].body !== 'This loop runs twice'
+    || review.comments[0].revision !== 'sha256:9f1c'
+    || review.comments[0].lineText.length !== 1) {
+    errors.push(`Review comment not persisted faithfully — the words, the anchor and the quote all have to come back: ${JSON.stringify(review.comments[0])}`);
+  }
+
+  const childReview = reloaded.resolveMessageThread(reviewThreadId).gitReviewDraft;
+  if (childReview.comments.length !== 1 || childReview.comments[0].id !== 'r2') {
+    errors.push(`Sub-thread review draft not persisted across reload. Expected the one comment 'r2', got ${JSON.stringify(childReview.comments)}`);
+  }
+
   if (errors.length === 0) {
-    logger.info('[draft-persistence-test] Test PASSED - draft text + attachments + scheduled-send target persisted across reload');
+    logger.info('[draft-persistence-test] Test PASSED - draft text + attachments + scheduled-send target + review comments persisted across reload');
     return { passed: 1, failed: 0, errors: [] };
   }
   return { passed: 0, failed: errors.length, errors };

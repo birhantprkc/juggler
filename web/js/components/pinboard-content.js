@@ -29,6 +29,7 @@ import gitStatusCache from '../services/git-status-cache.js';
 import gitReviewService from '../services/git-review-service.js';
 import { shellKill, shellTaskStatus } from '../services/ops-api.js';
 import { openMenuAt } from '../services/context-menu-service.js';
+import { reviewDraftBoundsError } from '../utils/review-draft.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { formatDisplayPath } from '../../sdk/lib/context-item-utils.js';
 import { createFileActions } from '../utils/properties-panel-helpers.js';
@@ -265,6 +266,14 @@ class PinboardContent extends JugglerElement {
     /** @type {Set<() => void>} @private Watchers of the running-task list. */
     this._taskListeners = new Set();
     /**
+     * Watchers of the review draft, each with the observer it currently has on
+     * the thread being read. The thread moves under them — that is what
+     * switching thread or conversation does — so the observer is re-bound rather
+     * than registered once, and the entry is what there is to re-bind.
+     * @type {Set<{listener: () => void, detach: (() => void)|null}>} @private
+     */
+    this._reviewWatchers = new Set();
+    /**
      * Listeners with news waiting — one entry each, however many times they
      * were told. See {@link _scheduleNotify}.
      * @type {Map<(...args: any[]) => void, {what: string, signal: AbortSignal|undefined}>} @private
@@ -399,7 +408,15 @@ class PinboardContent extends JugglerElement {
    */
   setActiveContext(active) {
     const previousConversation = this._active?.conversation?.id || '';
+    const previousThread = this._active?.thread?.id ?? null;
     this._active = active;
+    // A review draft belongs to the thread it will be sent to, so a move between
+    // threads — or between conversations — puts a different draft in front of
+    // the pin. Re-point the watchers before anything below can re-read.
+    if ((active?.conversation?.id || '') !== previousConversation
+      || (active?.thread?.id ?? null) !== previousThread) {
+      this._rebindReviewWatchers();
+    }
     // The running-task list belongs to one conversation. Showing the previous
     // one's tasks against the new one's name would be a lie for as long as the
     // next probe takes, so go back to "still looking" and ask again now.
@@ -1192,6 +1209,12 @@ class PinboardContent extends JugglerElement {
           reveal: (itemId) => this._reveal({ kind: 'item', id: itemId }),
           stop: (taskId) => this._stopTask(taskId),
         },
+        review: {
+          draft: () => this._reviewDraft(),
+          onChange: (listener) => this._watchReviewDraft(listener, signal),
+          save: (draft) => this._saveReviewDraft(draft),
+          clear: () => this._saveReviewDraft(null),
+        },
       },
       signal,
       updateConfig: async (nextConfig) => {
@@ -1459,6 +1482,125 @@ class PinboardContent extends JugglerElement {
     };
     signal?.addEventListener('abort', stop, { once: true });
     return stop;
+  }
+
+  /**
+   * The thread a review is written to and read from: the one the reader is in,
+   * in the conversation the board is showing. Resolved at the moment it is
+   * asked for rather than held, because both halves of that move under a pin —
+   * the reader changes thread, the board changes conversation — and a held
+   * thread would go on answering for the one they left.
+   * @returns {import('../model/message-thread.js').default|null} The thread, or
+   *   null when there is no conversation to write to.
+   * @private
+   */
+  _reviewThread() {
+    const conversationId = this._active?.conversation?.id;
+    const conversation = conversationId ? this._session?.getConversation?.(conversationId) : null;
+    if (!conversation) return null;
+    try {
+      // resolveMessageThread throws for an id that is not a thread item, which a
+      // stale snapshot can easily hold.
+      return conversation.resolveMessageThread(this._active?.thread?.id ?? null);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The unsent review on the thread being read, as a copy — the normalising read
+   * builds every comment fresh, so a pin cannot write through one into the
+   * document.
+   * @returns {import('../utils/review-draft.js').ReviewDraft|null} The draft, or
+   *   null when there is no conversation to hold one.
+   * @private
+   */
+  _reviewDraft() {
+    const thread = this._reviewThread();
+    return thread ? thread.gitReviewDraft : null;
+  }
+
+  /**
+   * Replace the review draft on the thread being read, or clear it with null.
+   *
+   * Refuses rather than trims. The destination is checked first because it is
+   * the more fundamental absence, and the bounds are checked before anything is
+   * written so that a refused save leaves the previous draft exactly as it was —
+   * the surface that asked still holds the text, and can show what came back
+   * beside it.
+   * @param {{comments?: import('../utils/review-draft.js').ReviewComment[]}|null} draft - The draft to store.
+   * @returns {Promise<void>} Resolves once it is in the document.
+   * @private
+   */
+  async _saveReviewDraft(draft) {
+    const thread = this._reviewThread();
+    if (!thread) throw new Error('There is no conversation open to keep review comments in.');
+    const problem = reviewDraftBoundsError(draft);
+    if (problem) throw new Error(problem);
+    thread.gitReviewDraft = draft;
+  }
+
+  /**
+   * Tell a pin when the review draft it is showing may have changed. Two
+   * different things count, and a pin cannot tell them apart: the draft was
+   * written — here, or in another window sharing the conversation — or the
+   * thread being read moved, so the draft is now a different one. Both mean the
+   * same thing to the pin, which re-reads.
+   *
+   * Tied to the pin's own signal as well as to the returned function, exactly as
+   * {@link _watchContextItems} is.
+   * @param {() => void} listener - Called after a change.
+   * @param {AbortSignal} signal - The subscribing pin's mount signal.
+   * @returns {() => void} Unsubscribe.
+   * @private
+   */
+  _watchReviewDraft(listener, signal) {
+    /** @type {{listener: () => void, detach: (() => void)|null}} */
+    const entry = { listener, detach: null };
+    this._reviewWatchers.add(entry);
+    this._bindReviewWatcher(entry);
+
+    let stopped = false;
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      entry.detach?.();
+      entry.detach = null;
+      this._reviewWatchers.delete(entry);
+    };
+    signal?.addEventListener('abort', stop, { once: true });
+    return stop;
+  }
+
+  /**
+   * Point one watcher at the thread now being read. A board with no conversation
+   * has nothing to observe and is left unbound — it is re-bound the moment one
+   * arrives, which is what {@link _rebindReviewWatchers} is for.
+   * @param {{listener: () => void, detach: (() => void)|null}} entry - The watcher.
+   * @private
+   */
+  _bindReviewWatcher(entry) {
+    entry.detach?.();
+    entry.detach = null;
+    const thread = this._reviewThread();
+    if (!thread) return;
+    entry.detach = thread.observeGitReviewDraft(
+      () => this._notifyPin(entry.listener, [], 'a review-draft change')
+    );
+  }
+
+  /**
+   * Move every watcher to the thread now being read, and tell it. The telling is
+   * the point: nothing was written, but what a pin is showing belongs to the
+   * thread the reader has just left, and a pin that learned of the move only
+   * when someone next typed would show another thread's comments until they did.
+   * @private
+   */
+  _rebindReviewWatchers() {
+    for (const entry of this._reviewWatchers) {
+      this._bindReviewWatcher(entry);
+      this._notifyPin(entry.listener, [], 'a move to another review draft');
+    }
   }
 
   /**
