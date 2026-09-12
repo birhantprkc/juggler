@@ -4767,7 +4767,7 @@ diff-viewer .diff-file-comment-list.stale .diff-comment {
 .review-panel__file-comment,
 .review-panel__editor-actions button,
 .review-panel__discard,
-.review-panel__send {
+.review-panel__compose {
     padding: 0.1875rem 0.5rem;
     border: 0.0625rem solid var(--border-color);
     border-radius: 0.25rem;
@@ -4779,15 +4779,20 @@ diff-viewer .diff-file-comment-list.stale .diff-comment {
     flex-shrink: 0;
 }
 
-.review-panel__save,
-.review-panel__send {
+/* Qualified by the row it sits in, and it has to stay that way: the shared rule
+   above reaches the editor's buttons as `.review-panel__editor-actions button`,
+   which outweighs a lone class and would paint the accepting button in the same
+   grey as the one that cancels it — an enabled primary action that reads as a
+   disabled one. */
+.review-panel__editor-actions .review-panel__save,
+.review-panel__compose {
     background: var(--accent-blue);
     border-color: var(--accent-blue);
     color: #fff;
 }
 
-/* Send and Discard act on the draft, not on the Pinboard item, so they live
-   with the count of what they would act on rather than in the item toolbar. */
+/* Both buttons act on the draft, not on the Pinboard item, so they live with the
+   count of what they would act on rather than in the item toolbar. */
 .review-panel__footer {
     display: flex;
     flex-wrap: wrap;

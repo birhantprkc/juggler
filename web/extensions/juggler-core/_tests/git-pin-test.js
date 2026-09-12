@@ -162,11 +162,11 @@ export async function runTests(_ctx) {
     /** @type {any[]} */
     const saves = [];
     let clears = 0;
-    let sends = 0;
+    let composes = 0;
     /** @type {any} */
     let saveFailure = null;
     /** @type {any} */
-    let sendFailure = null;
+    let composeFailure = null;
 
     const services = {
       files: { onChange: () => () => {} },
@@ -225,11 +225,11 @@ export async function runTests(_ctx) {
           draft = { version: 1, base: 'head', comments: [] };
           for (const listener of [...draftListeners]) listener();
         },
-        send: async () => {
-          sends++;
-          if (sendFailure) throw sendFailure;
-          draft = { version: 1, base: 'head', comments: [] };
-          for (const listener of [...draftListeners]) listener();
+        // The host puts the review in the prompt and leaves the comments alone,
+        // so this stub records the call and changes no draft.
+        compose: async () => {
+          composes++;
+          if (composeFailure) throw composeFailure;
         },
       },
     };
@@ -256,14 +256,14 @@ export async function runTests(_ctx) {
       pending: () => pending,
       saves: () => saves,
       clears: () => clears,
-      sends: () => sends,
+      composes: () => composes,
       draft: () => draft,
       settle,
       holdDiffs: (/** @type {boolean} */ hold) => { holdDiffs = hold; },
       setManifest: (/** @type {any} */ next) => { manifest = next; },
       failReview: (/** @type {any} */ e) => { reviewFailure = e; },
       failSave: (/** @type {any} */ e) => { saveFailure = e; },
-      failSend: (/** @type {any} */ e) => { sendFailure = e; },
+      failCompose: (/** @type {any} */ e) => { composeFailure = e; },
       setDraft: (/** @type {any} */ next) => {
         draft = next;
         for (const listener of [...draftListeners]) listener();
@@ -274,6 +274,8 @@ export async function runTests(_ctx) {
       active: () => body.querySelector('.review-panel__file[aria-current="true"]'),
       /** @returns {any} The mounted diff viewer, if there is one. */
       viewer: () => body.querySelector('diff-viewer'),
+      /** @returns {any[]} Every mounted diff viewer, to be counted. */
+      viewers: () => [...body.querySelectorAll('diff-viewer')],
       /** @returns {any} The open comment editor, if there is one. */
       editor: () => body.querySelector('.review-panel__editor'),
       teardown: () => {
@@ -399,6 +401,33 @@ export async function runTests(_ctx) {
     assert(m.diffs()[1].path === 'b.js', `expected b.js, got ${m.diffs()[1].path}`);
     assert(m.active()?.textContent?.includes('b.js'), 'the clicked row should become current');
     assert(m.text().includes('b.js'), `the diff should name the file it drew:\n${m.text()}`);
+    m.teardown();
+  });
+
+  await test('a large dirty tree draws one diff, however much of it is walked', async () => {
+    // The request count is the cheap half of this and is covered above. This is
+    // the other half: the rail can be arbitrarily long, but the DOM holds one
+    // patch at a time, and walking the rail reuses that one rather than leaving
+    // a viewer behind at every file visited.
+    const files = Array.from({ length: 40 }, (_, at) => ({
+      path: `src/dir${at}/file${at}.js`,
+      index: 'M',
+      worktree: '.',
+    }));
+    const m = await mounted({ manifest: manifestOf(files) });
+    assert(m.rows().length === 40, `expected a row per file, got ${m.rows().length}`);
+    assert(m.viewers().length === 1,
+      `a dirty tree must not build a diff per file, got ${m.viewers().length}`);
+
+    for (const at of [7, 19, 39]) {
+      m.rows()[at].click();
+      await settle();
+    }
+    assert(m.viewers().length === 1,
+      `walking the rail must reuse the one viewer, got ${m.viewers().length}`);
+    assert(m.active()?.textContent?.includes('file39.js'), 'the last file walked to should be current');
+    assert(m.diffs().length === 4,
+      `expected one request per file visited, got ${JSON.stringify(m.diffs().map((d) => d.path))}`);
     m.teardown();
   });
 
@@ -879,6 +908,31 @@ export async function runTests(_ctx) {
     m.teardown();
   });
 
+  await test('a renamed file is read under its new name and says where it came from', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{
+        path: 'web/js/components/review-panel.js',
+        oldPath: 'web/js/components/changed-files.js',
+        index: 'R',
+        worktree: '.',
+      }]),
+    });
+    const row = m.rows()[0];
+    assert(row.querySelector('.review-panel__code')?.textContent === 'R ',
+      `git's own letter for a rename: ${JSON.stringify(row.querySelector('.review-panel__code')?.textContent)}`);
+    assert(row.querySelector('.review-panel__name')?.textContent === 'review-panel.js',
+      `a row is read for where the file is now: ${row.querySelector('.review-panel__name')?.textContent}`);
+    // Both names, because "Renamed" without the old one does not say from what.
+    assert(row.getAttribute('aria-label')?.includes('from web/js/components/changed-files.js'),
+      `the row should say where it moved from: ${row.getAttribute('aria-label')}`);
+    assert(row.title === 'web/js/components/changed-files.js → web/js/components/review-panel.js',
+      `and show both on hover: ${JSON.stringify(row.title)}`);
+    const head = m.body.querySelector('.review-panel__diff-path');
+    assert(head?.textContent === 'web/js/components/changed-files.js → web/js/components/review-panel.js',
+      `the diff names the move it is showing: ${JSON.stringify(head?.textContent)}`);
+    m.teardown();
+  });
+
   // --- the draft ------------------------------------------------------------
 
   await test('the footer counts the batch and offers the two things to do with it', async () => {
@@ -902,14 +956,74 @@ export async function runTests(_ctx) {
     const footer = m.body.querySelector('.review-panel__footer');
     assert(footer?.textContent?.includes('2 draft comments'),
       `expected the batch counted, got ${JSON.stringify(footer?.textContent)}`);
-    assert(footer.querySelector('.review-panel__send') && footer.querySelector('.review-panel__discard'),
-      `Send and Discard act on the draft, so they live with it:\n${footer.innerHTML}`);
+    assert(footer.querySelector('.review-panel__compose') && footer.querySelector('.review-panel__discard'),
+      `both buttons act on the draft, so they live with it:\n${footer.innerHTML}`);
 
-    footer.querySelector('.review-panel__send').click();
+    footer.querySelector('.review-panel__compose').click();
     await settle();
-    assert(m.sends() === 1, `expected one send, got ${m.sends()}`);
-    assert(!m.body.querySelector('.review-panel__footer'),
-      'a sent review leaves no footer, because there is no longer a batch');
+    assert(m.composes() === 1, `expected one hand-over, got ${m.composes()}`);
+    // Handing the feedback over is not spending it: it is text in a box, which
+    // the reader can still cut down or delete, so the batch is theirs until they
+    // discard it.
+    assert(m.draft().comments.length === 2, 'the comments stay on the draft');
+    assert(m.body.querySelector('.review-panel__footer')?.textContent?.includes('2 draft comments'),
+      'and the footer goes on counting them');
+    m.teardown();
+  });
+
+  await test('the buttons say what they will do, and the primary one looks like one', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]),
+    });
+    m.viewer().querySelectorAll('.diff-comment-btn')[0].click();
+    await settle();
+
+    // "Save" says where the words go, which is the one thing a reader cannot
+    // guess: a comment is kept on a batch and nothing is said to anyone yet.
+    const save = m.editor().querySelector('.review-panel__save');
+    assert(save.textContent === 'Add to feedback',
+      `a new comment joins the batch: ${JSON.stringify(save.textContent)}`);
+
+    // The primary action must not be drawn as the secondary one beside it.
+    // Identical fills are what made this read as a disabled button.
+    const cancel = m.editor().querySelector('.review-panel__cancel');
+    const fill = (/** @type {Element} */ node) => getComputedStyle(node).backgroundColor;
+    assert(fill(save) !== fill(cancel),
+      `the accented button is drawn exactly like the one that cancels it: both ${fill(save)}`);
+    assert(getComputedStyle(save).color !== getComputedStyle(cancel).color,
+      'and carries its own text colour with it');
+
+    m.editor().querySelector('textarea').value = 'A first thought.';
+    m.editor().querySelector('.review-panel__save').click();
+    await settle();
+
+    // Editing one is not adding one — the comment is replaced in place — so the
+    // button may not claim a second comment is about to appear.
+    m.viewer().querySelector('.diff-comment-edit')?.click();
+    await settle();
+    const editing = m.editor()?.querySelector('.review-panel__save');
+    assert(editing?.textContent === 'Save changes',
+      `an edit replaces what is there: ${JSON.stringify(editing?.textContent)}`);
+    m.teardown();
+  });
+
+  await test('the footer says where the feedback is going', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]),
+      draft: {
+        version: 1,
+        base: 'head',
+        comments: [{
+          id: 'c_1', repo: '', path: 'a.js', side: 'file',
+          lineText: [], body: 'One.', revision: 'rev1', createdAt: 1, updatedAt: 1,
+        }],
+      },
+    });
+    // It lands in the prompt for the reader to read back and edit, so the label
+    // has to promise that rather than an action that has already happened.
+    const button = m.body.querySelector('.review-panel__compose');
+    assert(button?.textContent === 'Paste feedback into prompt',
+      `the footer must say where the batch goes: ${JSON.stringify(button?.textContent)}`);
     m.teardown();
   });
 
@@ -930,7 +1044,7 @@ export async function runTests(_ctx) {
     m.teardown();
   });
 
-  await test('a send that fails leaves every comment where it was', async () => {
+  await test('a hand-over that fails leaves every comment where it was', async () => {
     const m = await mounted({
       manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]),
       draft: {
@@ -942,11 +1056,11 @@ export async function runTests(_ctx) {
         }],
       },
     });
-    m.failSend(new Error('worker rejected the message'));
-    m.body.querySelector('.review-panel__send').click();
+    m.failCompose(new Error('worker rejected the message'));
+    m.body.querySelector('.review-panel__compose').click();
     await settle();
     const text = m.text();
-    assert(text.includes("Couldn't send.") && text.includes('worker rejected the message'),
+    assert(text.includes("Couldn't put the feedback in the prompt.") && text.includes('worker rejected the message'),
       `expected the lead and the underlying error:\n${text}`);
     assert(m.draft().comments.length === 1, 'and the comments are still there — they have not been said yet');
     assert(m.body.querySelector('.review-panel__footer'), 'so the footer stays too');
@@ -1093,9 +1207,9 @@ export async function runTests(_ctx) {
         { path: 'web/js/components/review-panel.js', index: 'M', worktree: '.', added: 126, removed: 43 },
       ]),
     });
-    // Both widths, because the rail is at its narrowest on a wide board: there
-    // it is 14rem whatever the window does, and every fixed thing in a row is
-    // width the path does not get.
+    // Both widths, because the rail is at its most cramped on a wide board:
+    // there it is a bounded share of the panel, capped at 22rem however wide
+    // the window is, and every fixed thing in a row is width the path loses.
     for (const width of ['60rem', '20rem']) {
       m.body.style.width = width;
       const rail = /** @type {HTMLElement} */ (m.body.querySelector('.review-panel__rail'));

@@ -33,6 +33,7 @@ export async function runTests(_ctx) {
   const errors = [];
 
   await import('../../js/components/diff-viewer.js');
+  const { addDiffViewer } = await import('../../js/utils/properties-panel-helpers.js');
 
   /** @type {HTMLElement[]} */
   const mounted = [];
@@ -259,6 +260,33 @@ export async function runTests(_ctx) {
     el.setPatch(patch());
     assert(el.readOnly === true, 'a diff viewer should start read-only');
     assert(el.querySelectorAll('.diff-comment-btn').length === 0, 'a read-only diff must not offer anchors');
+  });
+
+  run('a tool action draws its diff through the shared renderer', () => {
+    // The properties panel owns no renderer of its own: it hands a recorded
+    // snapshot to the same element the review panel drives, and takes the
+    // read-only default. What it must never grow is the review panel's half —
+    // a panel showing one operation on one file has nothing to navigate.
+    const wrapper = document.createElement('div');
+    const action = {
+      get: (/** @type {string} */ key) => (key === 'displayData'
+        ? { diffData: { oldContent: 'a\nb\n', newContent: 'a\nc\n', path: 'web/js/app.js' } }
+        : undefined),
+    };
+    assert(addDiffViewer(wrapper, action, '') === true, 'a recorded snapshot should draw');
+
+    const el = /** @type {any} */ (wrapper.querySelector('diff-viewer'));
+    assert(el, `the panel must draw through the shared element:\n${wrapper.innerHTML}`);
+    assert(el.classList.contains('properties-panel-diff'),
+      'the panel keeps its own class on the shared element');
+    const row = rows(el);
+    assert(row.includes('1|1| |a') && row.includes('2||-|b') && row.includes('|2|+|c'),
+      `the shared renderer should have drawn the snapshot, got ${row.join(' / ')}`);
+    assert(el.readOnly === true, 'a tool-action diff should take the read-only default');
+    assert(el.querySelectorAll('.diff-comment-btn').length === 0,
+      'a tool-action diff must not offer comment anchors');
+    assert(wrapper.querySelector('.review-panel__rail') === null,
+      'a properties panel must never acquire a file rail');
   });
 
   run('an annotatable diff offers one literal anchor per line', () => {

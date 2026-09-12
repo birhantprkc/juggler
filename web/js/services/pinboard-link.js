@@ -27,6 +27,12 @@
  *   mistake.
  * - `select` satellite → owner. Show this board's conversation, with nothing
  *   singled out in it. A reveal without anything to point at.
+ * - `compose` satellite → owner. Put text the user assembled on the board — a
+ *   review's feedback — in the prompt of the thread it is about, for them to read
+ *   back and send. A board window has no composer, so this is the only way text
+ *   written on one reaches a box; the owner decides what becomes of it, exactly as
+ *   it does for a reveal, and sends it rather than dropping it when that thread
+ *   has no box on screen.
  *
  * All of them travel over the addressed viewer relay ({@link module:services/websocket}'s
  * `relayTo`), which is best-effort and unqueued: a viewer that is not connected
@@ -55,6 +61,9 @@ const REVEAL = 'reveal';
 
 /** Satellite → owner: make this conversation the one you are showing. */
 const SELECT = 'select';
+
+/** Satellite → owner: put this text in the prompt, on this thread. */
+const COMPOSE = 'compose';
 
 /**
  * Whether this document can take part at all. A viewer the server could not
@@ -197,6 +206,9 @@ export const ownerLink = {
   /** @type {((conversationId: string) => void)|null} @private */
   _onSelect: null,
 
+  /** @type {((compose: {text: string, conversation: string, thread: string|null}) => void)|null} @private */
+  _onCompose: null,
+
   /** @type {((event: any) => void)|null} @private */
   _handler: null,
 
@@ -208,11 +220,14 @@ export const ownerLink = {
    *   Carry out a board's reveal in this window, in the conversation it names.
    * @param {(conversationId: string) => void} [handlers.onSelect] - Show the
    *   conversation a board names, without pointing at anything inside it.
+   * @param {(compose: {text: string, conversation: string, thread: string|null}) => void} [handlers.onCompose] -
+   *   Put a board's text in the prompt of the thread it names.
    * @returns {void}
    */
-  serve({ onReveal, onSelect }) {
+  serve({ onReveal, onSelect, onCompose }) {
     this._onReveal = onReveal;
     this._onSelect = onSelect || null;
+    this._onCompose = onCompose || null;
     if (this._handler) return;
     this._handler = (event) => {
       const message = parse(event);
@@ -238,6 +253,17 @@ export const ownerLink = {
           if (!this._satellites.has(message.from)) return;
           const conversation = String(message.body?.conversation || '');
           if (conversation) this._onSelect?.(conversation);
+          break;
+        }
+        case COMPOSE: {
+          // Same guard again, and most needed here: this one puts words in the
+          // prompt of a window a person is working in.
+          if (!this._satellites.has(message.from)) return;
+          const text = typeof message.body?.text === 'string' ? message.body.text : '';
+          const conversation = String(message.body?.conversation || '');
+          if (text && conversation) {
+            this._onCompose?.({ text, conversation, thread: message.body?.thread ?? null });
+          }
           break;
         }
         default:
@@ -359,6 +385,7 @@ export const ownerLink = {
     this._handler = null;
     this._onReveal = null;
     this._onSelect = null;
+    this._onCompose = null;
     this._satellites.clear();
   },
 };
@@ -480,6 +507,30 @@ export const satelliteLink = {
   selectConversation(conversationId) {
     if (!this._owner || !conversationId) return;
     send(this._owner, SELECT, { conversation: conversationId });
+  },
+
+  /**
+   * Ask the owner to put text in the prompt of one thread of this board's
+   * conversation.
+   *
+   * The one message here whose refusal the caller has to know about: a board with
+   * no owner to take the text has to do something else with it rather than lose
+   * it. `_present` is the answer — the owner was in the last list of connected
+   * viewers — and the list arrives on registration, so it is settled long before
+   * anyone can press a button. Nothing is acknowledged beyond that, as with
+   * everything else here.
+   * @param {string} text - What to put in the prompt.
+   * @param {string} conversationId - The conversation it belongs to.
+   * @param {string|null} threadItemId - The thread within it, null for the root.
+   * @returns {boolean} True when an owner was there and the relay took it.
+   */
+  compose(text, conversationId, threadItemId) {
+    if (!this._owner || !this._present || !text || !conversationId) return false;
+    return send(this._owner, COMPOSE, {
+      text,
+      conversation: conversationId,
+      thread: threadItemId ?? null,
+    });
   },
 
   /**

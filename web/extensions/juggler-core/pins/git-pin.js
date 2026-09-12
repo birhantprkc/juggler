@@ -222,7 +222,7 @@ class GitPin extends PinboardItemType {
         onChange: (/** @type {() => void} */ listener) => context.services.review.onChange(listener),
         save: (/** @type {any} */ next) => context.services.review.save(next),
         clear: () => context.services.review.clear(),
-        send: () => context.services.review.send(),
+        compose: () => context.services.review.compose(),
       },
     });
 

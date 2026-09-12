@@ -13,17 +13,24 @@
  * unchanged draft has to produce a byte-identical message twice for the format
  * to be testable at all.
  *
- * The second is the send itself. A review is generated text that the reviewer
- * never typed into the box, so it travels on `consumeComposer: false` — the
- * composer's text, its persisted draft, its pasted blobs and its armed schedule
- * all belong to a message that has not been sent yet, and a later validation
- * failure must not restore the review over them. `interpretCommands: false` is
- * the other half: generated text is an ordinary message even when it starts with
- * a `/`.
+ * The second is the hand-over. A review is not sent: it is put in the prompt of
+ * the thread it is about, for the reviewer to read back and send themselves, so
+ * what these cases pin is where it lands and what it leaves alone. A question
+ * already half-written in the box keeps its place above it, with its pasted blobs
+ * and its armed schedule; a review read on a sub-thread never lands in the root's
+ * box, because that would put the reader's words about one thread into a message
+ * to another.
  *
- * The rest is the promise the service makes about the comments themselves —
- * cleared only once the send is accepted, kept whole on every refusal, and
- * delivered to the thread being read rather than to the root.
+ * Only when there is no box for that thread at all — a board whose window has
+ * closed — is the review sent, because feedback that cannot be handed over is
+ * worth more said than dropped. That path keeps `consumeComposer: false` and
+ * `interpretCommands: false`: the composer belongs to a message nobody has sent,
+ * a later validation failure must not restore the review over it, and generated
+ * text is an ordinary message even when it starts with a `/`.
+ *
+ * The rest is the promise the service makes about the comments themselves: they
+ * are never cleared by handing them over — text in a box has not been said — and
+ * they survive every refusal.
  * @module unit-tests/review-send-test
  */
 
@@ -273,7 +280,10 @@ export async function runTests() {
     tab.setActive();
     await waitFor(() => !!tab.querySelector('composer-box textarea'),
       { description: 'the root composer to build' });
-    const composer = /** @type {any} */ (tab.querySelector('composer-box'));
+    // Rebound rather than held, because a tab taken out of the page and put back
+    // builds a new box: a case that kept the old reference would read an element
+    // nobody can see and call the review lost.
+    let composer = /** @type {any} */ (tab.querySelector('composer-box'));
     if (!composer._messageThread) composer.setMessageThread(root);
 
     content = /** @type {any} */ (document.createElement('pinboard-content'));
@@ -301,7 +311,8 @@ export async function runTests() {
       return found[found.length - 1];
     };
 
-    await run('a sent review is one user message carrying every comment', async () => {
+    await run('a review goes into the prompt whole, and nothing is sent', async () => {
+      composer.clearInput();
       await service().save({
         comments: [comment('c1', 'This loop runs twice'), comment('c2', 'And this name lies', {
           path: 'web/js/model/session.js',
@@ -311,44 +322,48 @@ export async function runTests() {
         })],
       });
       const before = userMessages(root).length;
-      await service().send();
-      const sent = await nextUserMessage(root, before);
-      assert(sent.startsWith('Review feedback:'), `expected the review, got ${JSON.stringify(sent)}`);
-      assert(sent.includes('This loop runs twice') && sent.includes('And this name lies'),
-        'every comment goes, or the reviewer said something nobody read');
-      assert(sent.includes('./web/js/model/session.js:40-41'), 'each with the code it is about');
-      assert(service().draft().comments.length === 0,
-        'and the draft is cleared, now that it has been said');
+      await service().compose();
+
+      const text = composer.getText();
+      assert(text.startsWith('Review feedback:'), `expected the review in the box, got ${JSON.stringify(text)}`);
+      assert(text.includes('This loop runs twice') && text.includes('And this name lies'),
+        'every comment goes, or the reviewer wrote something nobody will read');
+      assert(text.includes('./web/js/model/session.js:40-41'), 'each with the code it is about');
+      assert(userMessages(root).length === before,
+        'and none of it is said yet — the last look at it belongs to the reader');
+      assert(service().draft().comments.length === 2,
+        'so the comments are still theirs to discard, having not been spent');
+      composer.clearInput();
     });
 
-    await run('the send leaves the composer\'s own unsent message alone', async () => {
-      // Without this the case could pass by there being no box to take: a
-      // conversation that cannot find its composer clears nothing either.
+    await run('it lands under the question already in the box, and takes nothing of it', async () => {
+      // Without this the case could pass by there being no box to find: a
+      // review that cannot find the composer disturbs nothing either.
       assert(conversation._getComposer() === composer,
-        'precondition: an ordinary send would have emptied THIS box');
+        'precondition: THIS is the box the review will be put in');
       composer.setText('a half-written question');
       composer.flushDraft();
-      composer._pasteBlobs.set('paste_1', 'a pasted wall of text');
+      composer._pasteBlobs.set('paste_1', { content: 'a pasted wall of text', bytes: 21 });
+      // Armed the way the clock button arms it, schedule written onto the draft:
+      // an in-memory target alone is reconciled away by the first draft save, so
+      // asserting on one would be asserting on nothing.
       composer._scheduledSendAt = Date.now() + 600_000;
+      composer._scheduledSendMode = 'delay';
+      composer._persistDraft(undefined, { scheduleIsAuthoritative: true });
 
-      await service().save({ comments: [comment('c1', 'Sent while something else was being typed')] });
+      await service().save({ comments: [comment('c1', 'Written while something else was being typed')] });
       const before = userMessages(root).length;
-      await service().send();
-      await nextUserMessage(root, before);
+      await service().compose();
 
-      assert(composer.getText() === 'a half-written question',
-        `the box is not the review's to empty, got ${JSON.stringify(composer.getText())}`);
-      assert(root.draft?.text === 'a half-written question', 'nor is the draft under it');
-      assert(composer._pasteBlobs.size === 1, 'nor the blobs that draft refers to');
-      assert(composer._scheduledSendAt !== null, 'nor the send it has armed');
-    });
-
-    await run('a validation failure afterwards must not restore the review over it', async () => {
-      conversation.restorePendingMessage();
-      assert(composer.getText() === 'a half-written question',
-        `a send nobody typed is a send nobody gets back, got ${JSON.stringify(composer.getText())}`);
+      const text = composer.getText();
+      assert(text.startsWith('a half-written question\n'),
+        `the question keeps its place above it, got ${JSON.stringify(text)}`);
+      assert(text.includes('Written while something else was being typed'),
+        'with the review under it, on a line of its own');
+      assert(composer._pasteBlobs.size === 1, 'the blobs that draft refers to are left alone');
+      assert(composer._scheduledSendAt !== null, 'and so is the send it has armed');
+      assert(userMessages(root).length === before, 'and still nothing has been sent');
       composer.clearInput();
-      assert(composer.getText() === '', 'and the box is left clean for the cases below');
     });
 
     /**
@@ -357,86 +372,141 @@ export async function runTests() {
      */
     const readRoot = () => { content.setActiveContext(activeContext(conversation, null)); };
 
-    await run('a review is sent to the thread being read, not to the root', async () => {
+    /**
+     * The box bound to one thread, if this window has one open for it.
+     * @param {string|null} threadItemId - The thread, null for the root.
+     * @returns {any} The composer, or undefined.
+     */
+    const boxFor = (threadItemId) => [...tab.querySelectorAll('composer-box')]
+      .find((box) => (box.threadItemId ?? null) === threadItemId);
+
+    /**
+     * Run `body` with this window's tab out of the document — a board whose owner
+     * window has closed, and the only condition under which a review is sent
+     * rather than put in a prompt.
+     * @param {() => Promise<void>} body - The case's body.
+     * @returns {Promise<void>}
+     */
+    const withNoPrompt = async (body) => {
+      tab.remove();
+      try {
+        await body();
+      } finally {
+        container.appendChild(tab);
+        tab.setActive();
+        await waitFor(() => !!tab.querySelector('composer-box textarea'),
+          { description: 'the root composer to be built again' });
+        composer = /** @type {any} */ (tab.querySelector('composer-box'));
+        if (!composer._messageThread) composer.setMessageThread(root);
+      }
+    };
+
+    await run('a review read on a sub-thread never lands in the root\'s box', async () => {
       content.setActiveContext(activeContext(conversation, child));
+      composer.clearInput();
       await service().save({ comments: [comment('t1', 'About the sub-thread')] });
       const rootBefore = userMessages(root).length;
       const childBefore = userMessages(childThread).length;
-      await service().send();
-      const sent = await nextUserMessage(childThread, childBefore);
-      assert(sent.includes('About the sub-thread'), 'the child got the review');
-      assert(userMessages(root).length === rootBefore, 'and the root was left out of it');
+      await service().compose();
+
+      // The root's box is never a substitute for the thread's own: putting it
+      // there would hand the reader's words about one thread to a message
+      // addressed to another. Where it does go depends on whether this window has
+      // a column open for the sub-thread, and either is correct.
+      assert(composer.getText() === '',
+        `the root's box is not where this goes, got ${JSON.stringify(composer.getText())}`);
+      const childBox = boxFor(child);
+      if (childBox) {
+        assert(String(childBox.getText?.() || '').includes('About the sub-thread'),
+          `the sub-thread's own box should have it: ${JSON.stringify(childBox.getText?.())}`);
+        childBox.clearInput?.();
+      } else {
+        const sent = await nextUserMessage(childThread, childBefore);
+        assert(sent.includes('About the sub-thread'),
+          'with no box of its own it is sent on that thread, rather than dropped');
+      }
+      assert(userMessages(root).length === rootBefore, 'and the root was left out of it either way');
+      assert(service().draft().comments.length === 1, 'the comments stay here too');
       readRoot();
     });
 
-    await run('a review sent to a busy thread is queued, not dropped', async () => {
+    await run('a review with nowhere to put it is still accepted by a busy thread', async () => {
       readRoot();
       // Plant the status the client reads for "this thread is mid-turn". The
       // queueing itself is the worker's (integration:queue-drains-at-turn-
-      // boundary pins that); what matters here is that a review send meets the
-      // busy guard as a send to be queued rather than as one to refuse.
+      // boundary pins that); what matters here is that the fallback send meets
+      // the busy guard as a send to be queued rather than as one to refuse.
       conversation._llmState.updateStatus(conversation.id, 'custom', { message: 'Working' }, null);
       try {
         assert(conversation.isThreadProcessing(null), 'precondition: the root reads as busy');
         await service().save({ comments: [comment('q1', 'Said over the top of a live turn')] });
-        const before = userMessages(root).length;
-        await service().send();
-        const sent = await nextUserMessage(root, before);
-        assert(sent.includes('Said over the top of a live turn'), 'the review was accepted');
-        assert(service().draft().comments.length === 0, 'and the draft cleared with it');
+        await withNoPrompt(async () => {
+          const before = userMessages(root).length;
+          await service().compose();
+          const sent = await nextUserMessage(root, before);
+          assert(sent.includes('Said over the top of a live turn'), 'the review was accepted');
+        });
       } finally {
         conversation._llmState.stop(conversation.id);
+        composer.clearInput();
       }
     });
 
     // --- what must be refused -------------------------------------------------
 
-    await run('an empty review is refused rather than sent as a bare header', async () => {
+    await run('an empty review is refused rather than pasted as a bare header', async () => {
       readRoot();
+      composer.clearInput();
       await service().clear();
       const before = userMessages(root).length;
-      const outcome = await settled(service().send());
-      assert(outcome.error, 'there is nothing to send');
-      assert(userMessages(root).length === before, 'and nothing was sent');
+      const outcome = await settled(service().compose());
+      assert(outcome.error, 'there is nothing to hand over');
+      assert(composer.getText() === '', 'and nothing went in the box');
+      assert(userMessages(root).length === before, 'nor anywhere else');
     });
 
-    await run('a board with no conversation has nowhere to send to, and says so', async () => {
+    await run('a board with no conversation has nowhere to put a review, and says so', async () => {
       content.setActiveContext(activeContext(null, null));
-      const outcome = await settled(service().send());
-      assert(outcome.error, 'a send with no destination must reject rather than vanish');
+      const outcome = await settled(service().compose());
+      assert(outcome.error, 'a hand-over with no destination must reject rather than vanish');
       assert(String(outcome.error.message || '').toLowerCase().includes('conversation'),
         `and say why, got ${JSON.stringify(String(outcome.error.message))}`);
       readRoot();
     });
 
     await run('a refused send keeps the comments and reports what refused it', async () => {
+      // On the fallback path, which is the only one that can be refused: putting
+      // text in a box cannot fail, but the send a missing box falls back to can.
       readRoot();
       await service().save({ comments: [comment('r1', 'Written while the engine was away')] });
-      const before = userMessages(root).length;
-      // The refusals sendMessage can return are all conditions of the machine
-      // around it — an unreachable worker, a provider switched off. Standing one
-      // up here would be testing that machinery; what this case is about is what
-      // the service does with a reason when it gets one back.
-      const realSend = conversation.sendMessage;
-      conversation.sendMessage = async () => 'worker not ready';
-      let outcome;
-      try {
-        outcome = await settled(service().send());
-      } finally {
-        conversation.sendMessage = realSend;
-      }
-      assert(outcome.error, 'a refused send must reject');
-      assert(String(outcome.error.message || '').includes('worker not ready'),
-        `carrying the reason it was given, got ${JSON.stringify(String(outcome.error.message))}`);
-      const kept = service().draft().comments;
-      assert(kept.length === 1 && kept[0].id === 'r1',
-        'and the comments stay, because they have not been said yet');
-      assert(userMessages(root).length === before, 'with nothing sent');
+      await withNoPrompt(async () => {
+        const before = userMessages(root).length;
+        // The refusals sendMessage can return are all conditions of the machine
+        // around it — an unreachable worker, a provider switched off. Standing one
+        // up here would be testing that machinery; what this case is about is what
+        // the service does with a reason when it gets one back.
+        const realSend = conversation.sendMessage;
+        conversation.sendMessage = async () => 'worker not ready';
+        let outcome;
+        try {
+          outcome = await settled(service().compose());
+        } finally {
+          conversation.sendMessage = realSend;
+        }
+        assert(outcome.error, 'a refused send must reject');
+        assert(String(outcome.error.message || '').includes('worker not ready'),
+          `carrying the reason it was given, got ${JSON.stringify(String(outcome.error.message))}`);
+        const kept = service().draft().comments;
+        assert(kept.length === 1 && kept[0].id === 'r1',
+          'and the comments stay, because they have not been said yet');
+        assert(userMessages(root).length === before, 'with nothing sent');
+      });
     });
 
     // --- a detached board -----------------------------------------------------
 
-    await run('a detached board sends without a window of its own', async () => {
+    await run('a board with no window of its own hands over into the box it can see', async () => {
+      composer.clearInput();
       board = /** @type {any} */ (document.createElement('pinboard-content'));
       container.appendChild(board);
       board.setSession(session);
@@ -445,17 +515,73 @@ export async function runTests() {
       await waitFor(() => probe.context?.pin?.id === 'pin_board',
         { description: 'the board\'s pin to mount' });
       const detached = probe.context.services.review;
-      await detached.save({ comments: [comment('b1', 'Sent from the board')] });
+      await detached.save({ comments: [comment('b1', 'Written on the board')] });
       const before = userMessages(root).length;
-      await detached.send();
-      const sent = await nextUserMessage(root, before);
-      assert(sent.includes('Sent from the board'), 'a board sends to the conversation it is showing');
-      assert(detached.draft().comments.length === 0, 'and clears what it sent');
+      await detached.compose();
+      assert(composer.getText().includes('Written on the board'),
+        `a board needs no column of its own to reach the prompt: ${JSON.stringify(composer.getText())}`);
+      assert(userMessages(root).length === before, 'and sends nothing doing it');
+      assert(detached.draft().comments.length === 1, 'keeping the comments, as everywhere else');
+      composer.clearInput();
+    });
+
+    await run('a board sends the review when the window that opened it has gone', async () => {
+      // The case above still had the owner's tab — and its composer — in the same
+      // document, so it proves a board needs no column of its own, not that it
+      // survives the window it was opened from. This is the other half, and the
+      // one place a review is sent rather than handed over: with the owner's
+      // window gone there is no prompt anywhere to put it in, and feedback that
+      // cannot be handed over is worth more said than lost.
+      board?.remove();
+      board = /** @type {any} */ (document.createElement('pinboard-content'));
+      container.appendChild(board);
+      board.setSession(session);
+      board.setPin({ id: 'pin_orphan', type: 'review-send-probe', config: {} },
+        activeContext(conversation, null));
+      await waitFor(() => probe.context?.pin?.id === 'pin_orphan',
+        { description: 'the orphaned board\'s pin to mount' });
+      const orphan = probe.context.services.review;
+
+      await withNoPrompt(async () => {
+        await orphan.save({
+          comments: [comment('o1', 'Still reviewable'), comment('o2', 'And still sendable')],
+        });
+        assert(orphan.draft().comments.length === 2,
+          `a board writes its draft with no window above it, got ${orphan.draft().comments.length}`);
+
+        await orphan.compose();
+        // Waited for by its content rather than by a count: a message an earlier
+        // case queued can still be draining onto this thread, and counting the
+        // difference here would be counting someone else's traffic.
+        await waitFor(() => userMessages(root).some((m) => m.includes('And still sendable')),
+          { description: 'the review to be sent' });
+        const sent = userMessages(root).find((m) => m.includes('And still sendable')) || '';
+        assert(sent.includes('Still reviewable'),
+          `the review still reaches its conversation whole:\n${sent}`);
+        assert(orphan.draft().comments.length === 2,
+          'and the comments stay here too — one rule, whichever way the review went');
+      });
+
+      // A send nobody typed is a send nobody gets back: the review must not be
+      // restored into the box that came back with the window.
+      conversation.restorePendingMessage();
+      assert(composer.getText() === '',
+        `the box is not where a programmatic send goes back to, got ${JSON.stringify(composer.getText())}`);
+      composer.clearInput();
     });
 
     // Last, because the command it is proving inert would take the transcript —
     // and the sub-thread — with it if it ever ran.
     await run('generated text starting with a slash is an ordinary message', async () => {
+      // Something for it to have wiped, since the cases above now mostly leave
+      // the transcript empty — they put their reviews in the box instead.
+      const planted = userMessages(root).length;
+      await conversation.sendMessage('the message a /clear would take with it', null, root, {
+        consumeComposer: false,
+        interpretCommands: false,
+      });
+      await nextUserMessage(root, planted);
+
       const before = userMessages(root).length;
       const reason = await conversation.sendMessage('/clear', null, root, {
         consumeComposer: false,
@@ -464,7 +590,8 @@ export async function runTests() {
       assert(reason === null, `expected the send to be accepted, got ${JSON.stringify(reason)}`);
       const sent = await nextUserMessage(root, before);
       assert(sent === '/clear', `the text goes as written, got ${JSON.stringify(sent)}`);
-      assert(userMessages(root).length > 1, 'and the transcript it would have wiped is still here');
+      assert(userMessages(root).some((m) => m.includes('a /clear would take with it')),
+        'and the transcript it would have wiped is still here');
     });
   } finally {
     board?.remove();

@@ -505,12 +505,15 @@ import { validateManifest } from './lib/manifest.js';
  *   put it or the draft is over a limit, and writes nothing in either case — so
  *   keep the text on screen and show what came back rather than clearing it.
  * @property {() => Promise<void>} clear - Discard every comment on that thread.
- * @property {() => Promise<void>} send - Send the saved draft as one ordinary
- *   user message on the thread it belongs to, and clear it once that is
- *   accepted. What it sends is what `draft` reports, so save an edit before
- *   sending it. Rejects when there is nowhere to send, when there is nothing to
- *   say, and when the conversation refuses the message — and on every one of
- *   those the comments are still there, because they have not been said yet.
+ * @property {() => Promise<void>} compose - Hand the saved draft to the user as
+ *   one ordinary message for them to send: into the composer for the thread it
+ *   belongs to, or — from a detached board, which has no composer — to the window
+ *   that board was opened from. With neither, it sends the message itself, so a
+ *   board outliving its owner can still hand the feedback over. What it hands
+ *   over is what `draft` reports, so save an edit first. The comments are NOT
+ *   cleared: text in a box has not been said yet, and only `clear` discards
+ *   them. Rejects when there is nowhere to put it and when there is nothing to
+ *   say.
  */
 
 /**
@@ -523,12 +526,15 @@ import { validateManifest } from './lib/manifest.js';
  * conversation already offers a Stop button for. It is not a precedent for a
  * service that writes.
  *
- * `review.save`, `review.clear` and `review.send` are the second, and are narrow
- * in a different way: what they write is the user's own unsent text, at the
- * moment the user saves, discards or sends it, into a record that exists for no
- * other purpose. `send` adds a message to the conversation — the one thing any
- * user surface may do — and nothing else: it cannot edit the transcript, touch
- * the composer, or reach another thread's draft.
+ * `review.save`, `review.clear` and `review.compose` are the second, and are
+ * narrow in a different way: what they write is the user's own unsent text, at
+ * the moment the user saves, discards or hands it over, into a record that exists
+ * for no other purpose. `compose` writes that text into the composer — which a
+ * service may do only because the text is the user's own and they asked for it
+ * there, and because it is an insert at the caret: a message already in the box
+ * survives it, and one undo takes the review back out. It cannot read the box,
+ * clear it, send what is in it, edit the transcript, or reach another thread's
+ * draft.
  *
  * Services are added one at a time, as the provider that needs one lands. Write
  * against what is here rather than what you expect to be.

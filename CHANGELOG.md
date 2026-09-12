@@ -5,7 +5,7 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
-- The Git pin is now a review: read each changed file's diff, comment on lines, send the lot as one message
+- The Git pin is now a review: read each changed file's diff, comment on lines, paste the lot into the prompt
 - The Changed files pin is gone, replaced by review over the whole working tree
 - Pinboard extensions no longer receive a services.fileEdits; git review replaces it
 - Right-click a selection in any file, diff or code block to get options including pasting a reference to it into the prompt

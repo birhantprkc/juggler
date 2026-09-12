@@ -708,7 +708,7 @@ exist, and the two that write are called out as the exceptions they are:
 | `services.contextItems` | `find(type, from?)` — the nearest context item of a type, as a copy, with the thread it came from; `onChange(listener)` — the items or the focused thread moved, call `find` again; `reveal(threadId)` — bring that thread's column into view. |
 | `services.git` | The ambient half: `status()` — every repository under the project with its branch, upstream divergence, counts and bounded file list, or null before the first read; `error()` — the last read's failure, shown beside the last good status rather than instead of it; `onChange(listener)`; `refresh()`. The deliberate half: `review({signal})` — every repository and every changed file in each of them, with whatever could not be reached named in `warnings`; `diff(repo, path, {signal})` — one file's whole working-tree change against `HEAD`, as structured hunks. |
 | `services.tasks` | `list()` — the background tasks this conversation has running, newest first, or null before the first check; `error()`; `onChange(listener)`; `reveal(itemId)` — select the tool action that started one; `stop(taskId)`. |
-| `services.review` | `draft()` — the unsent review comments on the thread being read, as a copy, or null when there is no conversation to hold any; `onChange(listener)` — they changed, here or in another window, or the reader moved to a thread with different ones; `save({comments})` — replace them; `clear()` — discard them; `send()` — send them as one ordinary message on that thread, and clear them once it is accepted. |
+| `services.review` | `draft()` — the unsent review comments on the thread being read, as a copy, or null when there is no conversation to hold any; `onChange(listener)` — they changed, here or in another window, or the reader moved to a thread with different ones; `save({comments})` — replace them; `clear()` — discard them; `compose()` — put them as one ordinary message into that thread's composer for the reader to send, keeping them on the draft. |
 
 `contextItems.find()` resolves the way the columns do: the thread the user is
 reading first, then its ancestors, nearest first, ending at the root. That is why
@@ -782,16 +782,20 @@ and show what came back beside it. What you get from `draft()` is a copy, so edi
 it and save it back; the comments you send are yours to build, but the quoted
 source lines are bounded on the way in, being a copy of code the file still holds.
 
-`review.send` sends what was last saved, so save an edit before sending it. It
-becomes one ordinary user message on the thread the comments belong to, written
-in the same `file:line` blocks the context menu quotes a selection in — text the
-reader can see and the agent already knows how to read, with nothing hidden in it
-and nothing parsed back out. It takes nothing from the composer: a half-written
-question in the box, its attachments and an armed scheduled send are all left
-exactly as they were, whatever the send does. The comments are cleared only once
-the message is accepted — a rejection means nowhere to send, nothing to say, or a
-conversation that refused it, and on every one of those the draft is still there.
-Show what came back and leave the review alone.
+`review.compose` hands over what was last saved, so save an edit before handing it
+over. It becomes one ordinary message on the thread the comments belong to,
+written in the same `file:line` blocks the context menu quotes a selection in —
+text the reader can see and the agent already knows how to read, with nothing
+hidden in it and nothing parsed back out. It is not sent: it is inserted into that
+thread's composer at the caret, for the reader to read back, add to, cut down or
+abandon. A half-written question already in the box survives it, along with its
+attachments and an armed scheduled send, and one undo takes the review back out.
+From a detached board, which has no composer of its own, it goes to the window the
+board was opened from; with neither a composer nor that window, it is sent as a
+message rather than dropped. **The comments are never cleared** — text sitting in
+a box has not been said, so only `clear()` discards them, and a rejection (nowhere
+to put it, nothing to say) leaves them untouched too. Show what came back and
+leave the review alone.
 
 **The board and your pin share a keyboard, and position decides who gets a key.**
 While focus is on the board itself — the region a reader lands on when the board

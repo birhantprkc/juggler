@@ -176,6 +176,42 @@ function makeSession({ conversation = null, conversations = [], load } = {}) {
   };
 }
 
+/**
+ * A conversation with the little of one the compose path needs: a thread to be
+ * about, no tab in this window, and a record of what it was asked to send. No tab
+ * is the interesting half — it is how the owner discovers it has no box to put the
+ * text in, and the send it falls back to is then the observable thing.
+ * @param {string} id - The conversation's id.
+ * @returns {any} The conversation, with a `sent` list on it.
+ */
+function makeComposeConversation(id) {
+  /** @type {{text: string, thread: string|null, options: any}[]} */
+  const sent = [];
+  const conversation = {
+    id,
+    name: 'Board conv',
+    sent,
+    getTabElement: () => null,
+    sendMessage: async (/** @type {string} */ text, /** @type {string|null} */ thread,
+      /** @type {any} */ _messageThread, /** @type {any} */ options) => {
+      sent.push({ text, thread, options });
+      return null;
+    },
+  };
+  /** @type {any} */
+  const root = { threadItemId: null, conversation };
+  /** @type {any} */
+  const child = { threadItemId: 'thread_7', conversation };
+  return Object.assign(conversation, {
+    rootMessageThread: root,
+    resolveMessageThread: (/** @type {string|null} */ threadItemId) => {
+      if (!threadItemId) return root;
+      if (threadItemId === 'thread_7') return child;
+      throw new Error(`no such thread: ${threadItemId}`);
+    },
+  });
+}
+
 /** The conversation a detached board in these cases is a view of. */
 const BOARD_CONVERSATION = 'conv_board';
 
@@ -1253,6 +1289,46 @@ export async function runTests() {
       }
     });
 
+    await run('the owner comes to the board\u2019s conversation before putting its review in the prompt', async () => {
+      const conversation = makeComposeConversation('conv_other');
+      const session = makeSession({
+        conversation: { id: 'conv_main', name: 'Main' },
+        conversations: [conversation],
+      });
+      const { teardown, relay } = await mountShell({ search: '', session });
+      try {
+        relay.deliver('v_stranger', 'compose', {
+          text: 'Review feedback:\n\nFrom nobody.', conversation: 'conv_other', thread: null,
+        });
+        await settle();
+        assert(conversation.sent.length === 0 && session.switched.length === 0,
+          'a viewer that never said hello cannot put words in the prompt of a window a person is working in');
+
+        relay.deliver('v_sat', 'hello');
+        relay.deliver('v_sat', 'compose', {
+          text: 'Review feedback:\n\n./a.js:3 (new)\n>  x\nWrong.',
+          conversation: 'conv_other',
+          thread: 'thread_7',
+        });
+        await waitFor(() => conversation.sent.length === 1, 'the review to be handed over');
+
+        assert(session.switched.includes('conv_other'),
+          'the conversation is shown first — text in a box nobody can see is worse than no text');
+        assert(session.loaded.includes('conv_other'), 'hydrated on the way, exactly as a reveal hydrates it');
+        const [handed] = conversation.sent;
+        assert(handed.text.includes('Wrong.'), `carrying what the reader wrote:\n${handed.text}`);
+        assert(handed.thread === 'thread_7',
+          `onto the thread the board was reading, got ${JSON.stringify(handed.thread)}`);
+        // This window has no box for that thread, so the owner sends rather than
+        // drop the feedback — and a send nobody typed takes nothing from a
+        // composer and gives nothing back to one.
+        assert(handed.options?.consumeComposer === false && handed.options?.interpretCommands === false,
+          `sent as generated text, got ${JSON.stringify(handed.options)}`);
+      } finally {
+        teardown();
+      }
+    });
+
     await run('a board carries on when the window that opened it has gone', async () => {
       const { shell, teardown, relay } = await mountShell({ pins: PROBE_BOARD });
       try {
@@ -1268,6 +1344,51 @@ export async function runTests() {
           'and there is nothing to announce');
         assert(relay.sent.some((/** @type {any} */ m) => m.kind === 'hello'),
           'the introduction stands; only the reveals it enables have nowhere to go');
+      } finally {
+        teardown();
+      }
+    });
+
+    await run('a board asks the window it reports to to put its review in the prompt', async () => {
+      const { teardown, relay } = await mountShell({ pins: PROBE_BOARD });
+      try {
+        // A board window has no composer of its own, so this is the only way text
+        // written on one reaches a prompt. The owner has to be known to be there:
+        // the answer decides whether the board hands the review over or says it
+        // itself, and it arrives with the viewer list on registration.
+        wsService._emit('clients-changed', {
+          count: 2,
+          clients: [{ id: 'c1', viewerId: 'v_self' }, { id: 'c2', viewerId: 'v_owner' }],
+        });
+        await settle();
+
+        const took = satelliteLink.compose('Review feedback:\n\n./a.js:3 (new)\n>  x\nWrong.',
+          BOARD_CONVERSATION, 'thread_7');
+        assert(took === true, 'a board with an owner present hands the review to it');
+        const asked = relay.sent.filter((/** @type {any} */ m) => m.kind === 'compose');
+        assert(asked.length === 1, `one hand-over is one message, got ${JSON.stringify(relay.sent)}`);
+        assert(asked[0].to === 'v_owner', `addressed to the window that opened it, got ${asked[0].to}`);
+        assert(asked[0].body.text.includes('Wrong.'), 'carrying what the reader wrote');
+        assert(asked[0].body.conversation === BOARD_CONVERSATION && asked[0].body.thread === 'thread_7',
+          `and which prompt it belongs in, got ${JSON.stringify(asked[0].body)}`);
+      } finally {
+        teardown();
+      }
+    });
+
+    await run('a board with no window to report to refuses, so the review is not lost', async () => {
+      const { teardown, relay } = await mountShell({ pins: PROBE_BOARD });
+      try {
+        // The owner has closed. Saying "taken" here would be saying it of a
+        // message nothing will ever receive, and the caller would stop looking
+        // for somewhere else to put the feedback.
+        wsService._emit('clients-changed', { count: 1, clients: [{ id: 'c1', viewerId: 'v_self' }] });
+        await settle();
+
+        assert(satelliteLink.compose('Review feedback:\n\nWrong.', BOARD_CONVERSATION, null) === false,
+          'a board with nowhere to hand the review must say so');
+        assert(relay.sent.every((/** @type {any} */ m) => m.kind !== 'compose'),
+          `and ask nobody, got ${JSON.stringify(relay.sent)}`);
       } finally {
         teardown();
       }

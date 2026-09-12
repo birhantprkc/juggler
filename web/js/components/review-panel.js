@@ -143,7 +143,7 @@ class ReviewPanel {
    *   One file's patch. Called when a file is selected, never in a loop over the
    *   manifest, and given a signal that is aborted when the reader moves on.
    * @param {any} options.review - Where the comments live: `draft`, `onChange`,
-   *   `save`, `clear` and `send`, as `services.review` provides them.
+   *   `save`, `clear` and `compose`, as `services.review` provides them.
    */
   constructor({ scopeLabel, loadPatch, review }) {
     /** @type {string} @private */
@@ -359,7 +359,7 @@ class ReviewPanel {
   /**
    * One file's row: a real button, naming the file and what happened to it.
    *
-   * The rail is a fixed 14rem and a path is not, so the two halves of one are
+   * The rail is a bounded share of the panel and a path is not, so the two halves of one are
    * drawn as two things: the name, which is what the row is read for and is
    * never abbreviated away, and the directory, which qualifies it and gives up
    * its width first. The whole path is on the button's tooltip and in its label,
@@ -514,8 +514,8 @@ class ReviewPanel {
    * line of it, which is all a binary or conflicted file can offer.
    *
    * The controls live here rather than on the rail row because the rail has no
-   * room for them: hover-revealed or not, they hold their width in every row of
-   * a 14rem column, and it was the file's name that was paying for it.
+   * room for them: hover-revealed or not, they hold their width in every row,
+   * and in a rail capped at 22rem it is the file's name that pays for them.
    * @param {ReviewFile} file - The file being read.
    * @returns {any} The viewer, mounted and empty.
    * @private
@@ -730,7 +730,9 @@ class ReviewPanel {
     const error = el('div', 'review-panel__editor-error');
     error.hidden = true;
     const actions = el('div', 'review-panel__editor-actions');
-    const save = el('button', 'review-panel__save', 'Save');
+    // An edit replaces the comment it was opened on, so only a new one is
+    // joining anything. Neither is sent: both end at the batch in the footer.
+    const save = el('button', 'review-panel__save', anchor.id ? 'Save changes' : 'Add to feedback');
     /** @type {HTMLButtonElement} */ (save).type = 'button';
     const cancel = el('button', 'review-panel__cancel', 'Cancel');
     /** @type {HTMLButtonElement} */ (cancel).type = 'button';
@@ -895,10 +897,10 @@ class ReviewPanel {
     const discard = el('button', 'review-panel__discard', 'Discard');
     /** @type {HTMLButtonElement} */ (discard).type = 'button';
     discard.addEventListener('click', () => { void this._discard(); });
-    const send = el('button', 'review-panel__send', 'Send feedback');
-    /** @type {HTMLButtonElement} */ (send).type = 'button';
-    send.addEventListener('click', () => { void this._send(); });
-    this._footerEl.append(discard, send);
+    const compose = el('button', 'review-panel__compose', 'Paste feedback into prompt');
+    /** @type {HTMLButtonElement} */ (compose).type = 'button';
+    compose.addEventListener('click', () => { void this._compose(); });
+    this._footerEl.append(discard, compose);
     if (this._footerError) {
       this._footerEl.append(el('div', 'review-panel__footer-error', this._footerError));
     }
@@ -919,17 +921,18 @@ class ReviewPanel {
   }
 
   /**
-   * @returns {Promise<void>} Resolved once the review is sent, or the refusal shown.
+   * @returns {Promise<void>} Resolved once the review is in the prompt, or the
+   *   refusal shown.
    * @private
    */
-  async _send() {
+  async _compose() {
     try {
       this._footerError = '';
-      await this._review.send();
+      await this._review.compose();
     } catch (error) {
-      // Nothing has been said, so nothing is taken away: the comments are all
-      // still here and the footer still offers to send them.
-      this._footerError = `Couldn't send. ${reason(error)}`;
+      // The comments are still here either way — handing them over does not
+      // spend them — so this reports what went wrong and changes nothing else.
+      this._footerError = `Couldn't put the feedback in the prompt. ${reason(error)}`;
       this._renderFooter();
     }
   }

@@ -34,6 +34,7 @@ import { formatReviewMessage } from '../utils/review-message.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { formatDisplayPath } from '../../sdk/lib/context-item-utils.js';
 import { createFileActions } from '../utils/properties-panel-helpers.js';
+import { insertAtCaret } from './composer-paste-tokens.js';
 import findBar from './find-bar.js';
 import { REFRESH_SVG } from '../utils/icons.js';
 import { PINBOARD_BODY_ID } from './pinboard-tabbar.js';
@@ -105,6 +106,74 @@ const ENTRY_SELECTOR = 'a[href], button:not(:disabled), input:not(:disabled), se
  */
 function activeTab() {
   return document.querySelector('conversation-tab.active');
+}
+
+/**
+ * Write generated text into a composer at its caret, on a line of its own.
+ *
+ * Insertion, never replacement, and through the composer's own
+ * {@link insertAtCaret} — so a half-written message survives it, one undo takes
+ * the text back out, and the box settles exactly as it would around typing.
+ * Nothing is sent: the text sits there to be read back, edited and sent by hand.
+ * @param {any} composer - The composer element, or null when there is none.
+ * @param {string} text - What to put in it.
+ * @returns {boolean} True when the text landed.
+ */
+function pasteIntoComposer(composer, text) {
+  const textarea = /** @type {HTMLTextAreaElement|null} */ (composer?.querySelector?.('textarea'));
+  if (!textarea) return false;
+  const caret = textarea.selectionStart ?? textarea.value.length;
+  const before = textarea.value.slice(0, caret);
+  // A caret left mid-sentence gets a break first: the review's header has to
+  // start a line to be read as one, rather than spliced into what was there.
+  const lead = before !== '' && !before.endsWith('\n') ? '\n' : '';
+  insertAtCaret(composer, textarea, lead + text);
+  return true;
+}
+
+/**
+ * The composer bound to one thread, or null when this window has none for it.
+ *
+ * The thread's own box, found by the binding rather than by what is on screen:
+ * `getComposer()` answers with whichever column the user is working in, so a
+ * review read on a sub-thread would otherwise be pasted into the root's box. A
+ * detached board has no tabs at all, which is how a board window discovers it has
+ * nowhere of its own to put text.
+ *
+ * It must also be a box that is still in the document. A conversation holds on to
+ * its tab element after the window has taken it out of the page, and text put in
+ * that box is text put nowhere: nobody can see it, and nothing will ever send it.
+ * @param {any} thread - The thread whose box is wanted.
+ * @returns {any} The composer element, or null.
+ */
+function composerForThread(thread) {
+  const tab = thread?.conversation?.getTabElement?.();
+  if (!tab?.isConnected) return null;
+  const wanted = thread.threadItemId ?? null;
+  return [...tab.querySelectorAll('composer-box')]
+    .find((box) => (/** @type {any} */ (box).threadItemId ?? null) === wanted) || null;
+}
+
+/**
+ * Hand generated text to the user on one thread: into that thread's composer,
+ * or — when this window has no box for it — sent as an ordinary message rather
+ * than dropped.
+ *
+ * Exported for the same reason {@link revealInConversation} is: it happens in
+ * whichever window has the columns. A detached board relays it to the window it
+ * was opened from, and that window runs this, so both ends do the identical thing
+ * and a pin never has to know which window it is in.
+ * @param {any} thread - The thread the text belongs to.
+ * @param {string} text - The message.
+ * @returns {Promise<void>} Resolves once it is in the box, or away.
+ */
+export async function composeForThread(thread, text) {
+  if (pasteIntoComposer(composerForThread(thread), text)) return;
+  const reason = await thread.conversation.sendMessage(
+    text, thread.threadItemId ?? null, thread,
+    { consumeComposer: false, interpretCommands: false }
+  );
+  if (reason) throw new Error(`Couldn't send the review: ${reason}`);
 }
 
 /**
@@ -1197,7 +1266,7 @@ class PinboardContent extends JugglerElement {
           onChange: (listener) => this._watchReviewDraft(listener, signal),
           save: (draft) => this._saveReviewDraft(draft),
           clear: () => this._saveReviewDraft(null),
-          send: () => this._sendReview(),
+          compose: () => this._composeReview(),
         },
       },
       signal,
@@ -1525,32 +1594,37 @@ class PinboardContent extends JugglerElement {
   }
 
   /**
-   * Send the review on the thread being read, as one ordinary user message.
+   * Put the review in the prompt, for the reader to send themselves.
    *
-   * It goes the one way any message goes — `Conversation.sendMessage` — because
-   * that is what starts a run, queues behind a live turn, stamps the item and
-   * keeps the worker the authority on all three. What marks it out is only that
-   * nobody typed it: it takes nothing from the composer and gives nothing back
-   * to it.
+   * The feedback is the user's own words about their own code, and the last look
+   * at it belongs to them: it goes into the box so it can be read back, added
+   * to, cut down or abandoned. Three places it can land, in this order —
    *
-   * The comments are cleared last and only on acceptance. A refusal is a reason,
-   * not a loss: the draft is still there to send again once whatever refused it
-   * has been dealt with.
-   * @returns {Promise<void>} Resolves once the message is away.
+   * - the composer for the thread being read, when this window has one;
+   * - the window this board was detached from, which has the columns (see
+   *   {@link module:services/pinboard-link}); the owner decides what happens
+   *   there, exactly as it does for a reveal;
+   * - failing both, the conversation itself, as one ordinary user message. A
+   *   board whose owner has closed still has somewhere to put the feedback, and
+   *   a review that cannot be handed over is worth more said than dropped.
+   *
+   * The comments are never cleared. Pasting is not saying — the text can still
+   * be deleted out of the box — so the batch stays the reader's to discard, and
+   * the panel goes on counting it until they do.
+   * @returns {Promise<void>} Resolves once the review has been handed over.
    * @private
    */
-  async _sendReview() {
+  async _composeReview() {
     const thread = this._reviewThread();
-    if (!thread) throw new Error('There is no conversation open to send a review to.');
+    if (!thread) throw new Error('There is no conversation open to put a review in.');
     const draft = thread.gitReviewDraft;
-    if (!draft.comments.length) throw new Error('There are no review comments to send.');
+    if (!draft.comments.length) throw new Error('There are no review comments to hand over.');
+    const text = formatReviewMessage(draft);
 
-    const reason = await thread.conversation.sendMessage(
-      formatReviewMessage(draft), thread.threadItemId ?? null, thread,
-      { consumeComposer: false, interpretCommands: false }
-    );
-    if (reason) throw new Error(`Couldn't send the review: ${reason}`);
-    thread.gitReviewDraft = null;
+    if (pasteIntoComposer(composerForThread(thread), text)) return;
+    if (isPinboardView()
+      && satelliteLink.compose(text, thread.conversation.id, thread.threadItemId ?? null)) return;
+    await composeForThread(thread, text);
   }
 
   /**

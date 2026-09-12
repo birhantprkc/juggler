@@ -32,7 +32,7 @@ import { THREAD_FOCUS_CHANGED } from './conversation-tab.js';
 import { isEditableTarget } from '../services/key-shortcut-manager.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { openAddPicker } from './pinboard-add-picker.js';
-import { describePin, revealInConversation } from './pinboard-content.js';
+import { describePin, revealInConversation, composeForThread } from './pinboard-content.js';
 import { raiseThisWindow, closeThisWindow, isDesktopWindow } from '../../sdk/lib/window-control.js';
 import { ownerLink, satelliteLink, canLinkBoards, onLinkAvailability, frameHintOf } from '../services/pinboard-link.js';
 import { isPinboardView, boardConversationId, ownerViewerId } from '../utils/view-mode.js';
@@ -447,6 +447,7 @@ class PinboardPanel extends JugglerElement {
       ownerLink.serve({
         onReveal: (target) => { void this._revealForBoard(target); },
         onSelect: (conversationId) => { void this._showConversationForBoard(conversationId); },
+        onCompose: (compose) => { void this._composeForBoard(compose); },
       });
     }
   }
@@ -496,6 +497,39 @@ class PinboardPanel extends JugglerElement {
   async _revealForBoard(target) {
     if (!(await this._showConversationForBoard(target.conversation))) return;
     revealInConversation(target);
+  }
+
+  /**
+   * Put a board's text in this window's prompt, on the thread it names.
+   *
+   * The conversation is shown first for the reason a reveal shows it: text in a
+   * box nobody can see is worse than no text, and the box it goes in has to be the
+   * one for the thread the board was reading — not whatever this window happened
+   * to be looking at. {@link composeForThread} then does exactly what it does for
+   * a board sharing a window, including sending the message when that thread has
+   * no box on screen, so the feedback is never silently dropped.
+   * @param {{text: string, conversation: string, thread: string|null}} compose - What to put where.
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _composeForBoard({ text, conversation: conversationId, thread: threadItemId }) {
+    if (!(await this._showConversationForBoard(conversationId))) return;
+    const conversation = /** @type {any} */ (this._session)?.getConversation?.(conversationId);
+    if (!conversation) return;
+    let thread = null;
+    try {
+      thread = conversation.resolveMessageThread(threadItemId ?? null);
+    } catch {
+      // A thread id this window cannot resolve — the board is reading something
+      // that has since gone. The root is still the right place for the words.
+      thread = conversation.rootMessageThread;
+    }
+    if (!thread) return;
+    try {
+      await composeForThread(thread, text);
+    } catch (err) {
+      console.error('[Pinboard] Could not put a board\'s text in the prompt:', err);
+    }
   }
 
   /**
