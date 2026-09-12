@@ -37,6 +37,7 @@ import {
 import pinboardItemRegistry from '../../js/registries/pinboard-item-registry.js';
 import PinboardItemType from 'juggler/pinboard-item-type';
 import { formatReviewMessage } from '../../js/utils/review-message.js';
+import { formatCodeReference } from '../../sdk/lib/context-item-utils.js';
 import '../../js/components/pinboard-content.js';
 import '../../js/components/conversation-tab.js';
 
@@ -223,6 +224,35 @@ export async function runTests() {
   await run('a review with no comments is no message', () => {
     assert(formatReviewMessage({ comments: [] }) === '', 'there is nothing to say');
     assert(formatReviewMessage(null) === '', 'and nothing to say it about');
+  });
+
+  await run('a review comment and a quoted selection are the same block', () => {
+    // The one assertion Step 8 had to leave unwritten: the second caller did not
+    // exist yet. Both ends are compared here rather than at the textarea, which
+    // `unit:composer-selection-quote` already owns — the risk this covers is the
+    // two callers drifting apart about paths, ranges, sides and quote bounds.
+    const lines = ['renderInlineView(hunks) {', '  const frag = document.createDocumentFragment();'];
+    const quoted = formatCodeReference({
+      path: 'web/js/components/diff-viewer.js',
+      outOfRoot: false,
+      startLine: 115,
+      endLine: 116,
+      side: 'new',
+      lines,
+    });
+    const review = formatReviewMessage({
+      comments: [comment('same', 'And this is what I think of it.', {
+        path: 'web/js/components/diff-viewer.js',
+        side: 'new',
+        startLine: 115,
+        endLine: 116,
+        lineText: lines,
+      })],
+    });
+    const block = review.slice('Review feedback:\n\n'.length);
+    assert(block === `${quoted}And this is what I think of it.`,
+      `one format, one function, two callers:\n  review:    ${JSON.stringify(block)}`
+      + `\n  selection: ${JSON.stringify(quoted)}`);
   });
 
   // --- the send -------------------------------------------------------------

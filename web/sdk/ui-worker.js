@@ -67,6 +67,7 @@ export const createFileActions = () => domUnavailable('createFileActions');
 export const pinFile = () => domUnavailable('pinFile');
 export const addDiffViewer = () => domUnavailable('addDiffViewer');
 export const createDiffViewer = () => domUnavailable('createDiffViewer');
+export const createReviewPanel = () => domUnavailable('createReviewPanel');
 export const openImageLightbox = () => domUnavailable('openImageLightbox');
 export const createImageThumb = () => domUnavailable('createImageThumb');
 export const renderMarkdown = () => domUnavailable('renderMarkdown');

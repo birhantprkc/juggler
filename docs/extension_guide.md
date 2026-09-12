@@ -266,7 +266,11 @@ The full set of specifiers, and what each is for:
 - **`juggler/ui`** holds render/format helpers (`smartTruncate`, `createElement`,
   `FormattingHelpers`, …) and `createDiffViewer`, the shared diff renderer, which
   draws either a Git patch (`setPatch`) or a pair of before/after snapshots
-  (`setDiff`) for one file. See `web/sdk/ui.js`. It has a worker-safe twin: in the
+  (`setDiff`) for one file. `createReviewPanel` is the layer around it for a pin
+  reviewing several files at once: it owns the file rail, the comment editor and
+  the draft footer, and is given an already-worded manifest, a per-file patch
+  loader and a `services.review` to keep the comments in.
+  See `web/sdk/ui.js`. It has a worker-safe twin: in the
   engine, the pure formatters are real and the DOM helpers throw, so a capability
   that runs in both realms must keep its rendering on the viewer side.
 

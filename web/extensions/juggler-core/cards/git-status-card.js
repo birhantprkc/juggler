@@ -80,17 +80,29 @@ const GIT_SOURCE = { kind: 'git' };
  * Put the card's content inside a button that opens the pin, when there is a pin
  * to open. Gated on the registry, so an affordance that would do nothing is
  * absent rather than dead — the same gate the properties panels' pin buttons use.
+ *
+ * With changes waiting, the card says where they can be read and commented on,
+ * because the counts alone do not suggest that anything can be done about them.
+ * With none, it offers only to be looked at: inviting a review of nothing would
+ * be an invitation to nothing.
  * @param {HTMLElement[]} nodes - The rendered content.
+ * @param {boolean} [review] - Whether there is anything to review.
  * @returns {HTMLElement[]} The content, wrapped or not.
  */
-function withLauncher(nodes) {
+function withLauncher(nodes, review = false) {
   if (!pinboardView.canPin(GIT_SOURCE)) return nodes;
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'info-card__git-launch';
-  button.setAttribute('aria-label', 'Open Git status in the Pinboard');
-  button.title = 'Open in the Pinboard';
+  button.setAttribute('aria-label', review ? 'Review changes in the Pinboard' : 'Open Git status in the Pinboard');
+  button.title = review ? 'Review changes' : 'Open in the Pinboard';
   button.append(...nodes);
+  if (review) {
+    const cue = document.createElement('div');
+    cue.className = 'info-card__git-review';
+    cue.textContent = 'Review changes →';
+    button.appendChild(cue);
+  }
   // addSource dedupes: the Git pin is a singleton, so a second click reveals the
   // pin that is already there rather than adding another.
   button.addEventListener('click', () => { void pinboardView.addSource(GIT_SOURCE); });
@@ -124,7 +136,7 @@ function render(contentEl) {
     const counts = countsPhrase(r);
     return repoLine(showLabels ? repoLabel(snap.root, r.path) : null, counts);
   });
-  contentEl.replaceChildren(...withLauncher(nodes));
+  contentEl.replaceChildren(...withLauncher(nodes, true));
 }
 
 /**

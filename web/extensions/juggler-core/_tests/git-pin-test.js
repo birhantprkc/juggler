@@ -4,17 +4,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Git pin tests — the board's view of the working tree.
+ * Git pin tests — the board's review of the working tree.
  *
- * Mounted with a hand-built PinContext whose `git` service the test drives, so a
- * case can state a repository state exactly rather than arranging for git to be
- * in it. One case goes through the real service to the real server, which is
- * what proves the two halves agree about the shape they pass.
+ * Mounted with a hand-built PinContext whose `git` and `review` services the
+ * test drives, so a case can state a tree and a draft exactly rather than
+ * arranging for git to be in that state. One case goes through the real service
+ * to the real server, which is what proves the two halves agree about the shape
+ * they pass.
  * @module _tests/git-pin-test
  */
 
 import GitPin from '../pins/git-pin.js';
-import gitStatusCache from '../../../js/services/git-status-cache.js';
+import gitReviewService from '../../../js/services/git-review-service.js';
 import { assert } from '../../../js-tests/utilities/test-helpers.js';
 
 /**
@@ -51,9 +52,12 @@ export async function runTests(_ctx) {
 
   const pin = new GitPin();
 
+  /** @returns {Promise<void>} Resolved once the pending promise chains have run. */
+  const settle = () => new Promise((resolve) => { setTimeout(resolve, 0); });
+
   /**
    * A repo with everything filled in, so a case overrides only what it is about.
-   * @param {Partial<import('juggler/pinboard-item-type').PinGitRepo>} [overrides] - What this case cares about.
+   * @param {Partial<import('juggler/pinboard-item-type').PinGitReviewRepo>} [overrides] - What this case cares about.
    * @returns {any} The repo.
    */
   const repo = (overrides = {}) => ({
@@ -74,43 +78,159 @@ export async function runTests(_ctx) {
     detached: false,
     files: [],
     truncated: false,
+    complete: true,
     ...overrides,
   });
 
   /**
-   * Mount the pin against a canned status.
-   * @param {any} status - What `git.status()` should return.
-   * @param {string} [error] - What `git.error()` should return.
+   * A review manifest with one root repository holding these files.
+   * @param {any[]} files - The changed files.
+   * @param {object} [overrides] - Manifest-level overrides.
+   * @returns {any} The manifest.
+   */
+  const manifestOf = (files, overrides = {}) => ({
+    root: '/tmp/proj',
+    complete: true,
+    warnings: [],
+    repos: [repo({ changed: files.length, total: files.length, files })],
+    ...overrides,
+  });
+
+  /**
+   * A server patch for one file, with one context line and one addition.
+   * @param {string} path - The file.
+   * @param {object} [overrides] - What this case cares about.
+   * @returns {any} The patch.
+   */
+  const patchOf = (path, overrides = {}) => ({
+    repo: '',
+    path,
+    status: 'modified',
+    binary: false,
+    conflicted: false,
+    truncated: false,
+    added: 1,
+    removed: 0,
+    revision: 'rev1',
+    hunks: [{
+      oldStart: 84,
+      oldLines: 1,
+      newStart: 84,
+      newLines: 2,
+      heading: '',
+      lines: [
+        { kind: 'context', oldLine: 84, newLine: 84, text: 'const hunks = computeDiff();' },
+        { kind: 'add', newLine: 85, text: 'this.renderComments(hunks);' },
+      ],
+    }],
+    ...overrides,
+  });
+
+  /**
+   * Mount the pin against canned review answers and a canned draft.
+   * @param {object} [options] - What this case needs.
+   * @param {any} [options.manifest] - What `git.review()` answers with.
+   * @param {any} [options.reviewError] - What `git.review()` fails with from the
+   *   outset, for a read that never succeeded once.
+   * @param {any} [options.draft] - What `review.draft()` answers with; null for
+   *   a board with no conversation to keep comments on.
+   * @param {(repo: string, path: string) => any} [options.patch] - What
+   *   `git.diff()` answers with, per file.
    * @returns {any} The body, controller and the levers a test needs.
    */
-  function mount(status, error = '') {
+  function mount(options = {}) {
     const body = document.createElement('div');
+    body.style.width = '60rem';
+    body.style.position = 'absolute';
+    body.style.left = '-9999px';
     document.body.appendChild(body);
     const abort = new AbortController();
+
+    let manifest = options.manifest === undefined ? manifestOf([]) : options.manifest;
+    /** @type {any} */
+    let reviewFailure = options.reviewError || null;
+    let reviews = 0;
+    /** @type {{repo: string, path: string}[]} */
+    const diffs = [];
+    /** @type {{resolve: (patch: any) => void, reject: (e: any) => void, repo: string, path: string}[]} */
+    const pending = [];
+    let holdDiffs = false;
+
+    let draft = options.draft === undefined ? { version: 1, base: 'head', comments: [] } : options.draft;
     /** @type {(() => void)[]} */
-    const listeners = [];
-    let current = status;
-    let currentError = error;
-    let refreshes = 0;
+    const draftListeners = [];
+    /** @type {any[]} */
+    const saves = [];
+    let clears = 0;
+    let sends = 0;
+    /** @type {any} */
+    let saveFailure = null;
+    /** @type {any} */
+    let sendFailure = null;
 
     const services = {
       files: { onChange: () => () => {} },
       contextItems: { find: () => null, onChange: () => () => {}, reveal: () => {} },
       git: {
-        status: () => current,
-        error: () => currentError,
+        status: () => null,
+        error: () => '',
+        onChange: () => () => {},
+        refresh: async () => {},
+        review: async () => {
+          reviews++;
+          if (reviewFailure) throw reviewFailure;
+          return manifest;
+        },
         /**
-         * @param {() => void} listener - Called when a new status arrives.
+         * @param {string} repoPath - The repository.
+         * @param {string} filePath - The file within it.
+         * @returns {Promise<any>} Its patch.
+         */
+        diff: (repoPath, filePath) => {
+          diffs.push({ repo: repoPath, path: filePath });
+          if (!holdDiffs) {
+            const made = options.patch ? options.patch(repoPath, filePath) : patchOf(filePath);
+            return made instanceof Error ? Promise.reject(made) : Promise.resolve(made);
+          }
+          return new Promise((resolve, reject) => {
+            pending.push({ resolve, reject, repo: repoPath, path: filePath });
+          });
+        },
+      },
+      review: {
+        draft: () => (draft ? JSON.parse(JSON.stringify(draft)) : null),
+        /**
+         * @param {() => void} listener - Called when the draft may have changed.
          * @returns {() => void} Unsubscribe.
          */
         onChange: (listener) => {
-          listeners.push(listener);
+          draftListeners.push(listener);
           return () => {
-            const at = listeners.indexOf(listener);
-            if (at >= 0) listeners.splice(at, 1);
+            const at = draftListeners.indexOf(listener);
+            if (at >= 0) draftListeners.splice(at, 1);
           };
         },
-        refresh: async () => { refreshes++; },
+        /**
+         * @param {any} next - The draft to write.
+         * @returns {Promise<void>} Resolved once written.
+         */
+        save: async (next) => {
+          if (saveFailure) throw saveFailure;
+          saves.push(next);
+          draft = { version: 1, base: 'head', comments: next.comments };
+          for (const listener of [...draftListeners]) listener();
+        },
+        clear: async () => {
+          clears++;
+          draft = { version: 1, base: 'head', comments: [] };
+          for (const listener of [...draftListeners]) listener();
+        },
+        send: async () => {
+          sends++;
+          if (sendFailure) throw sendFailure;
+          draft = { version: 1, base: 'head', comments: [] };
+          for (const listener of [...draftListeners]) listener();
+        },
       },
     };
 
@@ -118,7 +238,7 @@ export async function runTests(_ctx) {
       pin: { id: 'pin_test', type: 'git', config: {} },
       active: {
         project: { path: '/tmp/proj', displayName: 'proj' },
-        conversation: { id: 'c1', title: 'Conv' },
+        conversation: draft === null ? null : { id: 'c1', title: 'Conv' },
         thread: { id: null },
       },
       services,
@@ -131,20 +251,49 @@ export async function runTests(_ctx) {
       controller,
       services,
       text: () => body.textContent || '',
-      watchers: () => listeners.length,
-      refreshes: () => refreshes,
-      /**
-       * @param {any} next - The new status.
-       * @param {string} [nextError] - The new error.
-       */
-      setStatus: (next, nextError = '') => { current = next; currentError = nextError; },
-      fireChange: () => { for (const listener of [...listeners]) listener(); },
+      reviews: () => reviews,
+      diffs: () => diffs,
+      pending: () => pending,
+      saves: () => saves,
+      clears: () => clears,
+      sends: () => sends,
+      draft: () => draft,
+      settle,
+      holdDiffs: (/** @type {boolean} */ hold) => { holdDiffs = hold; },
+      setManifest: (/** @type {any} */ next) => { manifest = next; },
+      failReview: (/** @type {any} */ e) => { reviewFailure = e; },
+      failSave: (/** @type {any} */ e) => { saveFailure = e; },
+      failSend: (/** @type {any} */ e) => { sendFailure = e; },
+      setDraft: (/** @type {any} */ next) => {
+        draft = next;
+        for (const listener of [...draftListeners]) listener();
+      },
+      /** @returns {any[]} The file rows, in order. */
+      rows: () => [...body.querySelectorAll('.review-panel__file')],
+      /** @returns {any} The active file row. */
+      active: () => body.querySelector('.review-panel__file[aria-current="true"]'),
+      /** @returns {any} The mounted diff viewer, if there is one. */
+      viewer: () => body.querySelector('diff-viewer'),
+      /** @returns {any} The open comment editor, if there is one. */
+      editor: () => body.querySelector('.review-panel__editor'),
       teardown: () => {
         controller.teardown?.();
         abort.abort();
         body.remove();
       },
     };
+  }
+
+  /**
+   * Mount, and wait for the manifest and the first file's patch to land.
+   * @param {object} [options] - Passed to `mount`.
+   * @returns {Promise<any>} The mounted pin.
+   */
+  async function mounted(options = {}) {
+    const m = mount(options);
+    await settle();
+    await settle();
+    return m;
   }
 
   // --- the manifest and its gates ------------------------------------------
@@ -160,9 +309,11 @@ export async function runTests(_ctx) {
       'a project is all it needs — a git pin does not need a conversation');
   });
 
-  await test('describe reads nothing, because layout calls it', () => {
+  await test('the tab says Git and the body says what it is for', () => {
     const described = pin.describe();
     assert(described.title === 'Git', `expected 'Git', got ${described.title}`);
+    assert(described.subtitle === 'Review changes',
+      `the pin is the review surface and should say so, got ${JSON.stringify(described.subtitle)}`);
     // The branch would be the obvious badge, and describe gets no services to
     // find it with. Plan and Todo hit the same wall; the body says it instead.
     assert(!described.badge, 'a badge would need the service, which describe is not given');
@@ -181,259 +332,193 @@ export async function runTests(_ctx) {
   // --- what it draws --------------------------------------------------------
 
   await test('nothing read yet is not no repository', () => {
-    const m = mount(null);
+    const m = mount({ manifest: manifestOf([]) });
     assert(m.text().trim() === 'Checking…', `expected 'Checking…', got ${JSON.stringify(m.text())}`);
     m.teardown();
   });
 
-  await test('a project without git says so plainly', () => {
-    const m = mount({ root: '/tmp/proj', repos: [] });
+  await test('a project without git says so plainly', async () => {
+    const m = await mounted({ manifest: { root: '/tmp/proj', complete: true, warnings: [], repos: [] } });
     assert(m.text().trim() === 'No git repository.', `got ${JSON.stringify(m.text())}`);
     m.teardown();
   });
 
-  await test('a clean tree shows its branch and nothing else', () => {
-    const m = mount({ root: '/tmp/proj', repos: [repo({ branch: 'main' })] });
+  await test('a clean tree shows its branch and says nothing changed', async () => {
+    const m = await mounted({ manifest: manifestOf([], { repos: [repo({ branch: 'main' })] }) });
     const text = m.text();
     assert(text.includes('main'), `branch missing:\n${text}`);
     assert(text.includes('Nothing changed.'), `expected the clean state:\n${text}`);
-    assert(!m.body.querySelector('.git-pin__file'), 'a clean tree has no file rows');
+    assert(m.rows().length === 0, 'a clean tree has no file rows');
+    assert(m.diffs().length === 0, 'and nothing to ask for a patch of');
     m.teardown();
   });
 
-  await test('the changed files are listed with their status codes', () => {
-    const m = mount({
-      root: '/tmp/proj',
-      repos: [repo({
-        changed: 1,
-        staged: 1,
-        total: 2,
-        files: [
-          { path: 'web/js/app.js', index: 'M', worktree: '.' },
-          { path: 'notes.md', index: '.', worktree: '?' },
+  await test('the scope is named, and never left to be guessed at', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.', added: 3, removed: 1 }]),
+    });
+    const scope = m.body.querySelector('.review-panel__scope');
+    assert(scope?.textContent?.includes('Working tree against HEAD'),
+      `the one comparison this ships with has to be named:\n${scope?.textContent}`);
+    assert(scope?.textContent?.includes('1 file'), `the file count is missing:\n${scope?.textContent}`);
+    assert(!scope?.textContent?.includes('so far'),
+      `a complete review states a total, not a floor:\n${scope?.textContent}`);
+    m.teardown();
+  });
+
+  // --- one file at a time ---------------------------------------------------
+
+  await test('mounting asks for a review and loads only the first file', async () => {
+    const m = await mounted({
+      manifest: manifestOf([
+        { path: 'a.js', index: 'M', worktree: '.' },
+        { path: 'b.js', index: '.', worktree: 'M' },
+        { path: 'c.js', index: '.', worktree: '?' },
+      ]),
+    });
+    assert(m.reviews() === 1, `expected one review on mount, got ${m.reviews()}`);
+    assert(m.rows().length === 3, `expected three file rows, got ${m.rows().length}`);
+    assert(m.diffs().length === 1,
+      `a dirty tree must not build a diff per file, got ${JSON.stringify(m.diffs())}`);
+    assert(m.diffs()[0].path === 'a.js', `expected the first file, got ${m.diffs()[0].path}`);
+    assert(m.active()?.textContent?.includes('a.js'), 'the first file should be the selected one');
+    assert(m.viewer(), `a selected file should be drawn:\n${m.body.innerHTML}`);
+    m.teardown();
+  });
+
+  await test('selecting another file loads that one, and only then', async () => {
+    const m = await mounted({
+      manifest: manifestOf([
+        { path: 'a.js', index: 'M', worktree: '.' },
+        { path: 'b.js', index: '.', worktree: 'M' },
+      ]),
+    });
+    m.rows()[1].click();
+    await settle();
+    assert(m.diffs().length === 2, `expected a second request, got ${JSON.stringify(m.diffs())}`);
+    assert(m.diffs()[1].path === 'b.js', `expected b.js, got ${m.diffs()[1].path}`);
+    assert(m.active()?.textContent?.includes('b.js'), 'the clicked row should become current');
+    assert(m.text().includes('b.js'), `the diff should name the file it drew:\n${m.text()}`);
+    m.teardown();
+  });
+
+  await test('a file is named by its repository as well as its path', async () => {
+    const m = await mounted({
+      manifest: {
+        root: '/tmp/proj',
+        complete: true,
+        warnings: [],
+        repos: [
+          repo({ path: '', changed: 1, total: 1, files: [{ path: 'src/main.go', index: 'M', worktree: '.' }] }),
+          repo({
+            path: 'vendor/lib',
+            branch: 'main',
+            changed: 1,
+            total: 1,
+            files: [{ path: 'src/main.go', index: 'M', worktree: '.' }],
+          }),
         ],
-      })],
+      },
     });
-    const rows = m.body.querySelectorAll('.git-pin__file');
-    assert(rows.length === 2, `expected 2 file rows, got ${rows.length}:\n${m.body.innerHTML}`);
-    const text = m.text();
-    assert(text.includes('web/js/app.js') && text.includes('notes.md'), `paths missing:\n${text}`);
-    assert(text.includes('1 changed, 1 staged'), `counts missing:\n${text}`);
+    assert(m.rows().length === 2, `both files should be listed, got ${m.rows().length}`);
+    m.rows()[1].click();
+    await settle();
+    assert(m.diffs().length === 2, `expected the second repo's file to be asked for: ${JSON.stringify(m.diffs())}`);
+    assert(m.diffs()[1].repo === 'vendor/lib' && m.diffs()[1].path === 'src/main.go',
+      `two src/main.go are two files, not one: ${JSON.stringify(m.diffs()[1])}`);
+    const labels = m.rows().map((/** @type {any} */ r) => r.getAttribute('aria-label') || '');
+    assert(labels[0] !== labels[1],
+      `two rows reading identically are indistinguishable aloud: ${JSON.stringify(labels)}`);
+    assert(labels[1].includes('vendor/lib'), `the nested repo belongs in the label: ${labels[1]}`);
     m.teardown();
   });
 
-  await test('changed rows show useful detail and standard file controls', () => {
+  await test('a patch that outlived its selection is not drawn', async () => {
     const m = mount({
-      root: '/tmp/proj',
-      repos: [repo({
-        branch: 'develop',
-        upstream: 'origin/develop',
-        head: 'abcdef1234567890',
-        stashes: 2,
-        conflicted: 1,
-        changed: 2,
-        staged: 1,
-        total: 2,
-        added: 14,
-        removed: 3,
-        files: [
-          {
-            path: 'web/new.js', oldPath: 'web/old.js', index: 'R', worktree: '.',
-            added: 12, removed: 3,
-          },
-          { path: 'notes.md', index: 'U', worktree: 'U', conflicted: true },
-        ],
-      })],
+      manifest: manifestOf([
+        { path: 'a.js', index: 'M', worktree: '.' },
+        { path: 'b.js', index: '.', worktree: 'M' },
+      ]),
     });
-    const text = m.text();
-    assert(text.includes('develop') && text.includes('origin/develop'), `upstream missing:\n${text}`);
-    assert(text.includes('abcdef1'), `short HEAD missing:\n${text}`);
-    assert(text.includes('2 stashes'), `stash count missing:\n${text}`);
-    assert(text.includes('1 conflicted'), `conflict count missing:\n${text}`);
-    assert(text.includes('web/old.js') && text.includes('web/new.js'), `rename paths missing:\n${text}`);
-    assert(text.includes('Renamed and staged'), `human status missing:\n${text}`);
-
-    const stats = m.body.querySelectorAll('.line-diffstat');
-    assert(stats.length === 2, `expected repo and file diffstats, got ${stats.length}:\n${m.body.innerHTML}`);
-    assert(stats[0].textContent?.includes('+14') && stats[0].textContent?.includes('-3'),
-      `repo diffstat missing:\n${m.body.innerHTML}`);
-    assert(stats[1].textContent?.includes('+12') && stats[1].textContent?.includes('-3'),
-      `file diffstat missing:\n${m.body.innerHTML}`);
-
-    const row = /** @type {HTMLElement|null} */ (m.body.querySelector('.git-pin__file'));
-    assert(row?.dataset.filePath === '/tmp/proj/web/new.js',
-      `row should name its absolute file, got ${JSON.stringify(row?.dataset.filePath)}`);
-    assert(row?.querySelector('.properties-panel-filepath-actions'),
-      `standard file controls missing:\n${row?.outerHTML}`);
-    assert(m.body.querySelector('.git-pin__file--conflicted'), 'conflict row should be visually distinct');
+    m.holdDiffs(true);
+    await settle();
+    m.rows()[1].click();
+    await settle();
+    assert(m.pending().length === 2, `expected both reads out, got ${m.pending().length}`);
+    // The first file's patch lands last. It is an answer to a question nobody is
+    // asking any more, and drawing it would show b.js's row over a.js's diff.
+    m.pending()[1].resolve(patchOf('b.js'));
+    await settle();
+    m.pending()[0].resolve(patchOf('a.js'));
+    await settle();
+    assert(m.viewer()?.textContent?.includes('b.js'),
+      `the selected file's diff should stand:\n${m.viewer()?.textContent}`);
+    assert(!m.viewer()?.textContent?.includes('a.js'),
+      `a stale answer must not replace it:\n${m.viewer()?.textContent}`);
     m.teardown();
   });
 
-  await test('an unborn repository says so instead of inventing a commit', () => {
-    const m = mount({ root: '/tmp/proj', repos: [repo({ head: '', initial: true })] });
-    assert(m.text().includes('No commits yet'), `initial state missing:\n${m.text()}`);
-    m.teardown();
-  });
-
-  await test('a status code says in words what its letters mean', () => {
-    const m = mount({
-      root: '/tmp/proj',
-      repos: [repo({ changed: 1, total: 1, files: [{ path: 'a.js', index: '.', worktree: '?' }] })],
-    });
-    const code = m.body.querySelector('.git-pin__code');
-    assert(code?.title === 'Untracked', `expected the letters explained, got ${JSON.stringify(code?.title)}`);
-    m.teardown();
-  });
-
-  await test('a branch ahead of its upstream says how far', () => {
-    const m = mount({
-      root: '/tmp/proj',
-      repos: [repo({ upstream: 'origin/develop', ahead: 2, behind: 1 })],
+  await test('a file whose patch fails says so and keeps the rail', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]),
+      patch: () => new Error('git: index locked'),
     });
     const text = m.text();
-    assert(text.includes('2 ahead'), `ahead missing:\n${text}`);
-    assert(text.includes('1 behind'), `behind missing:\n${text}`);
+    assert(text.includes("Couldn't load this diff."), `expected the plain-English lead:\n${text}`);
+    assert(text.includes('git: index locked'), `the underlying error must survive:\n${text}`);
+    assert(m.rows().length === 1, 'the file list is still worth showing');
     m.teardown();
   });
 
-  await test('a branch level with its upstream says so, and one without says nothing', () => {
-    const level = mount({ root: '/tmp/proj', repos: [repo({ upstream: 'origin/main' })] });
-    assert(level.text().includes('Up to date'), `expected 'Up to date':\n${level.text()}`);
-    level.teardown();
+  // --- refresh --------------------------------------------------------------
 
-    const untracked = mount({ root: '/tmp/proj', repos: [repo({ upstream: '' })] });
-    // A branch with no upstream is not up to date with anything, and it is not
-    // behind either — claiming a relationship it has not got would be a lie.
-    assert(!untracked.text().includes('Up to date'),
-      `a branch with no upstream is not up to date:\n${untracked.text()}`);
-    assert(!untracked.text().includes('behind'), `nothing to be behind:\n${untracked.text()}`);
-    untracked.teardown();
-  });
-
-  await test('a detached head is a state, not a branch name', () => {
-    const m = mount({ root: '/tmp/proj', repos: [repo({ branch: '', detached: true })] });
-    assert(m.text().includes('Detached head'), `expected the state:\n${m.text()}`);
-    m.teardown();
-  });
-
-  await test('a truncated list counts what it left out', () => {
-    const m = mount({
-      root: '/tmp/proj',
-      repos: [repo({
-        changed: 431,
-        total: 431,
-        truncated: true,
-        files: [{ path: 'a.js', index: '.', worktree: 'M' }],
-      })],
+  await test('refresh asks again and keeps the file that was being read', async () => {
+    const m = await mounted({
+      manifest: manifestOf([
+        { path: 'a.js', index: 'M', worktree: '.' },
+        { path: 'b.js', index: '.', worktree: 'M' },
+      ]),
     });
-    assert(m.text().includes('First 1 of 431 files.'), `expected the real total:\n${m.text()}`);
-    m.teardown();
-  });
-
-  // --- several repositories -------------------------------------------------
-
-  await test('a lone repo at the project root goes unlabelled', () => {
-    const m = mount({ root: '/tmp/proj', repos: [repo({ path: '', changed: 1, total: 1 })] });
-    assert(!m.body.querySelector('.git-pin__name'),
-      `one repo at the root needs no label:\n${m.body.innerHTML}`);
-    m.teardown();
-  });
-
-  await test('nested repos each get their own block and their own name', () => {
-    const m = mount({
-      root: '/tmp/proj',
-      repos: [
-        repo({ path: '', branch: 'main', changed: 1, total: 1 }),
-        repo({ path: 'juggler', branch: 'develop', changed: 2, total: 2 }),
-      ],
-    });
-    const blocks = m.body.querySelectorAll('.git-pin__repo');
-    assert(blocks.length === 2, `expected a block each, got ${blocks.length}`);
-    const names = [...m.body.querySelectorAll('.git-pin__name')].map((/** @type {any} */ n) => n.textContent);
-    // The root repo is named for the project folder; a bare "." would be cryptic.
-    assert(names.includes('proj') && names.includes('juggler'),
-      `expected both repos named, got ${JSON.stringify(names)}`);
-    const text = m.text();
-    assert(text.includes('main') && text.includes('develop'),
-      `each repo keeps its own branch:\n${text}`);
-    m.teardown();
-  });
-
-  // --- staying current ------------------------------------------------------
-
-  await test('a new status redraws the pin', () => {
-    const m = mount({ root: '/tmp/proj', repos: [repo({ branch: 'main' })] });
-    assert(m.text().includes('Nothing changed.'), `expected the clean state first:\n${m.text()}`);
-
-    m.setStatus({
-      root: '/tmp/proj',
-      repos: [repo({ branch: 'main', changed: 1, total: 1, files: [{ path: 'new.js', index: '.', worktree: 'M' }] })],
-    });
-    m.fireChange();
-    assert(m.text().includes('new.js'), `expected the new file after a change:\n${m.text()}`);
-    m.teardown();
-  });
-
-  await test('the pin asks for a status when it mounts', () => {
-    const m = mount(null);
-    assert(m.refreshes() === 1, `expected one refresh on mount, got ${m.refreshes()}`);
-    m.teardown();
-  });
-
-  await test('Refresh is the only action, and it asks again', async () => {
-    const m = mount({ root: '/tmp/proj', repos: [repo()] });
+    m.rows()[1].click();
+    await settle();
     const actions = m.controller.getActions();
-    assert(actions.length === 1, `expected one action, got ${actions.map((/** @type {any} */ a) => a.id).join(', ')}`);
-    assert(actions[0].id === 'refresh' && actions[0].primary === true,
-      'Refresh is the whole point of a pin over a poll, so it is the primary action');
-    assert(actions[0].icon === 'refresh',
-      'and it is the same glyph a refresh wears everywhere else');
-    const before = m.refreshes();
-    await actions[0].run();
-    assert(m.refreshes() === before + 1, 'Refresh should ask the service again');
+    assert(actions.some((/** @type {any} */ a) => a.id === 'refresh'),
+      `Refresh is how the user asks again, got ${actions.map((/** @type {any} */ a) => a.id).join(', ')}`);
+    await actions.find((/** @type {any} */ a) => a.id === 'refresh').run();
+    await settle();
+    assert(m.reviews() === 2, `expected a second review, got ${m.reviews()}`);
+    assert(m.active()?.textContent?.includes('b.js'),
+      'a refresh that moved the selection would lose the reader\'s place');
+    const last = m.diffs()[m.diffs().length - 1];
+    assert(last.path === 'b.js', `and the patch is re-read, not reused: ${JSON.stringify(m.diffs())}`);
     m.teardown();
   });
 
-  await test('a new active context redraws in place rather than remounting', () => {
-    const m = mount({ root: '/tmp/proj', repos: [repo({ branch: 'main' })] });
-    m.setStatus({ root: '/tmp/proj', repos: [repo({ branch: 'release' })] });
-    m.controller.update({
-      pin: { id: 'pin_test', type: 'git', config: {} },
-      active: { project: { path: '/tmp/proj', displayName: 'proj' }, conversation: null, thread: null },
-      services: m.services,
-      signal: new AbortController().signal,
-      updateConfig: async () => {},
+  await test('a file that went away takes the selection with it', async () => {
+    const m = await mounted({
+      manifest: manifestOf([
+        { path: 'a.js', index: 'M', worktree: '.' },
+        { path: 'b.js', index: '.', worktree: 'M' },
+      ]),
     });
-    assert(m.text().includes('release'),
-      `update should re-read through the context it was handed:\n${m.text()}`);
-    assert(m.watchers() === 1, `update must not stack a second watcher, got ${m.watchers()}`);
+    m.rows()[1].click();
+    await settle();
+    m.setManifest(manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]));
+    await m.controller.getActions().find((/** @type {any} */ a) => a.id === 'refresh').run();
+    await settle();
+    assert(m.rows().length === 1, `expected the one remaining file, got ${m.rows().length}`);
+    assert(m.active()?.textContent?.includes('a.js'),
+      'with the read file gone, the first one is the only honest selection');
     m.teardown();
   });
 
-  await test('teardown stops watching', () => {
-    const m = mount({ root: '/tmp/proj', repos: [repo()] });
-    assert(m.watchers() === 1, `expected one watcher while mounted, got ${m.watchers()}`);
-    m.controller.teardown();
-    assert(m.watchers() === 0, `expected no watcher after teardown, got ${m.watchers()}`);
-    m.teardown();
-  });
-
-  // --- failures -------------------------------------------------------------
-
-  await test("a failure before any status keeps the error text", () => {
-    const m = mount(null, 'git: command not found');
-    const text = m.text();
-    assert(text.includes("Couldn't read git status."), `expected the plain-English lead:\n${text}`);
-    assert(text.includes('git: command not found'),
-      `the underlying error must survive, not be replaced:\n${text}`);
-    m.teardown();
-  });
-
-  await test('a failed refresh keeps the last good status on screen', () => {
-    const m = mount({
-      root: '/tmp/proj',
-      repos: [repo({ changed: 1, total: 1, files: [{ path: 'a.js', index: '.', worktree: 'M' }] })],
-    }, 'network error');
+  await test('a failed refresh keeps the last good review on screen', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]),
+    });
+    m.failReview(new Error('network error'));
+    await m.controller.getActions().find((/** @type {any} */ a) => a.id === 'refresh').run();
+    await settle();
     const text = m.text();
     assert(text.includes('a.js'), `blanking the panel loses more than staleness costs:\n${text}`);
     assert(text.includes("Couldn't refresh.") && text.includes('network error'),
@@ -441,27 +526,585 @@ export async function runTests(_ctx) {
     m.teardown();
   });
 
+  await test('a first read that fails says so instead of claiming a clean tree', async () => {
+    // Armed before the mount, because the pin asks the moment it is mounted.
+    const m = await mounted({ reviewError: new Error('git: command not found') });
+    const text = m.text();
+    assert(!text.includes('Nothing changed.'),
+      `a failure is not a clean tree, and must never be drawn as one:\n${text}`);
+    assert(text.includes("Couldn't read the working tree.") && text.includes('git: command not found'),
+      `expected the lead and the underlying error:\n${text}`);
+    m.teardown();
+  });
+
+  await test('an incomplete review says what it could not reach', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }], {
+        complete: false,
+        warnings: ['0 of 431 changed files listed in vendor/lib.'],
+      }),
+    });
+    const text = m.text();
+    assert(text.includes('0 of 431 changed files listed in vendor/lib.'),
+      `the server's own words are the warning, verbatim:\n${text}`);
+    const warnings = m.body.querySelector('.review-panel__warnings');
+    assert(warnings, `an incomplete review has to say so prominently:\n${m.body.innerHTML}`);
+    assert(text.includes('1 file so far'),
+      `and the count it does show is a floor, not a total:\n${text}`);
+    m.teardown();
+  });
+
+  await test('a repository git could not read is listed with its reason', async () => {
+    const m = await mounted({
+      manifest: {
+        root: '/tmp/proj',
+        complete: false,
+        warnings: [],
+        repos: [repo({
+          path: 'vendor/lib',
+          complete: false,
+          error: 'fatal: not a git repository',
+        })],
+      },
+    });
+    assert(m.text().includes('fatal: not a git repository'),
+      `dropping it would turn "I could not read this" into "there is nothing here":\n${m.text()}`);
+    m.teardown();
+  });
+
+  // --- keyboard -------------------------------------------------------------
+
+  await test('the file rail moves under the arrow keys', async () => {
+    const m = await mounted({
+      manifest: manifestOf([
+        { path: 'a.js', index: 'M', worktree: '.' },
+        { path: 'b.js', index: '.', worktree: 'M' },
+        { path: 'c.js', index: '.', worktree: '?' },
+      ]),
+    });
+    const rows = m.rows();
+    // Focus is observed rather than read back from `document.activeElement`. The
+    // lanes in one window share a single focused frame, so a sibling lane
+    // focusing anything takes this document's active element to its body — which
+    // makes reading it back a measure of what else is running.
+    /** @type {any[]} */
+    const focused = [];
+    for (const row of rows) row.focus = () => { focused.push(row); };
+
+    /**
+     * @param {any} row - The row to send the key to.
+     * @param {string} key - The key.
+     * @returns {Promise<void>} Resolved once the selection has moved.
+     */
+    const press = async (row, key) => {
+      row.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+      await settle();
+    };
+
+    await press(rows[0], 'ArrowDown');
+    assert(m.active() === rows[1], `Down should move to the next file, got ${m.active()?.textContent}`);
+    assert(focused[focused.length - 1] === rows[1], 'and focus should go with it');
+    assert(rows[1].tabIndex === 0 && rows[0].tabIndex === -1 && rows[2].tabIndex === -1,
+      `Tab should reach the row being read and no other, got ${rows.map((/** @type {any} */ r) => r.tabIndex)}`);
+
+    await press(rows[1], 'End');
+    assert(m.active() === rows[2], `End should reach the last file, got ${m.active()?.textContent}`);
+    await press(rows[2], 'Home');
+    assert(m.active() === rows[0], `Home should come back to the first, got ${m.active()?.textContent}`);
+    m.teardown();
+  });
+
+  await test('the rail leaves Left and Right to the Pinboard', async () => {
+    const m = await mounted({
+      manifest: manifestOf([
+        { path: 'a.js', index: 'M', worktree: '.' },
+        { path: 'b.js', index: '.', worktree: 'M' },
+      ]),
+    });
+    const event = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true });
+    m.rows()[0].dispatchEvent(event);
+    assert(!event.defaultPrevented,
+      'Left and Right change pins; a rail that swallowed them would trap the reader in one');
+    m.teardown();
+  });
+
+  // --- comments -------------------------------------------------------------
+
+  await test('an anchor opens an editor that saves a comment where it was written', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]),
+    });
+    const anchor = m.viewer().querySelector('.diff-comment-btn[data-line="85"]');
+    assert(anchor, `an annotatable diff offers an anchor per line:\n${m.viewer().innerHTML}`);
+    anchor.click();
+    await settle();
+    const editor = m.editor();
+    assert(editor, `clicking an anchor should open an editor:\n${m.body.innerHTML}`);
+    const textarea = editor.querySelector('textarea');
+    assert(textarea, 'and the editor has a labelled textarea');
+    assert(editor.textContent.includes('new line 85'),
+      `the editor says what it is about:\n${editor.textContent}`);
+
+    textarea.value = 'Split this into two methods.';
+    editor.querySelector('.review-panel__save').click();
+    await settle();
+
+    const saved = m.saves();
+    assert(saved.length === 1, `expected one save, got ${saved.length}`);
+    const comment = saved[0].comments[0];
+    assert(comment.body === 'Split this into two methods.', `body missing: ${JSON.stringify(comment)}`);
+    assert(comment.side === 'new' && comment.startLine === 85 && comment.endLine === 85,
+      `the anchor is the comment's address: ${JSON.stringify(comment)}`);
+    assert(comment.path === 'a.js' && comment.repo === '', `the file is part of it: ${JSON.stringify(comment)}`);
+    assert(comment.revision === 'rev1',
+      `without the revision nothing can tell later that the file moved on: ${JSON.stringify(comment)}`);
+    assert(comment.lineText.join('\n').includes('this.renderComments(hunks);'),
+      `the quote is what is left once the file changes: ${JSON.stringify(comment.lineText)}`);
+    assert(!m.editor(), 'a saved comment closes its editor');
+    m.teardown();
+  });
+
+  await test('a refused save keeps the words on screen and says why', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]),
+    });
+    m.failSave(new Error('A comment holds at most 8000 characters; this one has 9001.'));
+    m.viewer().querySelector('.diff-comment-btn[data-line="85"]').click();
+    await settle();
+    const textarea = m.editor().querySelector('textarea');
+    textarea.value = 'Too long, apparently.';
+    m.editor().querySelector('.review-panel__save').click();
+    await settle();
+
+    assert(m.editor(), 'the editor stays open — the text has nowhere else to be');
+    assert(m.editor().querySelector('textarea').value === 'Too long, apparently.',
+      'and the words are still there');
+    assert(m.editor().textContent.includes('this one has 9001'),
+      `with the underlying reason intact:\n${m.editor().textContent}`);
+    m.teardown();
+  });
+
+  await test('Escape abandons a comment and gives the anchor back', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]),
+    });
+    const anchor = m.viewer().querySelector('.diff-comment-btn[data-line="85"]');
+    anchor.click();
+    await settle();
+    // Observed, not read back from `document.activeElement`: see the rail's own
+    // keyboard case for why that is a measure of the other lanes.
+    let refocused = false;
+    anchor.focus = () => { refocused = true; };
+    const textarea = m.editor().querySelector('textarea');
+    textarea.value = 'Never mind.';
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await settle();
+    assert(!m.editor(), 'Escape should close the editor');
+    assert(m.saves().length === 0, 'and write nothing');
+    assert(refocused, 'and focus belongs back on the anchor it came from');
+    m.teardown();
+  });
+
+  await test('a saved comment is drawn against its line and counted on its row', async () => {
+    const m = await mounted({
+      manifest: manifestOf([
+        { path: 'a.js', index: 'M', worktree: '.' },
+        { path: 'b.js', index: '.', worktree: 'M' },
+      ]),
+      draft: {
+        version: 1,
+        base: 'head',
+        comments: [{
+          id: 'c_1',
+          repo: '',
+          path: 'a.js',
+          side: 'new',
+          startLine: 85,
+          endLine: 85,
+          lineText: ['this.renderComments(hunks);'],
+          body: 'Keep annotation state outside the renderer.',
+          revision: 'rev1',
+          createdAt: 1,
+          updatedAt: 1,
+        }],
+      },
+    });
+    assert(m.viewer().textContent.includes('Keep annotation state outside the renderer.'),
+      `the comment belongs against the line it is about:\n${m.viewer().textContent}`);
+    const counts = m.rows().map((/** @type {any} */ r) => r.querySelector('.review-panel__count')?.textContent || '');
+    assert(counts[0] === '1', `the file with the comment should count it, got ${JSON.stringify(counts)}`);
+    assert(counts[1] === '', 'and the file without one should say nothing');
+    assert(m.rows()[0].getAttribute('aria-label')?.includes('1 comment'),
+      `the count has to be readable aloud too: ${m.rows()[0].getAttribute('aria-label')}`);
+    m.teardown();
+  });
+
+  await test('a comment on another file is not drawn over this one', async () => {
+    const m = await mounted({
+      manifest: manifestOf([
+        { path: 'a.js', index: 'M', worktree: '.' },
+        { path: 'b.js', index: '.', worktree: 'M' },
+      ]),
+      draft: {
+        version: 1,
+        base: 'head',
+        comments: [{
+          id: 'c_1',
+          repo: '',
+          path: 'b.js',
+          side: 'new',
+          startLine: 85,
+          endLine: 85,
+          lineText: [],
+          body: 'Belongs to b.js alone.',
+          revision: 'rev1',
+          createdAt: 1,
+          updatedAt: 1,
+        }],
+      },
+    });
+    assert(!m.viewer().textContent.includes('Belongs to b.js alone.'),
+      `a.js is the file on screen:\n${m.viewer().textContent}`);
+    m.teardown();
+  });
+
+  await test('deleting a comment writes the rest back', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]),
+      draft: {
+        version: 1,
+        base: 'head',
+        comments: [
+          {
+            id: 'c_1',
+            repo: '',
+            path: 'a.js',
+            side: 'new',
+            startLine: 85,
+            endLine: 85,
+            lineText: [],
+            body: 'First.',
+            revision: 'rev1',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          {
+            id: 'c_2',
+            repo: '',
+            path: 'a.js',
+            side: 'file',
+            lineText: [],
+            body: 'Second.',
+            revision: 'rev1',
+            createdAt: 2,
+            updatedAt: 2,
+          },
+        ],
+      },
+    });
+    m.viewer().querySelector('.diff-comment[data-id="c_1"] .diff-comment-delete').click();
+    await settle();
+    const saved = m.saves();
+    assert(saved.length === 1, `expected the remainder written back, got ${saved.length}`);
+    assert(saved[0].comments.length === 1 && saved[0].comments[0].id === 'c_2',
+      `only the deleted one should go: ${JSON.stringify(saved[0].comments.map((/** @type {any} */ c) => c.id))}`);
+    m.teardown();
+  });
+
+  await test('editing a comment reopens it with its own words', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]),
+      draft: {
+        version: 1,
+        base: 'head',
+        comments: [{
+          id: 'c_1',
+          repo: '',
+          path: 'a.js',
+          side: 'new',
+          startLine: 85,
+          endLine: 85,
+          lineText: ['this.renderComments(hunks);'],
+          body: 'First thought.',
+          revision: 'rev1',
+          createdAt: 1,
+          updatedAt: 1,
+        }],
+      },
+    });
+    m.viewer().querySelector('.diff-comment[data-id="c_1"] .diff-comment-edit').click();
+    await settle();
+    const textarea = m.editor()?.querySelector('textarea');
+    assert(textarea?.value === 'First thought.',
+      `an edit starts from what is there, got ${JSON.stringify(textarea?.value)}`);
+    textarea.value = 'Second thought.';
+    m.editor().querySelector('.review-panel__save').click();
+    await settle();
+    const comments = m.saves()[0].comments;
+    assert(comments.length === 1 && comments[0].id === 'c_1',
+      `an edit replaces the comment rather than adding one: ${JSON.stringify(comments)}`);
+    assert(comments[0].body === 'Second thought.', `the new words should stick: ${JSON.stringify(comments[0])}`);
+    assert(comments[0].createdAt === 1, 'and it is still the comment it was');
+    m.teardown();
+  });
+
+  await test('a file with no lines to comment on can still be commented on', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'logo.png', index: 'M', worktree: '.' }]),
+      patch: () => patchOf('logo.png', { binary: true, hunks: [], added: 0, removed: 0 }),
+    });
+    assert(m.viewer().textContent.includes('Binary file'),
+      `it should say why there are no lines:\n${m.viewer().textContent}`);
+    const whole = m.body.querySelector('.review-panel__file-comment');
+    assert(whole, `a file with no line to hang a comment on still needs one:\n${m.body.innerHTML}`);
+    whole.click();
+    await settle();
+    m.editor().querySelector('textarea').value = 'Is this meant to be here?';
+    m.editor().querySelector('.review-panel__save').click();
+    await settle();
+    const comment = m.saves()[0].comments[0];
+    assert(comment.side === 'file' && comment.startLine === undefined,
+      `a whole-file comment names no line: ${JSON.stringify(comment)}`);
+    m.teardown();
+  });
+
+  await test('a conflicted file stays selectable and says what it is', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'U', worktree: 'U', conflicted: true }]),
+      patch: () => patchOf('a.js', { conflicted: true, status: 'conflicted' }),
+    });
+    assert(m.rows().length === 1 && m.viewer(), 'a conflict is still worth reading');
+    assert(m.viewer().textContent.includes('Unresolved merge conflict'),
+      `and it should say so:\n${m.viewer().textContent}`);
+    m.teardown();
+  });
+
+  // --- the draft ------------------------------------------------------------
+
+  await test('the footer counts the batch and offers the two things to do with it', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]),
+      draft: {
+        version: 1,
+        base: 'head',
+        comments: [
+          {
+            id: 'c_1', repo: '', path: 'a.js', side: 'new', startLine: 85, endLine: 85,
+            lineText: [], body: 'One.', revision: 'rev1', createdAt: 1, updatedAt: 1,
+          },
+          {
+            id: 'c_2', repo: '', path: 'a.js', side: 'file',
+            lineText: [], body: 'Two.', revision: 'rev1', createdAt: 2, updatedAt: 2,
+          },
+        ],
+      },
+    });
+    const footer = m.body.querySelector('.review-panel__footer');
+    assert(footer?.textContent?.includes('2 draft comments'),
+      `expected the batch counted, got ${JSON.stringify(footer?.textContent)}`);
+    assert(footer.querySelector('.review-panel__send') && footer.querySelector('.review-panel__discard'),
+      `Send and Discard act on the draft, so they live with it:\n${footer.innerHTML}`);
+
+    footer.querySelector('.review-panel__send').click();
+    await settle();
+    assert(m.sends() === 1, `expected one send, got ${m.sends()}`);
+    assert(!m.body.querySelector('.review-panel__footer'),
+      'a sent review leaves no footer, because there is no longer a batch');
+    m.teardown();
+  });
+
+  await test('one comment is one comment', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]),
+      draft: {
+        version: 1,
+        base: 'head',
+        comments: [{
+          id: 'c_1', repo: '', path: 'a.js', side: 'file',
+          lineText: [], body: 'Only.', revision: 'rev1', createdAt: 1, updatedAt: 1,
+        }],
+      },
+    });
+    assert(m.body.querySelector('.review-panel__footer')?.textContent?.includes('1 draft comment'),
+      `expected the singular, got ${JSON.stringify(m.body.querySelector('.review-panel__footer')?.textContent)}`);
+    m.teardown();
+  });
+
+  await test('a send that fails leaves every comment where it was', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]),
+      draft: {
+        version: 1,
+        base: 'head',
+        comments: [{
+          id: 'c_1', repo: '', path: 'a.js', side: 'file',
+          lineText: [], body: 'Still unsaid.', revision: 'rev1', createdAt: 1, updatedAt: 1,
+        }],
+      },
+    });
+    m.failSend(new Error('worker rejected the message'));
+    m.body.querySelector('.review-panel__send').click();
+    await settle();
+    const text = m.text();
+    assert(text.includes("Couldn't send.") && text.includes('worker rejected the message'),
+      `expected the lead and the underlying error:\n${text}`);
+    assert(m.draft().comments.length === 1, 'and the comments are still there — they have not been said yet');
+    assert(m.body.querySelector('.review-panel__footer'), 'so the footer stays too');
+    m.teardown();
+  });
+
+  await test('Discard throws the batch away', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]),
+      draft: {
+        version: 1,
+        base: 'head',
+        comments: [{
+          id: 'c_1', repo: '', path: 'a.js', side: 'file',
+          lineText: [], body: 'Wrong on reflection.', revision: 'rev1', createdAt: 1, updatedAt: 1,
+        }],
+      },
+    });
+    m.body.querySelector('.review-panel__discard').click();
+    await settle();
+    assert(m.clears() === 1, `expected one clear, got ${m.clears()}`);
+    assert(!m.body.querySelector('.review-panel__footer'), 'and nothing left to act on');
+    m.teardown();
+  });
+
+  await test('a draft saved elsewhere shows up here', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]),
+    });
+    assert(!m.body.querySelector('.review-panel__footer'), 'nothing written yet');
+    m.setDraft({
+      version: 1,
+      base: 'head',
+      comments: [{
+        id: 'c_9', repo: '', path: 'a.js', side: 'new', startLine: 85, endLine: 85,
+        lineText: [], body: 'Written in the other window.', revision: 'rev1', createdAt: 1, updatedAt: 1,
+      }],
+    });
+    await settle();
+    assert(m.text().includes('Written in the other window.'),
+      `a draft is one record, wherever it was written:\n${m.text()}`);
+    m.teardown();
+  });
+
+  await test('an outdated comment is set aside, never moved', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]),
+      draft: {
+        version: 1,
+        base: 'head',
+        comments: [{
+          id: 'c_1', repo: '', path: 'a.js', side: 'new', startLine: 85, endLine: 85,
+          lineText: ['the line as it was'], body: 'Written against the old file.',
+          revision: 'rev0', createdAt: 1, updatedAt: 1,
+        }],
+      },
+    });
+    const stale = m.viewer().querySelector('.diff-file-comment-list.stale');
+    assert(stale, `a comment whose file moved on belongs under Outdated:\n${m.viewer().innerHTML}`);
+    assert(stale.textContent.includes('the line as it was'),
+      `with the code it was written about, which is all that is left of it:\n${stale.textContent}`);
+    assert(!m.viewer().querySelector('.diff-comments .diff-comment[data-id="c_1"]'),
+      'and never attached to whatever now occupies line 85');
+    m.teardown();
+  });
+
+  await test('a board with no conversation says so rather than taking comments', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]),
+      draft: null,
+    });
+    assert(m.viewer(), 'the tree is still worth reading without a conversation');
+    assert(!m.viewer().querySelector('.diff-comment-btn'),
+      'but there is nowhere to put a comment, so none is offered');
+    assert(m.text().includes('No conversation open, so there is nowhere to put a comment.'),
+      `and it says why, rather than leaving the reader to wonder:\n${m.text()}`);
+    m.teardown();
+  });
+
+  // --- staying current ------------------------------------------------------
+
+  await test('a new active context redraws in place rather than remounting', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]),
+    });
+    m.controller.update({
+      pin: { id: 'pin_test', type: 'git', config: {} },
+      active: { project: { path: '/tmp/proj', displayName: 'proj' }, conversation: null, thread: null },
+      services: m.services,
+      signal: new AbortController().signal,
+      updateConfig: async () => {},
+    });
+    await settle();
+    assert(m.rows().length === 1, `the review should survive a context update:\n${m.body.innerHTML}`);
+    assert(m.reviews() === 1, `and not re-read the whole tree for it, got ${m.reviews()}`);
+    m.teardown();
+  });
+
+  await test('teardown stops watching the draft', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]),
+    });
+    m.controller.teardown();
+    m.setDraft({
+      version: 1,
+      base: 'head',
+      comments: [{
+        id: 'c_1', repo: '', path: 'a.js', side: 'file',
+        lineText: [], body: 'After the end.', revision: 'rev1', createdAt: 1, updatedAt: 1,
+      }],
+    });
+    await settle();
+    assert(!m.text().includes('After the end.'),
+      `a torn-down pin should not still be drawing:\n${m.text()}`);
+    m.teardown();
+  });
+
+  // --- narrow -------------------------------------------------------------
+
+  await test('a docked Pinboard stacks the rail above the diff', async () => {
+    const m = await mounted({
+      manifest: manifestOf([{ path: 'a.js', index: 'M', worktree: '.' }]),
+    });
+    m.body.style.width = '20rem';
+    const main = /** @type {HTMLElement} */ (m.body.querySelector('.review-panel__main'));
+    const rail = /** @type {HTMLElement} */ (m.body.querySelector('.review-panel__rail'));
+    const diff = /** @type {HTMLElement} */ (m.body.querySelector('.review-panel__diff'));
+    assert(main && rail && diff, 'the panel should have a rail and a diff area');
+    // A container query, not a media query: the Pinboard can be 20rem wide on a
+    // desktop, so the viewport says nothing about the room this panel has.
+    assert(rail.offsetWidth > diff.offsetWidth * 0.5,
+      `at 20rem the rail should span the panel rather than share a row with the diff:`
+      + ` rail ${rail.offsetWidth}, diff ${diff.offsetWidth}`);
+    m.body.style.width = '60rem';
+    assert(rail.offsetWidth < diff.offsetWidth,
+      `and give way to the diff when there is room: rail ${rail.offsetWidth}, diff ${diff.offsetWidth}`);
+    m.teardown();
+  });
+
   // --- against the real service ---------------------------------------------
 
   await test('the real service hands the pin the shape it expects', async () => {
-    await gitStatusCache.refresh();
-    const status = gitStatusCache.get();
-    assert(status !== null, 'the server should answer a git status request');
-    assert(typeof status.root === 'string' && Array.isArray(status.repos),
-      `expected {root, repos}, got ${JSON.stringify(status)}`);
-    for (const found of status.repos) {
+    const review = await gitReviewService.review();
+    assert(review !== null, 'the server should answer a review request');
+    assert(typeof review.root === 'string' && Array.isArray(review.repos),
+      `expected {root, repos}, got ${JSON.stringify(review)}`);
+    assert(typeof review.complete === 'boolean' && Array.isArray(review.warnings),
+      `completeness must be stated, not implied: ${JSON.stringify(review)}`);
+    for (const found of review.repos) {
       assert(typeof found.path === 'string', `repo.path missing: ${JSON.stringify(found)}`);
-      assert(typeof found.changed === 'number' && typeof found.staged === 'number',
-        `counts missing: ${JSON.stringify(found)}`);
-      assert(typeof found.conflicted === 'number' && typeof found.added === 'number'
-        && typeof found.removed === 'number' && typeof found.stashes === 'number',
-      `rich counts missing: ${JSON.stringify(found)}`);
-      assert(typeof found.head === 'string' && typeof found.initial === 'boolean',
+      assert(typeof found.branch === 'string' && typeof found.head === 'string',
         `HEAD state missing: ${JSON.stringify(found)}`);
-      assert(typeof found.total === 'number', `total missing: ${JSON.stringify(found)}`);
-      assert(typeof found.branch === 'string', `branch missing: ${JSON.stringify(found)}`);
+      assert(typeof found.complete === 'boolean', `repo completeness missing: ${JSON.stringify(found)}`);
       assert(Array.isArray(found.files), `files missing: ${JSON.stringify(found)}`);
-      assert(typeof found.truncated === 'boolean', `truncated missing: ${JSON.stringify(found)}`);
+      for (const file of found.files) {
+        assert(typeof file.path === 'string' && typeof file.index === 'string'
+          && typeof file.worktree === 'string', `file shape wrong: ${JSON.stringify(file)}`);
+      }
     }
   });
 

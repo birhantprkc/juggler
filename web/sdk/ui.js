@@ -58,6 +58,9 @@ export {
 // The shared diff renderer, for a host drawing a patch or a pair of snapshots
 export { createDiffViewer } from '../js/components/diff-viewer.js';
 
+// The review panel around it: a file rail, one diff at a time, and the draft
+export { createReviewPanel } from '../js/components/review-panel.js';
+
 // Syntax highlighting (Prism-backed, safe fallback)
 export { highlightCode, highlightCodeLines, createHighlightedCode } from './lib/syntax-highlight.js';
 

@@ -1205,6 +1205,13 @@ conversation-bar .info-card__git-launch:focus-visible {
     outline-offset: 0.125rem;
 }
 
+/* Counts say what has changed; this says that something can be done about it. */
+conversation-bar .info-card__git-review {
+    margin-top: 0.125rem;
+    color: var(--accent-blue);
+    font-size: 0.75rem;
+}
+
 /* Bin modal — list of binned conversations with row actions. */
 bin-modal {
     display: none;
@@ -4473,6 +4480,313 @@ diff-viewer .diff-comment-actions button {
 
 diff-viewer .diff-file-comment-list.stale .diff-comment {
     color: var(--text-secondary);
+}
+
+/* Review panel — the file rail, one diff, and the draft under both.
+
+   A container query, not a media query: the docked Pinboard can be 20rem wide on
+   a desktop, so the viewport says nothing about the room this panel has. */
+.review-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    height: 100%;
+    min-height: 0;
+    container-type: inline-size;
+}
+
+.review-panel__scope {
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+}
+
+/* An incomplete review has to be as visible as the list it is incomplete
+   relative to; a partial list drawn as a whole one is the one failure here that
+   the reader cannot detect. */
+.review-panel__warnings {
+    padding: 0.5rem 0.625rem;
+    border-radius: 0.375rem;
+    background: color-mix(in srgb, var(--error-color, var(--text-secondary)) 8%, transparent);
+    color: var(--text-secondary);
+    font-size: var(--font-size-sm);
+}
+
+.review-panel__warnings-lead {
+    font-weight: 600;
+}
+
+.review-panel__warning-list {
+    margin: 0.25rem 0 0;
+    padding-left: 1.25rem;
+}
+
+.review-panel__error {
+    color: var(--text-tertiary);
+    font-size: var(--font-size-sm);
+    overflow-wrap: anywhere;
+}
+
+.review-panel__main {
+    display: flex;
+    flex: 1 1 auto;
+    gap: 0.75rem;
+    min-height: 0;
+}
+
+.review-panel__rail {
+    flex: 0 0 14rem;
+    min-width: 0;
+    overflow: auto;
+}
+
+.review-panel__diff {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+}
+
+@container (width < 34rem) {
+    .review-panel__main {
+        flex-direction: column;
+    }
+
+    .review-panel__rail {
+        flex: 0 0 auto;
+        max-height: 12rem;
+    }
+}
+
+.review-panel__group + .review-panel__group {
+    margin-top: 0.75rem;
+}
+
+.review-panel__group-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0 0.375rem 0.25rem;
+}
+
+.review-panel__group-name {
+    font-weight: 600;
+}
+
+.review-panel__group-detail {
+    color: var(--text-tertiary);
+    font-size: var(--font-size-sm);
+    font-family: var(--font-mono);
+}
+
+.review-panel__group-note {
+    padding: 0 0.375rem 0.25rem;
+    color: var(--text-tertiary);
+    font-size: var(--font-size-sm);
+    overflow-wrap: anywhere;
+}
+
+.review-panel__row {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    min-width: 0;
+}
+
+.review-panel__row .properties-panel-filepath-actions {
+    flex-shrink: 0;
+    opacity: 0;
+}
+
+.review-panel__row:hover .properties-panel-filepath-actions,
+.review-panel__row:focus-within .properties-panel-filepath-actions {
+    opacity: 1;
+}
+
+.review-panel__file {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+    padding: 0.25rem 0.375rem;
+    border: 0;
+    border-radius: 0.375rem;
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    font-size: var(--font-size-sm);
+    line-height: 1.4;
+    text-align: left;
+    cursor: pointer;
+}
+
+.review-panel__file:hover {
+    background: color-mix(in srgb, var(--text-primary) 5%, transparent);
+}
+
+.review-panel__file[aria-current="true"] {
+    background: color-mix(in srgb, var(--accent-blue) 18%, transparent);
+}
+
+.review-panel__code {
+    flex-shrink: 0;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+    white-space: pre;
+}
+
+.review-panel__path {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--font-mono);
+    overflow-wrap: anywhere;
+}
+
+.review-panel__stat {
+    flex-shrink: 0;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    white-space: nowrap;
+}
+
+.review-panel__count {
+    flex-shrink: 0;
+    color: var(--text-tertiary);
+    font-size: 0.75rem;
+}
+
+.review-panel__count:not(:empty) {
+    padding: 0 0.375rem;
+    border-radius: 0.625rem;
+    background: color-mix(in srgb, var(--text-primary) 10%, transparent);
+}
+
+.review-panel__diff-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding-bottom: 0.25rem;
+    min-width: 0;
+}
+
+.review-panel__diff-path {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+    overflow-wrap: anywhere;
+}
+
+.review-panel__diff diff-viewer {
+    flex: 1 1 auto;
+    max-height: none;
+    min-height: 0;
+    border-radius: 0.375rem;
+}
+
+.review-panel__placeholder {
+    padding: 2rem 0;
+    color: var(--text-tertiary);
+    text-align: center;
+}
+
+/* The editor is a node the panel owns and re-hangs after every redraw, so it
+   lives at the width of the panel wherever it lands in the diff. */
+.review-panel__editor {
+    position: sticky;
+    left: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+    box-sizing: border-box;
+    width: 100cqi;
+    padding: 0.5rem 0.75rem;
+    background: var(--bg-secondary);
+    border-bottom: 0.0625rem solid var(--border-divider);
+}
+
+.review-panel__editor-label {
+    color: var(--text-secondary);
+    font-family: var(--font-sans);
+    font-size: 0.75rem;
+}
+
+.review-panel__editor-text {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.375rem 0.5rem;
+    border: 0.0625rem solid var(--border-color);
+    border-radius: 0.375rem;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 0.8125rem;
+    resize: vertical;
+}
+
+.review-panel__editor-error {
+    color: var(--accent-red);
+    font-family: var(--font-sans);
+    font-size: 0.75rem;
+    overflow-wrap: anywhere;
+}
+
+.review-panel__editor-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.review-panel__file-comment,
+.review-panel__editor-actions button,
+.review-panel__discard,
+.review-panel__send {
+    padding: 0.1875rem 0.5rem;
+    border: 0.0625rem solid var(--border-color);
+    border-radius: 0.25rem;
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    font-family: var(--font-sans);
+    font-size: 0.75rem;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.review-panel__save,
+.review-panel__send {
+    background: var(--accent-blue);
+    border-color: var(--accent-blue);
+    color: #fff;
+}
+
+/* Send and Discard act on the draft, not on the Pinboard item, so they live
+   with the count of what they would act on rather than in the item toolbar. */
+.review-panel__footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    padding-top: 0.5rem;
+    border-top: 0.0625rem solid var(--border-divider);
+    font-size: var(--font-size-sm);
+}
+
+.review-panel__draft-count {
+    flex: 1;
+    min-width: 0;
+    color: var(--text-secondary);
+}
+
+.review-panel__footer-note {
+    color: var(--text-tertiary);
+}
+
+.review-panel__footer-error {
+    flex-basis: 100%;
+    color: var(--text-tertiary);
+    overflow-wrap: anywhere;
 }
 
 /* DiffViewer inside properties panel */

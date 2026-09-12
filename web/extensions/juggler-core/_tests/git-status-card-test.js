@@ -253,9 +253,21 @@ export async function runTests(_ctx) {
     const button = m.launcher();
     assert(!!button, 'with a pin that accepts the git source, the card offers to open it');
     assert(button?.tagName === 'BUTTON', `expected a real button, got ${button?.tagName}`);
-    assert(button?.getAttribute('aria-label') === 'Open Git status in the Pinboard',
+    assert(button?.getAttribute('aria-label') === 'Review changes in the Pinboard',
       `expected a literal label, got ${JSON.stringify(button?.getAttribute('aria-label'))}`);
+    assert(m.text().includes('Review changes'),
+      `a dirty tree has somewhere to go, and the card should say where:\n${m.text()}`);
     assert(m.text().includes('1 changed'), 'and the counts are still what it reads as');
+    m.teardown();
+  });
+
+  await test('with nothing changed the card offers a look, not a review', async () => {
+    enableGitPin();
+    const m = await mount({ root: '/tmp/proj', repos: [repo()] });
+    assert(!m.text().includes('Review changes'),
+      `there is nothing to review, so offering to is an invitation to nothing:\n${m.text()}`);
+    assert(m.launcher()?.getAttribute('aria-label') === 'Open Git status in the Pinboard',
+      `and it says what it does do, got ${JSON.stringify(m.launcher()?.getAttribute('aria-label'))}`);
     m.teardown();
   });
 
