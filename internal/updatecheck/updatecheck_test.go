@@ -54,6 +54,10 @@ func TestComputeStatus(t *testing.T) {
 		if st.UpdateAvailable || st.Notice != nil {
 			t.Fatalf("expected no update, got %+v", st)
 		}
+		// The one case in which a client may say "you are current".
+		if st.Unpublished {
+			t.Error("Unpublished = true for a published release")
+		}
 	})
 	t.Run("newer shows nothing", func(t *testing.T) {
 		st := ComputeStatus(m, "v0.2.0")
@@ -66,6 +70,9 @@ func TestComputeStatus(t *testing.T) {
 		if st.UpdateAvailable || st.Notice != nil {
 			t.Fatalf("dev should not update, got %+v", st)
 		}
+		if !st.Unpublished {
+			t.Error("Unpublished = false, want the suppression declared")
+		}
 	})
 	// A build from source parses as semver and really is behind — but the
 	// download it would be pointed at is not the thing it is running.
@@ -76,6 +83,13 @@ func TestComputeStatus(t *testing.T) {
 		}
 		if st.LatestVersion != "v0.1.0" {
 			t.Errorf("latest = %q, want it reported regardless", st.LatestVersion)
+		}
+		// LatestVersion is newer than this build and UpdateAvailable is false, so
+		// the two together are indistinguishable from being current unless the
+		// suppression itself is on the wire. Without this a client says "this is
+		// the latest version (v0.1.0)" to a v0.0.8-dev build.
+		if !st.Unpublished {
+			t.Error("Unpublished = false, want the suppression declared")
 		}
 	})
 	// The suites drive a server built from the same source as any other, so it

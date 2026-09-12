@@ -145,5 +145,28 @@ export async function runTests(_ctx) {
     });
   });
 
+  // A build from source is never offered updates, but the status it gets still
+  // carries the (newer) latest release. Reporting that as "the latest version"
+  // tells the user they are running a release they have not got.
+  await run('a build from source is never called current', async () => {
+    const status = {
+      currentVersion: 'v1.0.0-dev', latestVersion: 'v1.2.0', updateAvailable: false, unpublished: true,
+    };
+    await withPanel({ status }, async (el) => {
+      el._tabs.updates.show();
+      await settle();
+      const info = el.querySelector('#updates-version-info').textContent || '';
+      assert(info.includes('v1.0.0-dev'), `version line names this build; got ${JSON.stringify(info)}`);
+      assert(info.includes('v1.2.0'), `version line names the latest release; got ${JSON.stringify(info)}`);
+      assert(!/latest version/i.test(info), `no "latest version" claim; got ${JSON.stringify(info)}`);
+
+      el.querySelector('#updates-check-btn').click();
+      await settle();
+      const checked = el.querySelector('#updates-check-status').textContent || '';
+      assert(checked.includes('v1.2.0'), `manual check names the latest release; got ${JSON.stringify(checked)}`);
+      assert(!/latest version/i.test(checked), `manual check makes no "latest version" claim; got ${JSON.stringify(checked)}`);
+    });
+  });
+
   return { passed, failed, errors };
 }

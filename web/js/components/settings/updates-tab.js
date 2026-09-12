@@ -193,6 +193,12 @@ export class UpdatesTab {
     const parts = [`Current version ${current}.`];
     if (status.updateAvailable && latest) {
       parts.push(`Version ${latest} is available.`);
+    } else if (status.unpublished) {
+      // No comparison was made, and latest is usually newer than this build —
+      // so it is reported as what it is, never as the version being run.
+      parts.push(latest
+        ? `Latest release is ${latest}; a build from source is never offered updates.`
+        : 'A build from source is never offered updates.');
     } else if (latest) {
       parts.push(`This is the latest version (${latest}).`);
     } else {
@@ -266,6 +272,10 @@ export class UpdatesTab {
         this._setStatus(`Version ${status.latestVersion || ''} is available.`.trim());
         // Surface the full dialog (with download/install affordances).
         window.dispatchEvent(new CustomEvent('juggler:open-update-dialog'));
+      } else if (status.unpublished) {
+        this._setStatus(status.latestVersion
+          ? `Latest release is ${status.latestVersion}; a build from source is never offered updates.`
+          : 'A build from source is never offered updates.');
       } else {
         this._setStatus('You’re on the latest version.');
       }

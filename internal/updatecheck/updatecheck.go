@@ -95,6 +95,13 @@ type Status struct {
 	LatestVersion   string  `json:"latestVersion,omitempty"`
 	UpdateAvailable bool    `json:"updateAvailable"`
 	Notice          *Notice `json:"notice,omitempty"`
+
+	// Unpublished reports that no comparison was made because this build is one
+	// nobody could have downloaded, so UpdateAvailable is false regardless of how
+	// the versions actually sort. LatestVersion is still filled in and is very
+	// often NEWER than CurrentVersion: a client that reads !UpdateAvailable as
+	// "current" will tell such a build it is running a release it has not got.
+	Unpublished bool `json:"unpublished,omitempty"`
 }
 
 // validate rejects responses that are not a recognisable manifest.
@@ -124,6 +131,7 @@ func ComputeStatus(m *Manifest, currentVersion string) Status {
 	// upgrade of that. A prerelease is not an unpublished build — it is
 	// published, and it is offered upgrades like any other release.
 	if isUnpublishedBuild(currentVersion) {
+		st.Unpublished = true
 		return st
 	}
 	if cmp, ok := compareSemver(currentVersion, m.Latest); ok && cmp < 0 {
