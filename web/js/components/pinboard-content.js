@@ -30,6 +30,7 @@ import gitReviewService from '../services/git-review-service.js';
 import { shellKill, shellTaskStatus } from '../services/ops-api.js';
 import { openMenuAt } from '../services/context-menu-service.js';
 import { reviewDraftBoundsError } from '../utils/review-draft.js';
+import { formatReviewMessage } from '../utils/review-message.js';
 import { extractErrorMessage } from '../../sdk/lib/error-utils.js';
 import { formatDisplayPath } from '../../sdk/lib/context-item-utils.js';
 import { createFileActions } from '../utils/properties-panel-helpers.js';
@@ -1214,6 +1215,7 @@ class PinboardContent extends JugglerElement {
           onChange: (listener) => this._watchReviewDraft(listener, signal),
           save: (draft) => this._saveReviewDraft(draft),
           clear: () => this._saveReviewDraft(null),
+          send: () => this._sendReview(),
         },
       },
       signal,
@@ -1538,6 +1540,35 @@ class PinboardContent extends JugglerElement {
     const problem = reviewDraftBoundsError(draft);
     if (problem) throw new Error(problem);
     thread.gitReviewDraft = draft;
+  }
+
+  /**
+   * Send the review on the thread being read, as one ordinary user message.
+   *
+   * It goes the one way any message goes — `Conversation.sendMessage` — because
+   * that is what starts a run, queues behind a live turn, stamps the item and
+   * keeps the worker the authority on all three. What marks it out is only that
+   * nobody typed it: it takes nothing from the composer and gives nothing back
+   * to it.
+   *
+   * The comments are cleared last and only on acceptance. A refusal is a reason,
+   * not a loss: the draft is still there to send again once whatever refused it
+   * has been dealt with.
+   * @returns {Promise<void>} Resolves once the message is away.
+   * @private
+   */
+  async _sendReview() {
+    const thread = this._reviewThread();
+    if (!thread) throw new Error('There is no conversation open to send a review to.');
+    const draft = thread.gitReviewDraft;
+    if (!draft.comments.length) throw new Error('There are no review comments to send.');
+
+    const reason = await thread.conversation.sendMessage(
+      formatReviewMessage(draft), thread.threadItemId ?? null, thread,
+      { consumeComposer: false, interpretCommands: false }
+    );
+    if (reason) throw new Error(`Couldn't send the review: ${reason}`);
+    thread.gitReviewDraft = null;
   }
 
   /**

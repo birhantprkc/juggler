@@ -558,6 +558,12 @@ import { validateManifest } from './lib/manifest.js';
  *   put it or the draft is over a limit, and writes nothing in either case — so
  *   keep the text on screen and show what came back rather than clearing it.
  * @property {() => Promise<void>} clear - Discard every comment on that thread.
+ * @property {() => Promise<void>} send - Send the saved draft as one ordinary
+ *   user message on the thread it belongs to, and clear it once that is
+ *   accepted. What it sends is what `draft` reports, so save an edit before
+ *   sending it. Rejects when there is nowhere to send, when there is nothing to
+ *   say, and when the conversation refuses the message — and on every one of
+ *   those the comments are still there, because they have not been said yet.
  */
 
 /**
@@ -570,11 +576,12 @@ import { validateManifest } from './lib/manifest.js';
  * conversation already offers a Stop button for. It is not a precedent for a
  * service that writes.
  *
- * `review.save` and `review.clear` are the second, and are narrow in a different
- * way: what they write is the user's own unsent text, at the moment the user
- * saves or discards it, into a record that exists for no other purpose. They are
- * still not a handle on the conversation — a pin cannot reach the transcript,
- * the composer, or any other thread's draft through them.
+ * `review.save`, `review.clear` and `review.send` are the second, and are narrow
+ * in a different way: what they write is the user's own unsent text, at the
+ * moment the user saves, discards or sends it, into a record that exists for no
+ * other purpose. `send` adds a message to the conversation — the one thing any
+ * user surface may do — and nothing else: it cannot edit the transcript, touch
+ * the composer, or reach another thread's draft.
  *
  * Services are added one at a time, as the provider that needs one lands. Write
  * against what is here rather than what you expect to be.

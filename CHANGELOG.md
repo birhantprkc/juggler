@@ -5,8 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+- Right-click a selection in any file, diff or code block to get options including pasting a reference to it into the prompt
 - A grep reading its patterns or exclusions from a file outside the project now asks first
-- Right-click a selection in any file, diff or code block to paste a reference to it into the prompt
 - Claude Code turns count the tokens every paused tool round-trip was billed for, not just the last
 - The footer's conversation spend total is gone; it counted re-sent cached context, not cost
 - The spend ceiling counts only input a conversation hasn't already paid for, and now defaults to 10M

@@ -191,6 +191,7 @@ import { runTests as runPinboardFileEditsTests } from '../unit-tests/pinboard-fi
 import { runTests as runPinboardTasksTests } from '../unit-tests/pinboard-tasks-test.js';
 import { runTests as runPinboardGitReviewTests } from '../unit-tests/pinboard-git-review-test.js';
 import { runTests as runReviewDraftTests } from '../unit-tests/review-draft-test.js';
+import { runTests as runReviewSendTests } from '../unit-tests/review-send-test.js';
 import { runTests as runPinboardRetentionTests } from '../unit-tests/pinboard-retention-test.js';
 import { runTests as runPinboardSatelliteTests } from '../unit-tests/pinboard-satellite-test.js';
 import { runTests as runScrollAwayAutofollowTests } from '../unit-tests/scroll-away-autofollow-test.js';
@@ -535,6 +536,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:pinboard-tasks', run: runPinboardTasksTests },
   { name: 'unit:pinboard-git-review', run: runPinboardGitReviewTests },
   { name: 'unit:review-draft', run: runReviewDraftTests },
+  { name: 'unit:review-send', run: runReviewSendTests },
   { name: 'unit:pinboard-retention', run: runPinboardRetentionTests },
   // Exclusive: it puts the whole document into pinboard mode for the length of
   // a case, and a suite sharing the lane would boot into the wrong shell.

@@ -1543,13 +1543,23 @@ class Conversation {
    * @param {string} userMessage - User's message content
    * @param {string|null} [threadItemId] - Thread item ID if sending from a thread column
    * @param {import('./message-thread.js').MessageThread} [messageThread] - Column-scoped message thread
-   * @param {{preemptProcessing?: boolean, attachments?: Array<{id:string,mime:string,filename:string,bytes:number,width:number,height:number}>, skills?: string[]}} [options] -
+   * @param {{preemptProcessing?: boolean, consumeComposer?: boolean, interpretCommands?: boolean, attachments?: Array<{id:string,mime:string,filename:string,bytes:number,width:number,height:number}>, skills?: string[]}} [options] -
    *   When `preemptProcessing` is set, an in-flight turn is cancelled-and-settled
    *   (worker truth) before this message is delivered, instead of the message
    *   being silently dropped by the "already processing" guard. A visible notice
    *   is shown if a live turn was actually cancelled. `attachments` carries
    *   content-addressed asset references (uploaded images) to store on the user
    *   item.
+   *
+   *   The two `false` options are for a message the user never typed into a box —
+   *   a review submitted from a Pinboard, and anything else generated whole.
+   *   `consumeComposer: false` says this send has no claim on the composer: its
+   *   text, draft, pasted blobs and armed schedule belong to a message that has
+   *   not been sent, so the box is not cleared, the history the up-arrow walks is
+   *   not added to, and a later validation failure restores nothing over it.
+   *   `interpretCommands: false` says the text is a message whatever it starts
+   *   with, so generated text that happens to begin with `/` is sent rather than
+   *   run.
    * @returns {Promise<string|null>} null when the message was delivered (or a
    *   slash command was handled); otherwise a short reason describing which
    *   guard dropped it. The drop is silent for users (the UI guard normally
@@ -1557,8 +1567,10 @@ class Conversation {
    *   message fails the test at the send, not as a downstream fence timeout.
    */
   async sendMessage(userMessage, threadItemId = null, messageThread, options = {}) {
+    const consumeComposer = options.consumeComposer !== false;
+
     // Check for slash commands first (these work even when processing)
-    if (userMessage.startsWith('/')) {
+    if (options.interpretCommands !== false && userMessage.startsWith('/')) {
       // Capture composer before command runs — commands may change the active column
       const composer = this._getComposer();
       const boundBefore = this._composerThreadId(composer);
@@ -1670,13 +1682,19 @@ class Conversation {
 
     // Save the message before clearing, so a refusal can hand it back or resend
     // it. The WHOLE message: the box is about to be emptied and the worker has
-    // written nothing, so this record is the only copy of the images too.
-    this._pendingUserMessage = { content: userMessage, attachments: options.attachments || [] };
+    // written nothing, so this record is the only copy of the images too. It
+    // also carries whether handing it BACK is allowed: a message the box never
+    // held is one the box must never be given, however the send ends.
+    this._pendingUserMessage = {
+      content: userMessage,
+      attachments: options.attachments || [],
+      restorable: consumeComposer,
+    };
 
     // Validation passed locally - now clear the input. Only clear the box when
     // it is showing the thread we sent to: a scheduled send fired from the
     // model on a hidden thread must not wipe the visible column's draft.
-    const composer = this._getComposer();
+    const composer = consumeComposer ? this._getComposer() : null;
     if (composer && typeof (/** @type {any} */ (composer).clearInput) === 'function'
         && this._composerThreadId(composer) === this._targetThreadId(messageThread, threadItemId)) {
       /** @type {any} */ (composer).clearInput();
@@ -1691,7 +1709,9 @@ class Conversation {
 
     // Add to session-level message history for input navigation. An image-only
     // send has empty text — don't push a blank entry into up-arrow history.
-    if (userMessage) {
+    // History is the box's own: it is what has been typed into it, and pressing
+    // up must not walk back into text that was generated elsewhere.
+    if (consumeComposer && userMessage) {
       this._session.addMessageToHistory({ content: userMessage, attachments: options.attachments || [] });
     }
 
@@ -1751,7 +1771,13 @@ class Conversation {
    * cleared until the worker accepts the turn. One record, text and images
    * together, because a refusal has to hand back (or resend) the whole message
    * and nothing else is holding either half by then.
-   * @type {{content: string, attachments: Array<import('../utils/attachments.js').AssetRef>}|null}
+   *
+   * `restorable` is what separates the two kinds of sender. A composer send is
+   * restorable: the box was emptied on its behalf and a refusal owes it back. A
+   * generated send is not: the box never held this text, and writing it there on
+   * a failure would replace whatever the user is in the middle of. Resending is
+   * unaffected either way — a refused turn is worth retrying whoever wrote it.
+   * @type {{content: string, attachments: Array<import('../utils/attachments.js').AssetRef>, restorable?: boolean}|null}
    */
   _pendingUserMessage = null;
 
@@ -2523,12 +2549,17 @@ class Conversation {
    * cleared of both. Restoring the images is also what keeps their bytes alive:
    * a bounced send wrote no item, so the persisted draft becomes the only thing
    * referencing them (see the worker's CollectDraftAssetIDs).
+   *
+   * A send that never took the box (`consumeComposer: false`) is dropped here
+   * instead: there is nothing to give back, and the box is busy holding
+   * something else. Absent means restorable, so the only way to lose a message
+   * is to ask for it.
    * @returns {void}
    */
   restorePendingMessage() {
     const message = this._pendingUserMessage;
     this._pendingUserMessage = null;
-    if (!message || this._isEmptyMessage(message)) return;
+    if (!message || message.restorable === false || this._isEmptyMessage(message)) return;
     const composer = this._getComposer();
     if (composer && typeof (/** @type {any} */ (composer).restoreMessage) === 'function') {
       /** @type {any} */ (composer).restoreMessage(message);
