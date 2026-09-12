@@ -5,6 +5,8 @@ of changes; this project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-09-12
+
 - The Git pin is now a review: read each changed file's diff, comment on lines, paste the lot into the prompt
 - The Changed files pin is gone, replaced by review over the whole working tree
 - Pinboard extensions no longer receive a services.fileEdits; git review replaces it
