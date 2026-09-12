@@ -54,6 +54,17 @@
  *      conversation-area.js — one across a streaming bubble's growth, one across
  *      a structural insert — not this module.
  *
+ *  12. A column is pointed at a sub-thread → land on the START of that thread's
+ *      last message, when the message is too tall to fit
+ *      (restoreScrollPosition, scrollLastMessageStartIntoView). Opening a
+ *      finished thread is an instruction to read what it came back with, and
+ *      the end of a long answer is the one part of it the reader has no use for
+ *      yet. A thread still being driven keeps the ordinary landing at the end,
+ *      where its next token appears — there is nothing finished to read there.
+ *      The landing leaves the view outside rule 11's near-bottom band with
+ *      auto-follow stood down, which is what a thread nothing is writing to
+ *      wants, and is the second reason a busy one is excluded.
+ *
  * The follow target (see getFollowTarget) always sits at the end of the
  * conversation, in priority order:
  *   selected busy thread > any busy thread > footer spinner > footer.
@@ -179,6 +190,47 @@ function scrollElementIntoView(area, el, automatic = false) {
   // magnitudes is the sign-agnostic form of "further away".
   if (automatic && Math.abs(next) > Math.abs(messageList.scrollTop)) return;
   messageList.scrollTo({ top: next, behavior: 'instant' });
+}
+
+/**
+ * Rule 12: put the START of the column's last message at the top of the
+ * viewport, for a column being opened to be read rather than followed.
+ *
+ * Declines when the message fits, because the end position already shows the
+ * whole of it — the beginning included — and moving would only push the footer
+ * out of view to no purpose. So this answers "was there anything to do", and a
+ * caller that gets `false` should land where it otherwise would have.
+ *
+ * The move is the same relative, clamped delta scrollElementIntoView uses
+ * (never Element.scrollIntoView): rects are direction-agnostic, and in the
+ * reversed scroller scrollTop increases toward the content end exactly as it
+ * does in a normal column, so one offset serves both. Instant — this is where
+ * the column opens, not a journey the reader takes.
+ * @param {any} area - ConversationArea instance
+ * @returns {boolean} True when the view was moved to the message's start.
+ */
+function scrollLastMessageStartIntoView(area) {
+  const messageList = area.querySelector('#message-list');
+  const content = area.querySelector('#message-list-inner');
+  if (!messageList || !content) return false;
+
+  // By tag rather than by DOM adjacency: the trailing children include the
+  // footer and any non-message markers rendered after the last message.
+  let last = null;
+  for (const el of Array.from(content.children)) {
+    if (MESSAGE_TAGS.has(/** @type {Element} */ (el).tagName)) last = el;
+  }
+  if (!last) return false;
+
+  const listRect = messageList.getBoundingClientRect();
+  const elRect = /** @type {Element} */ (last).getBoundingClientRect();
+  if (elRect.height <= listRect.height) return false;
+
+  messageList.scrollTo({
+    top: messageList.scrollTop + (elRect.top - listRect.top),
+    behavior: 'instant',
+  });
+  return true;
 }
 
 /**
@@ -409,30 +461,44 @@ export function saveScrollPositionImmediately(area) {
 }
 
 /**
- * Restore scroll position from localStorage. Called by conversation-tab a frame
- * after the messages are rendered, so the rows this restores against have a
- * layout to measure. Only restores once per conversation load.
+ * Where a column opens. Called by conversation-tab a frame after the messages
+ * are rendered, so the rows this lands against have a layout to measure.
+ *
+ * Two jobs, in order of precedence. A column pointed at a sub-thread lands on
+ * the start of that thread's last message (rule 12) — once per thread it is
+ * shown, since columns are reused across thread navigations. Otherwise it
+ * restores the position this conversation was left at, once per load.
  *
  * That frame is not owed to us promptly. A hidden, occluded or background window
  * can be a long way behind, so the restore can arrive after the reader has
  * already put the view somewhere of their own — and a held reader anchor is
  * exactly that signal (conversation-area.js keeps one only while the reader sits
  * away from the end, and tells their scrolling apart from content drifting under
- * them). Restoring on top of it would be an automatic jump away from where they
- * just went, which is the one move rule 11 exists to refuse. The restore is
- * spent either way: it belongs to the load, and the load is over.
+ * them). Landing on top of it would be an automatic jump away from where they
+ * just went, which is the one move rule 11 exists to refuse. The move is spent
+ * either way: it belongs to the open, and the open is over.
  *
- * Both branches move the view immediately rather than through scrollToBottom's
- * coalescing frame — a restore happens once, so there is nothing to coalesce,
- * and a second deferred jump is a second chance to land on top of the reader.
+ * Every branch moves the view immediately rather than through scrollToBottom's
+ * coalescing frame — this happens once, so there is nothing to coalesce, and a
+ * second deferred jump is a second chance to land on top of the reader.
  * @param {any} area - ConversationArea instance
  */
 export function restoreScrollPosition(area) {
-  if (area._initialScrollRestored) return;
+  // A column pointed at a sub-thread owes that thread a landing, whatever this
+  // element has already done for a thread it used to show (rule 12).
+  const landing = area._threadLandingPending;
+  area._threadLandingPending = false;
+  if (area._initialScrollRestored && !landing) return;
   area._initialScrollRestored = true;
 
   if (!area._conversation) return;
   if (area._readerAnchor) return;
+
+  // Rule 12. A thread still being driven falls through to the end, where its
+  // next token lands; so does a last message short enough that the end position
+  // already shows the start of it.
+  if (landing && !area._messageThread?.isProcessing
+      && scrollLastMessageStartIntoView(area)) return;
 
   const state = getScrollState(area._conversation.id);
   if (!state || state.atBottom) {

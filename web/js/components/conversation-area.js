@@ -190,6 +190,8 @@ class ConversationArea extends HTMLElement {
     this._scrollAnimationFrame = null;
     /** @type {boolean} @private - Track if initial scroll restore has happened */
     this._initialScrollRestored = false;
+    /** @type {boolean} @private - This column has been pointed at a sub-thread it has yet to land on (rule 12, see restoreScrollPosition) */
+    this._threadLandingPending = false;
     /** @type {((event: any, transaction: any) => void)|null} @private - Metadata observer for nextSteps */
     this._metadataObserver = null;
     /** @type {((event: any, transaction: any) => void)|null} @private - Items observer for streaming scroll */
@@ -370,8 +372,18 @@ class ConversationArea extends HTMLElement {
    * @param {*} threadYMap - The thread Y.Map, or null for root column behavior
    */
   setThreadContext(threadYMap) {
-    // A different thread context means a fresh bulk populate — don't FLIP it in.
-    if (threadYMap !== this._threadYMap) this._animationsPrimed = false;
+    if (threadYMap !== this._threadYMap) {
+      // A different thread context means a fresh bulk populate — don't FLIP it in.
+      this._animationsPrimed = false;
+      // A column pointed at a sub-thread owes it a landing (rule 12), and owes
+      // it EVERY time: columns are reused across thread navigations, so a flag
+      // spent once per element would land the first thread opened here and
+      // never another. The reader's place goes with the thread it was a place
+      // in — holding it would make the incoming thread's landing stand down for
+      // a reader who is not there (see restoreScrollPosition).
+      this._threadLandingPending = !!threadYMap;
+      this.releaseReaderAnchor();
+    }
 
     // Clean up old observer
     if (this._threadStatusObserver && this._threadYMap) {

@@ -197,6 +197,7 @@ import { runTests as runScrollAwayAutofollowTests } from '../unit-tests/scroll-a
 import { runTests as runScrollToTopTests } from '../unit-tests/scroll-to-top-test.js';
 import { runTests as runAutoFollowHoldsTheEndTests } from '../unit-tests/auto-follow-holds-the-end-test.js';
 import { runTests as runUserSendFollowTests } from '../unit-tests/user-send-follow-test.js';
+import { runTests as runThreadColumnLandingTests } from '../unit-tests/thread-column-landing-test.js';
 import { runTests as runEmptyConversationHintTests } from '../unit-tests/empty-conversation-hint-test.js';
 import { runTests as runColumnFileDropTests } from '../unit-tests/column-file-drop-test.js';
 import { runTests as runColumnNavigationTests } from '../unit-tests/column-navigation-test.js';
@@ -543,6 +544,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:scroll-to-top', run: runScrollToTopTests },
   { name: 'unit:auto-follow-holds-the-end', run: runAutoFollowHoldsTheEndTests },
   { name: 'unit:user-send-follow', run: runUserSendFollowTests },
+  { name: 'unit:thread-column-landing', run: runThreadColumnLandingTests },
   { name: 'unit:empty-conversation-hint', run: runEmptyConversationHintTests },
   { name: 'unit:column-file-drop', run: runColumnFileDropTests },
   { name: 'unit:column-navigation', run: runColumnNavigationTests },
