@@ -268,6 +268,11 @@ function createPinButton(path) {
 
 /**
  * Append a diff viewer if the tool-action has a diffData snapshot.
+ *
+ * An empty side is a recorded snapshot like any other — it is what a file
+ * created from nothing, or emptied out, looks like — so the test is that both
+ * sides were recorded, not that both hold something. Only a snapshot with
+ * nothing on either side has no diff to draw.
  * @param {HTMLElement} wrapper
  * @param {any} toolAction - Y.Map for the tool action
  * @param {string} fallbackPath
@@ -275,7 +280,8 @@ function createPinButton(path) {
  */
 export function addDiffViewer(wrapper, toolAction, fallbackPath) {
   const diffData = yGet(toolAction, 'displayData')?.diffData;
-  if (!diffData?.oldContent || !diffData?.newContent) return false;
+  if (typeof diffData?.oldContent !== 'string' || typeof diffData?.newContent !== 'string') return false;
+  if (diffData.oldContent === '' && diffData.newContent === '') return false;
 
   const diffViewer = document.createElement('diff-viewer');
   diffViewer.classList.add('properties-panel-diff');

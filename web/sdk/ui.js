@@ -54,6 +54,9 @@ export {
   addDiffViewer,
 } from '../js/utils/properties-panel-helpers.js';
 
+// The shared diff renderer, for a host drawing a patch or a pair of snapshots
+export { createDiffViewer } from '../js/components/diff-viewer.js';
+
 // Syntax highlighting (Prism-backed, safe fallback)
 export { highlightCode, highlightCodeLines, createHighlightedCode } from './lib/syntax-highlight.js';
 

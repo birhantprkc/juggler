@@ -264,7 +264,9 @@ The full set of specifiers, and what each is for:
   There is deliberately no bare `fetch` or `search` export — those would shadow
   web globals. `web/sdk/ops.js` is the list of record.
 - **`juggler/ui`** holds render/format helpers (`smartTruncate`, `createElement`,
-  `FormattingHelpers`, …). See `web/sdk/ui.js`. It has a worker-safe twin: in the
+  `FormattingHelpers`, …) and `createDiffViewer`, the shared diff renderer, which
+  draws either a Git patch (`setPatch`) or a pair of before/after snapshots
+  (`setDiff`) for one file. See `web/sdk/ui.js`. It has a worker-safe twin: in the
   engine, the pure formatters are real and the DOM helpers throw, so a capability
   that runs in both realms must keep its rendering on the viewer side.
 

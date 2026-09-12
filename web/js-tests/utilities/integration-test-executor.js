@@ -153,6 +153,7 @@ import { runTests as runLanguageCoverageTests } from '../unit-tests/language-cov
 import { runTests as runHighlightLinesTests } from '../unit-tests/highlight-lines-test.js';
 import { runTests as runMarkdownHighlightTests } from '../unit-tests/markdown-highlight-test.js';
 import { runTests as runDiffHighlightTests } from '../unit-tests/diff-highlight-test.js';
+import { runTests as runDiffReviewTests } from '../unit-tests/diff-review-test.js';
 import { runTests as runExternalLinkTests } from '../unit-tests/external-link-test.js';
 import { runTests as runLinkGuardTests } from '../unit-tests/link-guard-test.js';
 import { runTests as runAnsiTests } from '../unit-tests/ansi-test.js';
@@ -505,6 +506,7 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:highlight-lines', run: runHighlightLinesTests },
   { name: 'unit:markdown-highlight', run: runMarkdownHighlightTests },
   { name: 'unit:diff-highlight', run: runDiffHighlightTests },
+  { name: 'unit:diff-review', run: runDiffReviewTests },
   { name: 'unit:external-link', run: runExternalLinkTests },
   { name: 'unit:link-guard', run: runLinkGuardTests },
   { name: 'unit:ansi', run: runAnsiTests },
