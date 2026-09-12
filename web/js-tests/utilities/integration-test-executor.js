@@ -187,7 +187,6 @@ import { runTests as runThreadPinSurvivesRevealTests } from '../unit-tests/threa
 import { runTests as runThreadStreamPinTests } from '../unit-tests/thread-stream-pin-test.js';
 import { runTests as runParallelThreadSelectionTests } from '../unit-tests/parallel-thread-selection-test.js';
 import { runTests as runPinboardThreadSourceTests } from '../unit-tests/pinboard-thread-source-test.js';
-import { runTests as runPinboardFileEditsTests } from '../unit-tests/pinboard-file-edits-test.js';
 import { runTests as runPinboardTasksTests } from '../unit-tests/pinboard-tasks-test.js';
 import { runTests as runPinboardGitReviewTests } from '../unit-tests/pinboard-git-review-test.js';
 import { runTests as runReviewDraftTests } from '../unit-tests/review-draft-test.js';
@@ -532,7 +531,6 @@ const UNIT_TEST_SUITES = [
   { name: 'unit:thread-stream-pin', run: runThreadStreamPinTests },
   { name: 'unit:parallel-thread-selection', run: runParallelThreadSelectionTests },
   { name: 'unit:pinboard-thread-source', run: runPinboardThreadSourceTests },
-  { name: 'unit:pinboard-file-edits', run: runPinboardFileEditsTests },
   { name: 'unit:pinboard-tasks', run: runPinboardTasksTests },
   { name: 'unit:pinboard-git-review', run: runPinboardGitReviewTests },
   { name: 'unit:review-draft', run: runReviewDraftTests },

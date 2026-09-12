@@ -6,6 +6,8 @@ of changes; this project follows semantic versioning.
 ## [Unreleased]
 
 - The Git pin is now a review: read each changed file's diff, comment on lines, send the lot as one message
+- The Changed files pin is gone, replaced by review over the whole working tree
+- Pinboard extensions no longer receive a services.fileEdits; git review replaces it
 - Right-click a selection in any file, diff or code block to get options including pasting a reference to it into the prompt
 - A grep reading its patterns or exclusions from a file outside the project now asks first
 - Claude Code turns count the tokens every paused tool round-trip was billed for, not just the last

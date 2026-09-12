@@ -26,6 +26,7 @@ import PinboardItemType from 'juggler/pinboard-item-type';
 import gitStatusCache from '../../js/services/git-status-cache.js';
 import gitReviewService from '../../js/services/git-review-service.js';
 import '../../js/components/pinboard-content.js';
+import { createReviewPanel } from '../../js/components/review-panel.js';
 
 /** The context the probe was mounted with. */
 const probe = { context: /** @type {any} */ (null) };
@@ -530,6 +531,90 @@ export async function runTests() {
       const review = await service().review();
       assert(review.repos.length === 2,
         'a review is a property of the project, so a detached board asks the server itself');
+    });
+
+    // --- taking focus ----------------------------------------------------------
+
+    await run('taking focus moves the rail and nothing above it', async () => {
+      // The panel is the body of a pin, and the board holding it is parked off
+      // the right edge of the workspace by a transform until it has slid in. A
+      // plain focus() there makes the browser scroll every ancestor to reveal
+      // it — and `.app-main` is `overflow: hidden`, which is a scroll box with
+      // the scrollbar taken away. The columns lurch left, the sliding panel
+      // overshoots with them, and it springs back when the transform settles.
+      // So focus must scroll the rail it landed in, and nothing outside it.
+      const workspace = document.createElement('div');
+      workspace.style.cssText = 'position:relative;width:600px;height:400px;overflow:hidden';
+      const parked = document.createElement('div');
+      parked.style.cssText =
+        'position:absolute;top:0;right:0;width:500px;height:100%;transform:translateX(100%)';
+      workspace.appendChild(parked);
+      container.appendChild(workspace);
+
+      const panel = createReviewPanel({
+        scopeLabel: 'working tree',
+        loadPatch: async () => ({ hunks: [] }),
+        review: { draft: () => null },
+      });
+      parked.appendChild(panel.element);
+      // Enough files that the last one is well below the fold of a rail that
+      // has to scroll to show it.
+      panel.setManifest({
+        complete: true,
+        warnings: [],
+        groups: [{
+          key: '',
+          files: Array.from({ length: 60 }, (_, i) => ({ repo: '', path: `src/file-${i}.js` })),
+        }],
+      });
+
+      try {
+        const rows = panel.element.querySelectorAll('.review-panel__file');
+        assert(rows.length === 60, `the rail must hold every file, got ${rows.length}`);
+        const rail = /** @type {HTMLElement} */ (panel.element.querySelector('.review-panel__rail'));
+        const active = /** @type {HTMLElement} */ (
+          panel.element.querySelector('.review-panel__file[aria-current="true"]'));
+        assert(active === rows[0], 'the first file is the one a fresh manifest lands on');
+        assert(rail.scrollHeight > rail.clientHeight,
+          'the rail must overflow, or there is no scrolling here to get wrong');
+
+        // Send the rail past the active row, so revealing it is a scroll that
+        // has to happen.
+        rail.scrollTop = rail.scrollHeight;
+        // What focus() was asked for, rather than what the browser did with it:
+        // this page never paints, so WebKit never runs the rendering update its
+        // scroll-into-view happens in, and every assertion about where the
+        // workspace ended up passes here whether the bug is present or not.
+        // The request is the part this code controls, so the request is what is
+        // checked.
+        /** @type {(FocusOptions|undefined)[]} */
+        const asked = [];
+        const realFocus = HTMLElement.prototype.focus;
+        HTMLElement.prototype.focus = function focus(options) {
+          asked.push(options);
+          return realFocus.call(this, options);
+        };
+        try {
+          panel.focus();
+        } finally {
+          HTMLElement.prototype.focus = realFocus;
+        }
+
+        assert(asked.length === 1, `focus went to one place, got ${asked.length}`);
+        assert(asked[0]?.preventScroll === true,
+          'focus must not be what scrolls the workspace: the board is still off its right edge');
+        // And because it asked for that, revealing the row is now this panel's
+        // job. Scrolling the rail is our own code, so it has happened by now.
+        const railBox = rail.getBoundingClientRect();
+        const rowBox = active.getBoundingClientRect();
+        assert(rowBox.top >= railBox.top - 1 && rowBox.bottom <= railBox.bottom + 1,
+          'the rail must scroll to the row focus went to, or focus is somewhere nobody can see'
+          + ` — rail scrollTop ${rail.scrollTop} of ${rail.scrollHeight}/${rail.clientHeight},`
+          + ` rail ${railBox.top}..${railBox.bottom}, row ${rowBox.top}..${rowBox.bottom}`);
+      } finally {
+        panel.destroy();
+        workspace.remove();
+      }
     });
   } finally {
     // Drain every stub in a finally, so a case that throws cannot strand one for

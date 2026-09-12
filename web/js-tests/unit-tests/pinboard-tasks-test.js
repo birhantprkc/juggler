@@ -19,7 +19,7 @@
  * would get wrong in its own favour.
  *
  * Driven through a probe item type registered only here, the same way
- * `unit:pinboard-file-edits` does.
+ * `unit:pinboard-shell` does.
  * @module unit-tests/pinboard-tasks-test
  */
 

@@ -115,7 +115,6 @@ export async function runTests(_ctx) {
       files: { onChange: () => () => {} },
       contextItems: { find: () => null, onChange: () => () => {}, reveal: () => {} },
       git: { status: () => null, error: () => '', onChange: () => () => {}, refresh: async () => {} },
-      fileEdits: { list: () => [], onChange: () => () => {}, reveal: () => {} },
       tasks: {
         /** @returns {any[]|null} The running tasks. */
         list: () => current,

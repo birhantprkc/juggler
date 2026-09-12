@@ -542,6 +542,29 @@ export async function runTests(_ctx) {
       }
     });
 
+    await run('a board still carrying the withdrawn pin loses it when it loads', async () => {
+      // The board arriving is the only trigger there could be: the type is never
+      // coming back, so nothing later could prompt the shell to ask. Without
+      // this, a board made before the Git pin became the review surface keeps a
+      // tab nothing can draw and nothing explains.
+      const { server, teardown } = await mountShell([
+        { id: 'pin_dead', type: 'changed-files' },
+        { id: 'pin_kept', type: 'probe', config: { label: 'kept' } },
+      ]);
+      try {
+        await waitFor(() => server.board.length === 1, {
+          timeoutMs: budgetFor(2000),
+          description: 'the retired pin to be pruned from the board',
+        }).catch(() => {});
+        assert(server.board.map((/** @type {any} */ p) => p.id).join(',') === 'pin_kept',
+          `the shared board should have lost that one pin: ${JSON.stringify(server.board)}`);
+        assert(pinboardStore.get().map((p) => p.id).join(',') === 'pin_kept',
+          `and this viewer should be showing what is left: ${JSON.stringify(pinboardStore.get())}`);
+      } finally {
+        teardown();
+      }
+    });
+
     await run('the shortcut opens the board and closes it again from inside', async () => {
       // The chord is dispatched by the shell precisely so it still fires over the
       // board's own popup token — the manager suppresses commands behind one.

@@ -148,6 +148,17 @@ function findDuplicate(typeId, config) {
 }
 
 /**
+ * The one pin type a board is pruned of: `changed-files`, withdrawn once the Git
+ * pin became the review surface for the whole working tree.
+ *
+ * Named exactly, never "any type the registry does not know". An unknown type is
+ * ordinarily an extension that has not loaded yet or has been disabled, and the
+ * host draws a placeholder for it on purpose; pruning on that rule would delete
+ * a user's pins the first time an extension failed to load.
+ */
+const RETIRED_PIN_TYPE = 'changed-files';
+
+/**
  * The types a board is furnished with when it is new, in the order their tabs
  * should sit in.
  *
@@ -421,6 +432,30 @@ const pinboardView = {
     await attempt(
       "Couldn't set the pinboard up.",
       () => pinboardStore.addAll(types.map(({ id }) => ({ type: id }))),
+    );
+  },
+
+  /**
+   * Take the retired pin off this board, if it is on it.
+   *
+   * Every viewer runs this as its board loads, and runs it again next time the
+   * app starts. Nothing records that it has been done, and nothing needs to:
+   * once the pin is gone there is nothing left to match, so a second pass asks
+   * for nothing. Two viewers pruning at the same moment are two removes of the
+   * same id, which the server applies once.
+   *
+   * The store's op rather than {@link remove}: this is a batch of operations,
+   * not the user removing a pin, and the type whose `willRemove` that would
+   * offer is exactly the type that no longer exists.
+   * @returns {Promise<void>} Resolves once the board has been pruned, or once
+   *   it is settled that there was nothing to prune.
+   */
+  async prune() {
+    const retired = pinboardStore.get().filter((pin) => pin.type === RETIRED_PIN_TYPE);
+    if (!retired.length) return;
+    await attempt(
+      "Couldn't tidy the pinboard.",
+      () => pinboardStore.applyOperations(retired.map((pin) => ({ op: 'remove', id: pin.id }))),
     );
   },
 

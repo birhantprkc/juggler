@@ -75,6 +75,8 @@ class PinboardShell extends JugglerElement {
     this._loaded = null;
     /** @type {boolean} @private Whether this viewer has asked to furnish a new board. */
     this._furnishStarted = false;
+    /** @type {boolean} @private Whether this viewer has pruned the board's retired pins. */
+    this._pruneStarted = false;
     /** @type {number} @private The panel's width in rem, after clamping. */
     this._widthRem = DEFAULT_WIDTH_REM;
   }
@@ -294,6 +296,14 @@ class PinboardShell extends JugglerElement {
     if (this._loaded && !this._furnishStarted && enabled.length > 0) {
       this._furnishStarted = true;
       void this._loaded.then(() => pinboardView.furnish());
+    }
+    // A withdrawn pin type is taken off the board once its board has arrived.
+    // Unlike furnishing, this waits for nothing else and is not claimed: the
+    // registry can never learn the type, every board carries its own copy of
+    // the tab, and a remove of a pin already gone changes nothing.
+    if (this._loaded && !this._pruneStarted) {
+      this._pruneStarted = true;
+      void this._loaded.then(() => pinboardView.prune());
     }
     const usable = enabled.length > 0 || pinboardStore.get().length > 0;
     this.hidden = !hasProject || !usable;

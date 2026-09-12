@@ -386,59 +386,6 @@ import { validateManifest } from './lib/manifest.js';
  */
 
 /**
- * One file edit the conversation's transcript records.
- * @typedef {object} PinFileEdit
- * @property {string} itemId - The tool action that made it, for `reveal`
- * @property {string|null} threadId - The thread it happened in, null for the root
- * @property {string} toolName - Which tool, as named in the query
- * @property {string} path - Absolute path of the file it changed
- * @property {number} added - Lines added, 0 when the tool did not report a diffstat
- * @property {number} removed - Lines removed, 0 when unreported
- * @property {number} at - Unix ms it was stamped, `Infinity` for one so new the
- *   worker has not echoed it back yet
- */
-
-/**
- * The file as one edit found it and as that edit left it, both in full.
- * @typedef {object} PinFileSnapshot
- * @property {string} oldContent - The whole file before the edit, `''` for a file
- *   the edit created
- * @property {string} newContent - The whole file after it
- */
-
-/**
- * What this conversation's tools have done to files, read from the transcript
- * rather than from a ledger kept beside it. Nothing here is inferred: an edit
- * appears because a tool action for it completed successfully, so the list is
- * exactly as durable as the conversation and survives a restart with it.
- *
- * **It is not the list of files that changed.** It is the list of files these
- * tools changed. A shell command, another editor, a checkout — none of them are
- * here and none of them can be, because nothing attributes a bare filesystem
- * write to anyone. Say which of the two you are showing; a surface that lets the
- * user read this as "everything that changed" is lying by omission. For what did
- * change, whoever changed it, use `services.git`.
- * @typedef {object} PinFileEditsService
- * @property {(query: {tools: string[], limit?: number}) => PinFileEdit[]} list -
- *   The edits made by the named tools, newest first, capped at `limit` (200 by
- *   default). You supply the tool names: which tools mutate a file is your
- *   knowledge, not the host's.
- * @property {(listener: () => void) => (() => void)} onChange - Called when the
- *   transcript may have changed. Carries nothing: call `list` again. Returns an
- *   unsubscribe function; the host also drops the subscription on teardown.
- * @property {(itemId: string) => PinFileSnapshot|null} snapshot - What one edit
- *   did, as the two whole files it did it to, or null when the transcript did not
- *   keep them. This is the expensive half of the service and is why `list` is the
- *   cheap one: a snapshot is the file twice over, so it is asked for one edit at a
- *   time, at the moment something is going to show it, and never in a loop over a
- *   list. Hold the result no longer than the display that needed it.
- * @property {(itemId: string) => void} reveal - Select that tool action in the
- *   conversation, opening whatever columns it takes to reach it. Like every
- *   reveal, it happens in the window that has the columns — a detached board's
- *   goes back to the window that opened it.
- */
-
-/**
  * One background task this conversation started and that is still running.
  * @typedef {object} PinTask
  * @property {string} taskId - The task's id, as `stop` takes it
@@ -589,7 +536,6 @@ import { validateManifest } from './lib/manifest.js';
  * @property {PinFilesService} files - Files changing on disk
  * @property {PinContextItemsService} contextItems - The conversation's context items
  * @property {PinGitService} git - The project's git working tree
- * @property {PinFileEditsService} fileEdits - What this conversation's tools changed
  * @property {PinTasksService} tasks - The background tasks this conversation is running
  * @property {PinReviewService} review - The unsent review comments on the thread being read
  */

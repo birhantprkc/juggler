@@ -109,6 +109,7 @@ function toManifest(review) {
       note: repoNote(repo),
       files: (repo.files || []).map((file) => {
         const absolute = absoluteFilePath(review.root, repo.path, file.path);
+        const onDisk = stillOnDisk(file);
         return {
           repo: repo.path || '',
           path: file.path,
@@ -117,9 +118,8 @@ function toManifest(review) {
           status: file.conflicted ? 'Conflicted' : fileStatusWords(file),
           added: file.added,
           removed: file.removed,
-          actions: stillOnDisk(file)
-            ? () => createFileActions(absolute, { pin: absolute })
-            : undefined,
+          filePath: onDisk ? absolute : undefined,
+          actions: onDisk ? () => createFileActions(absolute, { pin: absolute }) : undefined,
         };
       }),
     })),

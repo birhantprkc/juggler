@@ -682,7 +682,19 @@ class ProjectFilesPin extends PinboardItemType {
         const el = /** @type {HTMLElement} */ (child);
         if (el.classList.contains('project-files-pin__row')) el.tabIndex = el.dataset.rowKey === path ? 0 : -1;
       }
-      rowFor(path)?.focus();
+      const row = rowFor(path);
+      if (!row) return;
+      // The board this pin sits in is parked off the right edge of the workspace
+      // by a transform until it has slid in, and taking focus the plain way has
+      // the browser scroll every ancestor to reveal it — including the workspace
+      // itself, which drags the columns left and the sliding board with them.
+      // So the row is revealed by scrolling the list and nothing else: a clamped
+      // scrollTop on the one box that should move.
+      row.focus({ preventScroll: true });
+      const box = list.getBoundingClientRect();
+      const item = row.getBoundingClientRect();
+      if (item.top < box.top) list.scrollTop -= box.top - item.top;
+      else if (item.bottom > box.bottom) list.scrollTop += item.bottom - box.bottom;
     };
 
     /**

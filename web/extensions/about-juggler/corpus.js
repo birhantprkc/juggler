@@ -77,19 +77,19 @@ Distinguishing ideas:
   with the edge tab or its shortcut. Each tab is a "pin" supplied by an
   extension. The built-in ones keep a live file within reach (a properties panel
   showing a file offers to pin it), follow the current plan, the current todo
-  list and the project's memory, show the git working tree, list the files
-  this conversation's tools changed, and list the background tasks it has
-  running. Plan and Todo show the list belonging to the
+  list and the project's memory, review the git working tree, and list the
+  background tasks it has running. Plan and Todo show the list belonging to the
   thread you are reading, falling back to the nearest parent thread that has one
   and saying so when they do; both are read-only, since those lists change
-  through their tools. Git shows every repository under the project with its
-  branch, how far it has drifted from its upstream, and the changed files;
-  clicking the Git status card in the sidebar opens it. Changed files is the
-  other question and a different answer: it lists what the write and edit tools
-  did in this conversation, read from the transcript, so a file changed by a
-  shell command is not there and cannot be — nothing attributes a bare
-  filesystem write to anyone. Background tasks is a live inventory rather than a
-  history: a command or Monitor appears while it runs and is gone once it ends,
+  through their tools. Git is where changes are reviewed: every repository under
+  the project with its branch, how far it has drifted from its upstream, and
+  every changed file, each one's whole diff against HEAD, comments written onto
+  the lines they are about, and one action that sends them all to the
+  conversation as an ordinary message. It is git that is read, so a change made
+  by a shell command, a formatter or by hand is there like any other; clicking
+  the Git status card in the sidebar opens it. Background tasks is a live
+  inventory rather than a history: a command or Monitor appears while it runs
+  and is gone once it ends,
   each row offering a Stop and a way back to the action that started it, where
   its output and exit code are. Pins belong to the project session, so every viewer
   of the project sees the same board. A pin is only a view: unlike a context

@@ -4533,9 +4533,14 @@ diff-viewer .diff-file-comment-list.stale .diff-comment {
     min-height: 0;
 }
 
+/* A share of the room rather than a fixed column: a row has to hold a status,
+   a file name, its directory and a diffstat, and at any fixed width that fits a
+   wide board it leaves a narrow one no diff to read. Bounded at both ends, so
+   it can neither squeeze the diff nor run on past the longest path. */
 .review-panel__rail {
-    flex: 0 0 14rem;
-    min-width: 0;
+    flex: 0 0 35%;
+    min-width: 12rem;
+    max-width: 22rem;
     overflow: auto;
 }
 
@@ -4554,6 +4559,7 @@ diff-viewer .diff-file-comment-list.stale .diff-comment {
 
     .review-panel__rail {
         flex: 0 0 auto;
+        max-width: none;
         max-height: 12rem;
     }
 }
@@ -4589,19 +4595,7 @@ diff-viewer .diff-file-comment-list.stale .diff-comment {
 
 .review-panel__row {
     display: flex;
-    align-items: center;
-    gap: 0.25rem;
     min-width: 0;
-}
-
-.review-panel__row .properties-panel-filepath-actions {
-    flex-shrink: 0;
-    opacity: 0;
-}
-
-.review-panel__row:hover .properties-panel-filepath-actions,
-.review-panel__row:focus-within .properties-panel-filepath-actions {
-    opacity: 1;
 }
 
 .review-panel__file {
@@ -4637,11 +4631,39 @@ diff-viewer .diff-file-comment-list.stale .diff-comment {
     white-space: pre;
 }
 
+/* A path is longer than the rail is wide, so the row is not one string that
+   wraps but two boxes that yield in order: the directory first, the name last.
+   Wrapping instead puts a character per line and stretches the row to nine of
+   them, and eliding the whole path from the end hides the one part that tells
+   two rows apart. */
 .review-panel__path {
+    display: flex;
     flex: 1;
+    align-items: baseline;
+    gap: 0.375rem;
     min-width: 0;
+}
+
+.review-panel__name {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
     font-family: var(--font-mono);
-    overflow-wrap: anywhere;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Basis 0: the directory takes what is left after the name rather than a share
+   of the row, so it shrinks to nothing before the name loses a character. */
+.review-panel__dir {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .review-panel__stat {
@@ -4666,14 +4688,17 @@ diff-viewer .diff-file-comment-list.stale .diff-comment {
 
 .review-panel__diff-head {
     display: flex;
-    align-items: baseline;
+    flex-wrap: wrap;
+    align-items: center;
     gap: 0.5rem;
     padding-bottom: 0.25rem;
     min-width: 0;
 }
 
+/* A basis rather than a share: below it the controls wrap to a line of their
+   own instead of squeezing the path they are about. */
 .review-panel__diff-path {
-    flex: 1;
+    flex: 1 1 12rem;
     min-width: 0;
     font-family: var(--font-mono);
     font-size: var(--font-size-sm);

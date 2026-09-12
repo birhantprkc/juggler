@@ -22,7 +22,7 @@
  * because an `<iframe>` that was rebuilt looks identical and has lost everything.
  *
  * Driven through probe item types registered only here, as
- * `unit:pinboard-file-edits` does: a pin shipped in product code purely to be
+ * `unit:pinboard-shell` does: a pin shipped in product code purely to be
  * measured would be a promise the app cannot keep.
  * @module unit-tests/pinboard-retention-test
  */

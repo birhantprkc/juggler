@@ -531,6 +531,75 @@ export async function runTests(_ctx) {
     assert(stub.calls.length === 0, `nothing should have been asked, got ${stub.calls.length} requests`);
   });
 
+  // The Changed files pin shipped as a default pin, so essentially every board
+  // made since 0.6.0 carries one. Left alone, the host draws a tab the registry
+  // cannot place, for ever, with nothing to say it can be closed.
+
+  await run('a board loses its Changed files tab and keeps the rest in order', async () => {
+    await seed([
+      { id: 'pin_a', type: 'file' },
+      { id: 'pin_dead', type: 'changed-files' },
+      { id: 'pin_b', type: 'git' },
+    ]);
+    const stub = stubFetch((_url, opts) => {
+      const ops = JSON.parse(opts.body).operations;
+      return {
+        ok: true,
+        json: async () => ({
+          pins: [{ id: 'pin_a', type: 'file' }, { id: 'pin_b', type: 'git' }],
+          applied: ops,
+        }),
+      };
+    });
+    /** @type {any[]} */
+    let sent = [];
+    try {
+      await pinboardView.prune();
+      sent = stub.calls.length ? JSON.parse(stub.calls[0].opts.body).operations : [];
+    } finally {
+      stub.restore();
+      pinboardView.reset();
+    }
+    assert(sent.length === 1 && sent[0].op === 'remove' && sent[0].id === 'pin_dead',
+      `the prune must remove that one pin through the ordinary op: ${JSON.stringify(sent)}`);
+    assert(order(pinboardStore.get()) === 'pin_a,pin_b',
+      `the surviving tabs keep their order, got ${order(pinboardStore.get())}`);
+  });
+
+  await run('a board with nothing retired on it is not rewritten at all', async () => {
+    // Never "any type the registry does not know": the registry is empty here,
+    // and a prune reading it would take the user's whole board the first time an
+    // extension failed to load.
+    await seed([{ id: 'pin_a', type: 'file' }, { id: 'pin_b', type: 'some-extensions-pin' }]);
+    pinboardItemRegistry.reset();
+    const stub = stubFetch(() => ({ ok: true, json: async () => ({ pins: [] }) }));
+    try {
+      await pinboardView.prune();
+    } finally {
+      stub.restore();
+      pinboardView.reset();
+    }
+    assert(stub.calls.length === 0, `an untouched board must not be written: ${stub.calls.length} requests`);
+    assert(order(pinboardStore.get()) === 'pin_a,pin_b',
+      `and must still be there, got ${order(pinboardStore.get())}`);
+  });
+
+  await run('pruning a board that was already pruned asks for nothing', async () => {
+    // Every viewer of the board runs this as it loads, and runs it again next
+    // time the app starts. There is no marker to keep: once the pin is gone
+    // there is nothing to match, so the second pass is silent by construction.
+    await seed([{ id: 'pin_a', type: 'file' }]);
+    const stub = stubFetch(() => ({ ok: true, json: async () => ({ pins: [{ id: 'pin_a', type: 'file' }] }) }));
+    try {
+      await pinboardView.prune();
+      await pinboardView.prune();
+    } finally {
+      stub.restore();
+      pinboardView.reset();
+    }
+    assert(stub.calls.length === 0, `a pruned board is quiet, got ${stub.calls.length} requests`);
+  });
+
   await run('a claim that fails leaves the board alone rather than complaining', async () => {
     await seed([{ id: 'pin_a', type: 'file' }]);
     registerFurnishProbes();

@@ -23,6 +23,24 @@
 import { createDiffViewer } from './diff-viewer.js';
 
 /**
+ * Scroll one box just far enough to show something inside it, and scroll
+ * nothing else. The movement is a clamped `scrollTop` on the scroller itself,
+ * never `Element.scrollIntoView`, whose ancestor-walking would move whatever is
+ * holding the scroller — which for a pin is the workspace behind the board.
+ * @param {HTMLElement} scroller - The box that may move.
+ * @param {HTMLElement} target - What has to end up visible in it.
+ * @returns {void}
+ */
+function revealInScroller(scroller, target) {
+  const box = scroller.getBoundingClientRect();
+  const item = target.getBoundingClientRect();
+  // Both rectangles carry any transform on the way to the viewport, so the
+  // difference between them is unaffected by the board's slide.
+  if (item.top < box.top) scroller.scrollTop -= box.top - item.top;
+  else if (item.bottom > box.bottom) scroller.scrollTop += item.bottom - box.bottom;
+}
+
+/**
  * One file offered for review, worded by the host. The panel reads `repo` and
  * `path` as the file's address and shows the rest.
  * @typedef {object} ReviewFile
@@ -33,8 +51,11 @@ import { createDiffViewer } from './diff-viewer.js';
  * @property {string} [status] - The same thing in words, for the accessible label
  * @property {number} [added] - Lines added
  * @property {number} [removed] - Lines removed
- * @property {() => HTMLElement|null} [actions] - The row's file controls, built
- *   on demand. Omitted for a file that is no longer on disk.
+ * @property {string} [filePath] - Where the file is on disk, for the right-click
+ *   menu every other surface showing a path offers. Omitted for a file that is
+ *   no longer there.
+ * @property {() => HTMLElement|null} [actions] - The file's controls, built on
+ *   demand and shown above the diff. Omitted for a file that is no longer on disk.
  */
 
 /**
@@ -249,7 +270,17 @@ class ReviewPanel {
   focus() {
     /** @type {HTMLElement|null} */
     const active = this._railEl.querySelector('.review-panel__file[aria-current="true"]');
-    active?.focus();
+    if (!active) return;
+    // This panel is the body of a pin, and the board holding it is parked off
+    // the right edge of the workspace by a transform until it has slid in. A
+    // plain focus() there has the browser scroll every ancestor to reveal it,
+    // and `.app-main` is a scroll box with the scrollbar taken away: the columns
+    // lurch left, the sliding panel overshoots with them, and it all springs
+    // back when the transform settles. So the reveal is done here instead, on
+    // the one box that should move — clamped scrollTop on the rail, which can
+    // neither overshoot nor drag an ancestor along.
+    active.focus({ preventScroll: true });
+    revealInScroller(this._railEl, active);
   }
 
   /** Stop watching the draft and cancel whatever is still being read. */
@@ -326,8 +357,13 @@ class ReviewPanel {
   }
 
   /**
-   * One file's row: a real button, with its controls beside rather than inside
-   * it — a button holding buttons is neither one thing nor the other.
+   * One file's row: a real button, naming the file and what happened to it.
+   *
+   * The rail is a fixed 14rem and a path is not, so the two halves of one are
+   * drawn as two things: the name, which is what the row is read for and is
+   * never abbreviated away, and the directory, which qualifies it and gives up
+   * its width first. The whole path is on the button's tooltip and in its label,
+   * so an elided directory is still there to be read.
    * @param {ReviewFile} file - The file.
    * @returns {HTMLElement} The row.
    * @private
@@ -338,8 +374,16 @@ class ReviewPanel {
     /** @type {HTMLButtonElement} */ (button).type = 'button';
     button.dataset.key = fileKey(file.repo, file.path);
     button.tabIndex = -1;
+    button.title = file.oldPath ? `${file.oldPath} → ${file.path}` : file.path;
+    // The same right-click menu as every other surface naming a file, so a row
+    // that is not the one being read is still a row you can act on.
+    if (file.filePath) button.dataset.filePath = file.filePath;
     button.append(el('span', 'review-panel__code', file.code || ''));
-    button.append(el('span', 'review-panel__path', file.oldPath ? `${file.oldPath} → ${file.path}` : file.path));
+    const cut = file.path.lastIndexOf('/');
+    const address = el('span', 'review-panel__path');
+    address.append(el('span', 'review-panel__name', file.path.slice(cut + 1)));
+    if (cut > 0) address.append(el('span', 'review-panel__dir', file.path.slice(0, cut)));
+    button.append(address);
     const added = file.added || 0;
     const removed = file.removed || 0;
     if (added > 0 || removed > 0) {
@@ -348,16 +392,15 @@ class ReviewPanel {
     button.append(el('span', 'review-panel__count', ''));
     button.addEventListener('click', () => this._select(fileKey(file.repo, file.path), true));
     row.append(button);
-    const actions = file.actions?.();
-    if (actions) row.append(actions);
     this._labelRow(button, file);
     return row;
   }
 
   /**
-   * What a row says aloud: its status, its path, the group it is in — so two
-   * files of the same name in two repositories are not one row read twice — and
-   * how many comments are waiting on it.
+   * What a row says aloud: its status, its whole path, where it came from if it
+   * moved, the group it is in — so two files of the same name in two
+   * repositories are not one row read twice — and how many comments are waiting
+   * on it.
    * @param {HTMLElement} button - The row's button.
    * @param {ReviewFile} file - The file.
    * @private
@@ -366,6 +409,7 @@ class ReviewPanel {
     const count = this._commentsFor(file).length;
     /** @type {string[]} */
     const parts = [file.status || 'Changed', file.path];
+    if (file.oldPath) parts.push(`from ${file.oldPath}`);
     if (file.repo) parts.push(`in ${file.repo}`);
     if (count > 0) parts.push(plural(count, 'comment'));
     button.setAttribute('aria-label', parts.join(', '));
@@ -465,9 +509,13 @@ class ReviewPanel {
   }
 
   /**
-   * The diff area, headed by the file it is showing and — where there is
-   * somewhere to put one — a way to comment on the file rather than a line of
-   * it, which is all a binary or conflicted file can offer.
+   * The diff area, headed by the file it is showing, its controls, and — where
+   * there is somewhere to put one — a way to comment on the file rather than a
+   * line of it, which is all a binary or conflicted file can offer.
+   *
+   * The controls live here rather than on the rail row because the rail has no
+   * room for them: hover-revealed or not, they hold their width in every row of
+   * a 14rem column, and it was the file's name that was paying for it.
    * @param {ReviewFile} file - The file being read.
    * @returns {any} The viewer, mounted and empty.
    * @private
@@ -478,6 +526,8 @@ class ReviewPanel {
     const path = file.oldPath ? `${file.oldPath} → ${file.path}` : file.path;
     const head = el('div', 'review-panel__diff-head');
     head.append(el('span', 'review-panel__diff-path', file.repo ? `${file.repo}/${path}` : path));
+    const actions = file.actions?.();
+    if (actions) head.append(actions);
     if (this._canComment()) {
       const whole = el('button', 'review-panel__file-comment', 'Comment on this file');
       /** @type {HTMLButtonElement} */ (whole).type = 'button';

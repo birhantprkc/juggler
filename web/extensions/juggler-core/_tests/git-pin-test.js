@@ -1086,6 +1086,37 @@ export async function runTests(_ctx) {
     m.teardown();
   });
 
+  await test('a long path costs a row no height, and the name survives it', async () => {
+    const m = await mounted({
+      manifest: manifestOf([
+        { path: 'x/a.js', index: 'M', worktree: '.', added: 126, removed: 43 },
+        { path: 'web/js/components/review-panel.js', index: 'M', worktree: '.', added: 126, removed: 43 },
+      ]),
+    });
+    // Both widths, because the rail is at its narrowest on a wide board: there
+    // it is 14rem whatever the window does, and every fixed thing in a row is
+    // width the path does not get.
+    for (const width of ['60rem', '20rem']) {
+      m.body.style.width = width;
+      const rail = /** @type {HTMLElement} */ (m.body.querySelector('.review-panel__rail'));
+      const rows = /** @type {HTMLElement[]} */ ([...m.body.querySelectorAll('.review-panel__row')]);
+      const paths = /** @type {HTMLElement[]} */ ([...m.body.querySelectorAll('.review-panel__path')]);
+      assert(rows.length === 2 && paths.length === 2, `expected two rows at ${width}`);
+      assert(rows[1].offsetHeight === rows[0].offsetHeight,
+        `a path too long for the rail must give way, not stack a character per line, at ${width}:`
+        + ` short row ${rows[0].offsetHeight}, long row ${rows[1].offsetHeight}`);
+      assert(paths[1].offsetWidth > rail.offsetWidth * 0.5,
+        `a rail is read for its paths, so most of one belongs to them at ${width}:`
+        + ` path ${paths[1].offsetWidth} of rail ${rail.offsetWidth}`);
+    }
+    // The directory is what gives way. The name is the part that identifies the
+    // row, so it is the last thing that may be cut.
+    const name = /** @type {HTMLElement} */ (m.body.querySelectorAll('.review-panel__name')[1]);
+    assert(name && name.scrollWidth <= name.offsetWidth,
+      `the file's own name must stay whole: ${name?.scrollWidth} of ${name?.offsetWidth}`);
+    m.teardown();
+  });
+
   // --- against the real service ---------------------------------------------
 
   await test('the real service hands the pin the shape it expects', async () => {

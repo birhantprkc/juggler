@@ -187,18 +187,6 @@ function yget(value, key) {
 }
 
 /**
- * A number, or the fallback for anything that is not one. A diffstat is absent
- * on an edit large enough that computing it was skipped, and 0 is the honest
- * reading of "not reported" here: the alternative is showing NaN.
- * @param {any} value - The candidate.
- * @param {number} fallback - What to use instead.
- * @returns {number} A finite number.
- */
-function numberOr(value, fallback) {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-}
-
-/**
  * When an item was stamped, as Unix ms. Zero-free: an item the worker has not
  * echoed back carries no timestamp, and that only happens while it is the newest
  * thing in the thread, so it reads as now rather than as the beginning of time.
@@ -1195,12 +1183,6 @@ class PinboardContent extends JugglerElement {
             signal, options?.signal, (linked) => gitReviewService.diff(repo, path, { signal: linked })
           ),
         },
-        fileEdits: {
-          list: (query) => this._listFileEdits(query),
-          snapshot: (itemId) => this._snapshotForEdit(itemId),
-          onChange: (listener) => this._watchFileEdits(listener, signal),
-          reveal: (itemId) => this._reveal({ kind: 'item', id: itemId }),
-        },
         tasks: {
           // A copy, like every other service here: what a pin is handed is a
           // snapshot, and mutating it must not reach the next reader.
@@ -1632,139 +1614,6 @@ class PinboardContent extends JugglerElement {
       this._bindReviewWatcher(entry);
       this._notifyPin(entry.listener, [], 'a move to another review draft');
     }
-  }
-
-  /**
-   * The file edits this conversation's transcript records: every completed,
-   * successful tool action whose tool the caller named and whose input names a
-   * path. Derived rather than stored — the transcript already holds this, and a
-   * ledger beside it could only ever disagree with it.
-   *
-   * The caller supplies the tool names, because which tools mutate a file is the
-   * extension's knowledge and not the host's. The host's part is what a
-   * tool action is, when one counts as having happened, and how to read a path
-   * and a diffstat out of one.
-   *
-   * Deliberately narrow: the projection never touches `toolInput.content` or a
-   * stored diff, both of which hold whole files. Reading a `write` list would
-   * otherwise cost the size of everything ever written.
-   * @param {{tools: string[], limit?: number}} query - Which tools count, and how many edits to return.
-   * @returns {import('juggler/pinboard-item-type').PinFileEdit[]} The edits, newest first.
-   * @private
-   */
-  _listFileEdits(query) {
-    const wanted = new Set(query?.tools || []);
-    const limit = Math.max(0, query?.limit ?? 200);
-    if (!wanted.size || !limit) return [];
-
-    const conversationId = this._active?.conversation?.id;
-    const conversation = conversationId ? this._session?.getConversation?.(conversationId) : null;
-    if (!conversation) return [];
-
-    const root = (this._active?.project?.path || '').replace(/\/+$/, '');
-    /** @type {(import('juggler/pinboard-item-type').PinFileEdit & {_order: number})[]} */
-    const found = [];
-    let order = 0;
-
-    for (const thread of conversation.getAllMessageThreads?.() || []) {
-      for (const ymap of thread.items || []) {
-        order++;
-        if (typeof ymap?.get !== 'function') continue;
-        if (ymap.get('type') !== 'tool-action') continue;
-        const toolName = ymap.get('toolName');
-        if (!wanted.has(toolName)) continue;
-        // 'cancelled' is a state of its own, so this gate drops an abandoned
-        // edit as well as one still running.
-        if (ymap.get('state') !== 'completed') continue;
-
-        const result = ymap.get('result');
-        if (!result) continue;
-        if (yget(result, 'isError') === true || yget(result, 'cancelled') === true) continue;
-        const full = yget(result, 'fullResult');
-        if (yget(full, 'success') === false) continue;
-
-        const input = ymap.get('toolInput');
-        const raw = yget(input, 'path') ?? yget(input, 'file_path');
-        if (typeof raw !== 'string' || !raw) continue;
-
-        const payload = yget(full, 'result') ?? full;
-        found.push({
-          itemId: ymap.get('itemId'),
-          threadId: thread.threadItemId || null,
-          toolName,
-          path: root && !raw.startsWith('/') ? `${root}/${raw}` : raw,
-          added: numberOr(yget(payload, 'linesAdded'), 0),
-          removed: numberOr(yget(payload, 'linesRemoved'), 0),
-          at: itemTime(ymap),
-          _order: order,
-        });
-      }
-    }
-
-    // Newest first. An item the worker has not echoed yet carries no timestamp,
-    // which happens only while it is the newest thing there is — so it sorts
-    // first rather than last, and walk order settles the rest.
-    found.sort((a, b) => (b.at - a.at) || (b._order - a._order));
-    return found.slice(0, limit).map(({ _order, ...edit }) => edit);
-  }
-
-  /**
-   * The two whole files one edit sits between, read off the tool action that made
-   * it. {@link _listFileEdits} refuses to touch these on purpose — a list that
-   * carried them would cost the size of everything ever written — so they are
-   * fetched one action at a time, by a display that is about to show one.
-   *
-   * An edit stores its before and after under `displayData.diffData`, promoted
-   * onto the item whether the action was approved or auto-approved. A `write` that
-   * created the file stores `contentData` instead and no before, which is not a
-   * gap to report: the file began empty, so that is what is returned.
-   *
-   * Null means the transcript does not have this, which a caller must say rather
-   * than draw: two empty strings would render as a file that changed in no way.
-   * @param {string} itemId - The tool action to read.
-   * @returns {import('juggler/pinboard-item-type').PinFileSnapshot|null} Both sides, or null.
-   * @private
-   */
-  _snapshotForEdit(itemId) {
-    if (!itemId) return null;
-    const conversationId = this._active?.conversation?.id;
-    const conversation = conversationId ? this._session?.getConversation?.(conversationId) : null;
-    if (!conversation) return null;
-
-    for (const thread of conversation.getAllMessageThreads?.() || []) {
-      for (const ymap of thread.items || []) {
-        if (typeof ymap?.get !== 'function') continue;
-        if (ymap.get('itemId') !== itemId) continue;
-
-        const display = ymap.get('displayData');
-        const diff = yget(display, 'diffData');
-        if (diff) {
-          const oldContent = yget(diff, 'oldContent');
-          const newContent = yget(diff, 'newContent');
-          if (typeof oldContent !== 'string' || typeof newContent !== 'string') return null;
-          return { oldContent, newContent };
-        }
-
-        const created = yget(display, 'contentData');
-        const content = yget(created, 'content');
-        if (typeof content === 'string') return { oldContent: '', newContent: content };
-        return null;
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Tell an item type when the transcript it read may have changed. The same
-   * signals a context-item watcher uses: a tool action completing is an items
-   * change like any other.
-   * @param {() => void} listener - Called after a change.
-   * @param {AbortSignal} signal - The subscribing pin's mount signal.
-   * @returns {() => void} Unsubscribe.
-   * @private
-   */
-  _watchFileEdits(listener, signal) {
-    return this._watchContextItems(listener, signal);
   }
 
   /**
