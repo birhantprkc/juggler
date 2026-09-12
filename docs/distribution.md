@@ -46,10 +46,11 @@ one install directory as siblings and can add `juggler` to your `PATH`. Because
 they land in the same directory in a single install step, the two never drift
 apart. Uninstalling removes both.
 
-### Linux — server binary
+### Linux — tarball
 
-Linux ships the `juggler` server binary; run it from a terminal and connect with
-a browser or the desktop app. There is no separate app package yet.
+The tarball for each architecture contains `juggler`, the terminal server, and
+`juggler-app`, the GTK desktop client. Keep them in the same directory so the
+app can find and launch its matching server.
 
 ### Planned: Homebrew cask / winget
 

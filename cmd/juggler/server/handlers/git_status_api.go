@@ -113,13 +113,13 @@ func (a *GitStatusAPI) HandleGitStatus(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	for _, dir := range discoverRepos(ctx, root) {
-		status, err := repoStatus(ctx, dir, repoStatusOptions{maxFiles: gitStatusMaxFile})
+		status, err := repoStatus(ctx, dir, repoStatusOptions{maxFiles: gitStatusMaxFile, perCmd: gitStatusPerCmd})
 		if err != nil {
 			continue // best-effort: a repo git cannot report is left off the card
 		}
 		// Line counts are a nicety on a card and the whole point of a review, so
 		// this is the one caller that can shrug at losing them.
-		_ = repoDiffstats(ctx, dir, &status)
+		_ = repoDiffstats(ctx, dir, gitStatusPerCmd, &status)
 		status.Path = repoRelativePath(root, dir)
 		resp.Repos = append(resp.Repos, status)
 	}
@@ -260,6 +260,14 @@ func repoRelativePath(root, dir string) string {
 type repoStatusOptions struct {
 	maxFiles int // files listed one by one before the list is cut
 
+	// perCmd is one git command's clock, and every caller has to name one: the
+	// same read is worth waiting different lengths of time for, so there is no
+	// default here that would be right for both a card polled every twenty
+	// seconds, which would rather be wrong than slow, and a review the user is
+	// sitting in front of, which would rather be slow than wrong. Leaving it
+	// unset is a budget of nothing, and reads that fail immediately.
+	perCmd time.Duration
+
 	// allUntracked names every untracked file instead of letting git collapse a
 	// whole new directory into a single entry. It costs a full walk of every
 	// untracked directory, and it is the difference between "somebody added
@@ -278,7 +286,7 @@ func repoStatus(ctx context.Context, dir string, opts repoStatusOptions) (gitRep
 	if opts.allUntracked {
 		args = append(args, "--untracked-files=all")
 	}
-	out, err := gitRead(ctx, dir, gitStatusPerCmd, gitDiffMaxMeta, args...)
+	out, err := gitRead(ctx, dir, opts.perCmd, gitDiffMaxMeta, args...)
 	if err != nil {
 		return gitRepoStatus{}, err
 	}
@@ -323,12 +331,12 @@ func dropDirectoryEntries(status *gitRepoStatus) {
 // a file — the same comparison a single file's diff is taken from, so a count
 // here and a patch there can never disagree. Untracked and binary files have no
 // honest line count and simply carry none.
-func repoDiffstats(ctx context.Context, dir string, status *gitRepoStatus) error {
-	base, err := gitDiffBase(ctx, dir, gitStatusPerCmd)
+func repoDiffstats(ctx context.Context, dir string, perCmd time.Duration, status *gitRepoStatus) error {
+	base, err := gitDiffBase(ctx, dir, perCmd)
 	if err != nil {
 		return err
 	}
-	out, err := gitRead(ctx, dir, gitStatusPerCmd, gitDiffMaxMeta,
+	out, err := gitRead(ctx, dir, perCmd, gitDiffMaxMeta,
 		"diff-index", "--no-ext-diff", "--no-textconv", "--find-renames",
 		"--numstat", "-z", base, "--")
 	if err != nil {

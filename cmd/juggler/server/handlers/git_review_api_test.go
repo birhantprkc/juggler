@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The manifest's whole claim is that it is the complete working tree, so these
@@ -160,6 +162,48 @@ func TestGitReviewListsEveryRepositoryAndItsFiles(t *testing.T) {
 	lib := resp.repo(t, "libs/lib")
 	if got := lib.filePaths(); !reflect.DeepEqual(got, []string{"lib.txt"}) {
 		t.Errorf("nested files = %v, want [lib.txt]", got)
+	}
+}
+
+// The card is polled every twenty seconds and can give up on a slow read; a
+// review is asked for once, by somebody waiting for it, and reports whatever it
+// could not reach. Holding the review to the card's clock turns a machine that
+// was merely busy into a project full of unreadable repositories — the review
+// reads the same repositories, so the only thing keeping the two apart is this.
+func TestGitReviewIsNotHeldToTheStatusCardsClock(t *testing.T) {
+	if gitReviewPerCmd <= gitStatusPerCmd {
+		t.Errorf("gitReviewPerCmd = %s, want longer than the card's %s", gitReviewPerCmd, gitStatusPerCmd)
+	}
+	if gitReviewBudget < 2*gitReviewPerCmd {
+		t.Errorf("gitReviewBudget = %s, want room for more than one %s command", gitReviewBudget, gitReviewPerCmd)
+	}
+}
+
+// Both clocks are only worth naming if the read is actually run on the one its
+// caller asked for. A budget these helpers accept and then ignore in favour of
+// one written down inside them would make the constants above a fiction, and a
+// clock no read could ever beat is what tells the two apart: given a nanosecond
+// they have to give up, where a budget of their own would have them succeed.
+func TestGitStatusReadsRunOnTheirCallersClock(t *testing.T) {
+	p := newGitProject(t)
+	p.write("file.txt", "one\n")
+	p.commit("init")
+
+	// Whether the clock runs out before git starts or during the read decides
+	// which layer reports it, so either way of saying so counts.
+	ranOut := func(err error) bool {
+		return err != nil &&
+			(errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "longer than 1ns"))
+	}
+
+	_, err := repoStatus(t.Context(), p.root, repoStatusOptions{maxFiles: 10, perCmd: time.Nanosecond})
+	if !ranOut(err) {
+		t.Errorf("repoStatus on a 1ns clock = %v, want it to give up on that clock", err)
+	}
+
+	var status gitRepoStatus
+	if err := repoDiffstats(t.Context(), p.root, time.Nanosecond, &status); !ranOut(err) {
+		t.Errorf("repoDiffstats on a 1ns clock = %v, want it to give up on that clock", err)
 	}
 }
 

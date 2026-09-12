@@ -22,6 +22,13 @@ const (
 	// this cannot.
 	gitReviewBudget = 30 * time.Second
 
+	// gitReviewPerCmd is one git command's clock. The card reads the same
+	// repositories on a far shorter one, which is right for a number in the
+	// corner of a window and wrong here: a read cut off early is a repository
+	// reported as unreadable, and a review that calls a slow machine a broken one
+	// has failed at the only thing it claims to do.
+	gitReviewPerCmd = 10 * time.Second
+
 	// gitReviewMaxRepos and gitReviewMaxDirs stop an unbounded walk of a tree
 	// nobody meant to hand over — a home directory opened as a project. The
 	// directory count is the one that binds in practice: it is roughly a large
@@ -139,7 +146,7 @@ func reviewRepo(ctx context.Context, root, dir string, budget int, resp *gitRevi
 		Complete:      true,
 	}
 
-	status, err := repoStatus(ctx, dir, repoStatusOptions{maxFiles: budget, allUntracked: true})
+	status, err := repoStatus(ctx, dir, repoStatusOptions{maxFiles: budget, allUntracked: true, perCmd: gitReviewPerCmd})
 	if err != nil {
 		repo.Complete = false
 		repo.Error = gitReviewFailure(err)
@@ -162,7 +169,7 @@ func reviewRepo(ctx context.Context, root, dir string, budget int, resp *gitRevi
 	// A repository whose lines could not be counted is not a repository that did
 	// not change, and zero is what both look like. Only the warning separates
 	// them, so the count failing has to produce one.
-	if err := repoDiffstats(ctx, dir, &repo.gitRepoStatus); err != nil {
+	if err := repoDiffstats(ctx, dir, gitReviewPerCmd, &repo.gitRepoStatus); err != nil {
 		repo.Complete = false
 		resp.warn("Couldn't count the changed lines in %s: %s", repoDescription(rel), gitReviewFailure(err))
 	}
