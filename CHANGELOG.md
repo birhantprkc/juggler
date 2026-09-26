@@ -10,6 +10,7 @@ of changes; this project follows semantic versioning.
 - Dragging a mid-turn conversation to another workspace now refuses at the drop, instead of after asking
 - Lots of workspace panel UX improvements and snagging
 - A workspace can now be renamed from its box, the way a conversation tab is
+- The "+" and New workspace rows now fade aside for a drag, so neither is left lit by a tab passing over
 
 ## [0.7.0] - 2026-09-24
 

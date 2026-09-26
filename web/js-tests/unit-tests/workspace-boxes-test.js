@@ -654,15 +654,22 @@ export async function runTests() {
         'still at the end, after the pass that puts the boxes in order');
     });
 
-    await check('the outline gets out of the way of a drag, and comes back after it', () => {
-      // It is the last row of the strip and the one thing in it that is not a
-      // place to land, so a tab dragged to the foot of the bar has to be let go
-      // over something that will not take it — and the drag's own placeholder
-      // ends up below it. Nothing to explain while the gesture is on: the way to
-      // make a workspace is not what a drag is about, so it stands aside.
+    await check('both ways to make something stand aside for a drag, and come back after it', () => {
+      // Neither end of the strip is a place a tab can land, so while one is in
+      // the air both are only in the way. The outline is the last row, so a tab
+      // dragged to the foot of the bar has to be let go over something that will
+      // not take it, and the drag's own placeholder ends up below it. The "+" is
+      // the row the pointer crosses on the way there, and a pointer the gesture
+      // has captured never tells it that it left — so a hover taken in passing
+      // is a hover it keeps once the drag is over. One mark, both rows.
       const menu = /** @type {HTMLElement} */ (bar.querySelector('.conversation-tabs'));
       const outline = /** @type {HTMLElement} */ (menu.querySelector('.conversation-box-new'));
-      const shows = () => getComputedStyle(outline).display !== 'none';
+      const plus = /** @type {HTMLElement} */ (menu.querySelector('.conversation-add-item'));
+      /**
+       * @param {HTMLElement} row - One of the two.
+       * @returns {boolean} Whether it is standing aside.
+       */
+      const aside = (row) => row.classList.contains('stands-aside');
 
       /**
        * Take hold of something, move far enough for it to mean a drag, then
@@ -670,7 +677,7 @@ export async function runTests() {
        * only thing left to read is what the drag itself did to the strip.
        * @param {HTMLElement} grip - What the pointer goes down on.
        * @param {(press: any) => void} start - The gesture to start with it.
-       * @returns {boolean} Whether the outline was still drawn mid-drag.
+       * @returns {boolean} Whether both rows stood aside mid-drag.
        */
       const duringDrag = (grip, start) => {
         /** @type {any} */ (grip).setPointerCapture = () => {};
@@ -682,26 +689,64 @@ export async function runTests() {
           pointerId: 7, buttons: 1, pointerType: 'touch',
           clientX: x, clientY: from.top + 60, bubbles: true
         }));
-        const mid = shows();
+        const mid = aside(outline) && aside(plus);
         document.dispatchEvent(new PointerEvent('pointercancel', {
           pointerId: 7, pointerType: 'touch', bubbles: true
         }));
         return mid;
       };
 
-      assert(shows(), 'the outline is in the strip before anything is picked up');
+      assert(!aside(outline) && !aside(plus), 'both rows are in the strip before anything is picked up');
 
       const tab = /** @type {HTMLElement} */ (menu.querySelector('.conversation-tab'));
-      assert(!duringDrag(tab, (press) => bar._startDrag(press, tab)),
-        'a tab is dragged about a strip of places it can land, and the outline of a box to make is not '
-        + 'one of them — so it is not in the way while one is in the air');
-      assert(shows(), 'and it is back as soon as the gesture is over, abandoned or not');
+      assert(duringDrag(tab, (press) => bar._startDrag(press, tab)),
+        'a tab is dragged about a strip of places it can land, and neither the "+" nor the outline of a '
+        + 'box to make is one of them — so neither is in the way while one is in the air');
+      assert(!aside(outline) && !aside(plus),
+        'and both are back as soon as the gesture is over, abandoned or not');
 
       const box = /** @type {HTMLElement} */ (menu.querySelector('.conversation-box'));
       const header = /** @type {HTMLElement} */ (box.querySelector('.conversation-box-header'));
-      assert(!duringDrag(header, (press) => bar._startBoxDrag(press, box)),
-        'and the same while a whole box is being dragged past it');
-      assert(shows(), 'and back again after that one too');
+      assert(duringDrag(header, (press) => bar._startBoxDrag(press, box)),
+        'and the same while a whole box is being dragged past them');
+      assert(!aside(outline) && !aside(plus), 'and back again after that one too');
+    });
+
+    await check('standing aside is a fade, and only the last row gives up its space', () => {
+      // What the mark means, read with the transition suppressed: a test can be
+      // running in a hidden WebView, where nothing is painted and no transition
+      // ever advances, so the fade's end state is asked for directly.
+      const menu = /** @type {HTMLElement} */ (bar.querySelector('.conversation-tabs'));
+      const outline = /** @type {HTMLElement} */ (menu.querySelector('.conversation-box-new'));
+      const plus = /** @type {HTMLElement} */ (menu.querySelector('.conversation-add-item'));
+
+      for (const row of [outline, plus]) {
+        assert(getComputedStyle(row).transitionProperty.includes('opacity'),
+          'a row that left between two frames would read as the strip losing a row rather than as one '
+          + 'getting out of the way, so both fade');
+        row.style.transition = 'none';
+        row.classList.add('stands-aside');
+      }
+
+      try {
+        assert(Number(getComputedStyle(plus).opacity) === 0
+          && Number(getComputedStyle(outline).opacity) === 0, 'and end the fade invisible');
+        assert(getComputedStyle(plus).pointerEvents === 'none',
+          'the "+" is out of the pointer\'s reach while it is aside, which is what keeps a tab dragged '
+          + 'across it from leaving it lit');
+
+        assert(getComputedStyle(outline).display === 'none',
+          'the outline leaves the layout, so a drop past the last tab does not land a placeholder below '
+          + 'a row that is still taking up the foot of the strip');
+        assert(plus.getBoundingClientRect().height > 0,
+          'the "+" keeps its space — it is the first row, and every tab below it would jump the moment '
+          + 'a drag began');
+      } finally {
+        for (const row of [outline, plus]) {
+          row.classList.remove('stands-aside');
+          row.style.transition = '';
+        }
+      }
     });
 
     await check('a conversation started in a box is born bound to that workspace', async () => {

@@ -82,6 +82,12 @@ const CHROME_ELEMENT_KEYS = new Set([
   'nav', 'tabs-menu', 'add-button', 'new-workspace', 'bin-button', 'bin-undo', 'info-rail'
 ]);
 
+// The rows of the strip that make something rather than hold something: the "+"
+// at the top, which makes a conversation, and the outline at the foot, which
+// makes a workspace. They are the ends of the strip, and they stand aside
+// together for the length of a drag.
+const CREATE_ROW_KEYS = ['add-button', 'new-workspace'];
+
 // How long the Undo button rests above the Bin. Long enough to catch the click
 // you regret, short enough that it never becomes furniture — the Bin itself is
 // the unhurried way back.
@@ -1122,7 +1128,7 @@ class ConversationBar extends JugglerElement {
    */
   _dragStarted() {
     this._dragging = true;
-    this._showNewWorkspace(false);
+    this._showCreateRows(false);
   }
 
   /**
@@ -1133,7 +1139,7 @@ class ConversationBar extends JugglerElement {
    */
   _dragEnded(dragged) {
     this._dragging = false;
-    this._showNewWorkspace(true);
+    this._showCreateRows(true);
     // Draw whatever arrived while the strip was held — including the
     // arrangement this gesture has just committed. The commit runs first and its
     // notify lands while _dragging is still true, so without this the strip
@@ -1152,22 +1158,30 @@ class ConversationBar extends JugglerElement {
   }
 
   /**
-   * Show or hide the row that makes a workspace, for the length of a gesture.
+   * Show or hide the rows that make something, for the length of a gesture.
    *
-   * It is the last row of the strip and the only one that is not somewhere to
-   * land, so while something is in the air it is in the way twice over: a drop
-   * aimed at the foot of the bar is aimed over it, and the placeholder a drag
-   * past the end leaves behind is drawn below it. Neither is what the gesture is
-   * about, and the way to make a workspace is not an offer worth making while a
-   * conversation is being moved — so it stands aside, and comes back whether the
-   * drag landed or was abandoned.
-   * @param {boolean} shown - Whether it is drawn.
+   * Neither is somewhere to land, and a drag is about the places something can
+   * go — so while something is in the air they are only ever in the way, each in
+   * its own manner. The outline at the foot is in the way twice over: a drop
+   * aimed at the bottom of the bar is aimed over it, and the placeholder a drag
+   * past the end leaves behind is drawn below it. The "+" at the top is in the
+   * way of the pointer, which passes over it holding a tab and lights it up on
+   * the way — and a pointer the gesture has captured never tells it that it left,
+   * so the button it lit stays lit after the drag is over.
+   *
+   * Making a conversation or a workspace is also not an offer worth leaving open
+   * while one is being moved. So both stand aside, and both come back whether
+   * the drag landed or was abandoned. What standing aside looks like is the
+   * stylesheet's: the mark goes on here, the fade and the layout are there.
+   * @param {boolean} shown - Whether they are drawn.
    * @returns {void}
    * @private
    */
-  _showNewWorkspace(shown) {
-    const row = /** @type {HTMLElement|undefined} */ (this._cachedElements.get('new-workspace'));
-    if (row) row.hidden = !shown;
+  _showCreateRows(shown) {
+    for (const key of CREATE_ROW_KEYS) {
+      const row = /** @type {HTMLElement|undefined} */ (this._cachedElements.get(key));
+      row?.classList.toggle('stands-aside', !shown);
+    }
   }
 
   /**
