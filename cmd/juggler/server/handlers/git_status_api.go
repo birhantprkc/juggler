@@ -48,8 +48,16 @@ const (
 	gitScanMaxDepth  = 4   // directory levels below the project root to descend
 	gitScanMaxRepos  = 32  // stop discovering after this many repos
 	gitStatusMaxFile = 200 // per repo, the most files listed individually
-	gitStatusPerCmd  = 3 * time.Second
-	gitStatusBudget  = 6 * time.Second
+)
+
+// The card's clocks are the shortest of the three surfaces, which is right for a
+// number in the corner of a window and is why they are the first to run out
+// anywhere else. Var rather than const for the same reason the diff's and the
+// review's are: a test asking what the card counted is not asking how quickly
+// this machine's git could count it.
+var (
+	gitStatusPerCmd = 3 * time.Second
+	gitStatusBudget = 6 * time.Second
 )
 
 // gitFileStatus is one file in a repository's working tree. Index and Worktree

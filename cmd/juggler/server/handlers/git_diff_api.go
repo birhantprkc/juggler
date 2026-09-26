@@ -52,7 +52,12 @@ var gitDiffMaxBytes = 8 << 20
 // again for the patch and again for the tally behind a truncated one, and on a
 // loaded machine those reads take seconds rather than milliseconds. Refusing a
 // diff that another few seconds would have produced is the worse answer.
-const (
+//
+// Var rather than const so a test can lend itself more of them, as the review's
+// clocks are. A test that means to check what a diff says is not asking how fast
+// this machine's git is, and on a loaded runner those are different questions
+// with the same answer: a 502 naming the clock.
+var (
 	gitDiffPerCmd = 10 * time.Second // one git command's clock
 	gitDiffBudget = 30 * time.Second // the whole request's, across all of them
 )

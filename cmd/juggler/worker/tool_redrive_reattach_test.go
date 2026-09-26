@@ -61,13 +61,25 @@ func newReattachHarness(t *testing.T, convID string) *reattachHarness {
 	return h
 }
 
+// flushBarrierWait is how long a flush barrier waits for its sentinel, here and
+// in the cancel-epoch harness. What it waits on is a channel hand-off between
+// two goroutines of this process, so the wait is a deadlock detector and never a
+// measurement: the outcomes are microseconds, or never. A short value therefore
+// buys nothing and costs a failure on any machine busy enough to delay a
+// hand-off — CI has taken six seconds over these, which is how the 10s version
+// of this wait came to fail — so it sits where no amount of starvation reaches
+// it while a barrier that genuinely never lifts still ends the test. Past it the
+// package's own -timeout is the better diagnosis anyway: that panics with a
+// goroutine dump naming the blocked send, which this Fatal cannot do.
+const flushBarrierWait = 90 * time.Second
+
 func (h *reattachHarness) flush(t *testing.T) {
 	t.Helper()
 	b, _ := json.Marshal(ToolCommand{Type: "flush-sentinel"})
 	h.w.callbacks.sendToEngine(b)
 	select {
 	case <-h.flushCh:
-	case <-time.After(10 * time.Second):
+	case <-time.After(flushBarrierWait):
 		t.Fatal("flush barrier timed out")
 	}
 }

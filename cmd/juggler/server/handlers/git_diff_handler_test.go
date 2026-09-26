@@ -47,6 +47,7 @@ func newGitProject(t *testing.T) *gitProject {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	unhurried(t)
 
 	root := t.TempDir()
 	p := &gitProject{t: t, root: root, dir: root}
@@ -67,20 +68,34 @@ func (p *gitProject) nested(rel string) *gitProject {
 	return nested
 }
 
+// The identity a commit needs, and the housekeeping this repository must not
+// do — as the text `git config` would have written, appended to the config git
+// init just made. A spawn is the expensive unit in this package (on Windows a
+// CreateProcess and an image scan apiece) and this harness builds forty-five
+// repositories, so the settings are written once rather than run five times.
+//
+// git does its housekeeping after a commit, in a process it detaches and leaves
+// running, and it holds `.git/objects/maintenance.lock` while it works. A test
+// that hashes the repository before and after asking the endpoint something
+// sees that lock disappear between the two and reports it as a write of ours,
+// so this repository keeps no housekeeping of its own. Both maintenance keys:
+// the second is what the gits that predate the first read.
+const gitProjectConfig = "[user]\n\temail = test@example.com\n\tname = Juggler Test\n" +
+	"[commit]\n\tgpgsign = false\n" +
+	"[maintenance]\n\tauto = false\n" +
+	"[gc]\n\tauto = 0\n"
+
 func (p *gitProject) init() {
 	p.t.Helper()
 	p.git("init", "-q")
-	p.git("config", "user.email", "test@example.com")
-	p.git("config", "user.name", "Juggler Test")
-	p.git("config", "commit.gpgsign", "false")
-	// git does its housekeeping after a commit, in a process it detaches and
-	// leaves running, and it holds `.git/objects/maintenance.lock` while it
-	// works. A test that hashes the repository before and after asking the
-	// endpoint something sees that lock disappear between the two and reports
-	// it as a write of ours, so this repository keeps no housekeeping of its
-	// own. Both keys: the second is what the gits that predate the first read.
-	p.git("config", "maintenance.auto", "false")
-	p.git("config", "gc.auto", "0")
+	cfg := filepath.Join(p.dir, ".git", "config")
+	existing, err := os.ReadFile(cfg) //nolint:gosec // a repository this test made a line ago
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, append(existing, gitProjectConfig...), 0o600); err != nil {
+		p.t.Fatal(err)
+	}
 }
 
 // git runs one git command in this repository and fails the test if it could not.
@@ -781,6 +796,15 @@ func TestGitDiffTruncatesTheTextButNotTheTruth(t *testing.T) {
 // can be shown whole. Half of it is a worse answer than none of it, and either
 // way the response says it is not the complete patch.
 func TestGitDiffGiantSingleLineIsNotReturnedInHalves(t *testing.T) {
+	// Lowered for the same reason as in TestGitDiffTruncatesTheTextButNotTheTruth,
+	// and doubly so here: a single line past the shipped ceiling is eight megabytes
+	// with no newline in it for git or the parser to work with. What is under test
+	// is a line longer than the ceiling, whatever the ceiling is. Every test in
+	// this package runs sequentially, so lowering it for one is safe.
+	restore := gitDiffMaxBytes
+	gitDiffMaxBytes = 64 << 10
+	t.Cleanup(func() { gitDiffMaxBytes = restore })
+
 	p := newGitProject(t)
 	p.write("giant.txt", "small\n")
 	p.commit("init")

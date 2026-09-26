@@ -90,6 +90,30 @@ jobs:
           # Module/build caching is on by default and always wanted here: every
           # runner is an ephemeral hosted VM whose caches vanish with it.
 
+      # Windows only, and before anything writes to those caches. Every file this
+      # job touches is one Defender has to scan: the module cache, the build
+      # cache, the linked test binaries, and — the expensive one — the thousands
+      # of tiny loose objects the git-based test harnesses write into throwaway
+      # repositories under RUNNER_TEMP, each in a process Defender also scans as
+      # it starts. Nothing here is untrusted: the tree is the checkout under
+      # test, the caches are Go's, and the temp dirs hold only what the suites
+      # just created. Best-effort by design — if the runner image ever stops
+      # granting this, the step says so and the job carries on, slower.
+      - name: Exclude the build from Defender
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $paths = @($env:GITHUB_WORKSPACE, $env:RUNNER_TEMP, (go env GOCACHE), (go env GOMODCACHE)) | Where-Object { $_ }
+          $procs = @('git.exe', 'go.exe', 'link.exe', 'compile.exe', 'gcc.exe')
+          try {
+            Add-MpPreference -ExclusionPath $paths -ErrorAction Stop
+            Add-MpPreference -ExclusionProcess $procs -ErrorAction Stop
+            Write-Host 'Defender exclusions set for:'
+            $paths | ForEach-Object { Write-Host "  $_" }
+          } catch {
+            Write-Host "Could not set Defender exclusions, carrying on without them: $_"
+          }
+
       - name: Download Go modules
         run: go mod download
 
@@ -165,10 +189,31 @@ jobs:
       # -race. Kept a separate step from the browser suite so the CI log names
       # which layer broke. Use -count=1 (not -short): -short makes these suites'
       # TestMain/guards self-skip, which silently turned this gate into a no-op.
-      # Match `make test-go` exactly so CI can't drift weaker than local.
+      # Every package and every test runs on every platform, so this matches
+      # `make test-go` in scope and can't drift weaker than local; -p on Windows
+      # is a load knob, not a scope one.
+      #
+      # `go test` defaults -p to GOMAXPROCS, so a 4-vCPU hosted runner starts
+      # four race-instrumented test binaries at once — and `server/handlers` is a
+      # git storm, 339 real git processes, each a CreateProcess plus a Defender
+      # image scan. Run 36186123131 measured what that does to whatever shares
+      # the box: handlers 4.2s on Linux and 10.7s on macOS against 135.0s here
+      # (12.6x), while `worker` and `server` — which spawn nothing at all, being
+      # wholly in-process — were dragged to 135.2s and 122.4s (6.6x, 3.6x). All
+      # three converged on one wall time, which is starvation rather than work.
+      # What fails then is never the storm itself but whichever unrelated package
+      # was timing something: that run lost a 10s git budget in handlers and a
+      # 10s in-process channel round-trip in worker, both of them milliseconds on
+      # an idle machine. `claudecode` runs before the heavy binaries start and is
+      # 1.2x macOS, which is what this leg costs when nothing is fighting it.
       - name: Run Go package tests
         shell: bash
-        run: go test -count=1 -race -timeout 5m ./cmd/...
+        run: |
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            go test -count=1 -race -timeout 5m -p 2 ./cmd/...
+          else
+            go test -count=1 -race -timeout 5m ./cmd/...
+          fi
 
       # Browser test suite: drives the WebKitGTK engine inside a spawned
       # bin/juggler-testsrv. -count=1 (not -short) is load-bearing — under -short the
